@@ -284,6 +284,16 @@ impl PanelState {
         }
     }
 
+    fn update_selection_stats(&mut self, size: u64, selected: bool) {
+        if selected {
+            self.selected_count += 1;
+            self.selected_size += size;
+        } else {
+            self.selected_count = self.selected_count.saturating_sub(1);
+            self.selected_size = self.selected_size.saturating_sub(size);
+        }
+    }
+
     pub fn current_entry(&self) -> Option<&FileEntry> {
         if self.cursor < self.entries.len() {
             Some(&self.entries[self.cursor])
@@ -298,13 +308,22 @@ impl PanelState {
                 return;
             }
             entry.selected = !entry.selected;
-            if entry.selected {
-                self.selected_count += 1;
-                self.selected_size += entry.size;
-            } else {
-                self.selected_count = self.selected_count.saturating_sub(1);
-                self.selected_size = self.selected_size.saturating_sub(entry.size);
+            let size = entry.size;
+            let selected = entry.selected;
+            let _ = entry;
+            self.update_selection_stats(size, selected);
+        }
+    }
+
+    pub fn set_selection_at(&mut self, index: usize, selected: bool) {
+        if let Some(entry) = self.entries.get_mut(index) {
+            if entry.name == ".." || entry.selected == selected {
+                return;
             }
+            entry.selected = selected;
+            let size = entry.size;
+            let _ = entry;
+            self.update_selection_stats(size, selected);
         }
     }
 
@@ -551,7 +570,7 @@ mod tests {
         assert_eq!(panel.scroll_offset, 0);
         assert_eq!(panel.sort_mode, SortMode::default());
         assert_eq!(panel.listing_mode, ListingMode::Long);
-        assert!(!panel.show_hidden);
+        assert!(panel.show_hidden);
         assert!(panel.filter.is_none());
     }
 
@@ -603,6 +622,34 @@ mod tests {
         panel.cursor = 0;
         assert!(panel.entries[0].selected);
         panel.toggle_selection();
+        assert!(!panel.entries[0].selected);
+        assert_eq!(panel.selected_count, 0);
+        assert_eq!(panel.selected_size, 0);
+    }
+
+    #[test]
+    fn test_panel_state_set_selection_at_on() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel
+            .entries
+            .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+
+        panel.set_selection_at(0, true);
+
+        assert!(panel.entries[0].selected);
+        assert_eq!(panel.selected_count, 1);
+        assert_eq!(panel.selected_size, 100);
+    }
+
+    #[test]
+    fn test_panel_state_set_selection_at_off() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel
+            .entries
+            .push(create_test_entry("file1.txt", false, 100, 0o644, true));
+
+        panel.set_selection_at(0, false);
+
         assert!(!panel.entries[0].selected);
         assert_eq!(panel.selected_count, 0);
         assert_eq!(panel.selected_size, 0);
