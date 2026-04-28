@@ -551,7 +551,7 @@ mod tests {
         assert_eq!(panel.scroll_offset, 0);
         assert_eq!(panel.sort_mode, SortMode::default());
         assert_eq!(panel.listing_mode, ListingMode::Long);
-        assert!(!panel.show_hidden);
+        assert!(panel.show_hidden);
         assert!(panel.filter.is_none());
     }
 

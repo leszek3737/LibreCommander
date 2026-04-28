@@ -762,13 +762,13 @@ fn panel_visible_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(6) as usize
 }
 
-fn handle_normal_mode(
+fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     key: KeyCode,
     modifiers: KeyModifiers,
     terminal_height: u16,
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut ratatui::Terminal<B>,
 ) {
     let visible = panel_visible_height(terminal_height);
     match key {
@@ -1953,9 +1953,9 @@ fn handle_mouse_event(
 }
 
 /// Toggle external panel view (Ctrl+O) - hide panels to see terminal output
-fn toggle_external_view(
+fn toggle_external_view<B: ratatui::backend::Backend>(
     state: &mut AppState,
-    _terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    _terminal: &mut ratatui::Terminal<B>,
 ) -> io::Result<()> {
     use crossterm::{cursor::Show, terminal::LeaveAlternateScreen};
 
@@ -2135,12 +2135,12 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
     }
 }
 
-fn handle_menu_mode(
+fn handle_menu_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     key: KeyCode,
     terminal_height: u16,
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    terminal: &mut ratatui::Terminal<B>,
 ) {
     let menu_counts: [usize; 5] = [4, 10, 7, 6, 4];
     let max_items = menu_counts[state.menu_selected];
@@ -2545,8 +2545,13 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
 mod tests {
     use super::*;
     use app::types::{ActivePanel, FileEntry};
+    use ratatui::{backend::TestBackend, Terminal};
     use std::path::PathBuf;
     use std::time::{Duration, UNIX_EPOCH};
+
+    fn test_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
 
     #[test]
     fn menu_toggle_hidden_files_refreshes_active_panel() {
@@ -2554,6 +2559,7 @@ mod tests {
             active_panel: ActivePanel::Left,
             ..Default::default()
         };
+        let mut terminal = test_terminal();
         let mut state = state;
         state.left_panel.path = std::env::temp_dir();
         state.left_panel.show_hidden = false;
@@ -2561,7 +2567,7 @@ mod tests {
         state.menu_selected = 3;
         state.menu_item_selected = 4;
 
-        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         assert_eq!(state.mode, AppMode::Normal);
         assert!(state.left_panel.show_hidden);
@@ -2569,6 +2575,7 @@ mod tests {
 
     #[test]
     fn menu_rename_opens_input_dialog_with_current_name() {
+        let mut terminal = test_terminal();
         let mut state = AppState::default();
         state.left_panel.entries.push(app::types::FileEntry {
             name: "old.txt".to_string(),
@@ -2588,7 +2595,7 @@ mod tests {
         state.menu_selected = 1;
         state.menu_item_selected = 7;
 
-        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         assert_eq!(state.dialog_input, "old.txt");
         assert_eq!(
@@ -2652,6 +2659,7 @@ mod tests {
 
     #[test]
     fn menu_history_opens_picker() {
+        let mut terminal = test_terminal();
         let state = AppState {
             mode: AppMode::Menu,
             menu_selected: 2,
@@ -2661,7 +2669,7 @@ mod tests {
         let mut state = state;
         state.command_history.push("ls -la".to_string());
 
-        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         assert_eq!(state.mode, AppMode::ListPicker(PickerKind::History));
         assert_eq!(state.picker_selected, 0);
@@ -2669,6 +2677,7 @@ mod tests {
 
     #[test]
     fn menu_hotlist_opens_picker() {
+        let mut terminal = test_terminal();
         let mut state = AppState {
             mode: AppMode::Menu,
             menu_selected: 2,
@@ -2677,7 +2686,7 @@ mod tests {
         };
         state.directory_hotlist.push(std::env::temp_dir());
 
-        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
         assert_eq!(state.picker_selected, 0);
@@ -3188,6 +3197,7 @@ mod tests {
     fn user_menu_file_menu_no_menu_file_shows_error() {
         // Point the panel at a temp dir with no .mc.menu file
         let tmp = std::env::temp_dir();
+        let mut terminal = test_terminal();
         let mut state = AppState {
             mode: AppMode::Menu,
             menu_selected: 1,
@@ -3196,7 +3206,7 @@ mod tests {
         };
         state.left_panel.path = tmp.clone();
 
-        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         // Should show an error dialog since no menu file exists
         assert!(matches!(
@@ -3210,6 +3220,7 @@ mod tests {
         use std::io::Write;
 
         let tmp = tempfile::tempdir().unwrap();
+        let mut terminal = test_terminal();
         let menu_path = tmp.path().join(".mc.menu");
         let mut f = std::fs::File::create(&menu_path).unwrap();
         write!(
@@ -3226,7 +3237,7 @@ mod tests {
         };
         state.left_panel.path = tmp.path().to_path_buf();
 
-        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         assert_eq!(state.mode, AppMode::ListPicker(PickerKind::UserMenu));
         assert_eq!(state.picker_selected, 0);
