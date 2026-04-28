@@ -783,9 +783,13 @@ fn handle_normal_mode(
             state.picker_selected = 0;
         }
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
-            // Shift+Up: move cursor up and toggle selection
+            // Start range selection from the current entry, then extend upward.
             let panel = state.active_panel_mut();
             if panel.cursor > 0 {
+                let was_selected = panel.entries.get(panel.cursor).is_some_and(|entry| entry.selected);
+                if !was_selected {
+                    panel.toggle_selection();
+                }
                 panel.cursor -= 1;
                 panel.toggle_selection();
                 if panel.cursor < panel.scroll_offset {
@@ -794,10 +798,14 @@ fn handle_normal_mode(
             }
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
-            // Shift+Down: move cursor down and toggle selection
+            // Start range selection from the current entry, then extend downward.
             let panel = state.active_panel_mut();
             let len = panel.entries.len();
             if len > 0 && panel.cursor < len - 1 {
+                let was_selected = panel.entries.get(panel.cursor).is_some_and(|entry| entry.selected);
+                if !was_selected {
+                    panel.toggle_selection();
+                }
                 panel.cursor += 1;
                 panel.toggle_selection();
                 if panel.cursor >= panel.scroll_offset + visible {
