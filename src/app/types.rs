@@ -308,6 +308,22 @@ impl PanelState {
         }
     }
 
+    pub fn set_selection_at(&mut self, index: usize, selected: bool) {
+        if let Some(entry) = self.entries.get_mut(index) {
+            if entry.name == ".." || entry.selected == selected {
+                return;
+            }
+            entry.selected = selected;
+            if selected {
+                self.selected_count += 1;
+                self.selected_size += entry.size;
+            } else {
+                self.selected_count = self.selected_count.saturating_sub(1);
+                self.selected_size = self.selected_size.saturating_sub(entry.size);
+            }
+        }
+    }
+
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
         self.entries.iter().filter(|e| e.selected).collect()
     }
@@ -603,6 +619,34 @@ mod tests {
         panel.cursor = 0;
         assert!(panel.entries[0].selected);
         panel.toggle_selection();
+        assert!(!panel.entries[0].selected);
+        assert_eq!(panel.selected_count, 0);
+        assert_eq!(panel.selected_size, 0);
+    }
+
+    #[test]
+    fn test_panel_state_set_selection_at_on() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel
+            .entries
+            .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+
+        panel.set_selection_at(0, true);
+
+        assert!(panel.entries[0].selected);
+        assert_eq!(panel.selected_count, 1);
+        assert_eq!(panel.selected_size, 100);
+    }
+
+    #[test]
+    fn test_panel_state_set_selection_at_off() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel
+            .entries
+            .push(create_test_entry("file1.txt", false, 100, 0o644, true));
+
+        panel.set_selection_at(0, false);
+
         assert!(!panel.entries[0].selected);
         assert_eq!(panel.selected_count, 0);
         assert_eq!(panel.selected_size, 0);

@@ -783,31 +783,43 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             state.picker_selected = 0;
         }
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
-            // Start range selection from the current entry, then extend upward.
+            // Extend selection upward, or shrink it when moving back over a selected range.
             let panel = state.active_panel_mut();
             if panel.cursor > 0 {
-                let was_selected = panel.entries.get(panel.cursor).is_some_and(|entry| entry.selected);
-                if !was_selected {
-                    panel.toggle_selection();
+                let current = panel.cursor;
+                let next = current - 1;
+                let shrink = panel.entries.get(current).is_some_and(|entry| entry.selected)
+                    && panel.entries.get(next).is_some_and(|entry| entry.selected);
+
+                if shrink {
+                    panel.set_selection_at(current, false);
+                } else {
+                    panel.set_selection_at(current, true);
                 }
-                panel.cursor -= 1;
-                panel.toggle_selection();
+                panel.cursor = next;
+                panel.set_selection_at(panel.cursor, true);
                 if panel.cursor < panel.scroll_offset {
                     panel.scroll_offset = panel.cursor;
                 }
             }
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
-            // Start range selection from the current entry, then extend downward.
+            // Extend selection downward, or shrink it when moving back over a selected range.
             let panel = state.active_panel_mut();
             let len = panel.entries.len();
             if len > 0 && panel.cursor < len - 1 {
-                let was_selected = panel.entries.get(panel.cursor).is_some_and(|entry| entry.selected);
-                if !was_selected {
-                    panel.toggle_selection();
+                let current = panel.cursor;
+                let next = current + 1;
+                let shrink = panel.entries.get(current).is_some_and(|entry| entry.selected)
+                    && panel.entries.get(next).is_some_and(|entry| entry.selected);
+
+                if shrink {
+                    panel.set_selection_at(current, false);
+                } else {
+                    panel.set_selection_at(current, true);
                 }
-                panel.cursor += 1;
-                panel.toggle_selection();
+                panel.cursor = next;
+                panel.set_selection_at(panel.cursor, true);
                 if panel.cursor >= panel.scroll_offset + visible {
                     panel.scroll_offset = panel.cursor.saturating_sub(visible) + 1;
                 }
@@ -2690,6 +2702,121 @@ mod tests {
 
         assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
         assert_eq!(state.picker_selected, 0);
+    }
+
+    #[test]
+    fn shift_down_starts_selection_from_current_entry() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            FileEntry {
+                name: "a.txt".to_string(),
+                path: PathBuf::from("/tmp/a.txt"),
+                is_dir: false,
+                is_symlink: false,
+                is_executable: false,
+                size: 10,
+                modified: std::time::SystemTime::now(),
+                permissions: 0o644,
+                owner: String::new(),
+                group: String::new(),
+                selected: false,
+                is_hidden: false,
+            },
+            FileEntry {
+                name: "b.txt".to_string(),
+                path: PathBuf::from("/tmp/b.txt"),
+                is_dir: false,
+                is_symlink: false,
+                is_executable: false,
+                size: 20,
+                modified: std::time::SystemTime::now(),
+                permissions: 0o644,
+                owner: String::new(),
+                group: String::new(),
+                selected: false,
+                is_hidden: false,
+            },
+        ];
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Down,
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.left_panel.cursor, 1);
+        assert!(state.left_panel.entries[0].selected);
+        assert!(state.left_panel.entries[1].selected);
+    }
+
+    #[test]
+    fn shift_up_shrinks_selection_range() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            FileEntry {
+                name: "a.txt".to_string(),
+                path: PathBuf::from("/tmp/a.txt"),
+                is_dir: false,
+                is_symlink: false,
+                is_executable: false,
+                size: 10,
+                modified: std::time::SystemTime::now(),
+                permissions: 0o644,
+                owner: String::new(),
+                group: String::new(),
+                selected: true,
+                is_hidden: false,
+            },
+            FileEntry {
+                name: "b.txt".to_string(),
+                path: PathBuf::from("/tmp/b.txt"),
+                is_dir: false,
+                is_symlink: false,
+                is_executable: false,
+                size: 20,
+                modified: std::time::SystemTime::now(),
+                permissions: 0o644,
+                owner: String::new(),
+                group: String::new(),
+                selected: true,
+                is_hidden: false,
+            },
+            FileEntry {
+                name: "c.txt".to_string(),
+                path: PathBuf::from("/tmp/c.txt"),
+                is_dir: false,
+                is_symlink: false,
+                is_executable: false,
+                size: 30,
+                modified: std::time::SystemTime::now(),
+                permissions: 0o644,
+                owner: String::new(),
+                group: String::new(),
+                selected: true,
+                is_hidden: false,
+            },
+        ];
+        state.left_panel.cursor = 2;
+        state.left_panel.recalculate_selection_stats();
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Up,
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.left_panel.cursor, 1);
+        assert!(state.left_panel.entries[0].selected);
+        assert!(state.left_panel.entries[1].selected);
+        assert!(!state.left_panel.entries[2].selected);
     }
 
     #[test]
