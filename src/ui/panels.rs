@@ -308,60 +308,40 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
 
 /// Format a single entry line for display
 fn format_entry_line(entry: &FileEntry, width: usize) -> String {
-    let mut line = String::new();
-
-    // Selection marker: 1 char
-    line.push(if entry.selected { '*' } else { ' ' });
-
-    // Name first (truncated if necessary, with ellipsis)
-    // Reserve space for: marker(1) + name + spaces + size(10) + date(16) + perms(9) = ~36+ chars
-    let reserved_space = 1 + 10 + 1 + 16 + 1 + 9 + 1; // marker + size + space + date + space + perms + spaces
-    let name_space = width.saturating_sub(reserved_space);
-    
-    if name_space > 1 {
-        let name_width = UnicodeWidthStr::width(entry.name.as_str());
-        if name_width > name_space {
-            let name_space = name_space.saturating_sub(1);
-            let mut taken = 0;
-            for ch in entry.name.chars() {
-                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if taken + cw > name_space {
-                    break;
-                }
-                line.push(ch);
-                taken += cw;
-            }
-            line.push('…');
-        } else {
-            line.push_str(&entry.name);
-        }
-    }
-    
-    // Pad name field if needed
-    let current_len = line.len();
-    let name_field_end = 1 + name_space.max(1);
-    if current_len < name_field_end {
-        for _ in current_len..name_field_end {
-            line.push(' ');
-        }
-    }
-
-    // Size (right-aligned, max 10 chars): 10 chars
-    line.push(' ');
-    let size_str = format_size(entry.size);
-    use std::fmt::Write;
-    let _ = write!(line, "{size_str:>10}");
-    line.push(' ');
-
-    // Date/Time: 16 chars ("YYYY-MM-DD HH:MM")
+    let marker = if entry.selected { '*' } else { ' ' };
+    let size_str = format!("{:>10}", format_size(entry.size));
     let date_str = format_time(entry.modified);
-    line.push_str(&date_str);
+    let perms_str = format_permissions(entry.permissions);
+    let suffix = format!(" {size_str} {date_str} {perms_str}");
+    let suffix_width = UnicodeWidthStr::width(suffix.as_str());
 
-    // Permissions: 9 chars
-    line.push(' ');
-    line.push_str(&format_permissions(entry.permissions));
+    let available_name_width = width.saturating_sub(1 + suffix_width);
+    let mut name = String::new();
 
-    line
+    if available_name_width == 0 {
+        return format!("{marker}{suffix}");
+    }
+
+    let name_width = UnicodeWidthStr::width(entry.name.as_str());
+    if name_width <= available_name_width {
+        name.push_str(&entry.name);
+    } else if available_name_width == 1 {
+        name.push('…');
+    } else {
+        let truncate_to = available_name_width.saturating_sub(1);
+        let mut taken = 0;
+        for ch in entry.name.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if taken + cw > truncate_to {
+                break;
+            }
+            name.push(ch);
+            taken += cw;
+        }
+        name.push('…');
+    }
+
+    format!("{marker}{name}{suffix}")
 }
 
 fn format_brief_entry_line(entry: &FileEntry, width: usize) -> String {
@@ -723,17 +703,17 @@ mod tests {
             false,
             false,
         );
-        let result = format_entry_line(&entry, 30);
-        assert!(!result.is_empty());
-        assert!(result.contains(&format_permissions(entry.permissions)));
+        let result = format_entry_line(&entry, 45);
+        assert!(result.contains('…'));
+        assert!(UnicodeWidthStr::width(result.as_str()) <= 45);
     }
 
     #[test]
     fn test_format_entry_line_truncation_handles_unicode() {
         let entry = create_test_entry("zażółć_gęślą_jaźń.txt", false, false, false);
-        let result = format_entry_line(&entry, 20);
-        assert!(!result.is_empty());
-        assert!(result.contains(&format_permissions(entry.permissions)));
+        let result = format_entry_line(&entry, 45);
+        assert!(result.contains('…'));
+        assert!(UnicodeWidthStr::width(result.as_str()) <= 45);
     }
 
     #[test]

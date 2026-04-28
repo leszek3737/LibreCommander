@@ -284,6 +284,16 @@ impl PanelState {
         }
     }
 
+    fn update_selection_stats(&mut self, size: u64, selected: bool) {
+        if selected {
+            self.selected_count += 1;
+            self.selected_size += size;
+        } else {
+            self.selected_count = self.selected_count.saturating_sub(1);
+            self.selected_size = self.selected_size.saturating_sub(size);
+        }
+    }
+
     pub fn current_entry(&self) -> Option<&FileEntry> {
         if self.cursor < self.entries.len() {
             Some(&self.entries[self.cursor])
@@ -298,13 +308,10 @@ impl PanelState {
                 return;
             }
             entry.selected = !entry.selected;
-            if entry.selected {
-                self.selected_count += 1;
-                self.selected_size += entry.size;
-            } else {
-                self.selected_count = self.selected_count.saturating_sub(1);
-                self.selected_size = self.selected_size.saturating_sub(entry.size);
-            }
+            let size = entry.size;
+            let selected = entry.selected;
+            let _ = entry;
+            self.update_selection_stats(size, selected);
         }
     }
 
@@ -314,13 +321,9 @@ impl PanelState {
                 return;
             }
             entry.selected = selected;
-            if selected {
-                self.selected_count += 1;
-                self.selected_size += entry.size;
-            } else {
-                self.selected_count = self.selected_count.saturating_sub(1);
-                self.selected_size = self.selected_size.saturating_sub(entry.size);
-            }
+            let size = entry.size;
+            let _ = entry;
+            self.update_selection_stats(size, selected);
         }
     }
 

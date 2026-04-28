@@ -762,6 +762,16 @@ fn panel_visible_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(6) as usize
 }
 
+fn shift_select(panel: &mut app::types::PanelState, next: usize) {
+    let current = panel.cursor;
+    let shrink = panel.entries.get(current).is_some_and(|entry| entry.selected)
+        && panel.entries.get(next).is_some_and(|entry| entry.selected);
+
+    panel.set_selection_at(current, !shrink);
+    panel.cursor = next;
+    panel.set_selection_at(panel.cursor, true);
+}
+
 fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -786,18 +796,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             // Extend selection upward, or shrink it when moving back over a selected range.
             let panel = state.active_panel_mut();
             if panel.cursor > 0 {
-                let current = panel.cursor;
-                let next = current - 1;
-                let shrink = panel.entries.get(current).is_some_and(|entry| entry.selected)
-                    && panel.entries.get(next).is_some_and(|entry| entry.selected);
-
-                if shrink {
-                    panel.set_selection_at(current, false);
-                } else {
-                    panel.set_selection_at(current, true);
-                }
-                panel.cursor = next;
-                panel.set_selection_at(panel.cursor, true);
+                shift_select(panel, panel.cursor - 1);
                 if panel.cursor < panel.scroll_offset {
                     panel.scroll_offset = panel.cursor;
                 }
@@ -808,18 +807,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let panel = state.active_panel_mut();
             let len = panel.entries.len();
             if len > 0 && panel.cursor < len - 1 {
-                let current = panel.cursor;
-                let next = current + 1;
-                let shrink = panel.entries.get(current).is_some_and(|entry| entry.selected)
-                    && panel.entries.get(next).is_some_and(|entry| entry.selected);
-
-                if shrink {
-                    panel.set_selection_at(current, false);
-                } else {
-                    panel.set_selection_at(current, true);
-                }
-                panel.cursor = next;
-                panel.set_selection_at(panel.cursor, true);
+                shift_select(panel, panel.cursor + 1);
                 if panel.cursor >= panel.scroll_offset + visible {
                     panel.scroll_offset = panel.cursor.saturating_sub(visible) + 1;
                 }
@@ -2565,6 +2553,23 @@ mod tests {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
     }
 
+    fn make_test_entry(name: &str, size: u64, selected: bool) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: false,
+            size,
+            modified: std::time::SystemTime::now(),
+            permissions: 0o644,
+            owner: String::new(),
+            group: String::new(),
+            selected,
+            is_hidden: false,
+        }
+    }
+
     #[test]
     fn menu_toggle_hidden_files_refreshes_active_panel() {
         let state = AppState {
@@ -2709,34 +2714,8 @@ mod tests {
         let mut terminal = test_terminal();
         let mut state = AppState::default();
         state.left_panel.entries = vec![
-            FileEntry {
-                name: "a.txt".to_string(),
-                path: PathBuf::from("/tmp/a.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 10,
-                modified: std::time::SystemTime::now(),
-                permissions: 0o644,
-                owner: String::new(),
-                group: String::new(),
-                selected: false,
-                is_hidden: false,
-            },
-            FileEntry {
-                name: "b.txt".to_string(),
-                path: PathBuf::from("/tmp/b.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 20,
-                modified: std::time::SystemTime::now(),
-                permissions: 0o644,
-                owner: String::new(),
-                group: String::new(),
-                selected: false,
-                is_hidden: false,
-            },
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
         ];
 
         handle_normal_mode(
@@ -2758,48 +2737,9 @@ mod tests {
         let mut terminal = test_terminal();
         let mut state = AppState::default();
         state.left_panel.entries = vec![
-            FileEntry {
-                name: "a.txt".to_string(),
-                path: PathBuf::from("/tmp/a.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 10,
-                modified: std::time::SystemTime::now(),
-                permissions: 0o644,
-                owner: String::new(),
-                group: String::new(),
-                selected: true,
-                is_hidden: false,
-            },
-            FileEntry {
-                name: "b.txt".to_string(),
-                path: PathBuf::from("/tmp/b.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 20,
-                modified: std::time::SystemTime::now(),
-                permissions: 0o644,
-                owner: String::new(),
-                group: String::new(),
-                selected: true,
-                is_hidden: false,
-            },
-            FileEntry {
-                name: "c.txt".to_string(),
-                path: PathBuf::from("/tmp/c.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 30,
-                modified: std::time::SystemTime::now(),
-                permissions: 0o644,
-                owner: String::new(),
-                group: String::new(),
-                selected: true,
-                is_hidden: false,
-            },
+            make_test_entry("a.txt", 10, true),
+            make_test_entry("b.txt", 20, true),
+            make_test_entry("c.txt", 30, true),
         ];
         state.left_panel.cursor = 2;
         state.left_panel.recalculate_selection_stats();
