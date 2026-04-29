@@ -10,7 +10,7 @@ impl Theme {
     pub const STATUS_BAR_BG: Color = Color::Blue;
     pub const MENU_BAR_BG: Color = Color::Blue;
     pub const FUNCTION_BAR_BG: Color = Color::Blue;
-    pub const DIALOG_BG: Color = Color::Blue;
+    pub const DIALOG_BG: Color = Color::Black;
     pub const HIGHLIGHT_BG: Color = Color::Cyan;
     
     // Foreground colors
