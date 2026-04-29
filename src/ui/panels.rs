@@ -63,24 +63,16 @@ pub fn is_image(name: &str) -> bool {
 
 /// Check if file is source code
 pub fn is_source_code(name: &str) -> bool {
-    name.ends_with(".rs")
-        || name.ends_with(".py")
-        || name.ends_with(".js")
-        || name.ends_with(".ts")
-        || name.ends_with(".c")
-        || name.ends_with(".h")
-        || name.ends_with(".cpp")
-        || name.ends_with(".go")
-        || name.ends_with(".java")
-        || name.ends_with(".RS")
-        || name.ends_with(".PY")
-        || name.ends_with(".JS")
-        || name.ends_with(".TS")
-        || name.ends_with(".C")
-        || name.ends_with(".H")
-        || name.ends_with(".CPP")
-        || name.ends_with(".GO")
-        || name.ends_with(".JAVA")
+    let lower = name.to_lowercase();
+    lower.ends_with(".rs")
+        || lower.ends_with(".py")
+        || lower.ends_with(".js")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".c")
+        || lower.ends_with(".h")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".go")
+        || lower.ends_with(".java")
 }
 
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
@@ -89,79 +81,56 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
         return "📁 ";
     }
 
-    let name = &entry.name;
+    let lower = entry.name.to_lowercase();
 
-    if name.ends_with(".pdf")
-        || name.ends_with(".PDF")
-        || name.ends_with(".doc")
-        || name.ends_with(".DOC")
-        || name.ends_with(".docx")
-        || name.ends_with(".DOCX")
-        || name.ends_with(".xls")
-        || name.ends_with(".XLS")
-        || name.ends_with(".xlsx")
-        || name.ends_with(".XLSX")
-        || name.ends_with(".odt")
-        || name.ends_with(".ODT")
+    if lower.ends_with(".pdf")
+        || lower.ends_with(".doc")
+        || lower.ends_with(".docx")
+        || lower.ends_with(".xls")
+        || lower.ends_with(".xlsx")
+        || lower.ends_with(".odt")
     {
         return "📄 ";
     }
 
-    if is_archive(name) {
+    if is_archive(&entry.name) {
         return "📦 ";
     }
 
-    if is_image(name) {
+    if is_image(&entry.name) {
         return "🖼 ";
     }
 
-    if name.ends_with(".mp3")
-        || name.ends_with(".MP3")
-        || name.ends_with(".wav")
-        || name.ends_with(".WAV")
-        || name.ends_with(".flac")
-        || name.ends_with(".FLAC")
-        || name.ends_with(".ogg")
-        || name.ends_with(".OGG")
-        || name.ends_with(".m4a")
-        || name.ends_with(".M4A")
+    if lower.ends_with(".mp3")
+        || lower.ends_with(".wav")
+        || lower.ends_with(".flac")
+        || lower.ends_with(".ogg")
+        || lower.ends_with(".m4a")
     {
         return "🎵 ";
     }
 
-    if name.ends_with(".mp4")
-        || name.ends_with(".MP4")
-        || name.ends_with(".avi")
-        || name.ends_with(".AVI")
-        || name.ends_with(".mkv")
-        || name.ends_with(".MKV")
-        || name.ends_with(".mov")
-        || name.ends_with(".MOV")
-        || name.ends_with(".webm")
-        || name.ends_with(".WEBM")
+    if lower.ends_with(".mp4")
+        || lower.ends_with(".avi")
+        || lower.ends_with(".mkv")
+        || lower.ends_with(".mov")
+        || lower.ends_with(".webm")
     {
         return "🎬 ";
     }
 
-    if name.ends_with(".json")
-        || name.ends_with(".JSON")
-        || name.ends_with(".toml")
-        || name.ends_with(".TOML")
-        || name.ends_with(".yaml")
-        || name.ends_with(".YAML")
-        || name.ends_with(".yml")
-        || name.ends_with(".YML")
-        || name.ends_with(".ini")
-        || name.ends_with(".INI")
-        || name.ends_with(".conf")
-        || name.ends_with(".CONF")
-        || name.ends_with(".cfg")
-        || name.ends_with(".CFG")
+    if lower.ends_with(".json")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".ini")
+        || lower.ends_with(".conf")
+        || lower.ends_with(".cfg")
     {
         return "⚙ ";
     }
 
-    if is_source_code(name) {
+    if is_source_code(&entry.name) {
         return "💻 ";
     }
 
@@ -398,7 +367,7 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
 
     let icon = get_file_icon(entry);
     let icon_width = UnicodeWidthStr::width(icon);
-    let available_name_width = width.saturating_sub(1 + suffix_width + icon_width);
+    let available_name_width = width.saturating_sub(1 + suffix_width);
     let mut name = String::new();
 
     if available_name_width == 0 {
@@ -442,30 +411,34 @@ fn format_brief_entry_line(entry: &FileEntry, width: usize) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     let icon = get_file_icon(entry);
     let icon_width = UnicodeWidthStr::width(icon);
-    let prefix_len = 2 + icon_width;
-    let available = width.saturating_sub(prefix_len);
+    let available = width.saturating_sub(1); // after marker
     if available == 0 {
+        return format!("{marker}");
+    }
+    if available < icon_width {
+        return format!("{marker}");
+    }
+    let name_width = UnicodeWidthStr::width(entry.name.as_str());
+    let name_available = available - icon_width;
+    if name_available >= name_width {
+        return format!("{marker}{icon}{}", entry.name);
+    }
+    if name_available == 0 {
         return format!("{marker}{icon}");
     }
-    let name_with_icon = format!("{icon}{}", entry.name);
-    let name_width = UnicodeWidthStr::width(name_with_icon.as_str());
-    if name_width <= available {
-        return format!("{marker}{name_with_icon}");
-    }
-    let trunc_to = available.saturating_sub(icon_width + 1);
+    // Truncate name to fit with ellipsis
+    let trunc_to = name_available - 1; // leave room for ellipsis
     let mut taken = 0;
-    let mut name_part = String::new();
-    name_part.push_str(icon);
+    let mut truncated = String::new();
     for ch in entry.name.chars() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
         if taken + cw > trunc_to {
             break;
         }
-        name_part.push(ch);
+        truncated.push(ch);
         taken += cw;
     }
-    name_part.push('…');
-    format!("{marker}{name_part}")
+    format!("{marker}{icon}{truncated}…")
 }
 
 /// Render scrollbar indicator
