@@ -12,6 +12,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::ui::theme::Theme;
+
 // Minimal FileEntry as defined in the prompt requirements
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -377,7 +379,7 @@ impl FileSearch {
 // ============================================================================
 
 pub fn render_quick_search(f: &mut Frame, area: Rect, query: &str) {
-    let text_style = Style::default().fg(Color::White);
+    let text_style = Theme::status_bar();
 
     let text = if query.is_empty() {
         " Search: ".to_string()

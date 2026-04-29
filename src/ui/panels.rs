@@ -8,31 +8,34 @@ use ratatui::{
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
+use super::theme::Theme;
+
 pub use crate::app::types::FileEntry;
 pub use crate::app::types::PanelState;
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
     if entry.is_hidden {
-        return Style::default().fg(Color::DarkGray);
+        return Style::default().fg(Theme::HIDDEN_FILE).bg(Theme::PANEL_BG);
     }
 
     Style::default()
         .fg(if entry.is_dir {
-            Color::White
+            Theme::DIRECTORY
         } else if entry.is_executable {
-            Color::Green
+            Theme::EXECUTABLE
         } else if entry.is_symlink {
-            Color::Cyan
+            Theme::SYMLINK
         } else if is_archive(&entry.name) {
-            Color::Red
+            Theme::ARCHIVE
         } else if is_image(&entry.name) {
-            Color::Magenta
+            Theme::IMAGE
         } else if is_source_code(&entry.name) {
-            Color::Yellow
+            Theme::SOURCE_CODE
         } else {
-            Color::White
+            Theme::REGULAR_FILE
         })
+        .bg(Theme::PANEL_BG)
         .add_modifier(if entry.is_dir || entry.is_executable {
             Modifier::BOLD
         } else {
@@ -206,11 +209,9 @@ pub fn format_time(modified: SystemTime) -> String {
 /// Render a single file panel with border
 pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
     let border_style = if is_active {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        Theme::border_active()
     } else {
-        Style::default().fg(Color::DarkGray)
+        Theme::border_inactive()
     };
 
     // Title with current directory path
@@ -221,7 +222,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         .borders(Borders::ALL)
         .border_style(border_style)
         .title(title)
-        .title_style(Style::default().fg(Color::LightCyan));
+        .title_style(Theme::title());
 
     // Calculate available area for file list (inside the border)
     let inner_area = block.inner(area);
@@ -273,9 +274,9 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
 
     // Render the list
     let highlight_style = if is_active {
-        Style::default().bg(Color::DarkGray)
+        Theme::highlight()
     } else {
-        Style::default().bg(Color::Black).add_modifier(Modifier::DIM)
+        Theme::panel()
     };
 
     let list = List::new(list_items)
@@ -296,7 +297,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         && let Some(ref err) = panel.last_error
     {
         let err_text = Paragraph::new(format!(" Error: {err}"))
-            .style(Style::default().fg(Color::Red));
+            .style(Theme::error());
         f.render_widget(err_text, chunks[0]);
     }
 

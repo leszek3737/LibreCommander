@@ -27,6 +27,7 @@ use app::types::{ActivePanel, AppMode, AppState, CompareMode, PanelState, Picker
 use app::{dir_tree, user_menu};
 use fs::reader;
 use ops::sorting;
+use ui::theme::Theme;
 use ui::{dialogs, panels, viewer};
 
 struct TerminalGuard;
@@ -263,6 +264,12 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     }
 
     let size = f.area();
+    
+    // Fill entire screen with blue background
+    let bg_block = ratatui::widgets::Block::default()
+        .style(Theme::panel_bg());
+    f.render_widget(bg_block, size);
+    
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -313,7 +320,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
         format!("{}", ap.path.display())
     };
     let cmd_paragraph =
-        ratatui::widgets::Paragraph::new(cmd_text).style(Style::default().fg(Color::White));
+        ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar());
     f.render_widget(cmd_paragraph, main_layout[3]);
 
     panels::render_function_bar(f, main_layout[4]);
@@ -466,7 +473,7 @@ fn render_menu_dropdown(
     selected_menu: usize,
     selected_item: usize,
 ) {
-    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+    use ratatui::widgets::{Block, Borders, Paragraph};
 
     let menu_titles = ["Left", "File", "Command", "Options", "Right"];
     let menu_items: [&[&str]; 5] = [
@@ -518,12 +525,11 @@ fn render_menu_dropdown(
     for (i, title) in menu_titles.iter().enumerate() {
         let title_width = title.len() as u16 + 2;
         let style = if i == selected_menu {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+            Theme::highlight()
+                .fg(Theme::INFO)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::LightBlue).bg(Color::DarkGray)
+            Theme::menu_bar()
         };
         let label = format!(" {title} ");
         let p = Paragraph::new(label).style(style);
@@ -553,12 +559,15 @@ fn render_menu_dropdown(
         dropdown_height,
     );
 
-    f.render_widget(Clear, dropdown_area);
+    // Fill dropdown area with blue background
+    let bg_block = ratatui::widgets::Block::default()
+        .style(Theme::panel_bg());
+    f.render_widget(bg_block, dropdown_area);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White))
-        .style(Style::default().bg(Color::DarkGray));
+        .border_style(Theme::panel_fg())
+        .style(Theme::panel_bg());
     let inner = block.inner(dropdown_area);
     f.render_widget(block, dropdown_area);
 
@@ -567,9 +576,9 @@ fn render_menu_dropdown(
             break;
         }
         let style = if i == selected_item {
-            Style::default().fg(Color::Black).bg(Color::Cyan)
+            Theme::highlight()
         } else {
-            Style::default().fg(Color::White).bg(Color::DarkGray)
+            Theme::panel()
         };
         let item_area = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
         let p = Paragraph::new(format!(" {item} ")).style(style);
@@ -578,15 +587,19 @@ fn render_menu_dropdown(
 }
 
 fn render_directory_tree(f: &mut Frame, state: &AppState) {
-    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+    use ratatui::widgets::{Block, Borders, Paragraph};
 
     let area = f.area();
-    f.render_widget(Clear, area);
+    
+    // Fill with blue background instead of clearing
+    let bg_block = Block::default()
+        .style(Theme::panel_bg());
+    f.render_widget(bg_block, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Directory Tree: {} ", state.tree_root.display()))
-        .title_style(Style::default().fg(Color::LightCyan));
+        .title_style(Theme::title());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -626,11 +639,11 @@ fn render_directory_tree(f: &mut Frame, state: &AppState) {
         };
 
         let line_style = if row == selected {
-            Style::default().fg(Color::Black).bg(Color::Cyan)
+            Theme::highlight()
         } else if entry.is_dir {
-            Style::default().fg(Color::LightBlue)
+            Style::default().fg(Theme::DIRECTORY)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Theme::REGULAR_FILE)
         };
 
         let text = format!("{}{}{}", indent, prefix, entry.name);
@@ -643,7 +656,7 @@ fn render_directory_tree(f: &mut Frame, state: &AppState) {
     let bottom_y = inner.y + inner.height.saturating_sub(1);
     let bottom_area = Rect::new(inner.x, bottom_y, inner.width, 1);
     let help_text = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
-    let help_para = Paragraph::new(help_text).style(Style::default().fg(Color::Yellow));
+    let help_para = Paragraph::new(help_text).style(Theme::warning());
     f.render_widget(help_para, bottom_area);
 }
 

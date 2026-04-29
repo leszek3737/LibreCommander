@@ -9,6 +9,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::theme::Theme;
+
 pub struct ViewerState {
     pub file_path: PathBuf,
     pub content: Vec<String>,
@@ -250,9 +252,8 @@ fn format_line_with_highlight<'a>(
             == Some(current_match_idx);
 
         let style = if is_current {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+            Theme::highlight()
+                .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Black).bg(Color::LightGreen)
@@ -274,7 +275,7 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(state.file_path.display().to_string())
-        .title_style(Style::default().fg(Color::LightCyan));
+        .title_style(Theme::title());
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
@@ -362,7 +363,7 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
         if state.wrap_lines { "Wrap" } else { "No Wrap" }
     );
     let status_paragraph = Paragraph::new(status_text)
-        .style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray));
+        .style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
 }
 
@@ -370,7 +371,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!("{} [Hex]", state.file_path.display()))
-        .title_style(Style::default().fg(Color::LightCyan));
+        .title_style(Theme::title());
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
@@ -433,7 +434,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
             .to_string_lossy(),
     );
     let status_paragraph = Paragraph::new(status_text)
-        .style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray));
+        .style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
 }
 

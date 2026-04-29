@@ -1,13 +1,15 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::Line,
     widgets::{
-        Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+        Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap,
     },
 };
 use unicode_width::UnicodeWidthStr;
+
+use super::theme::Theme;
 
 #[derive(Debug, Clone)]
 pub enum DialogKind {
@@ -56,7 +58,11 @@ pub enum DialogResult {
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     let rect = f.area();
     let dialog_area = centered_rect(50, 40, rect);
-    f.render_widget(Clear, dialog_area);
+    
+    // Fill dialog area with blue background
+    let bg_block = ratatui::widgets::Block::default()
+        .style(Theme::dialog());
+    f.render_widget(bg_block, dialog_area);
 
     match dialog {
         DialogKind::Confirm { title, message } => {
@@ -102,7 +108,7 @@ pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &s
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        .style(Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -119,15 +125,12 @@ pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &s
     let buttons = Line::from(vec![
         ratatui::text::Span::styled(
             "[ Yes ]",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Theme::highlight().add_modifier(Modifier::BOLD),
         ),
         ratatui::text::Span::raw("  "),
         ratatui::text::Span::styled(
             "[ No ]",
-            Style::default().fg(Color::White).bg(Color::DarkGray),
+            Theme::dialog(),
         ),
     ]);
     let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
@@ -146,7 +149,7 @@ pub fn render_input_dialog(
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        .style(Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -183,7 +186,7 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::Red).bg(Color::DarkGray));
+        .style(Style::default().fg(Theme::ERROR).bg(Theme::DIALOG_BG));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -195,14 +198,13 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
     let message_paragraph = Paragraph::new(message.to_string())
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::Red));
+        .style(Theme::error());
     f.render_widget(message_paragraph, chunks[0]);
 
     let ok_btn = Paragraph::new("[ OK ]")
         .style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Red)
+            Theme::highlight()
+                .fg(Theme::ERROR)
                 .add_modifier(Modifier::BOLD),
         )
         .alignment(Alignment::Center);
@@ -214,7 +216,7 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::Cyan).bg(Color::DarkGray));
+        .style(Style::default().fg(Theme::INFO).bg(Theme::DIALOG_BG));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -226,14 +228,13 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
     let message_paragraph = Paragraph::new(message.to_string())
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::Cyan));
+        .style(Theme::info());
     f.render_widget(message_paragraph, chunks[0]);
 
     let ok_btn = Paragraph::new("[ Press any key ]")
         .style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+            Theme::highlight()
+                .fg(Theme::INFO)
                 .add_modifier(Modifier::BOLD),
         )
         .alignment(Alignment::Center);
@@ -245,7 +246,7 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        .style(Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -261,7 +262,7 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
 
     let clamped = percent.clamp(0.0, 100.0) as u16;
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(Style::default().fg(Theme::INFO).bg(Theme::DIALOG_BG))
         .percent(clamped)
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
@@ -282,7 +283,7 @@ pub fn render_properties_dialog(
         .borders(Borders::ALL)
         .title("File Properties".to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::Yellow).bg(Color::DarkGray));
+        .style(Style::default().fg(Theme::WARNING).bg(Theme::DIALOG_BG));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -295,7 +296,7 @@ pub fn render_properties_dialog(
         Line::from(format!("Owner: {}:{}", owner, group)),
         Line::from(""),
         Line::from("[ Press Enter or Esc to close ]")
-            .style(Style::default().fg(Color::Cyan)),
+            .style(Theme::info()),
     ];
 
     let paragraph = Paragraph::new(lines)
@@ -313,13 +314,17 @@ pub fn render_list_picker(
 ) {
     let area = f.area();
     let picker_area = centered_rect(60, 70, area);
-    f.render_widget(Clear, picker_area);
+    
+    // Fill picker area with blue background
+    let bg_block = ratatui::widgets::Block::default()
+        .style(Theme::dialog());
+    f.render_widget(bg_block, picker_area);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        .style(Theme::dialog());
     let inner = block.inner(picker_area);
     f.render_widget(block, picker_area);
 
@@ -330,16 +335,15 @@ pub fn render_list_picker(
 
     if items.is_empty() {
         let empty = Paragraph::new("(empty)")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(Theme::HIDDEN_FILE))
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {
         let list_items: Vec<ListItem> = items.iter().map(|s| ListItem::new(s.as_str())).collect();
         let list = List::new(list_items)
             .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                Theme::highlight()
+                    .fg(Theme::INFO)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("> ");
@@ -349,7 +353,7 @@ pub fn render_list_picker(
     }
 
     let hint_para = Paragraph::new(hint)
-        .style(Style::default().fg(Color::Yellow))
+        .style(Theme::warning())
         .alignment(Alignment::Center);
     f.render_widget(hint_para, chunks[1]);
 }
