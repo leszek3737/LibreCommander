@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **lc** (790 symbols, 2365 relationships, 70 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **lc---Libre-Commander** (898 symbols, 2660 relationships, 80 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **lc** (790 symbols, 2365 relationships, 
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/lc/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/lc/clusters` | All functional areas |
-| `gitnexus://repo/lc/processes` | All execution flows |
-| `gitnexus://repo/lc/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/lc---Libre-Commander/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/lc---Libre-Commander/clusters` | All functional areas |
+| `gitnexus://repo/lc---Libre-Commander/processes` | All execution flows |
+| `gitnexus://repo/lc---Libre-Commander/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

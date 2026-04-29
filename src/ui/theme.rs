@@ -25,7 +25,7 @@ impl Theme {
     pub const BORDER_ACTIVE: Color = Color::Yellow;
     pub const BORDER_INACTIVE: Color = Color::DarkGray;
     pub const TITLE: Color = Color::LightCyan;
-    pub const HIDDEN_FILE: Color = Color::White;
+    pub const HIDDEN_FILE: Color = Color::DarkGray;
     pub const ERROR: Color = Color::Red;
     pub const WARNING: Color = Color::Yellow;
     pub const INFO: Color = Color::Cyan;

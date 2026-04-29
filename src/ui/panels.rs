@@ -63,24 +63,78 @@ pub fn is_image(name: &str) -> bool {
 
 /// Check if file is source code
 pub fn is_source_code(name: &str) -> bool {
-    name.ends_with(".rs")
-        || name.ends_with(".py")
-        || name.ends_with(".js")
-        || name.ends_with(".ts")
-        || name.ends_with(".c")
-        || name.ends_with(".h")
-        || name.ends_with(".cpp")
-        || name.ends_with(".go")
-        || name.ends_with(".java")
-        || name.ends_with(".RS")
-        || name.ends_with(".PY")
-        || name.ends_with(".JS")
-        || name.ends_with(".TS")
-        || name.ends_with(".C")
-        || name.ends_with(".H")
-        || name.ends_with(".CPP")
-        || name.ends_with(".GO")
-        || name.ends_with(".JAVA")
+    let lower = name.to_lowercase();
+    lower.ends_with(".rs")
+        || lower.ends_with(".py")
+        || lower.ends_with(".js")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".c")
+        || lower.ends_with(".h")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".go")
+        || lower.ends_with(".java")
+}
+
+/// Get icon for a file entry (ASCII-safe, no variation selectors)
+pub fn get_file_icon(entry: &FileEntry) -> &'static str {
+    if entry.is_dir {
+        return "📁 ";
+    }
+
+    let lower = entry.name.to_lowercase();
+
+    if lower.ends_with(".pdf")
+        || lower.ends_with(".doc")
+        || lower.ends_with(".docx")
+        || lower.ends_with(".xls")
+        || lower.ends_with(".xlsx")
+        || lower.ends_with(".odt")
+    {
+        return "📄 ";
+    }
+
+    if is_archive(&entry.name) {
+        return "📦 ";
+    }
+
+    if is_image(&entry.name) {
+        return "🖼 ";
+    }
+
+    if lower.ends_with(".mp3")
+        || lower.ends_with(".wav")
+        || lower.ends_with(".flac")
+        || lower.ends_with(".ogg")
+        || lower.ends_with(".m4a")
+    {
+        return "🎵 ";
+    }
+
+    if lower.ends_with(".mp4")
+        || lower.ends_with(".avi")
+        || lower.ends_with(".mkv")
+        || lower.ends_with(".mov")
+        || lower.ends_with(".webm")
+    {
+        return "🎬 ";
+    }
+
+    if lower.ends_with(".json")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+        || lower.ends_with(".ini")
+        || lower.ends_with(".conf")
+        || lower.ends_with(".cfg")
+    {
+        return "⚙ ";
+    }
+
+    if is_source_code(&entry.name) {
+        return "💻 ";
+    }
+
+    "📄 "
 }
 
 /// Format file size for display
@@ -311,6 +365,8 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
     let suffix = format!(" {size_str} {date_str} {perms_str}");
     let suffix_width = UnicodeWidthStr::width(suffix.as_str());
 
+    let icon = get_file_icon(entry);
+    let icon_width = UnicodeWidthStr::width(icon);
     let available_name_width = width.saturating_sub(1 + suffix_width);
     let mut name = String::new();
 
@@ -318,13 +374,24 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
         return format!("{marker}{suffix}");
     }
 
-    let name_width = UnicodeWidthStr::width(entry.name.as_str());
+    let name_with_icon = format!("{icon}{}", entry.name);
+    let name_width = UnicodeWidthStr::width(name_with_icon.as_str());
     if name_width <= available_name_width {
-        name.push_str(&entry.name);
-    } else if available_name_width == 1 {
-        name.push('…');
+        name.push_str(&name_with_icon);
+    } else if available_name_width <= icon_width {
+        // Truncate icon by display width, not char count
+        let mut taken = 0;
+        for ch in icon.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if taken + cw > available_name_width {
+                break;
+            }
+            name.push(ch);
+            taken += cw;
+        }
     } else {
-        let truncate_to = available_name_width.saturating_sub(1);
+        name.push_str(icon);
+        let truncate_to = available_name_width.saturating_sub(icon_width + 1);
         let mut taken = 0;
         for ch in entry.name.chars() {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
@@ -342,27 +409,36 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
 
 fn format_brief_entry_line(entry: &FileEntry, width: usize) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
-    let prefix_len = 2;
-    let available = width.saturating_sub(prefix_len);
+    let icon = get_file_icon(entry);
+    let icon_width = UnicodeWidthStr::width(icon);
+    let available = width.saturating_sub(1); // after marker
     if available == 0 {
         return format!("{marker}");
     }
-    let name_width = UnicodeWidthStr::width(entry.name.as_str());
-    if name_width <= available {
-        return format!("{marker} {}", entry.name);
+    if available < icon_width {
+        return format!("{marker}");
     }
-    let trunc_to = available.saturating_sub(1);
+    let name_width = UnicodeWidthStr::width(entry.name.as_str());
+    let name_available = available - icon_width;
+    if name_available >= name_width {
+        return format!("{marker}{icon}{}", entry.name);
+    }
+    if name_available == 0 {
+        return format!("{marker}{icon}");
+    }
+    // Truncate name to fit with ellipsis
+    let trunc_to = name_available - 1; // leave room for ellipsis
     let mut taken = 0;
-    let mut name_part = String::new();
+    let mut truncated = String::new();
     for ch in entry.name.chars() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
         if taken + cw > trunc_to {
             break;
         }
-        name_part.push(ch);
+        truncated.push(ch);
         taken += cw;
     }
-    format!("{marker} {name_part}…")
+    format!("{marker}{icon}{truncated}…")
 }
 
 /// Render scrollbar indicator
@@ -692,6 +768,60 @@ mod tests {
     }
 
     #[test]
+    fn test_get_file_icon_directory() {
+        let entry = create_test_entry("mydir", true, false, false);
+        assert_eq!(get_file_icon(&entry), "📁 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_document() {
+        let entry = create_test_entry("report.pdf", false, false, false);
+        assert_eq!(get_file_icon(&entry), "📄 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_archive() {
+        let entry = create_test_entry("backup.tar.gz", false, false, false);
+        assert_eq!(get_file_icon(&entry), "📦 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_image() {
+        let entry = create_test_entry("photo.jpg", false, false, false);
+        assert_eq!(get_file_icon(&entry), "🖼 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_audio() {
+        let entry = create_test_entry("song.mp3", false, false, false);
+        assert_eq!(get_file_icon(&entry), "🎵 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_video() {
+        let entry = create_test_entry("movie.mp4", false, false, false);
+        assert_eq!(get_file_icon(&entry), "🎬 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_config() {
+        let entry = create_test_entry("config.toml", false, false, false);
+        assert_eq!(get_file_icon(&entry), "⚙ ");
+    }
+
+    #[test]
+    fn test_get_file_icon_code() {
+        let entry = create_test_entry("main.rs", false, false, false);
+        assert_eq!(get_file_icon(&entry), "💻 ");
+    }
+
+    #[test]
+    fn test_get_file_icon_default() {
+        let entry = create_test_entry("unknown.xyz", false, false, false);
+        assert_eq!(get_file_icon(&entry), "📄 ");
+    }
+
+    #[test]
     fn test_format_entry_line_truncation() {
         let entry = create_test_entry(
             "very_long_filename_that_should_be_truncated.txt",
@@ -699,17 +829,17 @@ mod tests {
             false,
             false,
         );
-        let result = format_entry_line(&entry, 45);
+        let result = format_entry_line(&entry, 47);
         assert!(result.contains('…'));
-        assert!(UnicodeWidthStr::width(result.as_str()) <= 45);
+        assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
     }
 
     #[test]
     fn test_format_entry_line_truncation_handles_unicode() {
         let entry = create_test_entry("zażółć_gęślą_jaźń.txt", false, false, false);
-        let result = format_entry_line(&entry, 45);
+        let result = format_entry_line(&entry, 47);
         assert!(result.contains('…'));
-        assert!(UnicodeWidthStr::width(result.as_str()) <= 45);
+        assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
     }
 
     #[test]
