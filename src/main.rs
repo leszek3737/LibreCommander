@@ -525,9 +525,7 @@ fn render_menu_dropdown(
     for (i, title) in menu_titles.iter().enumerate() {
         let title_width = title.len() as u16 + 2;
         let style = if i == selected_menu {
-            Theme::highlight()
-                .fg(Theme::INFO)
-                .add_modifier(Modifier::BOLD)
+            Theme::highlight_bold()
         } else {
             Theme::menu_bar()
         };
@@ -641,9 +639,9 @@ fn render_directory_tree(f: &mut Frame, state: &AppState) {
         let line_style = if row == selected {
             Theme::highlight()
         } else if entry.is_dir {
-            Style::default().fg(Theme::DIRECTORY)
+            Theme::panel_file(Theme::DIRECTORY)
         } else {
-            Style::default().fg(Theme::REGULAR_FILE)
+            Theme::panel_file(Theme::REGULAR_FILE)
         };
 
         let text = format!("{}{}{}", indent, prefix, entry.name);

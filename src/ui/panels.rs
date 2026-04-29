@@ -1,7 +1,7 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
     Frame,
 };
@@ -16,31 +16,26 @@ pub use crate::app::types::PanelState;
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
     if entry.is_hidden {
-        return Style::default().fg(Theme::HIDDEN_FILE).bg(Theme::PANEL_BG);
+        return Theme::panel_file(Theme::HIDDEN_FILE);
     }
 
-    Style::default()
-        .fg(if entry.is_dir {
-            Theme::DIRECTORY
-        } else if entry.is_executable {
-            Theme::EXECUTABLE
-        } else if entry.is_symlink {
-            Theme::SYMLINK
-        } else if is_archive(&entry.name) {
-            Theme::ARCHIVE
-        } else if is_image(&entry.name) {
-            Theme::IMAGE
-        } else if is_source_code(&entry.name) {
-            Theme::SOURCE_CODE
-        } else {
-            Theme::REGULAR_FILE
-        })
-        .bg(Theme::PANEL_BG)
-        .add_modifier(if entry.is_dir || entry.is_executable {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        })
+    let color = if entry.is_dir {
+        Theme::DIRECTORY
+    } else if entry.is_executable {
+        Theme::EXECUTABLE
+    } else if entry.is_symlink {
+        Theme::SYMLINK
+    } else if is_archive(&entry.name) {
+        Theme::ARCHIVE
+    } else if is_image(&entry.name) {
+        Theme::IMAGE
+    } else if is_source_code(&entry.name) {
+        Theme::SOURCE_CODE
+    } else {
+        Theme::REGULAR_FILE
+    };
+
+    Theme::panel_item(color, entry.is_dir || entry.is_executable)
 }
 
 /// Check if file is an archive

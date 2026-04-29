@@ -1,4 +1,5 @@
 use ratatui::style::{Color, Style};
+use ratatui::style::Modifier;
 
 /// Color theme for the application (Midnight Commander style)
 pub struct Theme;
@@ -69,6 +70,43 @@ impl Theme {
     
     pub fn highlight() -> Style {
         Style::default().fg(Self::HIGHLIGHT_FG).bg(Self::HIGHLIGHT_BG)
+    }
+
+    pub fn highlight_bold() -> Style {
+        Self::highlight().add_modifier(Modifier::BOLD)
+    }
+
+    pub fn error_dialog() -> Style {
+        Style::default().fg(Self::ERROR).bg(Self::DIALOG_BG)
+    }
+
+    pub fn help_dialog() -> Style {
+        Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
+    }
+
+    pub fn warning_dialog() -> Style {
+        Style::default().fg(Self::WARNING).bg(Self::DIALOG_BG)
+    }
+
+    pub fn progress_bar() -> Style {
+        Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
+    }
+
+    pub fn selected_error() -> Style {
+        Self::highlight().fg(Self::ERROR).add_modifier(Modifier::BOLD)
+    }
+
+    pub fn panel_file(color: Color) -> Style {
+        Style::default().fg(color).bg(Self::PANEL_BG)
+    }
+
+    pub fn panel_item(color: Color, bold: bool) -> Style {
+        let style = Self::panel_file(color);
+        if bold {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
     }
     
     pub fn border_active() -> Style {

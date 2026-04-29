@@ -272,6 +272,9 @@ fn format_line_with_highlight<'a>(
 }
 
 pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
+    let bg_block = Block::default().style(Theme::panel());
+    f.render_widget(bg_block, area);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(state.file_path.display().to_string())
@@ -368,6 +371,9 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
 }
 
 pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
+    let bg_block = Block::default().style(Theme::panel());
+    f.render_widget(bg_block, area);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!("{} [Hex]", state.file_path.display()))

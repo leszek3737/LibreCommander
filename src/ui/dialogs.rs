@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::Line,
     widgets::{
         Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap,
@@ -125,7 +125,7 @@ pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &s
     let buttons = Line::from(vec![
         ratatui::text::Span::styled(
             "[ Yes ]",
-            Theme::highlight().add_modifier(Modifier::BOLD),
+            Theme::highlight_bold(),
         ),
         ratatui::text::Span::raw("  "),
         ratatui::text::Span::styled(
@@ -186,7 +186,7 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Theme::ERROR).bg(Theme::DIALOG_BG));
+        .style(Theme::error_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -202,11 +202,7 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
     f.render_widget(message_paragraph, chunks[0]);
 
     let ok_btn = Paragraph::new("[ OK ]")
-        .style(
-            Theme::highlight()
-                .fg(Theme::ERROR)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(Theme::selected_error())
         .alignment(Alignment::Center);
     f.render_widget(ok_btn, chunks[1]);
 }
@@ -216,7 +212,7 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
         .borders(Borders::ALL)
         .title(title.to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Theme::INFO).bg(Theme::DIALOG_BG));
+        .style(Theme::help_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -232,11 +228,7 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
     f.render_widget(message_paragraph, chunks[0]);
 
     let ok_btn = Paragraph::new("[ Press any key ]")
-        .style(
-            Theme::highlight()
-                .fg(Theme::INFO)
-                .add_modifier(Modifier::BOLD),
-        )
+        .style(Theme::highlight_bold())
         .alignment(Alignment::Center);
     f.render_widget(ok_btn, chunks[1]);
 }
@@ -262,7 +254,7 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
 
     let clamped = percent.clamp(0.0, 100.0) as u16;
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Theme::INFO).bg(Theme::DIALOG_BG))
+        .gauge_style(Theme::progress_bar())
         .percent(clamped)
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
@@ -283,7 +275,7 @@ pub fn render_properties_dialog(
         .borders(Borders::ALL)
         .title("File Properties".to_string())
         .border_type(BorderType::Thick)
-        .style(Style::default().fg(Theme::WARNING).bg(Theme::DIALOG_BG));
+        .style(Theme::warning_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -341,11 +333,7 @@ pub fn render_list_picker(
     } else {
         let list_items: Vec<ListItem> = items.iter().map(|s| ListItem::new(s.as_str())).collect();
         let list = List::new(list_items)
-            .highlight_style(
-                Theme::highlight()
-                    .fg(Theme::INFO)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(Theme::highlight_bold())
             .highlight_symbol("> ");
         let mut list_state = ListState::default();
         list_state.select(Some(selected));
