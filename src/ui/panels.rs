@@ -15,10 +15,6 @@ pub use crate::app::types::PanelState;
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
-    if entry.is_hidden {
-        return Theme::panel_file(Theme::HIDDEN_FILE);
-    }
-
     let color = if entry.is_dir {
         Theme::DIRECTORY
     } else if entry.is_executable {

@@ -6,10 +6,10 @@ pub struct Theme;
 
 impl Theme {
     // Background colors
-    pub const PANEL_BG: Color = Color::Blue;
-    pub const STATUS_BAR_BG: Color = Color::Blue;
-    pub const MENU_BAR_BG: Color = Color::Blue;
-    pub const FUNCTION_BAR_BG: Color = Color::Blue;
+    pub const PANEL_BG: Color = Color::Rgb(0, 0, 128);
+    pub const STATUS_BAR_BG: Color = Color::Rgb(0, 0, 128);
+    pub const MENU_BAR_BG: Color = Color::Rgb(0, 0, 128);
+    pub const FUNCTION_BAR_BG: Color = Color::Rgb(0, 0, 128);
     pub const DIALOG_BG: Color = Color::Black;
     pub const HIGHLIGHT_BG: Color = Color::Cyan;
     
@@ -25,7 +25,7 @@ impl Theme {
     pub const BORDER_ACTIVE: Color = Color::Yellow;
     pub const BORDER_INACTIVE: Color = Color::DarkGray;
     pub const TITLE: Color = Color::LightCyan;
-    pub const HIDDEN_FILE: Color = Color::DarkGray;
+    pub const HIDDEN_FILE: Color = Color::White;
     pub const ERROR: Color = Color::Red;
     pub const WARNING: Color = Color::Yellow;
     pub const INFO: Color = Color::Cyan;
