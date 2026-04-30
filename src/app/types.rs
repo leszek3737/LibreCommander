@@ -182,6 +182,7 @@ pub struct AppState {
     pub tree_scroll: usize,
     pub prev_mode: Option<AppMode>,
     pub menu_restore_panel: Option<ActivePanel>,
+    pub dialog_selection: usize,
     // Mouse support fields
     pub last_click_time: Option<std::time::Instant>,
     pub last_click_position: Option<(u16, u16)>, // (column, row)
@@ -422,6 +423,7 @@ impl AppState {
             tree_scroll: 0,
             prev_mode: None,
             menu_restore_panel: None,
+            dialog_selection: 0,
             // Mouse support fields
             last_click_time: None,
             last_click_position: None,

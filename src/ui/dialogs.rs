@@ -16,6 +16,7 @@ pub enum DialogKind {
     Confirm {
         title: String,
         message: String,
+        selection: usize,
     },
     Input {
         title: String,
@@ -65,8 +66,8 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     f.render_widget(bg_block, dialog_area);
 
     match dialog {
-        DialogKind::Confirm { title, message } => {
-            render_confirm_dialog(f, dialog_area, title, message);
+        DialogKind::Confirm { title, message, selection } => {
+            render_confirm_dialog(f, dialog_area, title, message, *selection);
         }
         DialogKind::Input {
             title,
@@ -103,7 +104,7 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     }
 }
 
-pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &str) {
+pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &str, selection: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title.to_string())
@@ -122,16 +123,20 @@ pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &s
         .alignment(Alignment::Center);
     f.render_widget(message_paragraph, chunks[0]);
 
+    let yes_style = if selection == 0 {
+        Theme::highlight_bold()
+    } else {
+        Theme::dialog()
+    };
+    let no_style = if selection == 1 {
+        Theme::highlight_bold()
+    } else {
+        Theme::dialog()
+    };
     let buttons = Line::from(vec![
-        ratatui::text::Span::styled(
-            "[ Yes ]",
-            Theme::highlight_bold(),
-        ),
+        ratatui::text::Span::styled("[ Yes ]", yes_style),
         ratatui::text::Span::raw("  "),
-        ratatui::text::Span::styled(
-            "[ No ]",
-            Theme::dialog(),
-        ),
+        ratatui::text::Span::styled("[ No ]", no_style),
     ]);
     let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
     f.render_widget(btn_paragraph, chunks[1]);

@@ -115,7 +115,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 }
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
-                    handle_mouse_event(&mut state, &mut viewer_state, mouse_event, size);
+                    handle_mouse_event(&mut state, &mut viewer_state, mouse_event, size, terminal);
                 }
                 _ => {}
             }
@@ -331,6 +331,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
             app::types::DialogKind::Confirm(msg) => dialogs::DialogKind::Confirm {
                 title: "Confirm".to_string(),
                 message: msg.clone(),
+                selection: state.dialog_selection,
             },
             app::types::DialogKind::Input(prompt, _) => dialogs::DialogKind::Input {
                 title: "Input".to_string(),
@@ -363,6 +364,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
                 dialogs::DialogKind::Confirm {
                     title: format!("{action} Confirm"),
                     message: msg,
+                    selection: state.dialog_selection,
                 }
             }
             app::types::DialogKind::Properties { name, size, mtime, permissions, owner, group, is_dir, is_symlink } => {
@@ -972,6 +974,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 } else {
                     format!("Copy {} entries to '{}'?", paths.len(), dest_dir.display())
                 };
+                state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
                 state.status_message = Some(encode_paths("copy:", &paths));
             }
@@ -988,6 +991,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 } else {
                     format!("Move {} entries to '{}'?", paths.len(), dest_dir.display())
                 };
+                state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
                 state.status_message = Some(encode_paths("move:", &paths));
             }
@@ -1011,6 +1015,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 } else {
                     format!("Delete {} entries?", paths.len())
                 };
+                state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
                 state.status_message = Some(encode_paths("delete:", &paths));
             }
@@ -1435,9 +1440,19 @@ fn handle_dialog(
     match dialog_kind {
         app::types::DialogKind::Confirm(_) => match key {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
+                if state.dialog_selection == 1 {
+                    state.mode = AppMode::Normal;
+                    state.status_message = None;
+                    state.dialog_selection = 0;
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                    return;
+                }
                 if let Some(ref status) = state.status_message {
                     let status = status.clone();
                     execute_confirmed_action(state, &status);
+                    state.dialog_selection = 0;
                     if state.status_message.is_some() {
                         state.mode = AppMode::Normal;
                         refresh_both(state);
@@ -1449,6 +1464,7 @@ fn handle_dialog(
                 }
                 state.mode = AppMode::Normal;
                 state.status_message = None;
+                state.dialog_selection = 0;
                 refresh_both(state);
                 if let Some(panel) = state.menu_restore_panel.take() {
                     set_active_panel(state, panel);
@@ -1457,9 +1473,13 @@ fn handle_dialog(
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 state.mode = AppMode::Normal;
                 state.status_message = None;
+                state.dialog_selection = 0;
                 if let Some(panel) = state.menu_restore_panel.take() {
                     set_active_panel(state, panel);
                 }
+            }
+            KeyCode::Left | KeyCode::Right => {
+                state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
             }
             _ => {}
         },
@@ -1853,67 +1873,195 @@ fn handle_mouse_event(
     viewer_state: &mut Option<viewer::ViewerState>,
     mouse_event: crossterm::event::MouseEvent,
     terminal_size: ratatui::layout::Size,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) {
     use crossterm::event::{MouseEventKind, MouseButton};
     use std::time::Duration;
-
-    // Only handle mouse events in Normal mode
-    if !matches!(state.mode, AppMode::Normal) {
-        return;
-    }
 
     let MouseEventKind::Down(button) = mouse_event.kind else {
         return;
     };
 
-    // Only handle left button clicks
     if button != MouseButton::Left {
         return;
     }
 
     let col = mouse_event.column;
     let row = mouse_event.row;
+    let height = terminal_size.height;
+    let width = terminal_size.width;
 
-    // Calculate panel areas (matching render_ui layout)
-    // Menu bar: row 0 (1 row)
-    // Panels: row 1 to (height - 4)
-    // Status bar: height - 3
-    // Command line: height - 2
-    // Function bar: height - 1
+    // ── DIALOG CONFIRM ──
+    if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
+        let dialog_height = height * 40 / 100;
+        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+        let btn_row = dialog_y + dialog_height.saturating_sub(1);
+
+        if row == btn_row {
+            let dialog_width = width / 2;
+            let dialog_left = (width.saturating_sub(dialog_width)) / 2;
+            let btn_center = dialog_left + dialog_width / 2;
+            let new_sel = if col < btn_center { 0 } else { 1 };
+            if state.dialog_selection == new_sel {
+                // Click on already selected button → execute
+                if new_sel == 0 {
+                    // Yes
+                    if let Some(ref status) = state.status_message.clone() {
+                        let status = status.clone();
+                        execute_confirmed_action(state, &status);
+                        state.dialog_selection = 0;
+                        if state.status_message.is_some() {
+                            state.mode = AppMode::Normal;
+                            refresh_both(state);
+                            if let Some(panel) = state.menu_restore_panel.take() {
+                                set_active_panel(state, panel);
+                            }
+                            return;
+                        }
+                    }
+                    state.mode = AppMode::Normal;
+                    state.status_message = None;
+                    state.dialog_selection = 0;
+                    refresh_both(state);
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                } else {
+                    // No
+                    state.mode = AppMode::Normal;
+                    state.status_message = None;
+                    state.dialog_selection = 0;
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                }
+            } else {
+                state.dialog_selection = new_sel;
+            }
+        }
+        return;
+    }
+
+    // ── DIALOG OTHER (Error/Help/Properties) — click dismisses ──
+    if let AppMode::Dialog(_) = state.mode {
+        state.mode = AppMode::Normal;
+        state.status_message = None;
+        state.dialog_selection = 0;
+        if let Some(panel) = state.menu_restore_panel.take() {
+            set_active_panel(state, panel);
+        }
+        return;
+    }
+
+    // ── MENU BAR (row 0) — open menu ──
+    if row == 0 && matches!(state.mode, AppMode::Normal) {
+        let menu_titles = ["Left", "File", "Command", "Options", "Right"];
+        let mut x_offset = 3u16;
+        for (i, title) in menu_titles.iter().enumerate() {
+            let title_width = title.len() as u16 + 2;
+            if col >= x_offset && col < x_offset + title_width {
+                state.menu_selected = i;
+                state.menu_item_selected = 0;
+                state.mode = AppMode::Menu;
+                return;
+            }
+            x_offset += title_width + 1;
+        }
+        return;
+    }
+
+    // ── MENU DROPDOWN items ──
+    if matches!(state.mode, AppMode::Menu) && row >= 1 {
+        let menu_titles = ["Left", "File", "Command", "Options", "Right"];
+        let menu_items: [&[&str]; 5] = [
+            &["Listing mode...", "Sort order...", "Filter...", "Encoding..."],
+            &["User menu", "View file", "Edit file", "Copy", "Move", "Mkdir", "Delete", "Rename", "Chmod", "Quit"],
+            &["Directory tree", "Find file", "Swap panels", "Switch panels", "Compare dirs", "History", "Directory hotlist"],
+            &["Configuration...", "Layout...", "Panel options...", "Appearance...", "Show hidden files", "Save setup"],
+            &["Listing mode...", "Sort order...", "Filter...", "Encoding..."],
+        ];
+
+        // Calculate dropdown position (matching render_menu_dropdown)
+        let mut menu_x = 3u16;
+        for title in menu_titles.iter().take(state.menu_selected) {
+            menu_x += title.len() as u16 + 3;
+        }
+        let items = menu_items[state.menu_selected];
+        let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
+
+        // Dropdown inner area: starts at (menu_x + 1, 2) due to border
+        let inner_x = menu_x + 1;
+        let inner_y = 2u16;
+        let inner_width = dropdown_width.saturating_sub(2);
+
+        if col >= inner_x && col < inner_x + inner_width && row >= inner_y {
+            let item_idx = (row - inner_y) as usize;
+            if item_idx < items.len() {
+                state.menu_item_selected = item_idx;
+                // Execute menu item (same as Enter in handle_menu_mode)
+                let previous_mode = state.mode.clone();
+                if let Some(action_key) = execute_menu_action(state) {
+                    state.mode = AppMode::Normal;
+                    handle_normal_mode(state, viewer_state, action_key, KeyModifiers::NONE, height, terminal);
+                } else if state.mode == previous_mode {
+                    state.mode = AppMode::Normal;
+                }
+            }
+        }
+        return;
+    }
+
+    // ── FUNCTION BAR (row height-1) — dispatch F-key ──
+    if row == height.saturating_sub(1) && matches!(state.mode, AppMode::Normal) {
+        let btn_idx = (col * 10 / width).min(9);
+        let fkey = match btn_idx {
+            0 => KeyCode::F(1),
+            1 => KeyCode::F(2),
+            2 => KeyCode::F(3),
+            3 => KeyCode::F(4),
+            4 => KeyCode::F(5),
+            5 => KeyCode::F(6),
+            6 => KeyCode::F(7),
+            7 => KeyCode::F(8),
+            8 => KeyCode::F(9),
+            _ => KeyCode::F(10),
+        };
+        handle_normal_mode(state, viewer_state, fkey, KeyModifiers::NONE, height, terminal);
+        return;
+    }
+
+    // ── FILE PANELS (rows 1 to height-4) ──
+    if !matches!(state.mode, AppMode::Normal) {
+        return;
+    }
+
     let panel_start_row = 1u16;
-    let panel_end_row = terminal_size.height.saturating_sub(4);
-    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
+    let panel_end_row = height.saturating_sub(4);
 
-    // Check if click is in panel area
     if row < panel_start_row || row > panel_end_row {
         return;
     }
 
-    // Determine which panel was clicked (left or right half of screen)
-    let mid_col = terminal_size.width / 2;
+    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
+    let mid_col = width / 2;
     let clicked_left = col < mid_col;
 
-    // Switch to clicked panel
     if clicked_left {
         state.active_panel = ActivePanel::Left;
     } else {
         state.active_panel = ActivePanel::Right;
     }
 
-    // Get the panel that was clicked to calculate clicked index
     let panel = if clicked_left {
         &state.left_panel
     } else {
         &state.right_panel
     };
 
-    // Calculate which entry was clicked
-    // Account for border (1 char) and padding
-    let list_start_row = panel_start_row + 1; // Border top
+    let list_start_row = panel_start_row + 1;
     let relative_row = row.saturating_sub(list_start_row);
     let clicked_index = panel.scroll_offset + relative_row as usize;
 
-    // Check if click is within valid entry range
     if clicked_index >= panel.entries.len() {
         return;
     }
@@ -1921,7 +2069,6 @@ fn handle_mouse_event(
     let now = std::time::Instant::now();
     let is_double_click = if let Some(last_time) = state.last_click_time {
         if let Some(last_pos) = state.last_click_position {
-            // Same position and within 300ms = double click
             last_pos.0 == col && last_pos.1 == row && now.duration_since(last_time) < Duration::from_millis(300)
         } else {
             false
@@ -1931,13 +2078,11 @@ fn handle_mouse_event(
     };
 
     if is_double_click {
-        // Double-click: open directory or view file (F3 action)
         state.last_click_time = None;
         state.last_click_position = None;
 
         let entry = panel.entries[clicked_index].clone();
         if entry.is_dir {
-            // Open directory
             let panel_mut = state.active_panel_mut();
             panel_mut.history.push(panel_mut.path.clone());
             panel_mut.path = entry.path.clone();
@@ -1945,7 +2090,6 @@ fn handle_mouse_event(
             panel_mut.scroll_offset = 0;
             refresh_panel(panel_mut, panel_height as usize);
         } else {
-            // View file
             if let Ok(vs) = viewer::ViewerState::open(&entry.path) {
                 *viewer_state = Some(vs);
                 state.prev_mode = Some(state.mode.clone());
@@ -1953,7 +2097,6 @@ fn handle_mouse_event(
             }
         }
     } else {
-        // Single click: select file (move cursor)
         state.last_click_time = Some(now);
         state.last_click_position = Some((col, row));
 
@@ -2544,6 +2687,7 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
         CompareMode::Thorough => "Thorough",
     };
     state.status_message = None;
+    state.dialog_selection = 0;
     state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(format!(
         "Compare dirs ({mode_name}):\nUnique in left:  {unique_left}\nUnique in right: {unique_right}\nDiffering:       {differing}"
     )));
