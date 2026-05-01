@@ -207,6 +207,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 }
 
 fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
+    panel.unfiltered_entries.clear();
     match reader::read_directory(&panel.path, panel.show_hidden) {
         Ok((entries, errors)) => {
             if errors.is_empty() {
@@ -1380,44 +1381,6 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
     }
 }
 
-#[allow(dead_code)]
-fn encode_paths(prefix: &str, paths: &[std::path::PathBuf]) -> String {
-    let joined = paths
-        .iter()
-        .map(|p| {
-            p.to_string_lossy()
-                .replace('\\', "\\\\")
-                .replace('\n', "\\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{prefix}{joined}")
-}
-
-#[allow(dead_code)]
-fn decode_path_component(encoded: &str) -> String {
-    let mut decoded = String::new();
-    let mut chars = encoded.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some('n') => decoded.push('\n'),
-                Some('\\') => decoded.push('\\'),
-                Some(other) => {
-                    decoded.push('\\');
-                    decoded.push(other);
-                }
-                None => decoded.push('\\'),
-            }
-        } else {
-            decoded.push(ch);
-        }
-    }
-
-    decoded
-}
-
 fn handle_dialog(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -1432,17 +1395,7 @@ fn handle_dialog(
 
     match dialog_kind {
         app::types::DialogKind::Confirm(_) => match key {
-            KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
-                if state.dialog_selection == 1 {
-                    state.mode = AppMode::Normal;
-                    state.pending_action = None;
-                    state.status_message = None;
-                    state.dialog_selection = 0;
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
-                    return;
-                }
+            KeyCode::Char('y' | 'Y') => {
                 if state.pending_action.is_some() {
                     execute_confirmed_action(state);
                     state.dialog_selection = 0;
@@ -1464,7 +1417,45 @@ fn handle_dialog(
                     set_active_panel(state, panel);
                 }
             }
-            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+            KeyCode::Char('n' | 'N') => {
+                state.mode = AppMode::Normal;
+                state.pending_action = None;
+                state.status_message = None;
+                state.dialog_selection = 0;
+                if let Some(panel) = state.menu_restore_panel.take() {
+                    set_active_panel(state, panel);
+                }
+            }
+            KeyCode::Enter => {
+                if state.dialog_selection == 1 {
+                    state.mode = AppMode::Normal;
+                    state.pending_action = None;
+                    state.status_message = None;
+                    state.dialog_selection = 0;
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                } else if state.pending_action.is_some() {
+                    execute_confirmed_action(state);
+                    state.dialog_selection = 0;
+                    if state.status_message.is_some() {
+                        state.mode = AppMode::Normal;
+                        refresh_both(state);
+                        if let Some(panel) = state.menu_restore_panel.take() {
+                            set_active_panel(state, panel);
+                        }
+                        return;
+                    }
+                    state.mode = AppMode::Normal;
+                    state.pending_action = None;
+                    state.status_message = None;
+                    refresh_both(state);
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                }
+            }
+            KeyCode::Esc => {
                 state.mode = AppMode::Normal;
                 state.pending_action = None;
                 state.status_message = None;
@@ -2212,15 +2203,6 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     refresh_both(state);
 
     Ok(())
-}
-
-#[allow(dead_code)]
-fn decode_paths(prefix: &str, status: &str) -> Vec<std::path::PathBuf> {
-    status[prefix.len()..]
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|line| std::path::PathBuf::from(decode_path_component(line)))
-        .collect()
 }
 
 fn execute_confirmed_action(state: &mut AppState) {
@@ -3164,34 +3146,6 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_paths_single() {
-        let paths = vec![PathBuf::from("/a/b.txt")];
-        let result = encode_paths("copy:", &paths);
-        assert_eq!(result, "copy:/a/b.txt");
-    }
-
-    #[test]
-    fn test_encode_paths_multiple() {
-        let paths = vec![PathBuf::from("/a/b.txt"), PathBuf::from("/c/d.txt")];
-        let result = encode_paths("copy:", &paths);
-        assert_eq!(result, "copy:/a/b.txt\n/c/d.txt");
-    }
-
-    #[test]
-    fn test_encode_paths_escapes_newlines() {
-        let paths = vec![PathBuf::from("/a/line\nbreak.txt")];
-        let result = encode_paths("copy:", &paths);
-        assert_eq!(result, "copy:/a/line\\nbreak.txt");
-    }
-
-    #[test]
-    fn test_encode_paths_escapes_backslashes() {
-        let paths = vec![PathBuf::from(r#"/a/literal\nname.txt"#)];
-        let result = encode_paths("copy:", &paths);
-        assert_eq!(result, r#"copy:/a/literal\\nname.txt"#);
-    }
-
-    #[test]
     fn directory_tree_page_down_uses_terminal_height() {
         let mut state = AppState::default();
         state.tree_entries = (0..50)
@@ -3229,48 +3183,6 @@ mod tests {
 
         assert_eq!(state.tree_selected, 16);
         assert_eq!(state.tree_scroll, 16);
-    }
-
-    #[test]
-    fn test_decode_paths_single() {
-        let status = "copy:/a/b.txt";
-        let paths = decode_paths("copy:", status);
-        assert_eq!(paths, vec![PathBuf::from("/a/b.txt")]);
-    }
-
-    #[test]
-    fn test_decode_paths_multiple() {
-        let status = "delete:/a/b.txt\n/c/d.txt";
-        let paths = decode_paths("delete:", status);
-        assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0], PathBuf::from("/a/b.txt"));
-        assert_eq!(paths[1], PathBuf::from("/c/d.txt"));
-    }
-
-    #[test]
-    fn test_decode_paths_unescapes_newlines() {
-        let status = "copy:/a/line\\nbreak.txt";
-        let paths = decode_paths("copy:", status);
-        assert_eq!(paths, vec![PathBuf::from("/a/line\nbreak.txt")]);
-    }
-
-    #[test]
-    fn test_decode_paths_preserves_literal_backslash_n() {
-        let status = r#"copy:/a/literal\\nname.txt"#;
-        let paths = decode_paths("copy:", status);
-        assert_eq!(paths, vec![PathBuf::from(r#"/a/literal\nname.txt"#)]);
-    }
-
-    #[test]
-    fn test_encode_decode_roundtrip() {
-        let original = vec![
-            PathBuf::from("/home/user/doc.txt"),
-            PathBuf::from("/home/user/photo.png"),
-            PathBuf::from("/home/user/music.mp3"),
-        ];
-        let encoded = encode_paths("move:", &original);
-        let decoded = decode_paths("move:", &encoded);
-        assert_eq!(original, decoded);
     }
 
     #[test]
