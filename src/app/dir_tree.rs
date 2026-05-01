@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::ops::sorting::cmp_ignore_case;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
     pub path: PathBuf,
@@ -55,12 +57,7 @@ fn build_tree_recursive(
         });
     }
 
-    // Sort: directories first (alphabetically), then files (alphabetically)
-    children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
+    sort_entries(&mut children);
 
     for child in children {
         let should_recurse = child.is_dir && child.expanded;
@@ -80,23 +77,29 @@ fn build_tree_recursive(
     }
 }
 
+fn sort_entries(entries: &mut [TreeEntry]) {
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| cmp_ignore_case(&a.name, &b.name))
+    });
+}
+
 /// Toggle expansion of the directory at `index` in `entries`.
 /// If expanding: reads children and inserts them after the entry.
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
-pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, show_hidden: bool) {
-    let entry = match entries.get(index) {
-        Some(e) => e.clone(),
+pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, _root: &Path, show_hidden: bool) {
+    let (is_dir, expanded, depth, path) = match entries.get(index) {
+        Some(e) => (e.is_dir, e.expanded, e.depth, e.path.clone()),
         None => return,
     };
 
-    if !entry.is_dir {
+    if !is_dir {
         return;
     }
 
-    if entry.expanded {
-        // Collapse: remove all descendants
-        let depth = entry.depth;
+    if expanded {
         let mut end = index + 1;
         while end < entries.len() && entries[end].depth > depth {
             end += 1;
@@ -104,23 +107,13 @@ pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, sh
         entries.drain(index + 1..end);
         entries[index].expanded = false;
     } else {
-        // Expand: read children and insert
         let mut children = Vec::new();
-        build_tree_recursive(
-            &entry.path,
-            entry.depth + 1,
-            entry.depth + 1,
-            show_hidden,
-            &mut children,
-        );
-        // build_tree_recursive sets expanded=false since depth+1 > max_expand_depth (depth+1).
-        // We want children dirs to show as collapsed (expanded=false), which is correct.
-        // But build_tree_recursive uses max_expand_depth = depth+1, meaning dirs at depth+1
-        // will have expanded = is_dir && (depth+1 < depth+1) = false. Correct.
+        build_tree_recursive(&path, depth + 1, depth + 1, show_hidden, &mut children);
+
+        let insert_pos = index + 1;
+        entries.splice(insert_pos..insert_pos, children);
         entries[index].expanded = true;
-        entries.splice(index + 1..index + 1, children);
     }
-    let _ = root; // root not needed for toggle, kept for API consistency
 }
 
 #[cfg(test)]

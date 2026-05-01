@@ -36,7 +36,7 @@ User menu: `.mc.menu` or `~/.config/lc/menu`
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **lc---Libre-Commander** (922 symbols, 2691 relationships, 82 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **LibreCommander** (890 symbols, 2736 relationships, 79 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -59,10 +59,10 @@ This project is indexed by GitNexus as **lc---Libre-Commander** (922 symbols, 26
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/lc---Libre-Commander/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/lc---Libre-Commander/clusters` | All functional areas |
-| `gitnexus://repo/lc---Libre-Commander/processes` | All execution flows |
-| `gitnexus://repo/lc---Libre-Commander/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/LibreCommander/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/LibreCommander/clusters` | All functional areas |
+| `gitnexus://repo/LibreCommander/processes` | All execution flows |
+| `gitnexus://repo/LibreCommander/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

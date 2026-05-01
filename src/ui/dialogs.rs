@@ -3,9 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Style,
     text::Line,
-    widgets::{
-        Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap,
-    },
+    widgets::{Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -16,6 +14,7 @@ pub enum DialogKind {
     Confirm {
         title: String,
         message: String,
+        selection: usize,
     },
     Input {
         title: String,
@@ -58,15 +57,18 @@ pub enum DialogResult {
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     let rect = f.area();
     let dialog_area = centered_rect(50, 40, rect);
-    
+
     // Fill dialog area with blue background
-    let bg_block = ratatui::widgets::Block::default()
-        .style(Theme::dialog());
+    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
     f.render_widget(bg_block, dialog_area);
 
     match dialog {
-        DialogKind::Confirm { title, message } => {
-            render_confirm_dialog(f, dialog_area, title, message);
+        DialogKind::Confirm {
+            title,
+            message,
+            selection,
+        } => {
+            render_confirm_dialog(f, dialog_area, title, message, *selection);
         }
         DialogKind::Input {
             title,
@@ -98,12 +100,28 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
             group,
             file_type,
         } => {
-            render_properties_dialog(f, dialog_area, name, size, mtime, permissions, owner, group, file_type);
+            render_properties_dialog(
+                f,
+                dialog_area,
+                name,
+                size,
+                mtime,
+                permissions,
+                owner,
+                group,
+                file_type,
+            );
         }
     }
 }
 
-pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &str) {
+pub fn render_confirm_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: &str,
+    selection: usize,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title.to_string())
@@ -122,16 +140,20 @@ pub fn render_confirm_dialog(f: &mut Frame, area: Rect, title: &str, message: &s
         .alignment(Alignment::Center);
     f.render_widget(message_paragraph, chunks[0]);
 
+    let yes_style = if selection == 0 {
+        Theme::highlight_bold()
+    } else {
+        Theme::dialog()
+    };
+    let no_style = if selection == 1 {
+        Theme::highlight_bold()
+    } else {
+        Theme::dialog()
+    };
     let buttons = Line::from(vec![
-        ratatui::text::Span::styled(
-            "[ Yes ]",
-            Theme::highlight_bold(),
-        ),
+        ratatui::text::Span::styled("[ Yes ]", yes_style),
         ratatui::text::Span::raw("  "),
-        ratatui::text::Span::styled(
-            "[ No ]",
-            Theme::dialog(),
-        ),
+        ratatui::text::Span::styled("[ No ]", no_style),
     ]);
     let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
     f.render_widget(btn_paragraph, chunks[1]);
@@ -287,8 +309,7 @@ pub fn render_properties_dialog(
         Line::from(format!("Permissions: {}", permissions)),
         Line::from(format!("Owner: {}:{}", owner, group)),
         Line::from(""),
-        Line::from("[ Press Enter or Esc to close ]")
-            .style(Theme::info()),
+        Line::from("[ Press Enter or Esc to close ]").style(Theme::info()),
     ];
 
     let paragraph = Paragraph::new(lines)
@@ -306,10 +327,9 @@ pub fn render_list_picker(
 ) {
     let area = f.area();
     let picker_area = centered_rect(60, 70, area);
-    
+
     // Fill picker area with blue background
-    let bg_block = ratatui::widgets::Block::default()
-        .style(Theme::dialog());
+    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
     f.render_widget(bg_block, picker_area);
 
     let block = Block::default()

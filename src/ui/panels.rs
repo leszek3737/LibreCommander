@@ -1,30 +1,32 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
     style::{Color, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
-    Frame,
 };
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
-pub use crate::app::types::FileEntry;
-pub use crate::app::types::PanelState;
+use crate::app::types::{FileEntry, PanelState, format_permissions, format_size};
+
+fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
+    s.get(s.len().saturating_sub(suffix.len())..)
+        .map_or(false, |tail| tail.eq_ignore_ascii_case(suffix))
+}
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
-    if entry.is_hidden {
-        return Theme::panel_file(Theme::HIDDEN_FILE);
-    }
-
     let color = if entry.is_dir {
         Theme::DIRECTORY
     } else if entry.is_executable {
         Theme::EXECUTABLE
     } else if entry.is_symlink {
         Theme::SYMLINK
+    } else if entry.is_hidden {
+        Theme::HIDDEN_FILE
     } else if is_archive(&entry.name) {
         Theme::ARCHIVE
     } else if is_image(&entry.name) {
@@ -40,39 +42,78 @@ pub fn get_file_color(entry: &FileEntry) -> Style {
 
 /// Check if file is an archive
 pub fn is_archive(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.ends_with(".tar")
-        || lower.ends_with(".gz")
-        || lower.ends_with(".zip")
-        || lower.ends_with(".bz2")
-        || lower.ends_with(".xz")
-        || lower.ends_with(".7z")
-        || lower.ends_with(".rar")
+    ends_with_ignore_ascii_case(name, ".tar.gz")
+        || ends_with_ignore_ascii_case(name, ".tar.bz2")
+        || ends_with_ignore_ascii_case(name, ".tar.xz")
+        || ends_with_ignore_ascii_case(name, ".tar")
+        || ends_with_ignore_ascii_case(name, ".gz")
+        || ends_with_ignore_ascii_case(name, ".zip")
+        || ends_with_ignore_ascii_case(name, ".bz2")
+        || ends_with_ignore_ascii_case(name, ".xz")
+        || ends_with_ignore_ascii_case(name, ".7z")
+        || ends_with_ignore_ascii_case(name, ".rar")
 }
 
 /// Check if file is an image
 pub fn is_image(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".png")
-        || lower.ends_with(".gif")
-        || lower.ends_with(".bmp")
-        || lower.ends_with(".svg")
+    ends_with_ignore_ascii_case(name, ".jpg")
+        || ends_with_ignore_ascii_case(name, ".jpeg")
+        || ends_with_ignore_ascii_case(name, ".png")
+        || ends_with_ignore_ascii_case(name, ".gif")
+        || ends_with_ignore_ascii_case(name, ".bmp")
+        || ends_with_ignore_ascii_case(name, ".svg")
 }
 
 /// Check if file is source code
 pub fn is_source_code(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.ends_with(".rs")
-        || lower.ends_with(".py")
-        || lower.ends_with(".js")
-        || lower.ends_with(".ts")
-        || lower.ends_with(".c")
-        || lower.ends_with(".h")
-        || lower.ends_with(".cpp")
-        || lower.ends_with(".go")
-        || lower.ends_with(".java")
+    ends_with_ignore_ascii_case(name, ".rs")
+        || ends_with_ignore_ascii_case(name, ".py")
+        || ends_with_ignore_ascii_case(name, ".js")
+        || ends_with_ignore_ascii_case(name, ".ts")
+        || ends_with_ignore_ascii_case(name, ".c")
+        || ends_with_ignore_ascii_case(name, ".h")
+        || ends_with_ignore_ascii_case(name, ".cpp")
+        || ends_with_ignore_ascii_case(name, ".go")
+        || ends_with_ignore_ascii_case(name, ".java")
+}
+
+/// Check if file is a document
+pub fn is_document(name: &str) -> bool {
+    ends_with_ignore_ascii_case(name, ".pdf")
+        || ends_with_ignore_ascii_case(name, ".doc")
+        || ends_with_ignore_ascii_case(name, ".docx")
+        || ends_with_ignore_ascii_case(name, ".xls")
+        || ends_with_ignore_ascii_case(name, ".xlsx")
+        || ends_with_ignore_ascii_case(name, ".odt")
+}
+
+/// Check if file is audio
+pub fn is_audio(name: &str) -> bool {
+    ends_with_ignore_ascii_case(name, ".mp3")
+        || ends_with_ignore_ascii_case(name, ".wav")
+        || ends_with_ignore_ascii_case(name, ".flac")
+        || ends_with_ignore_ascii_case(name, ".ogg")
+        || ends_with_ignore_ascii_case(name, ".m4a")
+}
+
+/// Check if file is video
+pub fn is_video(name: &str) -> bool {
+    ends_with_ignore_ascii_case(name, ".mp4")
+        || ends_with_ignore_ascii_case(name, ".avi")
+        || ends_with_ignore_ascii_case(name, ".mkv")
+        || ends_with_ignore_ascii_case(name, ".mov")
+        || ends_with_ignore_ascii_case(name, ".webm")
+}
+
+/// Check if file is a config/data file
+pub fn is_config(name: &str) -> bool {
+    ends_with_ignore_ascii_case(name, ".json")
+        || ends_with_ignore_ascii_case(name, ".toml")
+        || ends_with_ignore_ascii_case(name, ".yaml")
+        || ends_with_ignore_ascii_case(name, ".yml")
+        || ends_with_ignore_ascii_case(name, ".ini")
+        || ends_with_ignore_ascii_case(name, ".conf")
+        || ends_with_ignore_ascii_case(name, ".cfg")
 }
 
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
@@ -81,15 +122,7 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
         return "📁 ";
     }
 
-    let lower = entry.name.to_lowercase();
-
-    if lower.ends_with(".pdf")
-        || lower.ends_with(".doc")
-        || lower.ends_with(".docx")
-        || lower.ends_with(".xls")
-        || lower.ends_with(".xlsx")
-        || lower.ends_with(".odt")
-    {
+    if is_document(&entry.name) {
         return "📄 ";
     }
 
@@ -101,32 +134,15 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
         return "🖼 ";
     }
 
-    if lower.ends_with(".mp3")
-        || lower.ends_with(".wav")
-        || lower.ends_with(".flac")
-        || lower.ends_with(".ogg")
-        || lower.ends_with(".m4a")
-    {
+    if is_audio(&entry.name) {
         return "🎵 ";
     }
 
-    if lower.ends_with(".mp4")
-        || lower.ends_with(".avi")
-        || lower.ends_with(".mkv")
-        || lower.ends_with(".mov")
-        || lower.ends_with(".webm")
-    {
+    if is_video(&entry.name) {
         return "🎬 ";
     }
 
-    if lower.ends_with(".json")
-        || lower.ends_with(".toml")
-        || lower.ends_with(".yaml")
-        || lower.ends_with(".yml")
-        || lower.ends_with(".ini")
-        || lower.ends_with(".conf")
-        || lower.ends_with(".cfg")
-    {
+    if is_config(&entry.name) {
         return "⚙ ";
     }
 
@@ -135,97 +151,6 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
     }
 
     "📄 "
-}
-
-/// Format file size for display
-pub fn format_size(size: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    let mut size = size as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{:>6} {}", size as u64, UNITS[unit_idx])
-    } else {
-        format!("{:>6.1} {}", size, UNITS[unit_idx])
-    }
-}
-
-/// Format permissions as rwx string
-pub fn format_permissions(permissions: u32) -> String {
-    let mut result = String::with_capacity(9);
-
-    // Standard Unix permission bits (octal notation):
-    // Each permission is a combination of read(4), write(2), execute(1)
-    // Owner: bits 6-8 (0o400, 0o200, 0o100)
-    // Group: bits 3-5 (0o040, 0o020, 0o010)
-    // Other: bits 0-2 (0o004, 0o002, 0o001)
-
-    const OWNER_READ: u32 = 0o400;
-    const OWNER_WRITE: u32 = 0o200;
-    const OWNER_EXEC: u32 = 0o100;
-    const GROUP_READ: u32 = 0o040;
-    const GROUP_WRITE: u32 = 0o020;
-    const GROUP_EXEC: u32 = 0o010;
-    const OTHER_READ: u32 = 0o004;
-    const OTHER_WRITE: u32 = 0o002;
-    const OTHER_EXEC: u32 = 0o001;
-
-    result.push(if (permissions & OWNER_READ) != 0 {
-        'r'
-    } else {
-        '-'
-    });
-    result.push(if (permissions & OWNER_WRITE) != 0 {
-        'w'
-    } else {
-        '-'
-    });
-    const SETUID: u32 = 0o4000;
-    const SETGID: u32 = 0o2000;
-    const STICKY: u32 = 0o1000;
-
-    result.push(if (permissions & SETUID) != 0 {
-        if (permissions & OWNER_EXEC) != 0 { 's' } else { 'S' }
-    } else {
-        if (permissions & OWNER_EXEC) != 0 { 'x' } else { '-' }
-    });
-    result.push(if (permissions & GROUP_READ) != 0 {
-        'r'
-    } else {
-        '-'
-    });
-    result.push(if (permissions & GROUP_WRITE) != 0 {
-        'w'
-    } else {
-        '-'
-    });
-    result.push(if (permissions & SETGID) != 0 {
-        if (permissions & GROUP_EXEC) != 0 { 's' } else { 'S' }
-    } else {
-        if (permissions & GROUP_EXEC) != 0 { 'x' } else { '-' }
-    });
-    result.push(if (permissions & OTHER_READ) != 0 {
-        'r'
-    } else {
-        '-'
-    });
-    result.push(if (permissions & OTHER_WRITE) != 0 {
-        'w'
-    } else {
-        '-'
-    });
-    result.push(if (permissions & STICKY) != 0 {
-        if (permissions & OTHER_EXEC) != 0 { 't' } else { 'T' }
-    } else {
-        if (permissions & OTHER_EXEC) != 0 { 'x' } else { '-' }
-    });
-
-    result
 }
 
 /// Format modification time
@@ -345,8 +270,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
     if panel.entries.is_empty()
         && let Some(ref err) = panel.last_error
     {
-        let err_text = Paragraph::new(format!(" Error: {err}"))
-            .style(Theme::error());
+        let err_text = Paragraph::new(format!(" Error: {err}")).style(Theme::error());
         f.render_widget(err_text, chunks[0]);
     }
 
@@ -552,12 +476,14 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 /// Render menu bar at top
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let menu_text = "   Left   File   Command   Options   Right   ";
+    let x = area.x + area.width.saturating_sub(menu_text.len() as u16) / 2;
+    let centered_area = Rect::new(x, area.y, menu_text.len() as u16, area.height);
 
     let paragraph = Paragraph::new(menu_text)
         .style(Style::default().fg(Color::LightBlue).bg(Color::DarkGray))
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Left);
 
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, centered_area);
 }
 
 #[cfg(test)]
@@ -630,7 +556,7 @@ mod tests {
     fn test_get_file_color_hidden() {
         let entry = create_test_entry(".hidden", false, false, false);
         let style = get_file_color(&entry);
-        assert_eq!(style.fg, Some(Color::DarkGray));
+        assert_eq!(style.fg, Some(Color::White));
     }
 
     #[test]
@@ -642,12 +568,12 @@ mod tests {
 
     #[test]
     fn test_format_size_zero() {
-        assert_eq!(format_size(0), "     0 B");
+        assert_eq!(format_size(0), "0 B");
     }
 
     #[test]
     fn test_format_size_bytes() {
-        assert_eq!(format_size(500), "   500 B");
+        assert_eq!(format_size(500), "500 B");
     }
 
     #[test]

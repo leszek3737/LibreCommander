@@ -1,3 +1,7 @@
+//! Filesystem reader module.
+//! Note: This module uses Unix-specific APIs (MetadataExt, uid/gid lookups)
+//! and will only compile on Unix platforms.
+
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -5,6 +9,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
+
+#[cfg(test)]
+use crate::app::types::format_permissions;
 
 pub use crate::app::types::FileEntry;
 
@@ -22,7 +29,10 @@ static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
     })
 });
 
-pub fn read_directory(path: &Path, show_hidden: bool) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
+pub fn read_directory(
+    path: &Path,
+    show_hidden: bool,
+) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
 
@@ -87,34 +97,35 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         metadata.is_dir()
     };
 
-    let (size, modified, permissions, is_exec, uid, gid) = if let Some(ref target_metadata) = target_meta {
-        let size = target_metadata.len();
-        let modified = target_metadata.modified()?;
-        let mode = target_metadata.mode();
-        let uid = target_metadata.uid();
-        let gid = target_metadata.gid();
-        (size, modified, mode, is_executable(mode), uid, gid)
-    } else {
-        let size = metadata.len();
-        let modified = metadata.modified()?;
-        let mode = metadata.mode();
-        let uid = metadata.uid();
-        let gid = metadata.gid();
-        let is_exec = if is_symlink && target_meta.is_none() {
-            false
+    let (size, modified, permissions, is_exec, uid, gid) =
+        if let Some(ref target_metadata) = target_meta {
+            let size = target_metadata.len();
+            let modified = target_metadata.modified()?;
+            let mode = target_metadata.mode();
+            let uid = target_metadata.uid();
+            let gid = target_metadata.gid();
+            (size, modified, mode, is_executable(mode), uid, gid)
         } else {
-            is_executable(mode)
+            let size = metadata.len();
+            let modified = metadata.modified()?;
+            let mode = metadata.mode();
+            let uid = metadata.uid();
+            let gid = metadata.gid();
+            let is_exec = if is_symlink && target_meta.is_none() {
+                false
+            } else {
+                is_executable(mode)
+            };
+            let display_mode = if is_symlink && target_meta.is_none() {
+                0
+            } else {
+                mode
+            };
+            (size, modified, display_mode, is_exec, uid, gid)
         };
-        let display_mode = if is_symlink && target_meta.is_none() {
-            0
-        } else {
-            mode
-        };
-        (size, modified, display_mode, is_exec, uid, gid)
-    };
 
     let (owner, group) = {
-        let mut cache = UID_CACHE.lock().unwrap();
+        let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let owner = cache
             .uid_to_name
             .entry(uid)
@@ -150,36 +161,6 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         selected: false,
         is_hidden: file_name.starts_with('.'),
     })
-}
-
-pub fn format_permissions(mode: u32) -> String {
-    let mut result = String::with_capacity(9);
-
-    result.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-    result.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-    result.push(if mode & 0o4000 != 0 {
-        if mode & 0o100 != 0 { 's' } else { 'S' }
-    } else {
-        if mode & 0o100 != 0 { 'x' } else { '-' }
-    });
-
-    result.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-    result.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-    result.push(if mode & 0o2000 != 0 {
-        if mode & 0o010 != 0 { 's' } else { 'S' }
-    } else {
-        if mode & 0o010 != 0 { 'x' } else { '-' }
-    });
-
-    result.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-    result.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-    result.push(if mode & 0o1000 != 0 {
-        if mode & 0o001 != 0 { 't' } else { 'T' }
-    } else {
-        if mode & 0o001 != 0 { 'x' } else { '-' }
-    });
-
-    result
 }
 
 pub fn format_date(time: SystemTime) -> String {
