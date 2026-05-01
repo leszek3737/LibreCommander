@@ -29,7 +29,10 @@ static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
     })
 });
 
-pub fn read_directory(path: &Path, show_hidden: bool) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
+pub fn read_directory(
+    path: &Path,
+    show_hidden: bool,
+) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
     let mut entries = Vec::new();
     let mut errors = Vec::new();
 
@@ -94,31 +97,32 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         metadata.is_dir()
     };
 
-    let (size, modified, permissions, is_exec, uid, gid) = if let Some(ref target_metadata) = target_meta {
-        let size = target_metadata.len();
-        let modified = target_metadata.modified()?;
-        let mode = target_metadata.mode();
-        let uid = target_metadata.uid();
-        let gid = target_metadata.gid();
-        (size, modified, mode, is_executable(mode), uid, gid)
-    } else {
-        let size = metadata.len();
-        let modified = metadata.modified()?;
-        let mode = metadata.mode();
-        let uid = metadata.uid();
-        let gid = metadata.gid();
-        let is_exec = if is_symlink && target_meta.is_none() {
-            false
+    let (size, modified, permissions, is_exec, uid, gid) =
+        if let Some(ref target_metadata) = target_meta {
+            let size = target_metadata.len();
+            let modified = target_metadata.modified()?;
+            let mode = target_metadata.mode();
+            let uid = target_metadata.uid();
+            let gid = target_metadata.gid();
+            (size, modified, mode, is_executable(mode), uid, gid)
         } else {
-            is_executable(mode)
+            let size = metadata.len();
+            let modified = metadata.modified()?;
+            let mode = metadata.mode();
+            let uid = metadata.uid();
+            let gid = metadata.gid();
+            let is_exec = if is_symlink && target_meta.is_none() {
+                false
+            } else {
+                is_executable(mode)
+            };
+            let display_mode = if is_symlink && target_meta.is_none() {
+                0
+            } else {
+                mode
+            };
+            (size, modified, display_mode, is_exec, uid, gid)
         };
-        let display_mode = if is_symlink && target_meta.is_none() {
-            0
-        } else {
-            mode
-        };
-        (size, modified, display_mode, is_exec, uid, gid)
-    };
 
     let (owner, group) = {
         let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());

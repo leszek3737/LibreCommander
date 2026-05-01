@@ -111,7 +111,9 @@ pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
 }
 
 pub fn load_setup(state: &mut AppState) -> Result<(), String> {
-    let Some(path) = config_path() else { return Ok(()) };
+    let Some(path) = config_path() else {
+        return Ok(());
+    };
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),

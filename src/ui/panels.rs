@@ -1,16 +1,16 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
     style::{Color, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
-    Frame,
 };
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
-use crate::app::types::{format_permissions, format_size, FileEntry, PanelState};
+use crate::app::types::{FileEntry, PanelState, format_permissions, format_size};
 
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
     s.get(s.len().saturating_sub(suffix.len())..)
@@ -270,8 +270,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
     if panel.entries.is_empty()
         && let Some(ref err) = panel.last_error
     {
-        let err_text = Paragraph::new(format!(" Error: {err}"))
-            .style(Theme::error());
+        let err_text = Paragraph::new(format!(" Error: {err}")).style(Theme::error());
         f.render_widget(err_text, chunks[0]);
     }
 
@@ -477,12 +476,14 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 /// Render menu bar at top
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let menu_text = "   Left   File   Command   Options   Right   ";
+    let x = area.x + area.width.saturating_sub(menu_text.len() as u16) / 2;
+    let centered_area = Rect::new(x, area.y, menu_text.len() as u16, area.height);
 
     let paragraph = Paragraph::new(menu_text)
         .style(Style::default().fg(Color::LightBlue).bg(Color::DarkGray))
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Left);
 
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, centered_area);
 }
 
 #[cfg(test)]

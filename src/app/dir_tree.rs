@@ -79,7 +79,9 @@ fn build_tree_recursive(
 
 fn sort_entries(entries: &mut [TreeEntry]) {
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then_with(|| cmp_ignore_case(&a.name, &b.name))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| cmp_ignore_case(&a.name, &b.name))
     });
 }
 
@@ -107,8 +109,6 @@ pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, _root: &Path, s
     } else {
         let mut children = Vec::new();
         build_tree_recursive(&path, depth + 1, depth + 1, show_hidden, &mut children);
-
-        sort_entries(&mut children);
 
         let insert_pos = index + 1;
         entries.splice(insert_pos..insert_pos, children);

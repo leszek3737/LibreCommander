@@ -29,7 +29,10 @@ fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result
     if depth > MAX_DEPTH {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("directory too deeply nested (>{MAX_DEPTH} levels): {}", src.display()),
+            format!(
+                "directory too deeply nested (>{MAX_DEPTH} levels): {}",
+                src.display()
+            ),
         ));
     }
 
@@ -81,7 +84,10 @@ pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, dest)?;
     #[cfg(not(unix))]
-    return Err(io::Error::new(io::ErrorKind::Unsupported, "symlinks not supported on this platform"));
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symlinks not supported on this platform",
+    ));
     Ok(())
 }
 
@@ -104,7 +110,10 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("copied {:?} to {:?} but failed to remove source: {}", src, dest, del_err),
+                        format!(
+                            "copied {:?} to {:?} but failed to remove source: {}",
+                            src, dest, del_err
+                        ),
                     ));
                 }
             } else if meta.is_dir() {
@@ -113,7 +122,10 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                     if let Err(del_err) = delete_dir_recursive(src) {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
-                            format!("copied {:?} to {:?} but failed to remove source: {}", src, dest, del_err),
+                            format!(
+                                "copied {:?} to {:?} but failed to remove source: {}",
+                                src, dest, del_err
+                            ),
                         ));
                     }
                 }
@@ -122,7 +134,10 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("copied {:?} to {:?} but failed to remove source: {}", src, dest, del_err),
+                        format!(
+                            "copied {:?} to {:?} but failed to remove source: {}",
+                            src, dest, del_err
+                        ),
                     ));
                 }
             }
@@ -137,7 +152,10 @@ pub fn delete_file(path: &Path) -> io::Result<()> {
 }
 
 pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
-    const CRITICAL_DIRS: &[&str] = &["/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/lib64", "/var", "/dev", "/sys", "/proc"];
+    const CRITICAL_DIRS: &[&str] = &[
+        "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/lib64", "/var", "/dev", "/sys",
+        "/proc",
+    ];
 
     if let Ok(canonical) = path.canonicalize() {
         if canonical.parent().is_none() {
@@ -212,7 +230,10 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_DEPTH {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("directory too deeply nested (>{MAX_DEPTH} levels): {}", path.display()),
+            format!(
+                "directory too deeply nested (>{MAX_DEPTH} levels): {}",
+                path.display()
+            ),
         ));
     }
 
@@ -237,7 +258,9 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
 }
 
 fn path_contains(parent: &Path, child: &Path) -> bool {
-    if let (Ok(canonical_parent), Ok(canonical_child)) = (parent.canonicalize(), child.canonicalize()) {
+    if let (Ok(canonical_parent), Ok(canonical_child)) =
+        (parent.canonicalize(), child.canonicalize())
+    {
         return canonical_child.starts_with(&canonical_parent);
     }
     let parent_components = parent.components().peekable();
@@ -411,12 +434,13 @@ mod tests {
 
         let dest = tmp.join("dest_dir");
         copy_dir_recursive(&src, &dest).unwrap();
-        assert!(dest
-            .join("symlink_dir")
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            dest.join("symlink_dir")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(fs::read_link(dest.join("symlink_dir")).unwrap(), linked);
 
         fs::remove_dir_all(&tmp).unwrap();

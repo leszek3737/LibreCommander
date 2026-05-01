@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::Margin,
     prelude::*,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 use std::fs;
 use std::io;
@@ -117,10 +117,6 @@ impl ViewerState {
         let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
 
         for (line_idx, line) in self.content.iter().enumerate() {
-            if !line.to_lowercase().contains(&lower_query as &str) {
-                continue;
-            }
-
             let (lower_line, byte_map) = build_lowercase_mapping(line);
             let mut search_start = 0;
             while let Some(pos) = lower_line[search_start..].find(&lower_query) {
@@ -130,7 +126,8 @@ impl ViewerState {
                 let orig_byte_end = byte_map.get(match_byte_end).copied().unwrap_or(line.len());
                 let char_pos = line[..orig_byte_start].chars().count();
                 let match_char_len = line[orig_byte_start..orig_byte_end].chars().count().max(1);
-                self.search_matches.push((line_idx, char_pos, match_char_len));
+                self.search_matches
+                    .push((line_idx, char_pos, match_char_len));
                 search_start = match_byte_end;
             }
         }
@@ -202,9 +199,17 @@ impl ViewerState {
         let max_line = if self.hex_mode {
             unicode_width::UnicodeWidthStr::width(format_hex_line(0, &[0u8; 16]).as_str())
         } else {
-            self.content.iter().map(|l| unicode_width::UnicodeWidthStr::width(l.as_str())).max().unwrap_or(0)
+            self.content
+                .iter()
+                .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
+                .max()
+                .unwrap_or(0)
         };
-        let max_offset = if effective_width > 0 { max_line.saturating_sub(effective_width) } else { max_line };
+        let max_offset = if effective_width > 0 {
+            max_line.saturating_sub(effective_width)
+        } else {
+            max_line
+        };
         self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
     }
 }
@@ -338,12 +343,7 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
         } else if state.search_matches.is_empty() {
             vec![Span::raw(line_content.clone())]
         } else {
-            format_line_with_highlight(
-                line_content,
-                i,
-                &state.search_matches,
-                state.current_match,
-            )
+            format_line_with_highlight(line_content, i, &state.search_matches, state.current_match)
         };
 
         lines.push(Line::from(spans));
@@ -382,8 +382,7 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
             .to_string_lossy(),
         if state.wrap_lines { "Wrap" } else { "No Wrap" }
     );
-    let status_paragraph = Paragraph::new(status_text)
-        .style(Theme::status_bar());
+    let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
 }
 
@@ -430,8 +429,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         lines.push(Line::from(Span::raw(hex_line)));
     }
 
-    let paragraph = Paragraph::new(lines)
-        .scroll((0, state.horizontal_offset as u16));
+    let paragraph = Paragraph::new(lines).scroll((0, state.horizontal_offset as u16));
     f.render_widget(paragraph, content_area);
 
     let status_area = Rect {
@@ -456,8 +454,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
             .unwrap_or_default()
             .to_string_lossy(),
     );
-    let status_paragraph = Paragraph::new(status_text)
-        .style(Theme::status_bar());
+    let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
 }
 
@@ -492,7 +489,7 @@ pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use std::io::Write;
     use tempfile::NamedTempFile;
 

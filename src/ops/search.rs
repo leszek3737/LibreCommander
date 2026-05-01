@@ -54,8 +54,7 @@ impl FileSearch {
         results: &mut Vec<FileEntry>,
         depth: usize,
     ) {
-        const MAX_DEPTH: usize = 20;
-        if depth > MAX_DEPTH || !path.is_dir() {
+        if depth >= Self::MAX_SEARCH_DEPTH || !path.is_dir() {
             return;
         }
 
@@ -150,7 +149,9 @@ impl FileSearch {
         results: &mut Vec<(PathBuf, usize, String)>,
         item_count: &mut usize,
     ) {
-        if !path.is_dir() || depth >= Self::MAX_SEARCH_DEPTH || *item_count >= Self::MAX_SEARCH_ITEMS
+        if !path.is_dir()
+            || depth >= Self::MAX_SEARCH_DEPTH
+            || *item_count >= Self::MAX_SEARCH_ITEMS
         {
             return;
         }
@@ -209,10 +210,7 @@ impl FileSearch {
         };
 
         let reader = BufReader::new(file);
-        let pattern_lower: Vec<char> = pattern
-            .chars()
-            .flat_map(|c| c.to_lowercase())
-            .collect();
+        let pattern_lower: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
 
         for (line_no, line) in reader.lines().enumerate() {
             let Ok(line_text) = line else { continue };
@@ -232,9 +230,17 @@ impl FileSearch {
         if needle_lower.is_empty() {
             return true;
         }
-        let haystack_lower: String = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
-        let needle_str: String = needle_lower.iter().collect();
-        haystack_lower.contains(&needle_str)
+        let mut window = Vec::with_capacity(needle_lower.len());
+        for ch in haystack.chars().flat_map(|c| c.to_lowercase()) {
+            window.push(ch);
+            if window.len() > needle_lower.len() {
+                window.remove(0);
+            }
+            if window == needle_lower {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {

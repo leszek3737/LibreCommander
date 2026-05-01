@@ -32,7 +32,50 @@ use ui::{dialogs, panels, viewer};
 
 struct TerminalGuard;
 
-const TERMINAL_STATE_FILE: &str = "/tmp/lc_terminal_state";
+const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
+const MENU_ITEMS: [&[&str]; 5] = [
+    &[
+        "Listing mode...",
+        "Sort order...",
+        "Filter...",
+        "Encoding...",
+    ],
+    &[
+        "User menu",
+        "View file",
+        "Edit file",
+        "Copy",
+        "Move",
+        "Mkdir",
+        "Delete",
+        "Rename",
+        "Chmod",
+        "Quit",
+    ],
+    &[
+        "Directory tree",
+        "Find file",
+        "Swap panels",
+        "Switch panels",
+        "Compare dirs",
+        "History",
+        "Directory hotlist",
+    ],
+    &[
+        "Configuration...",
+        "Layout...",
+        "Panel options...",
+        "Appearance...",
+        "Show hidden files",
+        "Save setup",
+    ],
+    &[
+        "Listing mode...",
+        "Sort order...",
+        "Filter...",
+        "Encoding...",
+    ],
+];
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -40,6 +83,13 @@ impl Drop for TerminalGuard {
         let mut stdout = io::stdout();
         let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, Show);
     }
+}
+
+fn terminal_state_file_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".cache").join("lc").join("terminal_state"))
+        .unwrap_or_else(|| std::env::temp_dir().join("lc_terminal_state"))
 }
 
 fn main() -> io::Result<()> {
@@ -60,9 +110,11 @@ fn main() -> io::Result<()> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    let terminal_state_file = terminal_state_file_path();
+
     // Terminal state recovery: if editor was SIGKILL'd, Drop was skipped.
     // Detect leftover state file and restore terminal before doing anything else.
-    if std::fs::metadata(TERMINAL_STATE_FILE).is_ok() {
+    if std::fs::metadata(&terminal_state_file).is_ok() {
         let _ = crossterm::execute!(
             io::stdout(),
             crossterm::terminal::LeaveAlternateScreen,
@@ -77,7 +129,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             crossterm::cursor::Show
         );
         let _ = crossterm::terminal::enable_raw_mode();
-        let _ = std::fs::remove_file(TERMINAL_STATE_FILE);
+        let _ = std::fs::remove_file(&terminal_state_file);
     }
 
     let mut state = AppState::new();
@@ -94,28 +146,52 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
-                Event::Key(key) => {
-                    match &state.mode {
-                        AppMode::Normal => {
-                            handle_normal_mode(&mut state, &mut viewer_state, key.code, key.modifiers, terminal.size()?.height, terminal);
-                        }
-                        AppMode::Viewing => {
-                            let sz = terminal.size()?;
-                            handle_viewer_mode(&mut state, &mut viewer_state, key.code, sz.height, sz.width);
-                        }
-                        AppMode::CommandLine => handle_command_line(&mut state, key.code),
-                        AppMode::Dialog(_) => handle_dialog(&mut state, &mut viewer_state, key.code, terminal.size()?.height),
-                        AppMode::Search => handle_search_mode(&mut state, key.code, terminal.size()?.height),
-                        AppMode::Menu => handle_menu_mode(&mut state, &mut viewer_state, key.code, terminal.size()?.height, terminal),
-                        AppMode::ListPicker(_) => handle_list_picker(&mut state, key.code),
-                        AppMode::DirectoryTree => handle_directory_tree(
+                Event::Key(key) => match &state.mode {
+                    AppMode::Normal => {
+                        handle_normal_mode(
                             &mut state,
                             &mut viewer_state,
                             key.code,
+                            key.modifiers,
                             terminal.size()?.height,
-                        ),
+                            terminal,
+                        );
                     }
-                }
+                    AppMode::Viewing => {
+                        let sz = terminal.size()?;
+                        handle_viewer_mode(
+                            &mut state,
+                            &mut viewer_state,
+                            key.code,
+                            sz.height,
+                            sz.width,
+                        );
+                    }
+                    AppMode::CommandLine => handle_command_line(&mut state, key.code),
+                    AppMode::Dialog(_) => handle_dialog(
+                        &mut state,
+                        &mut viewer_state,
+                        key.code,
+                        terminal.size()?.height,
+                    ),
+                    AppMode::Search => {
+                        handle_search_mode(&mut state, key.code, terminal.size()?.height)
+                    }
+                    AppMode::Menu => handle_menu_mode(
+                        &mut state,
+                        &mut viewer_state,
+                        key.code,
+                        terminal.size()?.height,
+                        terminal,
+                    ),
+                    AppMode::ListPicker(_) => handle_list_picker(&mut state, key.code),
+                    AppMode::DirectoryTree => handle_directory_tree(
+                        &mut state,
+                        &mut viewer_state,
+                        key.code,
+                        terminal.size()?.height,
+                    ),
+                },
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
                     handle_mouse_event(&mut state, &mut viewer_state, mouse_event, size, terminal);
@@ -136,10 +212,19 @@ fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             if errors.is_empty() {
                 panel.last_error = None;
             } else {
-                let error_summary = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
-                panel.last_error = Some(format!("{} file(s) failed to read: {error_summary}", errors.len()));
+                let error_summary = errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                panel.last_error = Some(format!(
+                    "{} file(s) failed to read: {error_summary}",
+                    errors.len()
+                ));
             }
-            let current_name = panel.entries.get(panel.cursor)
+            let current_name = panel
+                .entries
+                .get(panel.cursor)
                 .filter(|e| e.name != "..")
                 .map(|e| e.name.clone());
             let saved: HashSet<PathBuf> = panel
@@ -171,7 +256,8 @@ fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             }
             panel.recalculate_selection_stats();
             if let Some(ref name) = current_name
-                && let Some(pos) = panel.entries.iter().position(|e| e.name == *name) {
+                && let Some(pos) = panel.entries.iter().position(|e| e.name == *name)
+            {
                 panel.cursor = pos;
             }
             if panel.cursor >= panel.entries.len() && !panel.entries.is_empty() {
@@ -267,12 +353,11 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     }
 
     let size = f.area();
-    
+
     // Fill entire screen with blue background
-    let bg_block = ratatui::widgets::Block::default()
-        .style(Theme::panel_bg());
+    let bg_block = ratatui::widgets::Block::default().style(Theme::panel_bg());
     f.render_widget(bg_block, size);
-    
+
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -322,8 +407,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
         let ap = state.active_panel();
         format!("{}", ap.path.display())
     };
-    let cmd_paragraph =
-        ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar());
+    let cmd_paragraph = ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar());
     f.render_widget(cmd_paragraph, main_layout[3]);
 
     panels::render_function_bar(f, main_layout[4]);
@@ -355,13 +439,20 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
                 message: msg.clone(),
                 percent: *pct * 100.0,
             },
-            app::types::DialogKind::CopyMove { source, dest, is_move } => {
+            app::types::DialogKind::CopyMove {
+                source,
+                dest,
+                is_move,
+            } => {
                 let action = if *is_move { "Move" } else { "Copy" };
                 let msg = format!(
                     "{} {} item(s)\nfrom: {}\n  to: {}",
                     action,
                     source.len(),
-                    source.first().map(|p| p.display().to_string()).unwrap_or_default(),
+                    source
+                        .first()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
                     dest.display(),
                 );
                 dialogs::DialogKind::Confirm {
@@ -370,7 +461,16 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
                     selection: state.dialog_selection,
                 }
             }
-            app::types::DialogKind::Properties { name, size, mtime, permissions, owner, group, is_dir, is_symlink } => {
+            app::types::DialogKind::Properties {
+                name,
+                size,
+                mtime,
+                permissions,
+                owner,
+                group,
+                is_dir,
+                is_symlink,
+            } => {
                 let file_type = if *is_symlink {
                     "Symlink"
                 } else if *is_dir {
@@ -480,55 +580,9 @@ fn render_menu_dropdown(
 ) {
     use ratatui::widgets::{Block, Borders, Paragraph};
 
-    let menu_titles = ["Left", "File", "Command", "Options", "Right"];
-    let menu_items: [&[&str]; 5] = [
-        &[
-            "Listing mode...",
-            "Sort order...",
-            "Filter...",
-            "Encoding...",
-        ],
-        &[
-            "User menu",
-            "View file",
-            "Edit file",
-            "Copy",
-            "Move",
-            "Mkdir",
-            "Delete",
-            "Rename",
-            "Chmod",
-            "Quit",
-        ],
-        &[
-            "Directory tree",
-            "Find file",
-            "Swap panels",
-            "Switch panels",
-            "Compare dirs",
-            "History",
-            "Directory hotlist",
-        ],
-        &[
-            "Configuration...",
-            "Layout...",
-            "Panel options...",
-            "Appearance...",
-            "Show hidden files",
-            "Save setup",
-        ],
-        &[
-            "Listing mode...",
-            "Sort order...",
-            "Filter...",
-            "Encoding...",
-        ],
-    ];
-
     // Highlight selected menu title in menu bar
-    let mut x_offset = 3u16;
-    for (i, title) in menu_titles.iter().enumerate() {
-        let title_width = title.len() as u16 + 2;
+    for (i, title) in MENU_TITLES.iter().enumerate() {
+        let title_width = menu_title_width(title);
         let style = if i == selected_menu {
             Theme::highlight_bold()
         } else {
@@ -536,35 +590,27 @@ fn render_menu_dropdown(
         };
         let label = format!(" {title} ");
         let p = Paragraph::new(label).style(style);
-        let area = Rect::new(menu_bar_area.x + x_offset, menu_bar_area.y, title_width, 1);
+        let area = Rect::new(
+            menu_bar_area.x + menu_title_x(menu_bar_area.width, i),
+            menu_bar_area.y,
+            title_width,
+            1,
+        );
         f.render_widget(p, area);
-        x_offset += title_width + 1;
     }
 
     // Draw dropdown
-    let items = menu_items[selected_menu];
+    let items = MENU_ITEMS[selected_menu];
     let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
     let dropdown_height = items.len() as u16 + 2; // +2 for border
 
     // Calculate dropdown x position
-    let mut menu_x = 3u16;
-    for title in menu_titles.iter().take(selected_menu) {
-        menu_x += title.len() as u16 + 3;
-    }
-    let dropdown_x = menu_bar_area.x + menu_x;
     let dropdown_y = menu_bar_area.y + 1;
-
-    let max_dropdown_x = menu_bar_area.x.saturating_add(menu_bar_area.width).saturating_sub(dropdown_width);
-    let dropdown_area = Rect::new(
-        dropdown_x.min(max_dropdown_x),
-        dropdown_y,
-        dropdown_width,
-        dropdown_height,
-    );
+    let dropdown_x = menu_dropdown_x(menu_bar_area, selected_menu, dropdown_width);
+    let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);
 
     // Fill dropdown area with blue background
-    let bg_block = ratatui::widgets::Block::default()
-        .style(Theme::panel_bg());
+    let bg_block = ratatui::widgets::Block::default().style(Theme::panel_bg());
     f.render_widget(bg_block, dropdown_area);
 
     let block = Block::default()
@@ -589,14 +635,46 @@ fn render_menu_dropdown(
     }
 }
 
+fn menu_bar_text_width() -> u16 {
+    MENU_TITLES
+        .iter()
+        .map(|title| menu_title_width(title))
+        .sum::<u16>()
+        + MENU_TITLES.len().saturating_sub(1) as u16
+}
+
+fn menu_bar_start_x(width: u16) -> u16 {
+    width.saturating_sub(menu_bar_text_width()) / 2
+}
+
+fn menu_title_width(title: &str) -> u16 {
+    title.len() as u16 + 2
+}
+
+fn menu_title_x(width: u16, index: usize) -> u16 {
+    let mut x = menu_bar_start_x(width);
+    for title in MENU_TITLES.iter().take(index) {
+        x = x.saturating_add(menu_title_width(title) + 1);
+    }
+    x
+}
+
+fn menu_dropdown_x(menu_bar_area: Rect, selected_menu: usize, dropdown_width: u16) -> u16 {
+    let dropdown_x = menu_bar_area.x + menu_title_x(menu_bar_area.width, selected_menu);
+    let max_dropdown_x = menu_bar_area
+        .x
+        .saturating_add(menu_bar_area.width)
+        .saturating_sub(dropdown_width);
+    dropdown_x.min(max_dropdown_x)
+}
+
 fn render_directory_tree(f: &mut Frame, state: &AppState) {
     use ratatui::widgets::{Block, Borders, Paragraph};
 
     let area = f.area();
-    
+
     // Fill with blue background instead of clearing
-    let bg_block = Block::default()
-        .style(Theme::panel_bg());
+    let bg_block = Block::default().style(Theme::panel_bg());
     f.render_widget(bg_block, area);
 
     let block = Block::default()
@@ -780,7 +858,10 @@ fn panel_visible_height(terminal_height: u16) -> usize {
 
 fn shift_select(panel: &mut app::types::PanelState, next: usize) {
     let current = panel.cursor;
-    let shrink = panel.entries.get(current).is_some_and(|entry| entry.selected)
+    let shrink = panel
+        .entries
+        .get(current)
+        .is_some_and(|entry| entry.selected)
         && panel.entries.get(next).is_some_and(|entry| entry.selected);
 
     panel.set_selection_at(current, !shrink);
@@ -940,7 +1021,11 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 );
                 // Write state file before launching editor – if editor is SIGKILL'd,
                 // Drop is skipped but we can detect this on next startup.
-                let _ = std::fs::write(TERMINAL_STATE_FILE, "alternate_screen");
+                let terminal_state_file = terminal_state_file_path();
+                if let Some(parent) = terminal_state_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&terminal_state_file, "alternate_screen");
                 let mut parts = editor.split_whitespace();
                 let cmd = parts.next().unwrap_or("vi");
                 let status = std::process::Command::new(cmd)
@@ -951,7 +1036,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     .stderr(std::process::Stdio::inherit())
                     .status();
                 // Clean up state file on normal exit
-                let _ = std::fs::remove_file(TERMINAL_STATE_FILE);
+                let _ = std::fs::remove_file(&terminal_state_file);
                 let _ = crossterm::execute!(
                     io::stdout(),
                     crossterm::terminal::EnterAlternateScreen,
@@ -990,7 +1075,10 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 };
                 state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
-                state.pending_action = Some(app::types::PendingAction::Copy { sources: paths, dest: dest_dir });
+                state.pending_action = Some(app::types::PendingAction::Copy {
+                    sources: paths,
+                    dest: dest_dir,
+                });
             }
         }
         KeyCode::F(6) => {
@@ -1007,7 +1095,10 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 };
                 state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
-                state.pending_action = Some(app::types::PendingAction::Move { sources: paths, dest: dest_dir });
+                state.pending_action = Some(app::types::PendingAction::Move {
+                    sources: paths,
+                    dest: dest_dir,
+                });
             }
         }
         KeyCode::F(7) => {
@@ -1247,7 +1338,9 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
         crossterm::terminal::EnterAlternateScreen,
         crossterm::event::EnableMouseCapture,
         crossterm::cursor::Show
-    ).is_err() {
+    )
+    .is_err()
+    {
         ok = false;
     }
     if crossterm::terminal::enable_raw_mode().is_err() {
@@ -1263,11 +1356,7 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
 
 fn parse_octal_mode(input: &str) -> Option<u32> {
     let mode = u32::from_str_radix(input.trim(), 8).ok()?;
-    if mode <= 0o7777 {
-        Some(mode)
-    } else {
-        None
-    }
+    if mode <= 0o7777 { Some(mode) } else { None }
 }
 
 fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
@@ -1403,14 +1492,12 @@ fn handle_dialog(
                     state.dialog_cursor_pos = 0;
                     return;
                 }
-                if let AppMode::Dialog(app::types::DialogKind::Input(prompt, _)) = &state.mode
-                {
+                if let AppMode::Dialog(app::types::DialogKind::Input(prompt, _)) = &state.mode {
                     let prompt = prompt.clone();
                     if prompt == "Create directory:" && !input.trim().is_empty() {
                         let dir = state.active_panel().path.clone();
                         if let Err(err) = ops::file_ops::create_directory(&dir.join(&input)) {
-                            state.status_message =
-                                Some(format!("Create directory failed: {err}"));
+                            state.status_message = Some(format!("Create directory failed: {err}"));
                         } else {
                             refresh_active(state);
                         }
@@ -1423,7 +1510,8 @@ fn handle_dialog(
                     } else if prompt == "Chmod (octal):" && !input.is_empty() {
                         if let Some(mode) = parse_octal_mode(&input) {
                             if let Some(entry) = state.active_panel().current_entry()
-                                && let Err(err) = ops::file_ops::chmod(&entry.path, mode) {
+                                && let Err(err) = ops::file_ops::chmod(&entry.path, mode)
+                            {
                                 state.status_message = Some(format!("Chmod failed: {err}"));
                             }
                         } else {
@@ -1482,7 +1570,9 @@ fn handle_dialog(
                                     .position(|e| e.path == first.path)
                                 {
                                     state.active_panel_mut().cursor = pos;
-                                    state.active_panel_mut().ensure_cursor_visible(panel_visible_height(terminal_height));
+                                    state.active_panel_mut().ensure_cursor_visible(
+                                        panel_visible_height(terminal_height),
+                                    );
                                 }
                             }
                         } else {
@@ -1517,7 +1607,12 @@ fn handle_dialog(
             KeyCode::Backspace => {
                 if state.dialog_cursor_pos > 0 {
                     state.dialog_cursor_pos -= 1;
-                    let byte_pos = state.dialog_input.char_indices().nth(state.dialog_cursor_pos).map(|(i, _)| i).unwrap_or(state.dialog_input.len());
+                    let byte_pos = state
+                        .dialog_input
+                        .char_indices()
+                        .nth(state.dialog_cursor_pos)
+                        .map(|(i, _)| i)
+                        .unwrap_or(state.dialog_input.len());
                     let next_byte = state.dialog_input[byte_pos..]
                         .chars()
                         .next()
@@ -1527,7 +1622,8 @@ fn handle_dialog(
                 }
             }
             KeyCode::Delete => {
-                let byte_pos = state.dialog_input
+                let byte_pos = state
+                    .dialog_input
                     .char_indices()
                     .nth(state.dialog_cursor_pos)
                     .map(|(i, _)| i);
@@ -1541,7 +1637,12 @@ fn handle_dialog(
                 }
             }
             KeyCode::Char(c) => {
-                let byte_pos = state.dialog_input.char_indices().nth(state.dialog_cursor_pos).map(|(i, _)| i).unwrap_or(state.dialog_input.len());
+                let byte_pos = state
+                    .dialog_input
+                    .char_indices()
+                    .nth(state.dialog_cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(state.dialog_input.len());
                 state.dialog_input.insert(byte_pos, c);
                 state.dialog_cursor_pos += 1;
             }
@@ -1781,7 +1882,7 @@ fn handle_mouse_event(
     terminal_size: ratatui::layout::Size,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) {
-    use crossterm::event::{MouseEventKind, MouseButton};
+    use crossterm::event::{MouseButton, MouseEventKind};
     use std::time::Duration;
 
     let col = mouse_event.column;
@@ -1789,7 +1890,10 @@ fn handle_mouse_event(
     let height = terminal_size.height;
     let width = terminal_size.width;
 
-    if matches!(mouse_event.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+    if matches!(
+        mouse_event.kind,
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+    ) {
         if !matches!(state.mode, AppMode::Normal) {
             return;
         }
@@ -1839,7 +1943,7 @@ fn handle_mouse_event(
     if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
         let dialog_height = height * 40 / 100;
         let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        let btn_row = dialog_y + dialog_height.saturating_sub(1);
+        let btn_row = dialog_y + dialog_height.saturating_sub(2);
 
         if row == btn_row {
             let dialog_width = width / 2;
@@ -1897,42 +2001,29 @@ fn handle_mouse_event(
 
     // ── MENU BAR (row 0) — open menu ──
     if row == 0 && matches!(state.mode, AppMode::Normal) {
-        let menu_titles = ["Left", "File", "Command", "Options", "Right"];
-        let mut x_offset = 3u16;
-        for (i, title) in menu_titles.iter().enumerate() {
-            let title_width = title.len() as u16 + 2;
+        for (i, title) in MENU_TITLES.iter().enumerate() {
+            let x_offset = menu_title_x(width, i);
+            let title_width = menu_title_width(title);
             if col >= x_offset && col < x_offset + title_width {
                 state.menu_selected = i;
                 state.menu_item_selected = 0;
                 state.mode = AppMode::Menu;
                 return;
             }
-            x_offset += title_width + 1;
         }
         return;
     }
 
     // ── MENU DROPDOWN items ──
     if matches!(state.mode, AppMode::Menu) && row >= 1 {
-        let menu_titles = ["Left", "File", "Command", "Options", "Right"];
-        let menu_items: [&[&str]; 5] = [
-            &["Listing mode...", "Sort order...", "Filter...", "Encoding..."],
-            &["User menu", "View file", "Edit file", "Copy", "Move", "Mkdir", "Delete", "Rename", "Chmod", "Quit"],
-            &["Directory tree", "Find file", "Swap panels", "Switch panels", "Compare dirs", "History", "Directory hotlist"],
-            &["Configuration...", "Layout...", "Panel options...", "Appearance...", "Show hidden files", "Save setup"],
-            &["Listing mode...", "Sort order...", "Filter...", "Encoding..."],
-        ];
-
         // Calculate dropdown position (matching render_menu_dropdown)
-        let mut menu_x = 3u16;
-        for title in menu_titles.iter().take(state.menu_selected) {
-            menu_x += title.len() as u16 + 3;
-        }
-        let items = menu_items[state.menu_selected];
+        let items = MENU_ITEMS[state.menu_selected];
         let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
+        let menu_bar_area = Rect::new(0, 0, width, 1);
+        let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
 
-        // Dropdown inner area: starts at (menu_x + 1, 2) due to border
-        let inner_x = menu_x + 1;
+        // Dropdown inner area: starts at (dropdown_x + 1, 2) due to border
+        let inner_x = dropdown_x + 1;
         let inner_y = 2u16;
         let inner_width = dropdown_width.saturating_sub(2);
 
@@ -1944,7 +2035,14 @@ fn handle_mouse_event(
                 let previous_mode = state.mode.clone();
                 if let Some(action_key) = execute_menu_action(state) {
                     state.mode = AppMode::Normal;
-                    handle_normal_mode(state, viewer_state, action_key, KeyModifiers::NONE, height, terminal);
+                    handle_normal_mode(
+                        state,
+                        viewer_state,
+                        action_key,
+                        KeyModifiers::NONE,
+                        height,
+                        terminal,
+                    );
                 } else if state.mode == previous_mode {
                     state.mode = AppMode::Normal;
                 }
@@ -1968,7 +2066,14 @@ fn handle_mouse_event(
             8 => KeyCode::F(9),
             _ => KeyCode::F(10),
         };
-        handle_normal_mode(state, viewer_state, fkey, KeyModifiers::NONE, height, terminal);
+        handle_normal_mode(
+            state,
+            viewer_state,
+            fkey,
+            KeyModifiers::NONE,
+            height,
+            terminal,
+        );
         return;
     }
 
@@ -2011,7 +2116,9 @@ fn handle_mouse_event(
     let now = std::time::Instant::now();
     let is_double_click = if let Some(last_time) = state.last_click_time {
         if let Some(last_pos) = state.last_click_position {
-            last_pos.0 == col && last_pos.1 == row && now.duration_since(last_time) < Duration::from_millis(300)
+            last_pos.0 == col
+                && last_pos.1 == row
+                && now.duration_since(last_time) < Duration::from_millis(300)
         } else {
             false
         }
@@ -2122,19 +2229,30 @@ fn execute_confirmed_action(state: &mut AppState) {
         None => return,
     };
     match action {
-        app::types::PendingAction::Copy { sources: paths, dest: dest_dir } => {
+        app::types::PendingAction::Copy {
+            sources: paths,
+            dest: dest_dir,
+        } => {
             let mut errors: Vec<String> = Vec::new();
             let mut used_dests: HashSet<PathBuf> = HashSet::new();
             for src in &paths {
                 let file_name = src.file_name().unwrap_or_default();
                 let dest = dest_dir.join(file_name);
                 if !used_dests.insert(dest.clone()) {
-                    errors.push(format!("{}: duplicate destination {}", src.display(), dest.display()));
+                    errors.push(format!(
+                        "{}: duplicate destination {}",
+                        src.display(),
+                        dest.display()
+                    ));
                     continue;
                 }
                 let result = match src.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::copy_symlink(src, &dest),
-                    Ok(meta) if meta.is_dir() => ops::file_ops::copy_dir_recursive(src, &dest).map(|_| ()),
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        ops::file_ops::copy_symlink(src, &dest)
+                    }
+                    Ok(meta) if meta.is_dir() => {
+                        ops::file_ops::copy_dir_recursive(src, &dest).map(|_| ())
+                    }
                     Ok(_) => ops::file_ops::copy_file(src, &dest).map(|_| ()),
                     Err(e) => Err(e),
                 };
@@ -2148,14 +2266,21 @@ fn execute_confirmed_action(state: &mut AppState) {
             }
             refresh_both(state);
         }
-        app::types::PendingAction::Move { sources: paths, dest: dest_dir } => {
+        app::types::PendingAction::Move {
+            sources: paths,
+            dest: dest_dir,
+        } => {
             let mut errors: Vec<String> = Vec::new();
             let mut used_dests: HashSet<PathBuf> = HashSet::new();
             for src in &paths {
                 let file_name = src.file_name().unwrap_or_default();
                 let dest = dest_dir.join(file_name);
                 if !used_dests.insert(dest.clone()) {
-                    errors.push(format!("{}: duplicate destination {}", src.display(), dest.display()));
+                    errors.push(format!(
+                        "{}: duplicate destination {}",
+                        src.display(),
+                        dest.display()
+                    ));
                     continue;
                 }
                 if let Err(e) = ops::file_ops::move_entry(src, &dest) {
@@ -2292,7 +2417,14 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
             let previous_mode = state.mode.clone();
             if let Some(action_key) = execute_menu_action(state) {
                 state.mode = AppMode::Normal;
-                handle_normal_mode(state, viewer_state, action_key, KeyModifiers::NONE, terminal_height, terminal);
+                handle_normal_mode(
+                    state,
+                    viewer_state,
+                    action_key,
+                    KeyModifiers::NONE,
+                    terminal_height,
+                    terminal,
+                );
             } else if state.mode == previous_mode {
                 state.mode = AppMode::Normal;
             }
@@ -2658,12 +2790,11 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
 
 // ---- Type conversion helpers ----
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use app::types::{ActivePanel, FileEntry};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use std::path::PathBuf;
     use std::time::{Duration, UNIX_EPOCH};
 

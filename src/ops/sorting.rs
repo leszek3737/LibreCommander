@@ -74,10 +74,22 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
             let ord = cmp_ignore_case(get_extension(&b.name), get_extension(&a.name));
             ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
         }
-        SortMode::SizeAsc => a.size.cmp(&b.size).then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::SizeDesc => b.size.cmp(&a.size).then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::ModTimeAsc => a.modified.cmp(&b.modified).then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::ModTimeDesc => b.modified.cmp(&a.modified).then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::SizeAsc => a
+            .size
+            .cmp(&b.size)
+            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::SizeDesc => b
+            .size
+            .cmp(&a.size)
+            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::ModTimeAsc => a
+            .modified
+            .cmp(&b.modified)
+            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::ModTimeDesc => b
+            .modified
+            .cmp(&a.modified)
+            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
     }
 }
 

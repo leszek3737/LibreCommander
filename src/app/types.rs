@@ -289,9 +289,17 @@ pub enum ViewMode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingAction {
-    Copy { sources: Vec<std::path::PathBuf>, dest: std::path::PathBuf },
-    Move { sources: Vec<std::path::PathBuf>, dest: std::path::PathBuf },
-    Delete { paths: Vec<std::path::PathBuf> },
+    Copy {
+        sources: Vec<std::path::PathBuf>,
+        dest: std::path::PathBuf,
+    },
+    Move {
+        sources: Vec<std::path::PathBuf>,
+        dest: std::path::PathBuf,
+    },
+    Delete {
+        paths: Vec<std::path::PathBuf>,
+    },
 }
 
 // ============================================================================
@@ -362,11 +370,14 @@ impl FileEntry {
         use std::time::UNIX_EPOCH;
 
         if let Ok(duration) = self.modified.duration_since(UNIX_EPOCH) {
-            chrono::DateTime::from_timestamp(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-                .unwrap_or(chrono::DateTime::UNIX_EPOCH)
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string()
+            chrono::DateTime::from_timestamp(
+                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+                0,
+            )
+            .unwrap_or(chrono::DateTime::UNIX_EPOCH)
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
         } else {
             "Unknown".to_string()
         }
