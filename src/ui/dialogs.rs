@@ -46,14 +46,6 @@ pub enum DialogKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum DialogResult {
-    None,
-    Confirmed,
-    Cancelled,
-    InputValue(String),
-}
-
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     let rect = f.area();
     let dialog_area = centered_rect(50, 40, rect);
@@ -282,6 +274,7 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
     f.render_widget(gauge, chunks[1]);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_properties_dialog(
     f: &mut Frame,
     area: Rect,
@@ -408,16 +401,5 @@ mod tests {
         assert_eq!(rect.height, 20);
         assert_eq!(rect.x, 30);
         assert_eq!(rect.y, 15);
-    }
-
-    #[test]
-    fn test_dialog_result_eq() {
-        assert_eq!(DialogResult::None, DialogResult::None);
-        assert_eq!(DialogResult::Confirmed, DialogResult::Confirmed);
-        assert_ne!(DialogResult::Confirmed, DialogResult::Cancelled);
-        assert_eq!(
-            DialogResult::InputValue("test".to_string()),
-            DialogResult::InputValue("test".to_string())
-        );
     }
 }

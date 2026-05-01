@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::{
-    cursor::Show,
+    cursor::{Hide, Show},
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -29,6 +29,11 @@ use fs::reader;
 use ops::sorting;
 use ui::theme::Theme;
 use ui::{dialogs, panels, viewer};
+
+const EVENT_POLL_TIMEOUT_MS: u64 = 100;
+const MAX_HISTORY: usize = 100;
+const LAYOUT_OVERHEAD_ROWS: u16 = 6;
+const DIR_TREE_OVERHEAD_ROWS: u16 = 3;
 
 struct TerminalGuard;
 
@@ -83,6 +88,23 @@ impl Drop for TerminalGuard {
         let mut stdout = io::stdout();
         let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, Show);
     }
+}
+
+fn suspend_terminal_stdout() -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, Show)?;
+    Ok(())
+}
+
+fn resume_terminal_stdout() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        Hide
+    )?;
+    Ok(())
 }
 
 fn terminal_state_file_path() -> PathBuf {
@@ -144,7 +166,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     loop {
         terminal.draw(|f| render_ui(f, &state, &viewer_state))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
             match event::read()? {
                 Event::Key(key) => match &state.mode {
                     AppMode::Normal => {
@@ -319,19 +341,6 @@ fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) 
         set_active_panel(state, original);
     }
     result
-}
-
-fn cycle_sort_mode(mode: app::types::SortMode) -> app::types::SortMode {
-    match mode {
-        app::types::SortMode::NameAsc => app::types::SortMode::NameDesc,
-        app::types::SortMode::NameDesc => app::types::SortMode::SizeAsc,
-        app::types::SortMode::SizeAsc => app::types::SortMode::SizeDesc,
-        app::types::SortMode::SizeDesc => app::types::SortMode::ModTimeAsc,
-        app::types::SortMode::ModTimeAsc => app::types::SortMode::ModTimeDesc,
-        app::types::SortMode::ModTimeDesc => app::types::SortMode::ExtensionAsc,
-        app::types::SortMode::ExtensionAsc => app::types::SortMode::ExtensionDesc,
-        app::types::SortMode::ExtensionDesc => app::types::SortMode::NameAsc,
-    }
 }
 
 fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::ViewerState>) {
@@ -753,32 +762,29 @@ fn handle_directory_tree(
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if state.tree_selected > 0 {
+        KeyCode::Up | KeyCode::Char('k')
+            if state.tree_selected > 0 => {
                 state.tree_selected -= 1;
             }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down | KeyCode::Char('j')
             if !state.tree_entries.is_empty() && state.tree_selected + 1 < state.tree_entries.len()
-            {
+            => {
                 state.tree_selected += 1;
             }
-        }
         KeyCode::Home => {
             state.tree_selected = 0;
             state.tree_scroll = 0;
         }
-        KeyCode::End => {
-            if !state.tree_entries.is_empty() {
+        KeyCode::End
+            if !state.tree_entries.is_empty() => {
                 state.tree_selected = state.tree_entries.len() - 1;
             }
-        }
         KeyCode::PageUp => {
             state.tree_selected = state.tree_selected.saturating_sub(visible_height);
             state.tree_scroll = state.tree_scroll.saturating_sub(visible_height);
         }
-        KeyCode::PageDown => {
-            if !state.tree_entries.is_empty() {
+        KeyCode::PageDown
+            if !state.tree_entries.is_empty() => {
                 state.tree_selected =
                     (state.tree_selected + visible_height).min(state.tree_entries.len() - 1);
                 state.tree_scroll = state
@@ -786,7 +792,6 @@ fn handle_directory_tree(
                     .saturating_add(visible_height)
                     .min(state.tree_entries.len().saturating_sub(visible_height));
             }
-        }
         KeyCode::Enter => {
             let selected = state.tree_selected;
             let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
@@ -850,11 +855,11 @@ fn handle_directory_tree(
 }
 
 fn directory_tree_visible_height(terminal_height: u16) -> usize {
-    terminal_height.saturating_sub(3) as usize
+    terminal_height.saturating_sub(DIR_TREE_OVERHEAD_ROWS) as usize
 }
 
 fn panel_visible_height(terminal_height: u16) -> usize {
-    terminal_height.saturating_sub(6) as usize
+    terminal_height.saturating_sub(LAYOUT_OVERHEAD_ROWS) as usize
 }
 
 fn shift_select(panel: &mut app::types::PanelState, next: usize) {
@@ -871,8 +876,8 @@ fn shift_select(panel: &mut app::types::PanelState, next: usize) {
 }
 
 fn navigate_to_hotlist(state: &mut AppState, index: usize) {
-    if let Some(path) = state.directory_hotlist.get(index).cloned() {
-        if path.is_dir() {
+    if let Some(path) = state.directory_hotlist.get(index).cloned()
+        && path.is_dir() {
             let panel = state.active_panel_mut();
             panel.path = path.clone();
             panel.cursor = 0;
@@ -880,7 +885,6 @@ fn navigate_to_hotlist(state: &mut AppState, index: usize) {
             refresh_active(state);
             state.status_message = Some(format!("cd to {}", path.display()));
         }
-    }
 }
 
 fn handle_normal_mode<B: ratatui::backend::Backend>(
@@ -956,8 +960,8 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         }
         KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
             // Alt+Enter: Show file properties dialog
-            if let Some(entry) = state.active_panel().current_entry() {
-                if entry.name != ".." {
+            if let Some(entry) = state.active_panel().current_entry()
+                && entry.name != ".." {
                     state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
                         name: entry.name.clone(),
                         size: entry.size,
@@ -969,17 +973,15 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                         is_symlink: entry.is_symlink,
                     });
                 }
-            }
         }
         KeyCode::Enter => {
-            let entry = state.active_panel().current_entry().cloned();
-            if let Some(entry) = entry
-                && entry.is_dir
+            let entry_info = state.active_panel().current_entry().map(|e| (e.is_dir, e.path.clone()));
+            if let Some((is_dir, path)) = entry_info
+                && is_dir
             {
                 let p = state.active_panel_mut();
-                // Push current path to history before changing
                 p.history.push(p.path.clone());
-                p.path = entry.path.clone();
+                p.path = path;
                 p.cursor = 0;
                 p.scroll_offset = 0;
                 refresh_active(state);
@@ -1009,42 +1011,33 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::F(4) => {
-            if let Some(entry) = state.active_panel().current_entry().cloned()
-                && !entry.is_dir
+            let entry_info = state.active_panel().current_entry().map(|e| (e.is_dir, e.path.clone()));
+            if let Some((is_dir, path)) = entry_info
+                && !is_dir
             {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                let _ = crossterm::terminal::disable_raw_mode();
-                let _ = crossterm::execute!(
-                    io::stdout(),
-                    crossterm::terminal::LeaveAlternateScreen,
-                    crossterm::event::DisableMouseCapture,
-                    crossterm::cursor::Show
-                );
+                let _ = suspend_terminal_stdout();
                 // Write state file before launching editor – if editor is SIGKILL'd,
                 // Drop is skipped but we can detect this on next startup.
                 let terminal_state_file = terminal_state_file_path();
                 if let Some(parent) = terminal_state_file.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                let _ = std::fs::write(&terminal_state_file, "alternate_screen");
+                if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
+                    eprintln!("Warning: failed to write terminal state file: {e}");
+                }
                 let mut parts = editor.split_whitespace();
                 let cmd = parts.next().unwrap_or("vi");
                 let status = std::process::Command::new(cmd)
                     .args(parts)
-                    .arg(&entry.path)
+                    .arg(&path)
                     .stdin(std::process::Stdio::inherit())
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())
                     .status();
                 // Clean up state file on normal exit
                 let _ = std::fs::remove_file(&terminal_state_file);
-                let _ = crossterm::execute!(
-                    io::stdout(),
-                    crossterm::terminal::EnterAlternateScreen,
-                    crossterm::event::EnableMouseCapture,
-                    crossterm::cursor::Show
-                );
-                let _ = crossterm::terminal::enable_raw_mode();
+                let _ = resume_terminal_stdout();
                 if let Err(e) = status {
                     state.status_message = Some(format!("Editor error: {e}"));
                 }
@@ -1128,15 +1121,14 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         }
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
             let panel = state.active_panel_mut();
-            if let Some(prev_path) = panel.history.pop() {
-                if prev_path.is_dir() {
+            if let Some(prev_path) = panel.history.pop()
+                && prev_path.is_dir() {
                     panel.path = prev_path.clone();
                     panel.cursor = 0;
                     panel.scroll_offset = 0;
                     refresh_active(state);
                     state.status_message = Some(format!("cd to {}", prev_path.display()));
                 }
-            }
         }
         KeyCode::Char(c) if modifiers.contains(KeyModifiers::ALT) && ('1'..='9').contains(&c) => {
             navigate_to_hotlist(state, (c as usize) - ('1' as usize));
@@ -1168,11 +1160,13 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             refresh_active(state);
         }
         KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
-            let _ = toggle_external_view(state, terminal);
+            if let Err(e) = toggle_external_view(state, terminal) {
+                state.status_message = Some(format!("External view error: {e}"));
+            }
         }
         _ => {
-            if let KeyCode::Char(c) = key {
-                if modifiers.is_empty() {
+            if let KeyCode::Char(c) = key
+                && modifiers.is_empty() {
                     state.search_query.push(c);
                     state.mode = AppMode::Search;
                     let filter_query = state.search_query.clone();
@@ -1185,7 +1179,6 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     panel.scroll_offset = 0;
                     refresh_active(state);
                 }
-            }
         }
     }
 }
@@ -1253,8 +1246,8 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
             state.command_line.pop();
             state.history_index = None;
         }
-        KeyCode::Up => {
-            if !state.command_history.is_empty() {
+        KeyCode::Up
+            if !state.command_history.is_empty() => {
                 if state.history_index.is_none() {
                     state.command_draft = state.command_line.clone();
                 }
@@ -1266,7 +1259,6 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
                 state.history_index = Some(idx);
                 state.command_line = state.command_history[idx].clone();
             }
-        }
         KeyCode::Down => {
             if let Some(idx) = state.history_index {
                 if idx + 1 < state.command_history.len() {
@@ -1293,7 +1285,7 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
 
     if state.command_history.back().is_none_or(|last| last != cmd) {
         state.command_history.push_back(cmd.to_string());
-        if state.command_history.len() > 100 {
+        if state.command_history.len() > MAX_HISTORY {
             state.command_history.pop_front();
         }
     }
@@ -1311,13 +1303,10 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
     }
 
     let mut restore_guard = ShellRestoreGuard { restore_ok: false };
-    let _ = crossterm::terminal::disable_raw_mode();
-    let _ = crossterm::execute!(
-        io::stdout(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        crossterm::cursor::Show
-    );
+    if suspend_terminal_stdout().is_err() {
+        state.status_message = Some("Terminal suspend failed".into());
+        return;
+    }
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -1332,21 +1321,9 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
         Err(e) => println!("\n[Command failed: {e}. Press Enter to return]"),
     }
     let mut buf = String::new();
+    // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for
     let _ = io::stdin().read_line(&mut buf);
-    let mut ok = true;
-    if crossterm::execute!(
-        io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-        crossterm::cursor::Show
-    )
-    .is_err()
-    {
-        ok = false;
-    }
-    if crossterm::terminal::enable_raw_mode().is_err() {
-        ok = false;
-    }
+    let ok = resume_terminal_stdout().is_ok();
     if ok {
         restore_guard.restore_ok = true;
     } else {
@@ -1408,33 +1385,15 @@ fn handle_dialog(
                         return;
                     }
                 }
-                state.mode = AppMode::Normal;
-                state.pending_action = None;
-                state.status_message = None;
-                state.dialog_selection = 0;
+                dismiss_dialog(state);
                 refresh_both(state);
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
             }
             KeyCode::Char('n' | 'N') => {
-                state.mode = AppMode::Normal;
-                state.pending_action = None;
-                state.status_message = None;
-                state.dialog_selection = 0;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
+                dismiss_dialog(state);
             }
             KeyCode::Enter => {
                 if state.dialog_selection == 1 {
-                    state.mode = AppMode::Normal;
-                    state.pending_action = None;
-                    state.status_message = None;
-                    state.dialog_selection = 0;
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
+                    dismiss_dialog(state);
                 } else if state.pending_action.is_some() {
                     execute_confirmed_action(state);
                     state.dialog_selection = 0;
@@ -1446,23 +1405,12 @@ fn handle_dialog(
                         }
                         return;
                     }
-                    state.mode = AppMode::Normal;
-                    state.pending_action = None;
-                    state.status_message = None;
+                    dismiss_dialog(state);
                     refresh_both(state);
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
                 }
             }
             KeyCode::Esc => {
-                state.mode = AppMode::Normal;
-                state.pending_action = None;
-                state.status_message = None;
-                state.dialog_selection = 0;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
+                dismiss_dialog(state);
             }
             KeyCode::Left | KeyCode::Right => {
                 state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
@@ -1595,8 +1543,8 @@ fn handle_dialog(
                     set_active_panel(state, panel);
                 }
             }
-            KeyCode::Backspace => {
-                if state.dialog_cursor_pos > 0 {
+            KeyCode::Backspace
+                if state.dialog_cursor_pos > 0 => {
                     state.dialog_cursor_pos -= 1;
                     let byte_pos = state
                         .dialog_input
@@ -1611,7 +1559,6 @@ fn handle_dialog(
                         .unwrap_or(state.dialog_input.len());
                     state.dialog_input.drain(byte_pos..next_byte);
                 }
-            }
             KeyCode::Delete => {
                 let byte_pos = state
                     .dialog_input
@@ -1637,16 +1584,14 @@ fn handle_dialog(
                 state.dialog_input.insert(byte_pos, c);
                 state.dialog_cursor_pos += 1;
             }
-            KeyCode::Left => {
-                if state.dialog_cursor_pos > 0 {
+            KeyCode::Left
+                if state.dialog_cursor_pos > 0 => {
                     state.dialog_cursor_pos -= 1;
                 }
-            }
-            KeyCode::Right => {
-                if state.dialog_cursor_pos < state.dialog_input.chars().count() {
+            KeyCode::Right
+                if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
                     state.dialog_cursor_pos += 1;
                 }
-            }
             KeyCode::Home => {
                 state.dialog_cursor_pos = 0;
             }
@@ -1701,7 +1646,7 @@ fn handle_dialog(
 
 fn handle_list_picker(state: &mut AppState, key: KeyCode) {
     let kind = if let AppMode::ListPicker(ref k) = state.mode {
-        k.clone()
+        *k
     } else {
         return;
     };
@@ -1713,16 +1658,14 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up => {
-                    if len > 0 && state.picker_selected > 0 {
+                KeyCode::Up
+                    if len > 0 && state.picker_selected > 0 => {
                         state.picker_selected -= 1;
                     }
-                }
-                KeyCode::Down => {
-                    if len > 0 && state.picker_selected + 1 < len {
+                KeyCode::Down
+                    if len > 0 && state.picker_selected + 1 < len => {
                         state.picker_selected += 1;
                     }
-                }
                 KeyCode::Enter => {
                     let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
                     if let Some(cmd) = state.command_history.get(idx).cloned() {
@@ -1741,16 +1684,14 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up => {
-                    if len > 0 && state.picker_selected > 0 {
+                KeyCode::Up
+                    if len > 0 && state.picker_selected > 0 => {
                         state.picker_selected -= 1;
                     }
-                }
-                KeyCode::Down => {
-                    if len > 0 && state.picker_selected + 1 < len {
+                KeyCode::Down
+                    if len > 0 && state.picker_selected + 1 < len => {
                         state.picker_selected += 1;
                     }
-                }
                 KeyCode::Enter => {
                     if let Some(path) = state.directory_hotlist.get(state.picker_selected).cloned()
                     {
@@ -1776,8 +1717,8 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                             Some("Added current directory to hotlist".to_string());
                     }
                 }
-                KeyCode::Char('d') => {
-                    if state.picker_selected < state.directory_hotlist.len() {
+                KeyCode::Char('d')
+                    if state.picker_selected < state.directory_hotlist.len() => {
                         state.directory_hotlist.remove(state.picker_selected);
                         if state.picker_selected > 0
                             && state.picker_selected >= state.directory_hotlist.len()
@@ -1785,7 +1726,6 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                             state.picker_selected -= 1;
                         }
                     }
-                }
                 _ => {}
             }
         }
@@ -1797,16 +1737,14 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up => {
-                    if state.picker_selected > 0 {
+                KeyCode::Up
+                    if state.picker_selected > 0 => {
                         state.picker_selected -= 1;
                     }
-                }
-                KeyCode::Down => {
-                    if state.picker_selected + 1 < len {
+                KeyCode::Down
+                    if state.picker_selected + 1 < len => {
                         state.picker_selected += 1;
                     }
-                }
                 KeyCode::Enter => {
                     let chosen = MODES[state.picker_selected.min(len - 1)];
                     state.mode = AppMode::Normal;
@@ -1821,16 +1759,14 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up => {
-                    if len > 0 && state.picker_selected > 0 {
+                KeyCode::Up
+                    if len > 0 && state.picker_selected > 0 => {
                         state.picker_selected -= 1;
                     }
-                }
-                KeyCode::Down => {
-                    if len > 0 && state.picker_selected + 1 < len {
+                KeyCode::Down
+                    if len > 0 && state.picker_selected + 1 < len => {
                         state.picker_selected += 1;
                     }
-                }
                 KeyCode::Enter => {
                     let idx = state.picker_selected.min(len.saturating_sub(1));
                     state.mode = AppMode::Normal;
@@ -2056,7 +1992,7 @@ fn handle_mouse_menu_dropdown(
         let item_idx = (row - inner_y) as usize;
         if item_idx < items.len() {
             state.menu_item_selected = item_idx;
-            let previous_mode = state.mode.clone();
+            let previous_discriminant = std::mem::discriminant(&state.mode);
             if let Some(action_key) = execute_menu_action(state) {
                 state.mode = AppMode::Normal;
                 handle_normal_mode(
@@ -2067,7 +2003,7 @@ fn handle_mouse_menu_dropdown(
                     height,
                     terminal,
                 );
-            } else if state.mode == previous_mode {
+            } else if std::mem::discriminant(&state.mode) == previous_discriminant {
                 state.mode = AppMode::Normal;
             }
         }
@@ -2173,16 +2109,18 @@ fn handle_mouse_panels(
         state.last_click_time = None;
         state.last_click_position = None;
 
-        let entry = panel.entries[clicked_index].clone();
-        if entry.is_dir {
+        let entry = &panel.entries[clicked_index];
+        let is_dir = entry.is_dir;
+        let path = entry.path.clone();
+        if is_dir {
             let panel_mut = state.active_panel_mut();
             panel_mut.history.push(panel_mut.path.clone());
-            panel_mut.path = entry.path.clone();
+            panel_mut.path = path;
             panel_mut.cursor = 0;
             panel_mut.scroll_offset = 0;
             refresh_panel(panel_mut, panel_height as usize);
         } else {
-            if let Ok(vs) = viewer::ViewerState::open(&entry.path) {
+            if let Ok(vs) = viewer::ViewerState::open(&path) {
                 *viewer_state = Some(vs);
                 state.prev_mode = Some(state.mode.clone());
                 state.mode = AppMode::Viewing;
@@ -2203,26 +2141,17 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     state: &mut AppState,
     _terminal: &mut ratatui::Terminal<B>,
 ) -> io::Result<()> {
-    use crossterm::{cursor::Show, terminal::LeaveAlternateScreen};
-
-    // Save current terminal state and leave alternate screen
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        Show
-    );
-    let _ = crossterm::terminal::disable_raw_mode();
+    suspend_terminal_stdout()?;
 
     // Show message to user
     println!("External view active. Press Ctrl+O to return to Libre Commander.");
     println!("Press Enter to continue...");
 
     // Wait for Ctrl+O or any key
-    let _ = crossterm::terminal::enable_raw_mode();
+    enable_raw_mode()?;
     loop {
-        if crossterm::event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = crossterm::event::read()? {
+        if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
+            && let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     break;
                 }
@@ -2235,21 +2164,9 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
                     break;
                 }
             }
-        }
     }
 
-    // Restore terminal state
-    let _ = crossterm::terminal::disable_raw_mode();
-    let mut stdout = std::io::stdout();
-    let _ = crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    );
-    let _ = crossterm::terminal::enable_raw_mode();
-
-    // Hide cursor again
-    let _ = crossterm::execute!(stdout, crossterm::cursor::Hide);
+    resume_terminal_stdout()?;
 
     // Refresh display
     refresh_both(state);
@@ -2379,8 +2296,7 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
             state.search_query.clear();
             let panel = state.active_panel_mut();
             panel.filter = None;
-            panel.entries = panel.unfiltered_entries.clone();
-            panel.unfiltered_entries.clear();
+            panel.entries = std::mem::take(&mut panel.unfiltered_entries);
             panel.cursor = 0;
             panel.scroll_offset = 0;
             refresh_active(state);
@@ -2448,7 +2364,7 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
             state.menu_item_selected = (state.menu_item_selected + 1) % max_items;
         }
         KeyCode::Enter => {
-            let previous_mode = state.mode.clone();
+            let previous_discriminant = std::mem::discriminant(&state.mode);
             if let Some(action_key) = execute_menu_action(state) {
                 state.mode = AppMode::Normal;
                 handle_normal_mode(
@@ -2459,7 +2375,7 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
                     terminal_height,
                     terminal,
                 );
-            } else if state.mode == previous_mode {
+            } else if std::mem::discriminant(&state.mode) == previous_discriminant {
                 state.mode = AppMode::Normal;
             }
         }
@@ -2482,7 +2398,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
         (0 | 4, 1) => {
             with_menu_panel(state, |state| {
                 let p = state.active_panel_mut();
-                p.sort_mode = cycle_sort_mode(p.sort_mode);
+                p.sort_mode = sorting::cycle_sort_mode(p.sort_mode);
                 refresh_active(state);
             });
             None
@@ -2534,23 +2450,25 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
         (1, 5) => Some(KeyCode::F(7)),
         (1, 6) => Some(KeyCode::F(8)),
         (1, 7) => {
-            if let Some(entry) = state.active_panel().current_entry().cloned()
-                && entry.name != ".."
+            let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
+            if let Some(name) = entry_name
+                && name != ".."
             {
-                state.dialog_input = entry.name.clone();
+                state.dialog_input = name.clone();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
                 state.mode = AppMode::Dialog(app::types::DialogKind::Input(
                     "Rename to:".to_string(),
-                    entry.name.clone(),
+                    name,
                 ));
             }
             None
         }
         (1, 8) => {
-            if let Some(entry) = state.active_panel().current_entry().cloned()
-                && entry.name != ".."
+            let entry_info = state.active_panel().current_entry().map(|e| (e.name.clone(), e.permissions));
+            if let Some((name, permissions)) = entry_info
+                && name != ".."
             {
-                state.dialog_input = format!("{:o}", entry.permissions & 0o7777);
+                state.dialog_input = format!("{:o}", permissions & 0o7777);
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
                 state.mode = AppMode::Dialog(app::types::DialogKind::Input(
                     "Chmod (octal):".to_string(),
@@ -3273,7 +3191,7 @@ mod tests {
                 .is_none_or(|l| l.as_str() != cmd.as_str())
             {
                 state.command_history.push_back(cmd);
-                if state.command_history.len() > 100 {
+                if state.command_history.len() > MAX_HISTORY {
                     state.command_history.pop_front();
                 }
             }

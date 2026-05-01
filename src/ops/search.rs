@@ -13,10 +13,7 @@ pub struct FileSearch {
     pub query: String,
     pub search_path: PathBuf,
     pub results: Vec<PathBuf>,
-    pub is_searching: bool,
-    pub search_content: bool,
     pub case_sensitive: bool,
-    pub use_regex: bool,
 }
 
 pub const MAX_SEARCH_DEPTH: usize = 20;
@@ -28,10 +25,7 @@ impl FileSearch {
             query: String::new(),
             search_path: path,
             results: Vec::new(),
-            is_searching: false,
-            search_content: false,
             case_sensitive: false,
-            use_regex: false,
         }
     }
 
@@ -70,17 +64,16 @@ impl FileSearch {
                 continue;
             };
 
-            if Self::matches_pattern(
-                &entry.file_name().to_string_lossy(),
-                pattern,
-                case_sensitive,
-            ) {
+            let name = entry.file_name();
+            let name_lossy = name.to_string_lossy();
+            if Self::matches_pattern(&name_lossy, pattern, case_sensitive) {
                 let metadata = entry.metadata().ok();
+                let is_hidden = name_lossy.starts_with('.');
                 results.push(FileEntry {
-                    name: entry.file_name().to_string_lossy().into_owned(),
+                    name: name_lossy.into_owned(),
                     path: entry_path.clone(),
                     is_dir: file_type.is_dir(),
-                    is_hidden: entry.file_name().to_string_lossy().starts_with('.'),
+                    is_hidden,
                     size: metadata.as_ref().map(|m| m.len()).unwrap_or(0),
                     permissions: metadata
                         .as_ref()
@@ -227,17 +220,13 @@ impl FileSearch {
         if needle_lower.is_empty() {
             return true;
         }
-        let mut window = Vec::with_capacity(needle_lower.len());
-        for ch in haystack.chars().flat_map(|c| c.to_lowercase()) {
-            window.push(ch);
-            if window.len() > needle_lower.len() {
-                window.remove(0);
-            }
-            if window == needle_lower {
-                return true;
-            }
+        let haystack_lower: Vec<char> = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
+        if haystack_lower.len() < needle_lower.len() {
+            return false;
         }
-        false
+        haystack_lower
+            .windows(needle_lower.len())
+            .any(|w| w == needle_lower)
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {
@@ -252,34 +241,39 @@ impl FileSearch {
         let n = name_chars.len();
         let m = pattern_chars.len();
 
-        let mut dp = vec![vec![false; m + 1]; n + 1];
-        dp[0][0] = true;
+        let mut dp_prev = vec![false; m + 1];
+        let mut dp_curr = vec![false; m + 1];
+        dp_prev[0] = true;
 
         for j in 1..=m {
             if pattern_chars[j - 1] == '*' {
-                dp[0][j] = dp[0][j - 1];
+                dp_prev[j] = dp_prev[j - 1];
             }
         }
 
         for i in 1..=n {
+            dp_curr.fill(false);
             for j in 1..=m {
                 match pattern_chars[j - 1] {
                     '*' => {
-                        dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
+                        dp_curr[j] = dp_prev[j] || dp_curr[j - 1];
                     }
                     '?' => {
-                        dp[i][j] = dp[i - 1][j - 1];
+                        dp_curr[j] = dp_prev[j - 1];
                     }
                     c => {
-                        if name_chars[i - 1] == c {
-                            dp[i][j] = dp[i - 1][j - 1];
-                        }
+                        dp_curr[j] = if name_chars[i - 1] == c {
+                            dp_prev[j - 1]
+                        } else {
+                            false
+                        };
                     }
                 }
             }
+            std::mem::swap(&mut dp_prev, &mut dp_curr);
         }
 
-        dp[n][m]
+        dp_prev[m]
     }
 }
 
