@@ -110,16 +110,15 @@ pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn load_setup(state: &mut AppState) {
-    let Some(path) = config_path() else {
-        return;
+pub fn load_setup(state: &mut AppState) -> Result<(), String> {
+    let Some(path) = config_path() else { return Ok(()) };
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Failed to read config {}: {e}", path.display())),
     };
-    let Ok(content) = fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(setup) = toml::from_str::<PersistedSetup>(&content) else {
-        return;
-    };
+    let setup: PersistedSetup = toml::from_str(&content)
+        .map_err(|e| format!("Failed to parse config {}: {e}", path.display()))?;
 
     apply_panel(&mut state.left_panel, &setup.left);
     apply_panel(&mut state.right_panel, &setup.right);
@@ -130,6 +129,7 @@ pub fn load_setup(state: &mut AppState) {
     if !setup.hotlist.is_empty() {
         state.directory_hotlist = setup.hotlist.iter().map(PathBuf::from).collect();
     }
+    Ok(())
 }
 
 fn apply_panel(panel: &mut crate::app::types::PanelState, persisted: &PersistedPanel) {

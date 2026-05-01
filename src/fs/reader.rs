@@ -1,3 +1,7 @@
+//! Filesystem reader module.
+//! Note: This module uses Unix-specific APIs (MetadataExt, uid/gid lookups)
+//! and will only compile on Unix platforms.
+
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -5,6 +9,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
+
+#[cfg(test)]
+use crate::app::types::format_permissions;
 
 pub use crate::app::types::FileEntry;
 
@@ -114,7 +121,7 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     };
 
     let (owner, group) = {
-        let mut cache = UID_CACHE.lock().unwrap();
+        let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let owner = cache
             .uid_to_name
             .entry(uid)
@@ -150,36 +157,6 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         selected: false,
         is_hidden: file_name.starts_with('.'),
     })
-}
-
-pub fn format_permissions(mode: u32) -> String {
-    let mut result = String::with_capacity(9);
-
-    result.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-    result.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-    result.push(if mode & 0o4000 != 0 {
-        if mode & 0o100 != 0 { 's' } else { 'S' }
-    } else {
-        if mode & 0o100 != 0 { 'x' } else { '-' }
-    });
-
-    result.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-    result.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-    result.push(if mode & 0o2000 != 0 {
-        if mode & 0o010 != 0 { 's' } else { 'S' }
-    } else {
-        if mode & 0o010 != 0 { 'x' } else { '-' }
-    });
-
-    result.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-    result.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-    result.push(if mode & 0o1000 != 0 {
-        if mode & 0o001 != 0 { 't' } else { 'T' }
-    } else {
-        if mode & 0o001 != 0 { 'x' } else { '-' }
-    });
-
-    result
 }
 
 pub fn format_date(time: SystemTime) -> String {

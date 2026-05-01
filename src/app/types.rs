@@ -1,8 +1,91 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use super::dir_tree::TreeEntry;
 use super::user_menu::MenuEntry;
+
+// ============================================================================
+// 1a. Permissions newtype
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions(pub u32);
+
+impl Permissions {
+    pub fn from_mode(mode: u32) -> Self {
+        Self(mode & 0o7777)
+    }
+}
+
+impl std::fmt::Display for Permissions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mode = self.0;
+        let mut result = String::with_capacity(9);
+        // owner
+        result.push(if mode & 0o400 != 0 { 'r' } else { '-' });
+        result.push(if mode & 0o200 != 0 { 'w' } else { '-' });
+        result.push(if mode & 0o4000 != 0 {
+            if mode & 0o100 != 0 { 's' } else { 'S' }
+        } else {
+            if mode & 0o100 != 0 { 'x' } else { '-' }
+        });
+        // group
+        result.push(if mode & 0o040 != 0 { 'r' } else { '-' });
+        result.push(if mode & 0o020 != 0 { 'w' } else { '-' });
+        result.push(if mode & 0o2000 != 0 {
+            if mode & 0o010 != 0 { 's' } else { 'S' }
+        } else {
+            if mode & 0o010 != 0 { 'x' } else { '-' }
+        });
+        // others
+        result.push(if mode & 0o004 != 0 { 'r' } else { '-' });
+        result.push(if mode & 0o002 != 0 { 'w' } else { '-' });
+        result.push(if mode & 0o1000 != 0 {
+            if mode & 0o001 != 0 { 't' } else { 'T' }
+        } else {
+            if mode & 0o001 != 0 { 'x' } else { '-' }
+        });
+        write!(f, "{result}")
+    }
+}
+
+// ============================================================================
+// 1b. FileSize newtype
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSize(pub u64);
+
+impl std::fmt::Display for FileSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let size = self.0;
+        let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+        let mut size_f = size as f64;
+        let mut unit_idx = 0;
+        while size_f >= 1024.0 && unit_idx < units.len() - 1 {
+            size_f /= 1024.0;
+            unit_idx += 1;
+        }
+        if unit_idx == 0 {
+            write!(f, "{} {}", size, units[unit_idx])
+        } else {
+            write!(f, "{:.1} {}", size_f, units[unit_idx])
+        }
+    }
+}
+
+// ============================================================================
+// 1c. Free functions for formatting
+// ============================================================================
+
+pub fn format_permissions(mode: u32) -> String {
+    FileEntry::display_permissions_raw(mode)
+}
+
+pub fn format_size(size: u64) -> String {
+    FileSize(size).to_string()
+}
 
 // ============================================================================
 // 1. FileEntry struct definition
@@ -66,6 +149,7 @@ pub struct PanelState {
     pub selected_size: u64,
     pub last_error: Option<String>,
     pub history: Vec<PathBuf>,
+    pub unfiltered_entries: Vec<FileEntry>,
 }
 
 // ============================================================================
@@ -111,7 +195,7 @@ pub enum DialogKind {
 // 6. PickerKind enum definition
 // ============================================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
     History,
     Hotlist,
@@ -168,7 +252,7 @@ pub struct AppState {
     pub status_message: Option<String>,
     pub dialog_input: String,
     pub dialog_cursor_pos: usize,
-    pub command_history: Vec<String>,
+    pub command_history: VecDeque<String>,
     pub history_index: Option<usize>,
     pub command_draft: String,
     pub directory_hotlist: Vec<PathBuf>,
@@ -183,9 +267,31 @@ pub struct AppState {
     pub prev_mode: Option<AppMode>,
     pub menu_restore_panel: Option<ActivePanel>,
     pub dialog_selection: usize,
+    pub pending_action: Option<PendingAction>,
     // Mouse support fields
     pub last_click_time: Option<std::time::Instant>,
     pub last_click_position: Option<(u16, u16)>, // (column, row)
+}
+
+// ============================================================================
+// ViewMode enum
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Text { wrap: bool, line_numbers: bool },
+    Hex,
+}
+
+// ============================================================================
+// PendingAction enum
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingAction {
+    Copy { sources: Vec<std::path::PathBuf>, dest: std::path::PathBuf },
+    Move { sources: Vec<std::path::PathBuf>, dest: std::path::PathBuf },
+    Delete { paths: Vec<std::path::PathBuf> },
 }
 
 // ============================================================================
@@ -248,6 +354,10 @@ impl FileEntry {
         result
     }
 
+    pub fn is_parent_entry(&self) -> bool {
+        self.name == ".."
+    }
+
     pub fn display_modified(&self) -> String {
         use std::time::UNIX_EPOCH;
 
@@ -282,6 +392,7 @@ impl PanelState {
             selected_size: 0,
             last_error: None,
             history: Vec::new(),
+            unfiltered_entries: Vec::new(),
         }
     }
 
@@ -311,8 +422,11 @@ impl PanelState {
             entry.selected = !entry.selected;
             let size = entry.size;
             let selected = entry.selected;
-            let _ = entry;
+            let path = entry.path.clone();
             self.update_selection_stats(size, selected);
+            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == path) {
+                ue.selected = selected;
+            }
         }
     }
 
@@ -323,8 +437,11 @@ impl PanelState {
             }
             entry.selected = selected;
             let size = entry.size;
-            let _ = entry;
+            let path = entry.path.clone();
             self.update_selection_stats(size, selected);
+            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == path) {
+                ue.selected = selected;
+            }
         }
     }
 
@@ -336,6 +453,9 @@ impl PanelState {
         for entry in &mut self.entries {
             entry.selected = false;
         }
+        for entry in &mut self.unfiltered_entries {
+            entry.selected = false;
+        }
         self.selected_count = 0;
         self.selected_size = 0;
     }
@@ -343,7 +463,12 @@ impl PanelState {
     pub fn recalculate_selection_stats(&mut self) {
         self.selected_count = 0;
         self.selected_size = 0;
-        for entry in &self.entries {
+        let source = if self.unfiltered_entries.is_empty() {
+            &self.entries
+        } else {
+            &self.unfiltered_entries
+        };
+        for entry in source {
             if entry.selected {
                 self.selected_count += 1;
                 self.selected_size += entry.size;
@@ -409,7 +534,7 @@ impl AppState {
             status_message: None,
             dialog_input: String::new(),
             dialog_cursor_pos: 0,
-            command_history: Vec::new(),
+            command_history: VecDeque::new(),
             history_index: None,
             command_draft: String::new(),
             directory_hotlist: vec![left_path.clone()],
@@ -427,6 +552,7 @@ impl AppState {
             // Mouse support fields
             last_click_time: None,
             last_click_position: None,
+            pending_action: None,
         }
     }
 

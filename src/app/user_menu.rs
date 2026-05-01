@@ -3,14 +3,25 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 
 /// A single entry parsed from a user menu file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct MenuEntry {
     pub hotkey: char,
     pub title: String,
-    /// Raw command body (may contain substitution tokens).
     pub command: String,
-    /// Optional filename-regex condition (`+ f <regex>`).
-    pub condition: Option<String>,
+    pub condition: Option<Regex>,
+}
+
+impl PartialEq for MenuEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.hotkey == other.hotkey
+            && self.title == other.title
+            && self.command == other.command
+            && match (&self.condition, &other.condition) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.as_str() == b.as_str(),
+                _ => false,
+            }
+    }
 }
 
 /// Shell-escape a single string value using single-quote wrapping.
@@ -153,11 +164,19 @@ pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
             continue;
         }
 
+        let compiled_condition = match condition {
+            Some(s) => match Regex::new(&s) {
+                Ok(re) => Some(re),
+                Err(_) => continue,
+            },
+            None => None,
+        };
+
         entries.push(MenuEntry {
             hotkey,
             title,
             command: body_lines.join("\n"),
-            condition,
+            condition: compiled_condition,
         });
     }
 
@@ -184,9 +203,7 @@ pub fn filter_entries<'a>(entries: &'a [MenuEntry], filename: &str) -> Vec<&'a M
         .iter()
         .filter(|e| match &e.condition {
             None => true,
-            Some(pat) => Regex::new(pat)
-                .map(|re| re.is_match(filename))
-                .unwrap_or(false),
+            Some(re) => re.is_match(filename),
         })
         .collect()
 }
@@ -406,7 +423,8 @@ mod tests {
         let src = "T  Test\n\tcargo test %f\n+ f \\.rs$\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].condition.as_deref(), Some("\\.rs$"));
+        assert!(entries[0].condition.is_some());
+        assert!(entries[0].condition.as_ref().unwrap().is_match("main.rs"));
     }
 
     #[test]
@@ -414,7 +432,8 @@ mod tests {
         let src = "+ f \\.rs$\nT  Test\n\tcargo test %f\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].condition.as_deref(), Some("\\.rs$"));
+        assert!(entries[0].condition.is_some());
+        assert!(entries[0].condition.as_ref().unwrap().is_match("foo.rs"));
     }
 
     #[test]
@@ -444,21 +463,16 @@ mod tests {
             hotkey: 'T',
             title: "Test".into(),
             command: "cargo test".into(),
-            condition: Some("\\.rs$".into()),
+            condition: Some(Regex::new("\\.rs$").unwrap()),
         }];
         assert_eq!(filter_entries(&entries, "main.rs").len(), 1);
         assert_eq!(filter_entries(&entries, "main.py").len(), 0);
     }
 
     #[test]
-    fn test_filter_invalid_regex_excluded() {
-        let entries = vec![MenuEntry {
-            hotkey: 'X',
-            title: "Bad regex".into(),
-            command: "cmd".into(),
-            condition: Some("[invalid".into()),
-        }];
-        // Invalid regex → treated as non-matching → excluded.
-        assert_eq!(filter_entries(&entries, "anything").len(), 0);
+    fn test_parse_invalid_regex_skips_entry() {
+        let src = "+ f [invalid\nT  Test\n\tcmd\n";
+        let entries = parse_menu(src);
+        assert!(entries.is_empty());
     }
 }

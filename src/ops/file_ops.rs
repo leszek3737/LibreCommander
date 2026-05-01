@@ -21,6 +21,18 @@ pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
 }
 
 pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
+    copy_dir_recursive_inner(src, dest, 0)
+}
+
+fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result<u64> {
+    const MAX_DEPTH: usize = 256;
+    if depth > MAX_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("directory too deeply nested (>{MAX_DEPTH} levels): {}", src.display()),
+        ));
+    }
+
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
         _ => src == dest,
@@ -50,7 +62,7 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
         let file_type = entry.file_type()?;
 
         if file_type.is_dir() {
-            total_bytes += copy_dir_recursive(&entry_path, &dest_path)?;
+            total_bytes += copy_dir_recursive_inner(&entry_path, &dest_path, depth + 1)?;
         } else if file_type.is_symlink() {
             let target = fs::read_link(&entry_path)?;
             #[cfg(unix)]
@@ -68,6 +80,8 @@ pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
     let target = fs::read_link(src)?;
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, dest)?;
+    #[cfg(not(unix))]
+    return Err(io::Error::new(io::ErrorKind::Unsupported, "symlinks not supported on this platform"));
     Ok(())
 }
 
@@ -88,18 +102,28 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    eprintln!("Warning: copied {src:?} to {dest:?} but failed to remove source: {del_err}");
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("copied {:?} to {:?} but failed to remove source: {}", src, dest, del_err),
+                    ));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
-                if !path_contains(src, dest)
-                    && let Err(del_err) = delete_dir_recursive(src) {
-                        eprintln!("Warning: copied {src:?} to {dest:?} but failed to remove source: {del_err}");
+                if !path_contains(src, dest) {
+                    if let Err(del_err) = delete_dir_recursive(src) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("copied {:?} to {:?} but failed to remove source: {}", src, dest, del_err),
+                        ));
                     }
+                }
             } else {
                 copy_file(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    eprintln!("Warning: copied {src:?} to {dest:?} but failed to remove source: {del_err}");
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("copied {:?} to {:?} but failed to remove source: {}", src, dest, del_err),
+                    ));
                 }
             }
             Ok(())
@@ -175,11 +199,23 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
 }
 
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
-    let permissions = fs::Permissions::from_mode(mode);
+    let permissions = fs::Permissions::from_mode(mode & 0o7777);
     fs::set_permissions(path, permissions)
 }
 
 pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
+    calculate_dir_size_inner(path, 0)
+}
+
+fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
+    const MAX_DEPTH: usize = 256;
+    if depth > MAX_DEPTH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("directory too deeply nested (>{MAX_DEPTH} levels): {}", path.display()),
+        ));
+    }
+
     let mut total: u64 = 0;
     if path.is_dir() {
         for entry in fs::read_dir(path)? {
@@ -187,7 +223,7 @@ pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
             let entry_path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                total += calculate_dir_size(&entry_path)?;
+                total += calculate_dir_size_inner(&entry_path, depth + 1)?;
             } else if file_type.is_symlink() {
                 continue;
             } else {

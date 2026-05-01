@@ -32,6 +32,8 @@ use ui::{dialogs, panels, viewer};
 
 struct TerminalGuard;
 
+const TERMINAL_STATE_FILE: &str = "/tmp/lc_terminal_state";
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
@@ -60,7 +62,6 @@ fn main() -> io::Result<()> {
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     // Terminal state recovery: if editor was SIGKILL'd, Drop was skipped.
     // Detect leftover state file and restore terminal before doing anything else.
-    const TERMINAL_STATE_FILE: &str = "/tmp/lc_terminal_state";
     if std::fs::metadata(TERMINAL_STATE_FILE).is_ok() {
         let _ = crossterm::execute!(
             io::stdout(),
@@ -80,7 +81,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 
     let mut state = AppState::new();
-    app::config::load_setup(&mut state);
+    if let Err(e) = app::config::load_setup(&mut state) {
+        state.status_message = Some(e);
+    }
     let mut viewer_state: Option<viewer::ViewerState> = None;
 
     refresh_panel(&mut state.left_panel, 0);
@@ -785,6 +788,19 @@ fn shift_select(panel: &mut app::types::PanelState, next: usize) {
     panel.set_selection_at(panel.cursor, true);
 }
 
+fn navigate_to_hotlist(state: &mut AppState, index: usize) {
+    if let Some(path) = state.directory_hotlist.get(index).cloned() {
+        if path.is_dir() {
+            let panel = state.active_panel_mut();
+            panel.path = path.clone();
+            panel.cursor = 0;
+            panel.scroll_offset = 0;
+            refresh_active(state);
+            state.status_message = Some(format!("cd to {}", path.display()));
+        }
+    }
+}
+
 fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -914,8 +930,6 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             if let Some(entry) = state.active_panel().current_entry().cloned()
                 && !entry.is_dir
             {
-                const TERMINAL_STATE_FILE: &str = "/tmp/lc_terminal_state";
-
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
                 let _ = crossterm::terminal::disable_raw_mode();
                 let _ = crossterm::execute!(
@@ -976,7 +990,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 };
                 state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
-                state.status_message = Some(encode_paths("copy:", &paths));
+                state.pending_action = Some(app::types::PendingAction::Copy { sources: paths, dest: dest_dir });
             }
         }
         KeyCode::F(6) => {
@@ -993,7 +1007,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 };
                 state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
-                state.status_message = Some(encode_paths("move:", &paths));
+                state.pending_action = Some(app::types::PendingAction::Move { sources: paths, dest: dest_dir });
             }
         }
         KeyCode::F(7) => {
@@ -1017,7 +1031,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 };
                 state.dialog_selection = 0;
                 state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
-                state.status_message = Some(encode_paths("delete:", &paths));
+                state.pending_action = Some(app::types::PendingAction::Delete { paths });
             }
         }
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
@@ -1032,113 +1046,8 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 }
             }
         }
-        KeyCode::Char('1') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(0).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('2') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(1).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('3') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(2).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('4') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(3).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('5') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(4).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('6') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(5).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('7') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(6).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('8') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(7).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
-        }
-        KeyCode::Char('9') if modifiers.contains(KeyModifiers::ALT) => {
-            if let Some(path) = state.directory_hotlist.get(8).cloned() {
-                if path.is_dir() {
-                    let panel = state.active_panel_mut();
-                    panel.path = path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", path.display()));
-                }
-            }
+        KeyCode::Char(c) if modifiers.contains(KeyModifiers::ALT) && ('1'..='9').contains(&c) => {
+            navigate_to_hotlist(state, (c as usize) - ('1' as usize));
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::ALT) => {
             state.mode = AppMode::Dialog(app::types::DialogKind::Input(
@@ -1149,6 +1058,10 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             state.dialog_cursor_pos = state.dialog_input.chars().count();
         }
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let panel = state.active_panel_mut();
+            if panel.unfiltered_entries.is_empty() {
+                panel.unfiltered_entries = panel.entries.clone();
+            }
             state.mode = AppMode::Search;
             state.search_query.clear();
         }
@@ -1163,34 +1076,18 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             refresh_active(state);
         }
         KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
-            // Ctrl+O: Toggle external panel view (hide panels, see terminal)
             let _ = toggle_external_view(state, terminal);
         }
-        KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-            state.mode = AppMode::Search;
-            state.search_query.clear();
-        }
-        KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
-            let p = state.active_panel_mut();
-            p.show_hidden = !p.show_hidden;
-            p.cursor = 0;
-            p.scroll_offset = 0;
-            refresh_active(state);
-        }
-        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
-            refresh_active(state);
-        }
         _ => {
-            // Enter command line mode on any regular key press (no modifiers)
-            // OR enter incremental search mode for alphanumeric chars
             if let KeyCode::Char(c) = key {
                 if modifiers.is_empty() {
-                    // Incremental search: typing starts search mode
                     state.search_query.push(c);
                     state.mode = AppMode::Search;
-                    // Apply filter immediately - clone query first to avoid borrow issues
                     let filter_query = state.search_query.clone();
                     let panel = state.active_panel_mut();
+                    if panel.unfiltered_entries.is_empty() {
+                        panel.unfiltered_entries = panel.entries.clone();
+                    }
                     panel.filter = Some(filter_query);
                     panel.cursor = 0;
                     panel.scroll_offset = 0;
@@ -1302,10 +1199,10 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
         return;
     }
 
-    if state.command_history.last().is_none_or(|last| last != cmd) {
-        state.command_history.push(cmd.to_string());
+    if state.command_history.back().is_none_or(|last| last != cmd) {
+        state.command_history.push_back(cmd.to_string());
         if state.command_history.len() > 100 {
-            state.command_history.remove(0);
+            state.command_history.pop_front();
         }
     }
 
@@ -1365,7 +1262,12 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
 }
 
 fn parse_octal_mode(input: &str) -> Option<u32> {
-    u32::from_str_radix(input.trim(), 8).ok().map(|m| m & 0o777)
+    let mode = u32::from_str_radix(input.trim(), 8).ok()?;
+    if mode <= 0o7777 {
+        Some(mode)
+    } else {
+        None
+    }
 }
 
 fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
@@ -1389,6 +1291,7 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
     }
 }
 
+#[allow(dead_code)]
 fn encode_paths(prefix: &str, paths: &[std::path::PathBuf]) -> String {
     let joined = paths
         .iter()
@@ -1402,6 +1305,7 @@ fn encode_paths(prefix: &str, paths: &[std::path::PathBuf]) -> String {
     format!("{prefix}{joined}")
 }
 
+#[allow(dead_code)]
 fn decode_path_component(encoded: &str) -> String {
     let mut decoded = String::new();
     let mut chars = encoded.chars();
@@ -1442,6 +1346,7 @@ fn handle_dialog(
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 if state.dialog_selection == 1 {
                     state.mode = AppMode::Normal;
+                    state.pending_action = None;
                     state.status_message = None;
                     state.dialog_selection = 0;
                     if let Some(panel) = state.menu_restore_panel.take() {
@@ -1449,9 +1354,8 @@ fn handle_dialog(
                     }
                     return;
                 }
-                if let Some(ref status) = state.status_message {
-                    let status = status.clone();
-                    execute_confirmed_action(state, &status);
+                if state.pending_action.is_some() {
+                    execute_confirmed_action(state);
                     state.dialog_selection = 0;
                     if state.status_message.is_some() {
                         state.mode = AppMode::Normal;
@@ -1463,6 +1367,7 @@ fn handle_dialog(
                     }
                 }
                 state.mode = AppMode::Normal;
+                state.pending_action = None;
                 state.status_message = None;
                 state.dialog_selection = 0;
                 refresh_both(state);
@@ -1472,6 +1377,7 @@ fn handle_dialog(
             }
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 state.mode = AppMode::Normal;
+                state.pending_action = None;
                 state.status_message = None;
                 state.dialog_selection = 0;
                 if let Some(panel) = state.menu_restore_panel.take() {
@@ -1566,14 +1472,14 @@ fn handle_dialog(
                         let results =
                             ops::search::FileSearch::search_files(&dir, &input, true, false);
                         if let Some(first) = results.first() {
-                            if let Some(parent) = first.parent() {
+                            if let Some(parent) = first.path.parent() {
                                 state.active_panel_mut().path = parent.to_path_buf();
                                 refresh_active(state);
                                 if let Some(pos) = state
                                     .active_panel()
                                     .entries
                                     .iter()
-                                    .position(|e| e.path == *first)
+                                    .position(|e| e.path == first.path)
                                 {
                                     state.active_panel_mut().cursor = pos;
                                     state.active_panel_mut().ensure_cursor_visible(panel_visible_height(terminal_height));
@@ -1878,6 +1784,49 @@ fn handle_mouse_event(
     use crossterm::event::{MouseEventKind, MouseButton};
     use std::time::Duration;
 
+    let col = mouse_event.column;
+    let row = mouse_event.row;
+    let height = terminal_size.height;
+    let width = terminal_size.width;
+
+    if matches!(mouse_event.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+        if !matches!(state.mode, AppMode::Normal) {
+            return;
+        }
+        let panel_start_row = 1u16;
+        let panel_end_row = height.saturating_sub(4);
+        if row < panel_start_row || row > panel_end_row {
+            return;
+        }
+        let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
+        let visible_rows = panel_height.saturating_sub(2) as usize;
+        let mid_col = width / 2;
+        let clicked_left = col < mid_col;
+        if clicked_left {
+            state.active_panel = ActivePanel::Left;
+        } else {
+            state.active_panel = ActivePanel::Right;
+        }
+        let panel = state.active_panel_mut();
+        let len = panel.entries.len();
+        match mouse_event.kind {
+            MouseEventKind::ScrollUp => {
+                panel.cursor = panel.cursor.saturating_sub(3);
+                panel.ensure_cursor_visible(visible_rows);
+            }
+            MouseEventKind::ScrollDown => {
+                if panel.cursor + 3 < len {
+                    panel.cursor += 3;
+                } else {
+                    panel.cursor = len.saturating_sub(1);
+                }
+                panel.ensure_cursor_visible(visible_rows);
+            }
+            _ => unreachable!(),
+        }
+        return;
+    }
+
     let MouseEventKind::Down(button) = mouse_event.kind else {
         return;
     };
@@ -1885,11 +1834,6 @@ fn handle_mouse_event(
     if button != MouseButton::Left {
         return;
     }
-
-    let col = mouse_event.column;
-    let row = mouse_event.row;
-    let height = terminal_size.height;
-    let width = terminal_size.width;
 
     // ── DIALOG CONFIRM ──
     if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
@@ -1903,12 +1847,9 @@ fn handle_mouse_event(
             let btn_center = dialog_left + dialog_width / 2;
             let new_sel = if col < btn_center { 0 } else { 1 };
             if state.dialog_selection == new_sel {
-                // Click on already selected button → execute
                 if new_sel == 0 {
-                    // Yes
-                    if let Some(ref status) = state.status_message.clone() {
-                        let status = status.clone();
-                        execute_confirmed_action(state, &status);
+                    if state.pending_action.is_some() {
+                        execute_confirmed_action(state);
                         state.dialog_selection = 0;
                         if state.status_message.is_some() {
                             state.mode = AppMode::Normal;
@@ -1920,6 +1861,7 @@ fn handle_mouse_event(
                         }
                     }
                     state.mode = AppMode::Normal;
+                    state.pending_action = None;
                     state.status_message = None;
                     state.dialog_selection = 0;
                     refresh_both(state);
@@ -1927,8 +1869,8 @@ fn handle_mouse_event(
                         set_active_panel(state, panel);
                     }
                 } else {
-                    // No
                     state.mode = AppMode::Normal;
+                    state.pending_action = None;
                     state.status_message = None;
                     state.dialog_selection = 0;
                     if let Some(panel) = state.menu_restore_panel.take() {
@@ -2165,6 +2107,7 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn decode_paths(prefix: &str, status: &str) -> Vec<std::path::PathBuf> {
     status[prefix.len()..]
         .lines()
@@ -2173,76 +2116,101 @@ fn decode_paths(prefix: &str, status: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn execute_confirmed_action(state: &mut AppState, status: &str) {
-    state.status_message = None;
-    if status.starts_with("copy:") {
-        let paths = decode_paths("copy:", status);
-        let dest_dir = state.inactive_panel().path.clone();
-        let mut errors: Vec<String> = Vec::new();
-        let mut used_dests: HashSet<PathBuf> = HashSet::new();
-        for src in &paths {
-            let file_name = src.file_name().unwrap_or_default();
-            let dest = dest_dir.join(file_name);
-            if !used_dests.insert(dest.clone()) {
-                errors.push(format!("{}: duplicate destination {}", src.display(), dest.display()));
-                continue;
+fn execute_confirmed_action(state: &mut AppState) {
+    let action = match state.pending_action.take() {
+        Some(a) => a,
+        None => return,
+    };
+    match action {
+        app::types::PendingAction::Copy { sources: paths, dest: dest_dir } => {
+            let mut errors: Vec<String> = Vec::new();
+            let mut used_dests: HashSet<PathBuf> = HashSet::new();
+            for src in &paths {
+                let file_name = src.file_name().unwrap_or_default();
+                let dest = dest_dir.join(file_name);
+                if !used_dests.insert(dest.clone()) {
+                    errors.push(format!("{}: duplicate destination {}", src.display(), dest.display()));
+                    continue;
+                }
+                let result = match src.symlink_metadata() {
+                    Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::copy_symlink(src, &dest),
+                    Ok(meta) if meta.is_dir() => ops::file_ops::copy_dir_recursive(src, &dest).map(|_| ()),
+                    Ok(_) => ops::file_ops::copy_file(src, &dest).map(|_| ()),
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = result {
+                    errors.push(format!("{}: {}", src.display(), e));
+                }
             }
-            let result = match src.symlink_metadata() {
-                Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::copy_symlink(src, &dest),
-                Ok(meta) if meta.is_dir() => ops::file_ops::copy_dir_recursive(src, &dest).map(|_| ()),
-                Ok(_) => ops::file_ops::copy_file(src, &dest).map(|_| ()),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = result {
-                errors.push(format!("{}: {}", src.display(), e));
+            state.active_panel_mut().clear_selection();
+            if !errors.is_empty() {
+                state.status_message = Some(format!("Copy errors: {}", errors.join("; ")));
             }
+            refresh_both(state);
         }
-        state.active_panel_mut().clear_selection();
-        if !errors.is_empty() {
-            state.status_message = Some(format!("Copy errors: {}", errors.join("; ")));
-        }
-        refresh_both(state);
-    } else if status.starts_with("move:") {
-        let paths = decode_paths("move:", status);
-        let dest_dir = state.inactive_panel().path.clone();
-        let mut errors: Vec<String> = Vec::new();
-        let mut used_dests: HashSet<PathBuf> = HashSet::new();
-        for src in &paths {
-            let file_name = src.file_name().unwrap_or_default();
-            let dest = dest_dir.join(file_name);
-            if !used_dests.insert(dest.clone()) {
-                errors.push(format!("{}: duplicate destination {}", src.display(), dest.display()));
-                continue;
+        app::types::PendingAction::Move { sources: paths, dest: dest_dir } => {
+            let mut errors: Vec<String> = Vec::new();
+            let mut used_dests: HashSet<PathBuf> = HashSet::new();
+            for src in &paths {
+                let file_name = src.file_name().unwrap_or_default();
+                let dest = dest_dir.join(file_name);
+                if !used_dests.insert(dest.clone()) {
+                    errors.push(format!("{}: duplicate destination {}", src.display(), dest.display()));
+                    continue;
+                }
+                if let Err(e) = ops::file_ops::move_entry(src, &dest) {
+                    errors.push(format!("{}: {}", src.display(), e));
+                }
             }
-            if let Err(e) = ops::file_ops::move_entry(src, &dest) {
-                errors.push(format!("{}: {}", src.display(), e));
+            state.active_panel_mut().clear_selection();
+            if !errors.is_empty() {
+                state.status_message = Some(format!("Move errors: {}", errors.join("; ")));
             }
+            refresh_both(state);
         }
-        state.active_panel_mut().clear_selection();
-        if !errors.is_empty() {
-            state.status_message = Some(format!("Move errors: {}", errors.join("; ")));
-        }
-        refresh_both(state);
-    } else if status.starts_with("delete:") {
-        let paths = decode_paths("delete:", status);
-        let mut errors: Vec<String> = Vec::new();
-        for path in &paths {
-            let result = match path.symlink_metadata() {
-                Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::delete_file(path),
-                Ok(meta) if meta.is_dir() => ops::file_ops::delete_dir_recursive(path),
-                Ok(_) => ops::file_ops::delete_file(path),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = result {
-                errors.push(format!("{}: {}", path.display(), e));
+        app::types::PendingAction::Delete { paths } => {
+            let mut errors: Vec<String> = Vec::new();
+            for path in &paths {
+                let result = match path.symlink_metadata() {
+                    Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::delete_file(path),
+                    Ok(meta) if meta.is_dir() => ops::file_ops::delete_dir_recursive(path),
+                    Ok(_) => ops::file_ops::delete_file(path),
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = result {
+                    errors.push(format!("{}: {}", path.display(), e));
+                }
             }
+            state.active_panel_mut().clear_selection();
+            if !errors.is_empty() {
+                state.status_message = Some(format!("Delete errors: {}", errors.join("; ")));
+            }
+            refresh_both(state);
         }
-        state.active_panel_mut().clear_selection();
-        if !errors.is_empty() {
-            state.status_message = Some(format!("Delete errors: {}", errors.join("; ")));
-        }
-        refresh_both(state);
     }
+}
+
+fn apply_search_filter(panel: &mut PanelState) {
+    let sort_mode = panel.sort_mode;
+    let mut filtered: Vec<app::types::FileEntry> = panel
+        .unfiltered_entries
+        .iter()
+        .filter(|e| {
+            if e.name == ".." {
+                true
+            } else if let Some(f) = &panel.filter {
+                ops::search::FileSearch::matches_pattern(&e.name, f, false)
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    sorting::sort_entries(&mut filtered, sort_mode);
+    panel.entries = filtered;
+    panel.cursor = 0;
+    panel.scroll_offset = 0;
+    panel.recalculate_selection_stats();
 }
 
 fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16) {
@@ -2250,20 +2218,20 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
             state.search_query.clear();
-            // Clear filter
             let panel = state.active_panel_mut();
             panel.filter = None;
+            panel.entries = panel.unfiltered_entries.clone();
+            panel.unfiltered_entries.clear();
             panel.cursor = 0;
             panel.scroll_offset = 0;
             refresh_active(state);
         }
         KeyCode::Enter => {
-            // Confirm search and stay in search mode with filter active
-            state.mode = AppMode::Search;
+            state.mode = AppMode::Normal;
+            state.active_panel_mut().unfiltered_entries.clear();
         }
         KeyCode::Backspace => {
             state.search_query.pop();
-            // Update filter - clone query first to avoid borrow issues
             let filter_query = if state.search_query.is_empty() {
                 None
             } else {
@@ -2271,19 +2239,14 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
             };
             let panel = state.active_panel_mut();
             panel.filter = filter_query;
-            panel.cursor = 0;
-            panel.scroll_offset = 0;
-            refresh_active(state);
+            apply_search_filter(panel);
         }
         KeyCode::Char(c) => {
             state.search_query.push(c);
-            // Update filter in real-time - clone query first to avoid borrow issues
             let filter_query = state.search_query.clone();
             let panel = state.active_panel_mut();
             panel.filter = Some(filter_query);
-            panel.cursor = 0;
-            panel.scroll_offset = 0;
-            refresh_active(state);
+            apply_search_filter(panel);
         }
         _ => {}
     }
@@ -2421,7 +2384,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             if let Some(entry) = state.active_panel().current_entry().cloned()
                 && entry.name != ".."
             {
-                state.dialog_input = format!("{:o}", entry.permissions & 0o777);
+                state.dialog_input = format!("{:o}", entry.permissions & 0o7777);
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
                 state.mode = AppMode::Dialog(app::types::DialogKind::Input(
                     "Chmod (octal):".to_string(),
@@ -2839,7 +2802,7 @@ mod tests {
             ..Default::default()
         };
         let mut state = state;
-        state.command_history.push("ls -la".to_string());
+        state.command_history.push_back("ls -la".to_string());
 
         handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
@@ -2917,7 +2880,7 @@ mod tests {
     #[test]
     fn command_line_up_loads_last_history_entry() {
         let mut state = AppState::default();
-        state.command_history.push("git status".to_string());
+        state.command_history.push_back("git status".to_string());
 
         handle_command_line(&mut state, KeyCode::Up);
 
@@ -3183,11 +3146,11 @@ mod tests {
     fn history_dedup_consecutive() {
         let mut state = AppState::default();
         state.left_panel.path = std::env::temp_dir();
-        state.command_history.push("echo hi".to_string());
+        state.command_history.push_back("echo hi".to_string());
         // Simulate push logic (same as run_shell_command but without executing)
         let cmd = "echo hi";
-        if state.command_history.last().is_none_or(|l| l != cmd) {
-            state.command_history.push(cmd.to_string());
+        if state.command_history.back().is_none_or(|l| l != cmd) {
+            state.command_history.push_back(cmd.to_string());
         }
         assert_eq!(state.command_history.len(), 1);
         assert_eq!(state.command_history[0], "echo hi");
@@ -3196,10 +3159,10 @@ mod tests {
     #[test]
     fn history_dedup_different_commands() {
         let mut state = AppState::default();
-        state.command_history.push("echo hi".to_string());
+        state.command_history.push_back("echo hi".to_string());
         let cmd = "ls -la";
-        if state.command_history.last().is_none_or(|l| l != cmd) {
-            state.command_history.push(cmd.to_string());
+        if state.command_history.back().is_none_or(|l| l != cmd) {
+            state.command_history.push_back(cmd.to_string());
         }
         assert_eq!(state.command_history.len(), 2);
     }
@@ -3211,12 +3174,12 @@ mod tests {
             let cmd = format!("cmd_{}", i);
             if state
                 .command_history
-                .last()
+                .back()
                 .is_none_or(|l| l.as_str() != cmd.as_str())
             {
-                state.command_history.push(cmd);
+                state.command_history.push_back(cmd);
                 if state.command_history.len() > 100 {
-                    state.command_history.remove(0);
+                    state.command_history.pop_front();
                 }
             }
         }
@@ -3228,8 +3191,8 @@ mod tests {
     #[test]
     fn history_picker_enter_loads_command_line() {
         let mut state = AppState::default();
-        state.command_history.push("git status".to_string());
-        state.command_history.push("git log".to_string());
+        state.command_history.push_back("git status".to_string());
+        state.command_history.push_back("git log".to_string());
         state.mode = AppMode::ListPicker(PickerKind::History);
         state.picker_selected = 0;
 
@@ -3242,7 +3205,7 @@ mod tests {
     #[test]
     fn history_picker_esc_cancels() {
         let mut state = AppState::default();
-        state.command_history.push("ls".to_string());
+        state.command_history.push_back("ls".to_string());
         state.mode = AppMode::ListPicker(PickerKind::History);
 
         handle_list_picker(&mut state, KeyCode::Esc);
@@ -3253,9 +3216,9 @@ mod tests {
     #[test]
     fn history_picker_navigate_up_down() {
         let mut state = AppState::default();
-        state.command_history.push("cmd1".to_string());
-        state.command_history.push("cmd2".to_string());
-        state.command_history.push("cmd3".to_string());
+        state.command_history.push_back("cmd1".to_string());
+        state.command_history.push_back("cmd2".to_string());
+        state.command_history.push_back("cmd3".to_string());
         state.mode = AppMode::ListPicker(PickerKind::History);
         state.picker_selected = 0;
 

@@ -8,6 +8,22 @@ use std::cmp::Ordering;
 pub use crate::app::types::FileEntry;
 pub use crate::app::types::SortMode;
 
+pub fn cmp_ignore_case(a: &str, b: &str) -> Ordering {
+    let mut ai = a.chars().flat_map(|c| c.to_lowercase());
+    let mut bi = b.chars().flat_map(|c| c.to_lowercase());
+    loop {
+        match (ai.next(), bi.next()) {
+            (Some(ac), Some(bc)) => match ac.cmp(&bc) {
+                Ordering::Equal => continue,
+                other => return other,
+            },
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return Ordering::Equal,
+        }
+    }
+}
+
 /// Extracts the file extension from a file name.
 ///
 /// Returns an empty string if no extension is found.
@@ -48,30 +64,20 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
 
     // Perform comparison based on the sort mode
     match mode {
-        SortMode::NameAsc => {
-            let name_a = a.name.to_lowercase();
-            let name_b = b.name.to_lowercase();
-            name_a.cmp(&name_b)
-        }
-        SortMode::NameDesc => {
-            let name_a = a.name.to_lowercase();
-            let name_b = b.name.to_lowercase();
-            name_b.cmp(&name_a)
-        }
+        SortMode::NameAsc => cmp_ignore_case(&a.name, &b.name),
+        SortMode::NameDesc => cmp_ignore_case(&b.name, &a.name),
         SortMode::ExtensionAsc => {
-            let ext_a = get_extension(&a.name).to_lowercase();
-            let ext_b = get_extension(&b.name).to_lowercase();
-            ext_a.cmp(&ext_b).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            let ord = cmp_ignore_case(get_extension(&a.name), get_extension(&b.name));
+            ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
         }
         SortMode::ExtensionDesc => {
-            let ext_a = get_extension(&a.name).to_lowercase();
-            let ext_b = get_extension(&b.name).to_lowercase();
-            ext_b.cmp(&ext_a).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            let ord = cmp_ignore_case(get_extension(&b.name), get_extension(&a.name));
+            ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
         }
-        SortMode::SizeAsc => a.size.cmp(&b.size).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-        SortMode::SizeDesc => b.size.cmp(&a.size).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-        SortMode::ModTimeAsc => a.modified.cmp(&b.modified).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-        SortMode::ModTimeDesc => b.modified.cmp(&a.modified).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        SortMode::SizeAsc => a.size.cmp(&b.size).then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::SizeDesc => b.size.cmp(&a.size).then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::ModTimeAsc => a.modified.cmp(&b.modified).then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::ModTimeDesc => b.modified.cmp(&a.modified).then_with(|| cmp_ignore_case(&a.name, &b.name)),
     }
 }
 

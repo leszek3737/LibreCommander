@@ -22,12 +22,25 @@ pub struct ViewerState {
     pub current_match: usize,
     pub wrap_lines: bool,
     pub show_line_numbers: bool,
-    pub hex_mode: bool,
+    pub hex_mode: bool, // TODO: migrate to ViewMode enum from types.rs
     raw_bytes: Vec<u8>,
 }
 
 impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
+        const MAX_VIEW_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+
+        let metadata = fs::metadata(path)?;
+        if metadata.len() > MAX_VIEW_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "File too large to view ({} bytes, max 64 MB)",
+                    metadata.len()
+                ),
+            ));
+        }
+
         let raw_bytes = fs::read(path)?;
         let content_str = String::from_utf8_lossy(&raw_bytes);
         let mut content: Vec<String> = content_str.lines().map(String::from).collect();
@@ -104,6 +117,10 @@ impl ViewerState {
         let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
 
         for (line_idx, line) in self.content.iter().enumerate() {
+            if !line.to_lowercase().contains(&lower_query as &str) {
+                continue;
+            }
+
             let (lower_line, byte_map) = build_lowercase_mapping(line);
             let mut search_start = 0;
             while let Some(pos) = lower_line[search_start..].find(&lower_query) {
