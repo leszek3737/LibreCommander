@@ -3,6 +3,8 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
 
+const MAX_RECURSION_DEPTH: usize = 256;
+
 pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
@@ -25,12 +27,11 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
 }
 
 fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result<u64> {
-    const MAX_DEPTH: usize = 256;
-    if depth > MAX_DEPTH {
+    if depth > MAX_RECURSION_DEPTH {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!(
-                "directory too deeply nested (>{MAX_DEPTH} levels): {}",
+                "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
                 src.display()
             ),
         ));
@@ -226,12 +227,11 @@ pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
 }
 
 fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
-    const MAX_DEPTH: usize = 256;
-    if depth > MAX_DEPTH {
+    if depth > MAX_RECURSION_DEPTH {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!(
-                "directory too deeply nested (>{MAX_DEPTH} levels): {}",
+                "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
                 path.display()
             ),
         ));

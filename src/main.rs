@@ -1865,7 +1865,6 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
     }
 }
 
-/// Handle mouse events for click selection, double-click open, and panel switching
 fn handle_mouse_event(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -1874,7 +1873,6 @@ fn handle_mouse_event(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
-    use std::time::Duration;
 
     let col = mouse_event.column;
     let row = mouse_event.row;
@@ -1885,52 +1883,88 @@ fn handle_mouse_event(
         mouse_event.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) {
-        if !matches!(state.mode, AppMode::Normal) {
-            return;
-        }
-        let panel_start_row = 1u16;
-        let panel_end_row = height.saturating_sub(4);
-        if row < panel_start_row || row > panel_end_row {
-            return;
-        }
-        let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
-        let visible_rows = panel_height.saturating_sub(2) as usize;
-        let mid_col = width / 2;
-        let clicked_left = col < mid_col;
-        if clicked_left {
-            state.active_panel = ActivePanel::Left;
-        } else {
-            state.active_panel = ActivePanel::Right;
-        }
-        let panel = state.active_panel_mut();
-        let len = panel.entries.len();
-        match mouse_event.kind {
-            MouseEventKind::ScrollUp => {
-                panel.cursor = panel.cursor.saturating_sub(3);
-                panel.ensure_cursor_visible(visible_rows);
-            }
-            MouseEventKind::ScrollDown => {
-                if panel.cursor + 3 < len {
-                    panel.cursor += 3;
-                } else {
-                    panel.cursor = len.saturating_sub(1);
-                }
-                panel.ensure_cursor_visible(visible_rows);
-            }
-            _ => unreachable!(),
-        }
+        handle_mouse_scroll(state, mouse_event.kind, col, row, width, height);
         return;
     }
 
     let MouseEventKind::Down(button) = mouse_event.kind else {
         return;
     };
-
     if button != MouseButton::Left {
         return;
     }
 
-    // ── DIALOG CONFIRM ──
+    if handle_mouse_dialog(state, col, row, width, height) {
+        return;
+    }
+    if handle_mouse_menu_bar(state, viewer_state, col, row, width, height, terminal) {
+        return;
+    }
+    if handle_mouse_menu_dropdown(state, viewer_state, col, row, width, height, terminal) {
+        return;
+    }
+    if handle_mouse_function_bar(state, viewer_state, col, row, width, height, terminal) {
+        return;
+    }
+    handle_mouse_panels(state, viewer_state, col, row, width, height);
+}
+
+fn handle_mouse_scroll(
+    state: &mut AppState,
+    kind: crossterm::event::MouseEventKind,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) {
+    use crossterm::event::MouseEventKind;
+
+    if !matches!(state.mode, AppMode::Normal) {
+        return;
+    }
+    let panel_start_row = 1u16;
+    let panel_end_row = height.saturating_sub(4);
+    if row < panel_start_row || row > panel_end_row {
+        return;
+    }
+    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
+    let visible_rows = panel_height.saturating_sub(2) as usize;
+    let mid_col = width / 2;
+    if col < mid_col {
+        state.active_panel = ActivePanel::Left;
+    } else {
+        state.active_panel = ActivePanel::Right;
+    }
+    let panel = state.active_panel_mut();
+    let len = panel.entries.len();
+    match kind {
+        MouseEventKind::ScrollUp => {
+            panel.cursor = panel.cursor.saturating_sub(3);
+            panel.ensure_cursor_visible(visible_rows);
+        }
+        MouseEventKind::ScrollDown => {
+            if panel.cursor + 3 < len {
+                panel.cursor += 3;
+            } else {
+                panel.cursor = len.saturating_sub(1);
+            }
+            panel.ensure_cursor_visible(visible_rows);
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn dismiss_dialog(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    state.pending_action = None;
+    state.status_message = None;
+    state.dialog_selection = 0;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+}
+
+fn handle_mouse_dialog(state: &mut AppState, col: u16, row: u16, width: u16, height: u16) -> bool {
     if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
         let dialog_height = height * 40 / 100;
         let dialog_y = (height.saturating_sub(dialog_height)) / 2;
@@ -1947,128 +1981,146 @@ fn handle_mouse_event(
                         execute_confirmed_action(state);
                         state.dialog_selection = 0;
                         if state.status_message.is_some() {
-                            state.mode = AppMode::Normal;
+                            dismiss_dialog(state);
                             refresh_both(state);
-                            if let Some(panel) = state.menu_restore_panel.take() {
-                                set_active_panel(state, panel);
-                            }
-                            return;
+                            return true;
                         }
                     }
-                    state.mode = AppMode::Normal;
-                    state.pending_action = None;
-                    state.status_message = None;
-                    state.dialog_selection = 0;
+                    dismiss_dialog(state);
                     refresh_both(state);
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
                 } else {
-                    state.mode = AppMode::Normal;
-                    state.pending_action = None;
-                    state.status_message = None;
-                    state.dialog_selection = 0;
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
+                    dismiss_dialog(state);
                 }
             } else {
                 state.dialog_selection = new_sel;
             }
         }
-        return;
+        return true;
     }
 
-    // ── DIALOG OTHER (Error/Help/Properties) — click dismisses ──
     if let AppMode::Dialog(_) = state.mode {
-        state.mode = AppMode::Normal;
-        state.status_message = None;
-        state.dialog_selection = 0;
-        if let Some(panel) = state.menu_restore_panel.take() {
-            set_active_panel(state, panel);
-        }
-        return;
+        dismiss_dialog(state);
+        return true;
     }
 
-    // ── MENU BAR (row 0) — open menu ──
-    if row == 0 && matches!(state.mode, AppMode::Normal) {
-        for (i, title) in MENU_TITLES.iter().enumerate() {
-            let x_offset = menu_title_x(width, i);
-            let title_width = menu_title_width(title);
-            if col >= x_offset && col < x_offset + title_width {
-                state.menu_selected = i;
-                state.menu_item_selected = 0;
-                state.mode = AppMode::Menu;
-                return;
+    false
+}
+
+fn handle_mouse_menu_bar(
+    state: &mut AppState,
+    _viewer_state: &mut Option<viewer::ViewerState>,
+    col: u16,
+    row: u16,
+    _width: u16,
+    _height: u16,
+    _terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> bool {
+    if row != 0 || !matches!(state.mode, AppMode::Normal) {
+        return false;
+    }
+    for (i, title) in MENU_TITLES.iter().enumerate() {
+        let x_offset = menu_title_x(_width, i);
+        let title_width = menu_title_width(title);
+        if col >= x_offset && col < x_offset + title_width {
+            state.menu_selected = i;
+            state.menu_item_selected = 0;
+            state.mode = AppMode::Menu;
+            return true;
+        }
+    }
+    true
+}
+
+fn handle_mouse_menu_dropdown(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> bool {
+    if !matches!(state.mode, AppMode::Menu) || row < 1 {
+        return false;
+    }
+    let items = MENU_ITEMS[state.menu_selected];
+    let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
+    let menu_bar_area = Rect::new(0, 0, width, 1);
+    let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
+
+    let inner_x = dropdown_x + 1;
+    let inner_y = 2u16;
+    let inner_width = dropdown_width.saturating_sub(2);
+
+    if col >= inner_x && col < inner_x + inner_width && row >= inner_y {
+        let item_idx = (row - inner_y) as usize;
+        if item_idx < items.len() {
+            state.menu_item_selected = item_idx;
+            let previous_mode = state.mode.clone();
+            if let Some(action_key) = execute_menu_action(state) {
+                state.mode = AppMode::Normal;
+                handle_normal_mode(
+                    state,
+                    viewer_state,
+                    action_key,
+                    KeyModifiers::NONE,
+                    height,
+                    terminal,
+                );
+            } else if state.mode == previous_mode {
+                state.mode = AppMode::Normal;
             }
         }
-        return;
     }
+    true
+}
 
-    // ── MENU DROPDOWN items ──
-    if matches!(state.mode, AppMode::Menu) && row >= 1 {
-        // Calculate dropdown position (matching render_menu_dropdown)
-        let items = MENU_ITEMS[state.menu_selected];
-        let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
-        let menu_bar_area = Rect::new(0, 0, width, 1);
-        let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
-
-        // Dropdown inner area: starts at (dropdown_x + 1, 2) due to border
-        let inner_x = dropdown_x + 1;
-        let inner_y = 2u16;
-        let inner_width = dropdown_width.saturating_sub(2);
-
-        if col >= inner_x && col < inner_x + inner_width && row >= inner_y {
-            let item_idx = (row - inner_y) as usize;
-            if item_idx < items.len() {
-                state.menu_item_selected = item_idx;
-                // Execute menu item (same as Enter in handle_menu_mode)
-                let previous_mode = state.mode.clone();
-                if let Some(action_key) = execute_menu_action(state) {
-                    state.mode = AppMode::Normal;
-                    handle_normal_mode(
-                        state,
-                        viewer_state,
-                        action_key,
-                        KeyModifiers::NONE,
-                        height,
-                        terminal,
-                    );
-                } else if state.mode == previous_mode {
-                    state.mode = AppMode::Normal;
-                }
-            }
-        }
-        return;
+fn handle_mouse_function_bar(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> bool {
+    if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal) {
+        return false;
     }
+    let btn_idx = (col * 10 / width).min(9);
+    let fkey = match btn_idx {
+        0 => KeyCode::F(1),
+        1 => KeyCode::F(2),
+        2 => KeyCode::F(3),
+        3 => KeyCode::F(4),
+        4 => KeyCode::F(5),
+        5 => KeyCode::F(6),
+        6 => KeyCode::F(7),
+        7 => KeyCode::F(8),
+        8 => KeyCode::F(9),
+        _ => KeyCode::F(10),
+    };
+    handle_normal_mode(
+        state,
+        viewer_state,
+        fkey,
+        KeyModifiers::NONE,
+        height,
+        terminal,
+    );
+    true
+}
 
-    // ── FUNCTION BAR (row height-1) — dispatch F-key ──
-    if row == height.saturating_sub(1) && matches!(state.mode, AppMode::Normal) {
-        let btn_idx = (col * 10 / width).min(9);
-        let fkey = match btn_idx {
-            0 => KeyCode::F(1),
-            1 => KeyCode::F(2),
-            2 => KeyCode::F(3),
-            3 => KeyCode::F(4),
-            4 => KeyCode::F(5),
-            5 => KeyCode::F(6),
-            6 => KeyCode::F(7),
-            7 => KeyCode::F(8),
-            8 => KeyCode::F(9),
-            _ => KeyCode::F(10),
-        };
-        handle_normal_mode(
-            state,
-            viewer_state,
-            fkey,
-            KeyModifiers::NONE,
-            height,
-            terminal,
-        );
-        return;
-    }
+fn handle_mouse_panels(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) {
+    use std::time::Duration;
 
-    // ── FILE PANELS (rows 1 to height-4) ──
     if !matches!(state.mode, AppMode::Normal) {
         return;
     }

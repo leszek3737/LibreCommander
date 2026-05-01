@@ -19,10 +19,10 @@ pub struct FileSearch {
     pub use_regex: bool,
 }
 
-impl FileSearch {
-    const MAX_SEARCH_DEPTH: usize = 20;
-    const MAX_SEARCH_ITEMS: usize = 10000;
+pub const MAX_SEARCH_DEPTH: usize = 20;
+pub const MAX_SEARCH_ITEMS: usize = 10000;
 
+impl FileSearch {
     pub fn new(path: PathBuf) -> Self {
         Self {
             query: String::new(),
@@ -54,7 +54,7 @@ impl FileSearch {
         results: &mut Vec<FileEntry>,
         depth: usize,
     ) {
-        if depth >= Self::MAX_SEARCH_DEPTH || !path.is_dir() {
+        if depth >= MAX_SEARCH_DEPTH || !path.is_dir() {
             return;
         }
 
@@ -149,10 +149,7 @@ impl FileSearch {
         results: &mut Vec<(PathBuf, usize, String)>,
         item_count: &mut usize,
     ) {
-        if !path.is_dir()
-            || depth >= Self::MAX_SEARCH_DEPTH
-            || *item_count >= Self::MAX_SEARCH_ITEMS
-        {
+        if !path.is_dir() || depth >= MAX_SEARCH_DEPTH || *item_count >= MAX_SEARCH_ITEMS {
             return;
         }
 
@@ -162,7 +159,7 @@ impl FileSearch {
         };
 
         for entry in entries {
-            if *item_count >= Self::MAX_SEARCH_ITEMS {
+            if *item_count >= MAX_SEARCH_ITEMS {
                 return;
             }
             let Ok(entry) = entry else { continue };
