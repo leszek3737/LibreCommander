@@ -903,16 +903,29 @@ fn panel_visible_height(terminal_height: u16) -> usize {
 }
 
 fn shift_select(panel: &mut app::types::PanelState, next: usize) {
-    let current = panel.cursor;
-    let shrink = panel
-        .entries
-        .get(current)
-        .is_some_and(|entry| entry.selected)
-        && panel.entries.get(next).is_some_and(|entry| entry.selected);
+    let anchor = panel.selection_anchor.get_or_insert(panel.cursor);
+    let anchor = *anchor;
 
-    panel.set_selection_at(current, !shrink);
+    let old = panel.cursor;
     panel.cursor = next;
-    panel.set_selection_at(panel.cursor, true);
+
+    if anchor == next {
+        panel.set_selection_at(old, false);
+        panel.set_selection_at(next, false);
+        panel.selection_anchor = None;
+        return;
+    }
+
+    let lo = anchor.min(next);
+    let hi = anchor.max(next);
+
+    for i in 0..panel.entries.len() {
+        if i >= lo && i <= hi {
+            panel.set_selection_at(i, true);
+        } else if panel.entries[i].selected {
+            panel.set_selection_at(i, false);
+        }
+    }
 }
 
 fn navigate_to_hotlist(state: &mut AppState, index: usize) {
@@ -970,10 +983,14 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            state.active_panel_mut().move_cursor_up();
+            let panel = state.active_panel_mut();
+            panel.selection_anchor = None;
+            panel.move_cursor_up();
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            state.active_panel_mut().move_cursor_down(visible);
+            let panel = state.active_panel_mut();
+            panel.selection_anchor = None;
+            panel.move_cursor_down(visible);
         }
         KeyCode::Home => {
             let p = state.active_panel_mut();
@@ -2986,6 +3003,7 @@ mod tests {
             make_test_entry("c.txt", 30, true),
         ];
         state.left_panel.cursor = 2;
+        state.left_panel.selection_anchor = Some(0);
         state.left_panel.recalculate_selection_stats();
 
         handle_normal_mode(
