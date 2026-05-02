@@ -323,7 +323,7 @@ impl FileSearch {
             }
             let line_text = match String::from_utf8(line) {
                 Ok(line_text) => line_text,
-                Err(_) => return,
+                Err(_) => continue,
             };
             let match_found = if case_sensitive {
                 line_text.contains(pattern)

@@ -499,10 +499,10 @@ impl PanelState {
             return;
         }
 
-        let selected_by_path: HashMap<PathBuf, bool> = self
+        let selected_by_path: HashMap<&PathBuf, bool> = self
             .entries
             .iter()
-            .map(|entry| (entry.path.clone(), entry.selected))
+            .map(|entry| (&entry.path, entry.selected))
             .collect();
         for entry in &mut self.unfiltered_entries {
             if let Some(selected) = selected_by_path.get(&entry.path) {

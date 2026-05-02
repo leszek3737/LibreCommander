@@ -89,7 +89,11 @@ fn copy_dir_recursive_inner(
         ));
     }
     ensure_destination_absent(dest)?;
-    fs::create_dir(dest)?;
+    if depth == 0 {
+        fs::create_dir_all(dest)?;
+    } else {
+        fs::create_dir(dest)?;
+    }
     let src_perms = fs::metadata(src)?.permissions();
 
     let mut total_bytes: u64 = 0;
@@ -131,8 +135,16 @@ pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
 }
 
 pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
-    if src == dest {
-        return Ok(());
+    let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
+        (Some(s), Some(d)) => s == d,
+        _ => src == dest,
+    };
+    if same_file {
+        return if src == dest {
+            Ok(())
+        } else {
+            fs::rename(src, dest)
+        };
     }
     ensure_destination_absent(dest)?;
 
@@ -222,7 +234,7 @@ pub fn create_directory(path: &Path) -> io::Result<()> {
             "directory path must not contain parent components",
         ));
     }
-    fs::create_dir(path)
+    fs::create_dir_all(path)
 }
 
 pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {

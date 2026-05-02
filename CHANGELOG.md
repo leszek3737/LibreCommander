@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.2.0 — 2026-05-02
+## 0.0.7 — 2026-05-02
 
 - Quality gates enforced: fmt, clippy, test all pass before merge
 - File operation safety: system directory protection, symlink-aware copy/move/delete
@@ -14,7 +14,7 @@ All notable changes to this project will be documented in this file.
 - UI small terminal: graceful degradation under 80x24, minimum size guard
 - Architecture extraction: ops module split into compare, batch, search, sorting, file_ops
 
-## 0.1.0 — 2026-04-15
+## 0.0.7 — 2026-04-15
 
 - Added crate package metadata for publishing and tooling.
 - Added MIT license file matching the README license.
