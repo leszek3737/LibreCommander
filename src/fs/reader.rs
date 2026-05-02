@@ -2,12 +2,12 @@
 //! Note: This module uses Unix-specific APIs (MetadataExt, uid/gid lookups)
 //! and will only compile on Unix platforms.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::SystemTime;
 
 #[cfg(test)]
@@ -20,14 +20,12 @@ struct UidCache {
     gid_to_name: HashMap<u32, String>,
 }
 
-use std::sync::LazyLock;
-
-static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
-    Mutex::new(UidCache {
+thread_local! {
+    static UID_CACHE: RefCell<UidCache> = RefCell::new(UidCache {
         uid_to_name: HashMap::new(),
         gid_to_name: HashMap::new(),
-    })
-});
+    });
+}
 
 pub fn read_directory(
     path: &Path,
@@ -125,26 +123,28 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         };
 
     let (owner, group) = {
-        let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let owner = cache
-            .uid_to_name
-            .entry(uid)
-            .or_insert_with(|| {
-                users::get_user_by_uid(uid)
-                    .map(|u| u.name().to_string_lossy().to_string())
-                    .unwrap_or_else(|| uid.to_string())
-            })
-            .clone();
-        let group = cache
-            .gid_to_name
-            .entry(gid)
-            .or_insert_with(|| {
-                users::get_group_by_gid(gid)
-                    .map(|g| g.name().to_string_lossy().to_string())
-                    .unwrap_or_else(|| gid.to_string())
-            })
-            .clone();
-        (owner, group)
+        UID_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let owner = cache
+                .uid_to_name
+                .entry(uid)
+                .or_insert_with(|| {
+                    users::get_user_by_uid(uid)
+                        .map(|u| u.name().to_string_lossy().to_string())
+                        .unwrap_or_else(|| uid.to_string())
+                })
+                .clone();
+            let group = cache
+                .gid_to_name
+                .entry(gid)
+                .or_insert_with(|| {
+                    users::get_group_by_gid(gid)
+                        .map(|g| g.name().to_string_lossy().to_string())
+                        .unwrap_or_else(|| gid.to_string())
+                })
+                .clone();
+            (owner, group)
+        })
     };
 
     Ok(FileEntry {

@@ -6,20 +6,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::types::{ActivePanel, AppState, ListingMode, SortMode};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistedPanel {
-    pub path: String,
-    pub show_hidden: bool,
-    pub listing_mode: String,
-    pub sort_mode: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_with_fallback")]
+    pub listing_mode: ListingMode,
+    #[serde(default, deserialize_with = "deserialize_with_fallback")]
+    pub sort_mode: SortMode,
+    #[serde(default)]
     pub filter: String,
+    #[serde(default)]
+    pub show_hidden: bool,
+}
+
+fn deserialize_with_fallback<'de, T, D>(d: D) -> Result<T, D::Error>
+where
+    T: serde::Deserialize<'de> + Default,
+    D: serde::Deserializer<'de>,
+{
+    match T::deserialize(d) {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(T::default()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedSetup {
+    #[serde(default)]
     pub version: u32,
+    #[serde(default)]
     pub active_panel: String,
+    #[serde(default)]
     pub left: PersistedPanel,
+    #[serde(default)]
     pub right: PersistedPanel,
     #[serde(default)]
     pub hotlist: Vec<String>,
@@ -37,45 +57,11 @@ fn config_path() -> Option<PathBuf> {
 
 fn panel_to_persisted(panel: &crate::app::types::PanelState) -> PersistedPanel {
     PersistedPanel {
-        path: panel.path.display().to_string(),
-        show_hidden: panel.show_hidden,
-        listing_mode: match panel.listing_mode {
-            ListingMode::Long => "long",
-            ListingMode::Brief => "brief",
-        }
-        .to_string(),
-        sort_mode: match panel.sort_mode {
-            SortMode::NameAsc => "name_asc",
-            SortMode::NameDesc => "name_desc",
-            SortMode::ExtensionAsc => "extension_asc",
-            SortMode::ExtensionDesc => "extension_desc",
-            SortMode::SizeAsc => "size_asc",
-            SortMode::SizeDesc => "size_desc",
-            SortMode::ModTimeAsc => "mod_time_asc",
-            SortMode::ModTimeDesc => "mod_time_desc",
-        }
-        .to_string(),
+        path: Some(panel.path.display().to_string()),
+        listing_mode: panel.listing_mode,
+        sort_mode: panel.sort_mode,
         filter: panel.filter.clone().unwrap_or_default(),
-    }
-}
-
-fn persisted_to_listing_mode(mode: &str) -> ListingMode {
-    match mode {
-        "brief" => ListingMode::Brief,
-        _ => ListingMode::Long,
-    }
-}
-
-fn persisted_to_sort_mode(mode: &str) -> SortMode {
-    match mode {
-        "name_desc" => SortMode::NameDesc,
-        "extension_asc" => SortMode::ExtensionAsc,
-        "extension_desc" => SortMode::ExtensionDesc,
-        "size_asc" => SortMode::SizeAsc,
-        "size_desc" => SortMode::SizeDesc,
-        "mod_time_asc" => SortMode::ModTimeAsc,
-        "mod_time_desc" => SortMode::ModTimeDesc,
-        _ => SortMode::NameAsc,
+        show_hidden: panel.show_hidden,
     }
 }
 
@@ -135,16 +121,19 @@ pub fn load_setup(state: &mut AppState) -> Result<(), String> {
 }
 
 fn apply_panel(panel: &mut crate::app::types::PanelState, persisted: &PersistedPanel) {
-    let path = PathBuf::from(&persisted.path);
-    if path.is_dir() {
-        panel.path = path;
+    if let Some(ref path_str) = persisted.path {
+        let path = PathBuf::from(path_str);
+        let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if resolved.is_dir() {
+            panel.path = resolved;
+        }
     }
-    panel.show_hidden = persisted.show_hidden;
-    panel.listing_mode = persisted_to_listing_mode(&persisted.listing_mode);
-    panel.sort_mode = persisted_to_sort_mode(&persisted.sort_mode);
+    panel.listing_mode = persisted.listing_mode;
+    panel.sort_mode = persisted.sort_mode;
     panel.filter = if persisted.filter.trim().is_empty() {
         None
     } else {
         Some(persisted.filter.clone())
     };
+    panel.show_hidden = persisted.show_hidden;
 }

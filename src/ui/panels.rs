@@ -14,7 +14,7 @@ use crate::app::types::{FileEntry, PanelState, format_permissions, format_size};
 
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
     s.get(s.len().saturating_sub(suffix.len())..)
-        .map_or(false, |tail| tail.eq_ignore_ascii_case(suffix))
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }
 
 /// Get color/style for a file entry based on its type
@@ -375,17 +375,17 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     let visible_height = area.height as usize;
     let scroll_offset = panel.scroll_offset;
 
-    // Calculate scrollbar position
-    let scrollbar_height = area.height as usize;
-    let max_scroll = total_entries.saturating_sub(scrollbar_height);
+    let height = area.height as usize;
+    let scrollbar_height = height;
+    let max_scroll = total_entries.saturating_sub(height);
     let thumb_pos = if max_scroll > 0 && scrollbar_height > 1 {
-        (scroll_offset * (scrollbar_height - 1) / max_scroll) as u16
+        scroll_offset * (scrollbar_height - 1) / max_scroll
     } else {
         0
     };
 
-    let mut scrollbar = String::new();
-    for i in 0..area.height {
+    let mut scrollbar = String::with_capacity(height * 4);
+    for i in 0..height {
         if i == thumb_pos && total_entries > visible_height {
             scrollbar.push_str("█\n");
         } else {

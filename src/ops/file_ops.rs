@@ -28,8 +28,7 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
 
 fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             format!(
                 "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
                 src.display()
@@ -109,8 +108,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         format!(
                             "copied {:?} to {:?} but failed to remove source: {}",
                             src, dest, del_err
@@ -119,22 +117,19 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
-                if !path_contains(src, dest) {
-                    if let Err(del_err) = delete_dir_recursive(src) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
+                if !path_contains(src, dest)
+                    && let Err(del_err) = delete_dir_recursive(src) {
+                        return Err(io::Error::other(
                             format!(
                                 "copied {:?} to {:?} but failed to remove source: {}",
                                 src, dest, del_err
                             ),
                         ));
                     }
-                }
             } else {
                 copy_file(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         format!(
                             "copied {:?} to {:?} but failed to remove source: {}",
                             src, dest, del_err
@@ -228,8 +223,7 @@ pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
 
 fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             format!(
                 "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
                 path.display()

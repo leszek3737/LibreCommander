@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
+
 use super::dir_tree::TreeEntry;
 use super::user_menu::MenuEntry;
 
@@ -111,7 +113,8 @@ pub struct FileEntry {
 // 2. SortMode enum definition
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SortMode {
     #[default]
     NameAsc,
@@ -124,7 +127,8 @@ pub enum SortMode {
     ModTimeDesc,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ListingMode {
     #[default]
     Long,

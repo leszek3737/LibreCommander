@@ -226,10 +226,14 @@ pub fn locate_menu_file(panel_dir: &Path) -> Option<PathBuf> {
 /// Load and parse entries from the best menu file, applying filename filter.
 /// Returns `Err` if no menu file is found or file cannot be read.
 pub fn load_menu(panel_dir: &Path, filename: &str) -> Result<Vec<MenuEntry>, String> {
-    let path = locate_menu_file(panel_dir)
-        .ok_or_else(|| "No user menu file found at ./.mc.menu or ~/.config/lc/menu".to_string())?;
+    let path = locate_menu_file(panel_dir).ok_or_else(|| {
+        format!(
+            "No user menu file found (searched: {}/.mc.menu, ~/.config/lc/menu)",
+            panel_dir.display()
+        )
+    })?;
     let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot read menu file {}: {}", path.display(), e))?;
+        .map_err(|e| format!("Failed to read menu file {}: {e}", path.display()))?;
     let all = parse_menu(&content);
     Ok(filter_entries(&all, filename)
         .into_iter()

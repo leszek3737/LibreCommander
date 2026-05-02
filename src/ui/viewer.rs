@@ -5,6 +5,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -32,8 +33,7 @@ impl ViewerState {
 
         let metadata = fs::metadata(path)?;
         if metadata.len() > MAX_VIEW_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!(
                     "File too large to view ({} bytes, max 64 MB)",
                     metadata.len()
@@ -234,29 +234,19 @@ fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
     (lower, byte_map)
 }
 
-// Helper to format a single line with highlighting
 fn format_line_with_highlight<'a>(
     line: &'a str,
-    line_idx: usize,
-    search_matches: &[(usize, usize, usize)],
+    line_matches: &[(usize, usize, usize)],
     current_match_idx: usize,
 ) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
-    let matches_on_line: Vec<&(usize, usize, usize)> = search_matches
-        .iter()
-        .filter(|(l, _, _)| *l == line_idx)
-        .collect();
 
-    if matches_on_line.is_empty() {
+    if line_matches.is_empty() {
         return vec![Span::raw(line)];
     }
 
     let mut last_end = 0;
-    for match_ref in matches_on_line.iter() {
-        let (match_line_idx, col, match_len) = match_ref;
-        let col = *col;
-        let match_len = *match_len;
-        let match_line_idx = *match_line_idx;
+    for &(global_idx, col, match_len) in line_matches {
         let start_byte = char_to_byte_idx(line, col);
 
         if col > last_end {
@@ -268,10 +258,7 @@ fn format_line_with_highlight<'a>(
         let end_byte = char_to_byte_idx(line, end_char);
         let match_text = &line[start_byte..end_byte];
 
-        let is_current = search_matches
-            .iter()
-            .position(|m| m == &(match_line_idx, col, match_len))
-            == Some(current_match_idx);
+        let is_current = global_idx == current_match_idx;
 
         let style = if is_current {
             Theme::highlight()
@@ -324,26 +311,37 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let start_idx = state.scroll_offset;
     let end_idx = (start_idx + visible_height).min(state.content.len());
 
+    let mut matches_by_line: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
+    for (idx, &(line, col, len)) in state.search_matches.iter().enumerate() {
+        matches_by_line
+            .entry(line)
+            .or_default()
+            .push((idx, col, len));
+    }
+
     for i in start_idx..end_idx {
         let line_content = &state.content[i];
+        let line_matches: &[(usize, usize, usize)] = matches_by_line
+            .get(&i)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let spans: Vec<Span> = if state.show_line_numbers {
             let line_num = format!("{:>4}  ", i + 1);
             let mut line_spans = vec![Span::raw(line_num)];
-            if state.search_matches.is_empty() {
-                line_spans.push(Span::raw(line_content.clone()));
+            if line_matches.is_empty() {
+                line_spans.push(Span::raw(line_content.as_str()));
             } else {
                 line_spans.extend(format_line_with_highlight(
                     line_content,
-                    i,
-                    &state.search_matches,
+                    line_matches,
                     state.current_match,
                 ));
             }
             line_spans
-        } else if state.search_matches.is_empty() {
-            vec![Span::raw(line_content.clone())]
+        } else if line_matches.is_empty() {
+            vec![Span::raw(line_content.as_str())]
         } else {
-            format_line_with_highlight(line_content, i, &state.search_matches, state.current_match)
+            format_line_with_highlight(line_content, line_matches, state.current_match)
         };
 
         lines.push(Line::from(spans));
@@ -459,18 +457,17 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
 }
 
 pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
-    let mut hex_part = String::with_capacity(49); // 16 * 3 + 1 padding
+    use std::fmt::Write;
+    let mut hex_part = String::with_capacity(49);
     for (i, b) in bytes.iter().enumerate() {
         if i == 8 {
             hex_part.push(' ');
         }
-        use std::fmt::Write;
         let _ = write!(hex_part, "{b:02x} ");
     }
 
-    // Pad the hex part to ensure consistent width (49 chars for 16 bytes + padding)
     let padding_needed = 49 - hex_part.len();
-    hex_part.push_str(&" ".repeat(padding_needed));
+    let _ = write!(hex_part, "{:width$}", "", width = padding_needed);
 
     let ascii_part: String = bytes
         .iter()
@@ -663,7 +660,7 @@ mod tests {
 
     #[test]
     fn test_format_line_with_highlight_handles_unicode() {
-        let spans = format_line_with_highlight("zażółć gęślą jaźń", 0, &[(0, 7, 4)], 0);
+        let spans = format_line_with_highlight("zażółć gęślą jaźń", &[(0, 7, 4)], 0);
 
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "zażółć ");
