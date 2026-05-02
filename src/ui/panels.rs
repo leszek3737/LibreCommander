@@ -280,30 +280,52 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
     }
 }
 
-/// Format a single entry line for display
 fn format_entry_line(entry: &FileEntry, width: usize) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
-    let size_str = format!("{:>10}", format_size(entry.size));
-    let date_str = format_time(entry.modified);
-    let perms_str = format_permissions(entry.permissions);
-    let suffix = format!(" {size_str} {date_str} {perms_str}");
-    let suffix_width = UnicodeWidthStr::width(suffix.as_str());
+    if width <= 1 {
+        return format!("{marker}");
+    }
 
     let icon = get_file_icon(entry);
     let icon_width = UnicodeWidthStr::width(icon);
-    let available_name_width = width.saturating_sub(1 + suffix_width);
-    let mut name = String::new();
+    let size_str = format!("{:>10}", format_size(entry.size));
+    let date_str = format_time(entry.modified);
+    let perms_str = format_permissions(entry.permissions);
 
+    let (suffix, suffix_width) = {
+        let full = format!(" {size_str} {date_str} {perms_str}");
+        if 2 + UnicodeWidthStr::width(full.as_str()) <= width {
+            let w = UnicodeWidthStr::width(full.as_str());
+            (full, w)
+        } else {
+            let np = format!(" {size_str} {date_str}");
+            if 2 + UnicodeWidthStr::width(np.as_str()) <= width {
+                let w = UnicodeWidthStr::width(np.as_str());
+                (np, w)
+            } else {
+                let nd = format!(" {size_str}");
+                if 2 + UnicodeWidthStr::width(nd.as_str()) <= width {
+                    let w = UnicodeWidthStr::width(nd.as_str());
+                    (nd, w)
+                } else {
+                    (String::new(), 0)
+                }
+            }
+        }
+    };
+
+    let available_name_width = width.saturating_sub(1 + suffix_width);
     if available_name_width == 0 {
-        return format!("{marker}{suffix}");
+        return format!("{marker}");
     }
 
     let name_with_icon = format!("{icon}{}", entry.name);
     let name_width = UnicodeWidthStr::width(name_with_icon.as_str());
+    let mut name = String::new();
+
     if name_width <= available_name_width {
         name.push_str(&name_with_icon);
     } else if available_name_width <= icon_width {
-        // Truncate icon by display width, not char count
         let mut taken = 0;
         for ch in icon.chars() {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
@@ -408,19 +430,7 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
 
 /// Render status bar showing current file info
 pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
-    let mut info_line = String::new();
-
-    if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
-        let entry = &panel.entries[panel.cursor];
-        info_line = format!(
-            "{} | {} | {} | {} | {}",
-            entry.name,
-            format_size(entry.size),
-            format_permissions(entry.permissions),
-            entry.owner,
-            entry.group,
-        );
-    }
+    let available = area.width as usize;
 
     let mut selected_info = String::new();
     if panel.selected_count > 0 {
@@ -430,6 +440,61 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
             format_size(panel.selected_size)
         );
     }
+
+    let selected_width = UnicodeWidthStr::width(selected_info.as_str());
+    let remaining = available.saturating_sub(selected_width);
+
+    let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
+        let entry = &panel.entries[panel.cursor];
+        let size_str = format_size(entry.size);
+        let perms_str = format_permissions(entry.permissions);
+        let full_info = format!(
+            "{} | {} | {} | {} | {}",
+            entry.name, size_str, perms_str, entry.owner, entry.group,
+        );
+        let full_width = UnicodeWidthStr::width(full_info.as_str());
+
+        if full_width <= remaining {
+            full_info
+        } else {
+            let meta = format!(
+                " | {} | {} | {} | {}",
+                size_str, perms_str, entry.owner, entry.group
+            );
+            let meta_width = UnicodeWidthStr::width(meta.as_str());
+            let name_budget = remaining.saturating_sub(meta_width);
+
+            if name_budget >= 3 {
+                let mut truncated = String::new();
+                let mut taken = 0;
+                for ch in entry.name.chars() {
+                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if taken + cw > name_budget.saturating_sub(1) {
+                        break;
+                    }
+                    truncated.push(ch);
+                    taken += cw;
+                }
+                format!("{truncated}…{meta}")
+            } else if remaining > 0 {
+                let mut truncated = String::new();
+                let mut taken = 0;
+                for ch in full_info.chars() {
+                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if taken + cw > remaining {
+                        break;
+                    }
+                    truncated.push(ch);
+                    taken += cw;
+                }
+                truncated
+            } else {
+                String::new()
+            }
+        }
+    } else {
+        String::new()
+    };
 
     let full_text = format!("{info_line}{selected_info}");
 
