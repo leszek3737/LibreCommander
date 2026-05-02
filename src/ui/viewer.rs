@@ -7,7 +7,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use super::theme::Theme;
@@ -29,17 +29,19 @@ pub struct ViewerState {
 
 impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
-        const MAX_VIEW_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+        const MAX_VIEW_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
-        let metadata = fs::metadata(path)?;
-        if metadata.len() > MAX_VIEW_SIZE {
+        let file = fs::File::open(path)?;
+        let mut raw_bytes = Vec::new();
+        file.take((MAX_VIEW_SIZE + 1) as u64)
+            .read_to_end(&mut raw_bytes)?;
+        if raw_bytes.len() > MAX_VIEW_SIZE {
             return Err(io::Error::other(format!(
                 "File too large to view ({} bytes, max 64 MB)",
-                metadata.len()
+                raw_bytes.len()
             )));
         }
 
-        let raw_bytes = fs::read(path)?;
         let content_str = String::from_utf8_lossy(&raw_bytes);
         let mut content: Vec<String> = content_str.lines().map(String::from).collect();
         if raw_bytes.last() == Some(&b'\n') {
@@ -192,7 +194,11 @@ impl ViewerState {
     }
 
     pub fn scroll_right(&mut self, cols: usize, visible_width: usize) {
-        let line_num_width = if self.show_line_numbers { 6 } else { 0 };
+        let line_num_width = if self.show_line_numbers {
+            line_number_column_width(self.line_count)
+        } else {
+            0
+        };
         let effective_width = visible_width.saturating_sub(line_num_width);
         let max_line = if self.hex_mode {
             unicode_width::UnicodeWidthStr::width(format_hex_line(0, &[0u8; 16]).as_str())
@@ -210,6 +216,18 @@ impl ViewerState {
         };
         self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
     }
+}
+
+fn line_number_digits(line_count: usize) -> usize {
+    line_count.max(1).ilog10() as usize + 1
+}
+
+fn line_number_column_width(line_count: usize) -> usize {
+    line_number_digits(line_count) + 2
+}
+
+fn paragraph_horizontal_scroll(horizontal_offset: usize) -> u16 {
+    horizontal_offset.min(u16::MAX as usize) as u16
 }
 
 fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
@@ -322,7 +340,11 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
         let line_matches: &[(usize, usize, usize)] =
             matches_by_line.get(&i).map(Vec::as_slice).unwrap_or(&[]);
         let spans: Vec<Span> = if state.show_line_numbers {
-            let line_num = format!("{:>4}  ", i + 1);
+            let line_num = format!(
+                "{:>width$}  ",
+                i + 1,
+                width = line_number_digits(state.line_count)
+            );
             let mut line_spans = vec![Span::raw(line_num)];
             if line_matches.is_empty() {
                 line_spans.push(Span::raw(line_content.as_str()));
@@ -347,7 +369,7 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     if state.wrap_lines {
         paragraph = paragraph.wrap(Wrap { trim: false });
     } else {
-        paragraph = paragraph.scroll((0, state.horizontal_offset as u16));
+        paragraph = paragraph.scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
     }
 
     f.render_widget(paragraph, content_area);
@@ -423,7 +445,8 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         lines.push(Line::from(Span::raw(hex_line)));
     }
 
-    let paragraph = Paragraph::new(lines).scroll((0, state.horizontal_offset as u16));
+    let paragraph =
+        Paragraph::new(lines).scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
     f.render_widget(paragraph, content_area);
 
     let status_area = Rect {
@@ -764,6 +787,46 @@ mod tests {
 
         state.scroll_left(100);
         assert_eq!(state.horizontal_offset, 0);
+    }
+
+    #[test]
+    fn test_line_number_width_expands_for_large_files() {
+        assert_eq!(line_number_column_width(9_999), 6);
+        assert_eq!(line_number_column_width(10_000), 7);
+
+        let content = (1..=10_000)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let file = create_test_file(&content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.show_line_numbers = true;
+        state.wrap_lines = false;
+        state.scroll_offset = 9_999;
+
+        let buffer = render_viewer_buffer(&state, 24, 4);
+
+        assert!(buffer_line(&buffer, 1).contains("10000  line 10000"));
+    }
+
+    #[test]
+    fn test_horizontal_scroll_uses_dynamic_line_number_width() {
+        let content = (1..=10_000)
+            .map(|_| "abcdefghijkl".to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let file = create_test_file(&content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.show_line_numbers = true;
+
+        state.scroll_right(100, 10);
+
+        assert_eq!(state.horizontal_offset, 9);
+    }
+
+    #[test]
+    fn test_paragraph_horizontal_scroll_clamps_to_u16() {
+        assert_eq!(paragraph_horizontal_scroll(usize::MAX), u16::MAX);
     }
 
     #[test]
