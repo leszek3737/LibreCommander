@@ -28,12 +28,10 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
 
 fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::other(
-            format!(
-                "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
-                src.display()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
+            src.display()
+        )));
     }
 
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
@@ -108,33 +106,28 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(
-                        format!(
-                            "copied {:?} to {:?} but failed to remove source: {}",
-                            src, dest, del_err
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
                 if !path_contains(src, dest)
-                    && let Err(del_err) = delete_dir_recursive(src) {
-                        return Err(io::Error::other(
-                            format!(
-                                "copied {:?} to {:?} but failed to remove source: {}",
-                                src, dest, del_err
-                            ),
-                        ));
-                    }
+                    && let Err(del_err) = delete_dir_recursive(src)
+                {
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
+                }
             } else {
                 copy_file(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(
-                        format!(
-                            "copied {:?} to {:?} but failed to remove source: {}",
-                            src, dest, del_err
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
                 }
             }
             Ok(())
@@ -223,12 +216,10 @@ pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
 
 fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::other(
-            format!(
-                "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
-                path.display()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
+            path.display()
+        )));
     }
 
     let mut total: u64 = 0;
@@ -388,6 +379,38 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_file_existing_destination_does_not_overwrite() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"new content").unwrap();
+        fs::write(&dest, b"existing content").unwrap();
+
+        let err = copy_file(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_move_entry_existing_destination_does_not_overwrite() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"new content").unwrap();
+        fs::write(&dest, b"existing content").unwrap();
+
+        let err = move_entry(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn test_copy_dir_recursive_rejects_descendant_destination() {
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
@@ -401,6 +424,36 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_dir_recursive_rejects_parent_component_descendant_destination() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        let subdir = src.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let dest = subdir.join("..").join("nested");
+        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_existing_file_destination_does_not_overwrite() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"new content").unwrap();
+        let dest = tmp.join("dest.txt");
+        fs::write(&dest, b"existing content").unwrap();
+
+        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn test_move_entry_rejects_descendant_destination() {
         let tmp = unique_temp_dir();
         let src = tmp.join("move_dir");
@@ -409,6 +462,21 @@ mod tests {
         let dest = src.join("nested");
         let err = move_entry(&src, &dest).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_move_entry_rejects_parent_component_descendant_destination() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("move_dir");
+        let subdir = src.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let dest = subdir.join("..").join("nested");
+        let err = move_entry(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(src.exists());
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -493,6 +561,40 @@ mod tests {
         let new_dir = tmp.join("new_folder");
         create_directory(&new_dir).unwrap();
         assert!(new_dir.is_dir());
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_create_directory_rejects_parent_component() {
+        let tmp = unique_temp_dir();
+        let base = tmp.join("base");
+        fs::create_dir(&base).unwrap();
+        let path = base.join("..").join("escaped");
+
+        let err = create_directory(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!tmp.join("escaped").exists());
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_chmod_does_not_follow_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = unique_temp_dir();
+        let target = tmp.join("target.txt");
+        let link = tmp.join("link.txt");
+        fs::write(&target, b"target").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let err = chmod(&link, 0o777).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let target_mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(target_mode, 0o600);
 
         fs::remove_dir_all(&tmp).unwrap();
     }
