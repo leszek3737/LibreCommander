@@ -640,7 +640,7 @@ fn render_menu_dropdown(
     selected_menu: usize,
     selected_item: usize,
 ) {
-    use ratatui::widgets::{Block, Borders, Paragraph};
+    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
     // Highlight selected menu title in menu bar
     for (i, title) in MENU_TITLES.iter().enumerate() {
@@ -672,6 +672,7 @@ fn render_menu_dropdown(
     let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);
 
     // Fill dropdown area with blue background
+    f.render_widget(Clear, dropdown_area);
     let bg_block = ratatui::widgets::Block::default().style(Theme::panel_bg());
     f.render_widget(bg_block, dropdown_area);
 
@@ -902,16 +903,20 @@ fn panel_visible_height(terminal_height: u16) -> usize {
 }
 
 fn shift_select(panel: &mut app::types::PanelState, next: usize) {
-    let current = panel.cursor;
-    let shrink = panel
-        .entries
-        .get(current)
-        .is_some_and(|entry| entry.selected)
-        && panel.entries.get(next).is_some_and(|entry| entry.selected);
+    let anchor = panel.selection_anchor.get_or_insert(panel.cursor);
+    let anchor = *anchor;
 
-    panel.set_selection_at(current, !shrink);
+    let old = panel.cursor;
     panel.cursor = next;
-    panel.set_selection_at(panel.cursor, true);
+
+    let lo = anchor.min(next);
+    let hi = anchor.max(next);
+    let affected_lo = anchor.min(old).min(next);
+    let affected_hi = anchor.max(old).max(next);
+
+    for i in affected_lo..=affected_hi {
+        panel.set_selection_at(i, i >= lo && i <= hi);
+    }
 }
 
 fn navigate_to_hotlist(state: &mut AppState, index: usize) {
@@ -969,13 +974,18 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            state.active_panel_mut().move_cursor_up();
+            let panel = state.active_panel_mut();
+            panel.selection_anchor = None;
+            panel.move_cursor_up();
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            state.active_panel_mut().move_cursor_down(visible);
+            let panel = state.active_panel_mut();
+            panel.selection_anchor = None;
+            panel.move_cursor_down(visible);
         }
         KeyCode::Home => {
             let p = state.active_panel_mut();
+            p.selection_anchor = None;
             p.cursor = 0;
             p.scroll_offset = 0;
         }
@@ -983,18 +993,21 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let len = state.active_panel().entries.len();
             if len > 0 {
                 let p = state.active_panel_mut();
+                p.selection_anchor = None;
                 p.cursor = len - 1;
                 p.ensure_cursor_visible(visible);
             }
         }
         KeyCode::PageUp => {
             let p = state.active_panel_mut();
+            p.selection_anchor = None;
             p.cursor = p.cursor.saturating_sub(visible);
             p.scroll_offset = p.scroll_offset.saturating_sub(visible);
         }
         KeyCode::PageDown => {
             let len = state.active_panel().entries.len();
             let p = state.active_panel_mut();
+            p.selection_anchor = None;
             p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
             p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
         }
@@ -2985,6 +2998,7 @@ mod tests {
             make_test_entry("c.txt", 30, true),
         ];
         state.left_panel.cursor = 2;
+        state.left_panel.selection_anchor = Some(0);
         state.left_panel.recalculate_selection_stats();
 
         handle_normal_mode(
@@ -2997,6 +3011,68 @@ mod tests {
         );
 
         assert_eq!(state.left_panel.cursor, 1);
+        assert!(state.left_panel.entries[0].selected);
+        assert!(state.left_panel.entries[1].selected);
+        assert!(!state.left_panel.entries[2].selected);
+    }
+
+    #[test]
+    fn shift_selection_preserves_unrelated_entries() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, true),
+            make_test_entry("b.txt", 20, false),
+            make_test_entry("c.txt", 30, false),
+            make_test_entry("d.txt", 40, false),
+        ];
+        state.left_panel.cursor = 2;
+        state.left_panel.recalculate_selection_stats();
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Down,
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
+        assert!(state.left_panel.entries[0].selected);
+        assert!(!state.left_panel.entries[1].selected);
+        assert!(state.left_panel.entries[2].selected);
+        assert!(state.left_panel.entries[3].selected);
+    }
+
+    #[test]
+    fn home_resets_selection_anchor() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
+            make_test_entry("c.txt", 30, false),
+        ];
+        state.left_panel.cursor = 2;
+        state.left_panel.selection_anchor = Some(1);
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Home,
+            KeyModifiers::NONE,
+            24,
+            &mut terminal,
+        );
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Down,
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
         assert!(state.left_panel.entries[0].selected);
         assert!(state.left_panel.entries[1].selected);
         assert!(!state.left_panel.entries[2].selected);

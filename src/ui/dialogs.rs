@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Style,
     text::Line,
-    widgets::{Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     let rect = f.area();
     let dialog_area = centered_rect(50, 40, rect);
 
-    // Fill dialog area with blue background
+    f.render_widget(Clear, dialog_area);
     let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
     f.render_widget(bg_block, dialog_area);
 
@@ -376,6 +376,7 @@ pub fn render_list_picker(
     let picker_area = centered_rect(60, 70, area);
 
     // Fill picker area with blue background
+    f.render_widget(Clear, picker_area);
     let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
     f.render_widget(bg_block, picker_area);
 
