@@ -1647,9 +1647,13 @@ fn handle_dialog(
                     }
                     InputAction::FindFile => {
                         let dir = state.active_panel().path.clone();
-                        let results =
-                            ops::search::FileSearch::search_files(&dir, &input, true, false);
-                        if let Some(first) = results.first() {
+                        let outcome = ops::search::FileSearch::search_files_with_diagnostics(
+                            &dir, &input, true, false,
+                        );
+                        let result_count = outcome.matches.len();
+                        let error_count = outcome.errors.len();
+                        let truncated = outcome.truncated;
+                        if let Some(first) = outcome.matches.first() {
                             if let Some(parent) = first.path.parent() {
                                 state.active_panel_mut().path = parent.to_path_buf();
                                 refresh_active(state);
@@ -1665,8 +1669,24 @@ fn handle_dialog(
                                     );
                                 }
                             }
+                            let mut message =
+                                format!("Found {result_count} match(es) for '{input}'");
+                            if error_count > 0 {
+                                message.push_str(&format!(", {error_count} error(s)"));
+                            }
+                            if truncated {
+                                message.push_str(", truncated");
+                            }
+                            state.status_message = Some(message);
                         } else {
-                            state.status_message = Some(format!("No matches for '{input}'"));
+                            let mut message = format!("No matches for '{input}'");
+                            if error_count > 0 {
+                                message.push_str(&format!(", {error_count} error(s)"));
+                            }
+                            if truncated {
+                                message.push_str(", truncated");
+                            }
+                            state.status_message = Some(message);
                         }
                     }
                     _ => {}

@@ -9,6 +9,23 @@ use std::path::{Path, PathBuf};
 use crate::app::types::FileEntry;
 
 #[derive(Debug, Clone)]
+pub struct SearchOutcome<T> {
+    pub matches: Vec<T>,
+    pub errors: Vec<String>,
+    pub truncated: bool,
+}
+
+impl<T> Default for SearchOutcome<T> {
+    fn default() -> Self {
+        Self {
+            matches: Vec::new(),
+            errors: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct FileSearch {
     pub query: String,
     pub search_path: PathBuf,
@@ -35,9 +52,27 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
     ) -> Vec<FileEntry> {
-        let mut results = Vec::new();
-        Self::search_files_recursive(path, pattern, recursive, case_sensitive, &mut results, 0);
-        results
+        Self::search_files_with_diagnostics(path, pattern, recursive, case_sensitive).matches
+    }
+
+    pub fn search_files_with_diagnostics(
+        path: &Path,
+        pattern: &str,
+        recursive: bool,
+        case_sensitive: bool,
+    ) -> SearchOutcome<FileEntry> {
+        let mut outcome = SearchOutcome::default();
+        let mut item_count: usize = 0;
+        Self::search_files_recursive(
+            path,
+            pattern,
+            recursive,
+            case_sensitive,
+            &mut outcome,
+            0,
+            &mut item_count,
+        );
+        outcome
     }
 
     fn search_files_recursive(
@@ -45,31 +80,66 @@ impl FileSearch {
         pattern: &str,
         recursive: bool,
         case_sensitive: bool,
-        results: &mut Vec<FileEntry>,
+        outcome: &mut SearchOutcome<FileEntry>,
         depth: usize,
+        item_count: &mut usize,
     ) {
-        if depth >= MAX_SEARCH_DEPTH || !path.is_dir() {
+        if depth >= MAX_SEARCH_DEPTH {
+            outcome.truncated = true;
+            return;
+        }
+        if !path.is_dir() {
+            outcome
+                .errors
+                .push(format!("Not a directory: {}", path.display()));
             return;
         }
 
         let entries = match std::fs::read_dir(path) {
             Ok(entries) => entries,
-            Err(_) => return,
+            Err(err) => {
+                outcome
+                    .errors
+                    .push(format!("Failed to read {}: {err}", path.display()));
+                return;
+            }
         };
 
         for entry in entries {
-            let Ok(entry) = entry else { continue };
-            let entry_path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            if *item_count >= MAX_SEARCH_ITEMS {
+                outcome.truncated = true;
+                return;
+            }
+
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    outcome
+                        .errors
+                        .push(format!("Failed to read entry in {}: {err}", path.display()));
+                    continue;
+                }
             };
+            let entry_path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => {
+                    outcome.errors.push(format!(
+                        "Failed to read type for {}: {err}",
+                        entry_path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            *item_count += 1;
 
             let name = entry.file_name();
             let name_lossy = name.to_string_lossy();
             if Self::matches_pattern(&name_lossy, pattern, case_sensitive) {
                 let metadata = entry.metadata().ok();
                 let is_hidden = name_lossy.starts_with('.');
-                results.push(FileEntry {
+                outcome.matches.push(FileEntry {
                     name: name_lossy.into_owned(),
                     path: entry_path.clone(),
                     is_dir: file_type.is_dir(),
@@ -106,8 +176,9 @@ impl FileSearch {
                     pattern,
                     recursive,
                     case_sensitive,
-                    results,
+                    outcome,
                     depth + 1,
+                    item_count,
                 );
             }
         }
@@ -379,6 +450,46 @@ mod tests {
         eprintln!("Non-recursive search results: {:?}", results);
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_files_reports_missing_directory() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_missing_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+
+        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", true, false);
+
+        assert!(outcome.matches.is_empty());
+        assert!(!outcome.errors.is_empty());
+        assert!(!outcome.truncated);
+    }
+
+    #[test]
+    fn test_search_files_truncates_after_item_limit() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_truncated_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        for i in 0..=MAX_SEARCH_ITEMS {
+            File::create(dir.join(format!("file_{i}.txt"))).unwrap();
+        }
+
+        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", false, false);
+
+        assert_eq!(outcome.matches.len(), MAX_SEARCH_ITEMS);
+        assert!(outcome.truncated);
 
         let _ = fs::remove_dir_all(dir);
     }
