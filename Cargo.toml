@@ -2,6 +2,11 @@
 name = "lc"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "A fast Rust terminal file manager inspired by Midnight Commander"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/leszek3737/lc---Libre-Commander"
 
 [dependencies]
 chrono = "0.4.44"

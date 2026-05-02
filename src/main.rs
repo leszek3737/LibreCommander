@@ -92,18 +92,18 @@ impl Drop for TerminalGuard {
 
 fn suspend_terminal_stdout() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, Show)?;
+    execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        Show
+    )?;
     Ok(())
 }
 
 fn resume_terminal_stdout() -> io::Result<()> {
     enable_raw_mode()?;
-    execute!(
-        io::stdout(),
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        Hide
-    )?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide)?;
     Ok(())
 }
 
@@ -762,36 +762,34 @@ fn handle_directory_tree(
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up | KeyCode::Char('k')
-            if state.tree_selected > 0 => {
-                state.tree_selected -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if state.tree_selected > 0 => {
+            state.tree_selected -= 1;
+        }
         KeyCode::Down | KeyCode::Char('j')
-            if !state.tree_entries.is_empty() && state.tree_selected + 1 < state.tree_entries.len()
-            => {
-                state.tree_selected += 1;
-            }
+            if !state.tree_entries.is_empty()
+                && state.tree_selected + 1 < state.tree_entries.len() =>
+        {
+            state.tree_selected += 1;
+        }
         KeyCode::Home => {
             state.tree_selected = 0;
             state.tree_scroll = 0;
         }
-        KeyCode::End
-            if !state.tree_entries.is_empty() => {
-                state.tree_selected = state.tree_entries.len() - 1;
-            }
+        KeyCode::End if !state.tree_entries.is_empty() => {
+            state.tree_selected = state.tree_entries.len() - 1;
+        }
         KeyCode::PageUp => {
             state.tree_selected = state.tree_selected.saturating_sub(visible_height);
             state.tree_scroll = state.tree_scroll.saturating_sub(visible_height);
         }
-        KeyCode::PageDown
-            if !state.tree_entries.is_empty() => {
-                state.tree_selected =
-                    (state.tree_selected + visible_height).min(state.tree_entries.len() - 1);
-                state.tree_scroll = state
-                    .tree_scroll
-                    .saturating_add(visible_height)
-                    .min(state.tree_entries.len().saturating_sub(visible_height));
-            }
+        KeyCode::PageDown if !state.tree_entries.is_empty() => {
+            state.tree_selected =
+                (state.tree_selected + visible_height).min(state.tree_entries.len() - 1);
+            state.tree_scroll = state
+                .tree_scroll
+                .saturating_add(visible_height)
+                .min(state.tree_entries.len().saturating_sub(visible_height));
+        }
         KeyCode::Enter => {
             let selected = state.tree_selected;
             let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
@@ -877,14 +875,15 @@ fn shift_select(panel: &mut app::types::PanelState, next: usize) {
 
 fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     if let Some(path) = state.directory_hotlist.get(index).cloned()
-        && path.is_dir() {
-            let panel = state.active_panel_mut();
-            panel.path = path.clone();
-            panel.cursor = 0;
-            panel.scroll_offset = 0;
-            refresh_active(state);
-            state.status_message = Some(format!("cd to {}", path.display()));
-        }
+        && path.is_dir()
+    {
+        let panel = state.active_panel_mut();
+        panel.path = path.clone();
+        panel.cursor = 0;
+        panel.scroll_offset = 0;
+        refresh_active(state);
+        state.status_message = Some(format!("cd to {}", path.display()));
+    }
 }
 
 fn handle_normal_mode<B: ratatui::backend::Backend>(
@@ -961,21 +960,25 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
             // Alt+Enter: Show file properties dialog
             if let Some(entry) = state.active_panel().current_entry()
-                && entry.name != ".." {
-                    state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
-                        name: entry.name.clone(),
-                        size: entry.size,
-                        mtime: entry.modified,
-                        permissions: entry.permissions,
-                        owner: entry.owner.clone(),
-                        group: entry.group.clone(),
-                        is_dir: entry.is_dir,
-                        is_symlink: entry.is_symlink,
-                    });
-                }
+                && entry.name != ".."
+            {
+                state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
+                    name: entry.name.clone(),
+                    size: entry.size,
+                    mtime: entry.modified,
+                    permissions: entry.permissions,
+                    owner: entry.owner.clone(),
+                    group: entry.group.clone(),
+                    is_dir: entry.is_dir,
+                    is_symlink: entry.is_symlink,
+                });
+            }
         }
         KeyCode::Enter => {
-            let entry_info = state.active_panel().current_entry().map(|e| (e.is_dir, e.path.clone()));
+            let entry_info = state
+                .active_panel()
+                .current_entry()
+                .map(|e| (e.is_dir, e.path.clone()));
             if let Some((is_dir, path)) = entry_info
                 && is_dir
             {
@@ -1011,7 +1014,10 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::F(4) => {
-            let entry_info = state.active_panel().current_entry().map(|e| (e.is_dir, e.path.clone()));
+            let entry_info = state
+                .active_panel()
+                .current_entry()
+                .map(|e| (e.is_dir, e.path.clone()));
             if let Some((is_dir, path)) = entry_info
                 && !is_dir
             {
@@ -1122,13 +1128,14 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
             let panel = state.active_panel_mut();
             if let Some(prev_path) = panel.history.pop()
-                && prev_path.is_dir() {
-                    panel.path = prev_path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", prev_path.display()));
-                }
+                && prev_path.is_dir()
+            {
+                panel.path = prev_path.clone();
+                panel.cursor = 0;
+                panel.scroll_offset = 0;
+                refresh_active(state);
+                state.status_message = Some(format!("cd to {}", prev_path.display()));
+            }
         }
         KeyCode::Char(c) if modifiers.contains(KeyModifiers::ALT) && ('1'..='9').contains(&c) => {
             navigate_to_hotlist(state, (c as usize) - ('1' as usize));
@@ -1166,19 +1173,20 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         }
         _ => {
             if let KeyCode::Char(c) = key
-                && modifiers.is_empty() {
-                    state.search_query.push(c);
-                    state.mode = AppMode::Search;
-                    let filter_query = state.search_query.clone();
-                    let panel = state.active_panel_mut();
-                    if panel.unfiltered_entries.is_empty() {
-                        panel.unfiltered_entries = panel.entries.clone();
-                    }
-                    panel.filter = Some(filter_query);
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
+                && modifiers.is_empty()
+            {
+                state.search_query.push(c);
+                state.mode = AppMode::Search;
+                let filter_query = state.search_query.clone();
+                let panel = state.active_panel_mut();
+                if panel.unfiltered_entries.is_empty() {
+                    panel.unfiltered_entries = panel.entries.clone();
                 }
+                panel.filter = Some(filter_query);
+                panel.cursor = 0;
+                panel.scroll_offset = 0;
+                refresh_active(state);
+            }
         }
     }
 }
@@ -1246,19 +1254,18 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
             state.command_line.pop();
             state.history_index = None;
         }
-        KeyCode::Up
-            if !state.command_history.is_empty() => {
-                if state.history_index.is_none() {
-                    state.command_draft = state.command_line.clone();
-                }
-                let idx = match state.history_index {
-                    Some(i) if i > 0 => i - 1,
-                    Some(i) => i,
-                    None => state.command_history.len() - 1,
-                };
-                state.history_index = Some(idx);
-                state.command_line = state.command_history[idx].clone();
+        KeyCode::Up if !state.command_history.is_empty() => {
+            if state.history_index.is_none() {
+                state.command_draft = state.command_line.clone();
             }
+            let idx = match state.history_index {
+                Some(i) if i > 0 => i - 1,
+                Some(i) => i,
+                None => state.command_history.len() - 1,
+            };
+            state.history_index = Some(idx);
+            state.command_line = state.command_history[idx].clone();
+        }
         KeyCode::Down => {
             if let Some(idx) = state.history_index {
                 if idx + 1 < state.command_history.len() {
@@ -1543,22 +1550,21 @@ fn handle_dialog(
                     set_active_panel(state, panel);
                 }
             }
-            KeyCode::Backspace
-                if state.dialog_cursor_pos > 0 => {
-                    state.dialog_cursor_pos -= 1;
-                    let byte_pos = state
-                        .dialog_input
-                        .char_indices()
-                        .nth(state.dialog_cursor_pos)
-                        .map(|(i, _)| i)
-                        .unwrap_or(state.dialog_input.len());
-                    let next_byte = state.dialog_input[byte_pos..]
-                        .chars()
-                        .next()
-                        .map(|c| byte_pos + c.len_utf8())
-                        .unwrap_or(state.dialog_input.len());
-                    state.dialog_input.drain(byte_pos..next_byte);
-                }
+            KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
+                state.dialog_cursor_pos -= 1;
+                let byte_pos = state
+                    .dialog_input
+                    .char_indices()
+                    .nth(state.dialog_cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(state.dialog_input.len());
+                let next_byte = state.dialog_input[byte_pos..]
+                    .chars()
+                    .next()
+                    .map(|c| byte_pos + c.len_utf8())
+                    .unwrap_or(state.dialog_input.len());
+                state.dialog_input.drain(byte_pos..next_byte);
+            }
             KeyCode::Delete => {
                 let byte_pos = state
                     .dialog_input
@@ -1584,14 +1590,12 @@ fn handle_dialog(
                 state.dialog_input.insert(byte_pos, c);
                 state.dialog_cursor_pos += 1;
             }
-            KeyCode::Left
-                if state.dialog_cursor_pos > 0 => {
-                    state.dialog_cursor_pos -= 1;
-                }
-            KeyCode::Right
-                if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
-                    state.dialog_cursor_pos += 1;
-                }
+            KeyCode::Left if state.dialog_cursor_pos > 0 => {
+                state.dialog_cursor_pos -= 1;
+            }
+            KeyCode::Right if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
+                state.dialog_cursor_pos += 1;
+            }
             KeyCode::Home => {
                 state.dialog_cursor_pos = 0;
             }
@@ -1658,14 +1662,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if len > 0 && state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if len > 0 && state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
                     if let Some(cmd) = state.command_history.get(idx).cloned() {
@@ -1684,14 +1686,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if len > 0 && state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if len > 0 && state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     if let Some(path) = state.directory_hotlist.get(state.picker_selected).cloned()
                     {
@@ -1717,15 +1717,14 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                             Some("Added current directory to hotlist".to_string());
                     }
                 }
-                KeyCode::Char('d')
-                    if state.picker_selected < state.directory_hotlist.len() => {
-                        state.directory_hotlist.remove(state.picker_selected);
-                        if state.picker_selected > 0
-                            && state.picker_selected >= state.directory_hotlist.len()
-                        {
-                            state.picker_selected -= 1;
-                        }
+                KeyCode::Char('d') if state.picker_selected < state.directory_hotlist.len() => {
+                    state.directory_hotlist.remove(state.picker_selected);
+                    if state.picker_selected > 0
+                        && state.picker_selected >= state.directory_hotlist.len()
+                    {
+                        state.picker_selected -= 1;
                     }
+                }
                 _ => {}
             }
         }
@@ -1737,14 +1736,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     let chosen = MODES[state.picker_selected.min(len - 1)];
                     state.mode = AppMode::Normal;
@@ -1759,14 +1756,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if len > 0 && state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if len > 0 && state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     let idx = state.picker_selected.min(len.saturating_sub(1));
                     state.mode = AppMode::Normal;
@@ -2151,19 +2146,20 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     enable_raw_mode()?;
     loop {
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
-            && let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    break;
-                }
-                // Also allow Enter to return
-                if key.code == KeyCode::Enter {
-                    break;
-                }
-                // Esc to return
-                if key.code == KeyCode::Esc {
-                    break;
-                }
+            && let Event::Key(key) = event::read()?
+        {
+            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                break;
             }
+            // Also allow Enter to return
+            if key.code == KeyCode::Enter {
+                break;
+            }
+            // Esc to return
+            if key.code == KeyCode::Esc {
+                break;
+            }
+        }
     }
 
     resume_terminal_stdout()?;
@@ -2464,7 +2460,10 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             None
         }
         (1, 8) => {
-            let entry_info = state.active_panel().current_entry().map(|e| (e.name.clone(), e.permissions));
+            let entry_info = state
+                .active_panel()
+                .current_entry()
+                .map(|e| (e.name.clone(), e.permissions));
             if let Some((name, permissions)) = entry_info
                 && name != ".."
             {
@@ -3117,16 +3116,18 @@ mod tests {
 
     #[test]
     fn directory_tree_page_down_uses_terminal_height() {
-        let mut state = AppState::default();
-        state.tree_entries = (0..50)
-            .map(|i| app::dir_tree::TreeEntry {
-                path: PathBuf::from(format!("/tmp/{i}")),
-                depth: 0,
-                is_dir: false,
-                expanded: false,
-                name: format!("entry-{i}"),
-            })
-            .collect();
+        let mut state = AppState {
+            tree_entries: (0..50)
+                .map(|i| app::dir_tree::TreeEntry {
+                    path: PathBuf::from(format!("/tmp/{i}")),
+                    depth: 0,
+                    is_dir: false,
+                    expanded: false,
+                    name: format!("entry-{i}"),
+                })
+                .collect(),
+            ..Default::default()
+        };
 
         handle_directory_tree(&mut state, &mut None, KeyCode::PageDown, 12);
 
@@ -3136,18 +3137,20 @@ mod tests {
 
     #[test]
     fn directory_tree_page_up_uses_terminal_height() {
-        let mut state = AppState::default();
-        state.tree_entries = (0..50)
-            .map(|i| app::dir_tree::TreeEntry {
-                path: PathBuf::from(format!("/tmp/{i}")),
-                depth: 0,
-                is_dir: false,
-                expanded: false,
-                name: format!("entry-{i}"),
-            })
-            .collect();
-        state.tree_selected = 25;
-        state.tree_scroll = 25;
+        let mut state = AppState {
+            tree_entries: (0..50)
+                .map(|i| app::dir_tree::TreeEntry {
+                    path: PathBuf::from(format!("/tmp/{i}")),
+                    depth: 0,
+                    is_dir: false,
+                    expanded: false,
+                    name: format!("entry-{i}"),
+                })
+                .collect(),
+            tree_selected: 25,
+            tree_scroll: 25,
+            ..Default::default()
+        };
 
         handle_directory_tree(&mut state, &mut None, KeyCode::PageUp, 12);
 

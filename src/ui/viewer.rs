@@ -33,12 +33,10 @@ impl ViewerState {
 
         let metadata = fs::metadata(path)?;
         if metadata.len() > MAX_VIEW_SIZE {
-            return Err(io::Error::other(
-                format!(
-                    "File too large to view ({} bytes, max 64 MB)",
-                    metadata.len()
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "File too large to view ({} bytes, max 64 MB)",
+                metadata.len()
+            )));
         }
 
         let raw_bytes = fs::read(path)?;
@@ -321,10 +319,8 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
 
     for i in start_idx..end_idx {
         let line_content = &state.content[i];
-        let line_matches: &[(usize, usize, usize)] = matches_by_line
-            .get(&i)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
+        let line_matches: &[(usize, usize, usize)] =
+            matches_by_line.get(&i).map(Vec::as_slice).unwrap_or(&[]);
         let spans: Vec<Span> = if state.show_line_numbers {
             let line_num = format!("{:>4}  ", i + 1);
             let mut line_spans = vec![Span::raw(line_num)];
