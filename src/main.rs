@@ -174,8 +174,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     refresh_panel(&mut state.left_panel, 0);
     refresh_panel(&mut state.right_panel, 0);
 
+    let mut dirty = true;
+
     loop {
-        terminal.draw(|f| render_ui(f, &state, &viewer_state))?;
+        if dirty {
+            terminal.draw(|f| render_ui(f, &state, &viewer_state))?;
+            dirty = false;
+        }
 
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
             match event::read()? {
@@ -189,6 +194,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             terminal.size()?.height,
                             terminal,
                         );
+                        dirty = true;
                     }
                     AppMode::Viewing => {
                         let sz = terminal.size()?;
@@ -199,35 +205,56 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             sz.height,
                             sz.width,
                         );
+                        dirty = true;
                     }
-                    AppMode::CommandLine => handle_command_line(&mut state, key.code),
-                    AppMode::Dialog(_) => handle_dialog(
-                        &mut state,
-                        &mut viewer_state,
-                        key.code,
-                        terminal.size()?.height,
-                    ),
+                    AppMode::CommandLine => {
+                        handle_command_line(&mut state, key.code);
+                        dirty = true;
+                    }
+                    AppMode::Dialog(_) => {
+                        handle_dialog(
+                            &mut state,
+                            &mut viewer_state,
+                            key.code,
+                            terminal.size()?.height,
+                        );
+                        dirty = true;
+                    }
                     AppMode::Search => {
-                        handle_search_mode(&mut state, key.code, terminal.size()?.height)
+                        handle_search_mode(&mut state, key.code, terminal.size()?.height);
+                        dirty = true;
                     }
-                    AppMode::Menu => handle_menu_mode(
-                        &mut state,
-                        &mut viewer_state,
-                        key.code,
-                        terminal.size()?.height,
-                        terminal,
-                    ),
-                    AppMode::ListPicker(_) => handle_list_picker(&mut state, key.code),
-                    AppMode::DirectoryTree => handle_directory_tree(
-                        &mut state,
-                        &mut viewer_state,
-                        key.code,
-                        terminal.size()?.height,
-                    ),
+                    AppMode::Menu => {
+                        handle_menu_mode(
+                            &mut state,
+                            &mut viewer_state,
+                            key.code,
+                            terminal.size()?.height,
+                            terminal,
+                        );
+                        dirty = true;
+                    }
+                    AppMode::ListPicker(_) => {
+                        handle_list_picker(&mut state, key.code);
+                        dirty = true;
+                    }
+                    AppMode::DirectoryTree => {
+                        handle_directory_tree(
+                            &mut state,
+                            &mut viewer_state,
+                            key.code,
+                            terminal.size()?.height,
+                        );
+                        dirty = true;
+                    }
                 },
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
                     handle_mouse_event(&mut state, &mut viewer_state, mouse_event, size, terminal);
+                    dirty = true;
+                }
+                Event::Resize(_, _) => {
+                    dirty = true;
                 }
                 _ => {}
             }

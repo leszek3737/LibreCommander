@@ -230,6 +230,16 @@ impl FileSearch {
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {
+        if !pattern.contains(['*', '?']) {
+            return if case_sensitive {
+                name.contains(pattern)
+            } else {
+                let pattern_lower: Vec<char> =
+                    pattern.chars().flat_map(|c| c.to_lowercase()).collect();
+                Self::contains_case_insensitive(name, &pattern_lower)
+            };
+        }
+
         let (name_chars, pattern_chars): (Vec<char>, Vec<char>) = if case_sensitive {
             (name.chars().collect(), pattern.chars().collect())
         } else {
@@ -287,6 +297,25 @@ mod tests {
     fn test_file_search_matches_pattern_exact() {
         assert!(FileSearch::matches_pattern("file.txt", "file.txt", true));
         assert!(FileSearch::matches_pattern("file.txt", "file.txt", false));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_plain_contains() {
+        assert!(FileSearch::matches_pattern(
+            "archive-file.txt",
+            "file",
+            true
+        ));
+        assert!(!FileSearch::matches_pattern(
+            "archive-file.txt",
+            "FILE",
+            true
+        ));
+        assert!(FileSearch::matches_pattern(
+            "archive-file.txt",
+            "FILE",
+            false
+        ));
     }
 
     #[test]
