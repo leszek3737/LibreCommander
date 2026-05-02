@@ -2351,91 +2351,23 @@ fn execute_confirmed_action(state: &mut AppState) {
         Some(a) => a,
         None => return,
     };
-    match action {
-        app::types::PendingAction::Copy {
-            sources: paths,
-            dest: dest_dir,
-        } => {
-            let mut errors: Vec<String> = Vec::new();
-            let mut used_dests: HashSet<PathBuf> = HashSet::new();
-            for src in &paths {
-                let file_name = src.file_name().unwrap_or_default();
-                let dest = dest_dir.join(file_name);
-                if !used_dests.insert(dest.clone()) {
-                    errors.push(format!(
-                        "{}: duplicate destination {}",
-                        src.display(),
-                        dest.display()
-                    ));
-                    continue;
-                }
-                let result = match src.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => {
-                        ops::file_ops::copy_symlink(src, &dest)
-                    }
-                    Ok(meta) if meta.is_dir() => {
-                        ops::file_ops::copy_dir_recursive(src, &dest).map(|_| ())
-                    }
-                    Ok(_) => ops::file_ops::copy_file(src, &dest).map(|_| ()),
-                    Err(e) => Err(e),
-                };
-                if let Err(e) = result {
-                    errors.push(format!("{}: {}", src.display(), e));
-                }
-            }
-            state.active_panel_mut().clear_selection();
-            if !errors.is_empty() {
-                state.status_message = Some(format!("Copy errors: {}", errors.join("; ")));
-            }
-            refresh_both(state);
-        }
-        app::types::PendingAction::Move {
-            sources: paths,
-            dest: dest_dir,
-        } => {
-            let mut errors: Vec<String> = Vec::new();
-            let mut used_dests: HashSet<PathBuf> = HashSet::new();
-            for src in &paths {
-                let file_name = src.file_name().unwrap_or_default();
-                let dest = dest_dir.join(file_name);
-                if !used_dests.insert(dest.clone()) {
-                    errors.push(format!(
-                        "{}: duplicate destination {}",
-                        src.display(),
-                        dest.display()
-                    ));
-                    continue;
-                }
-                if let Err(e) = ops::file_ops::move_entry(src, &dest) {
-                    errors.push(format!("{}: {}", src.display(), e));
-                }
-            }
-            state.active_panel_mut().clear_selection();
-            if !errors.is_empty() {
-                state.status_message = Some(format!("Move errors: {}", errors.join("; ")));
-            }
-            refresh_both(state);
-        }
-        app::types::PendingAction::Delete { paths } => {
-            let mut errors: Vec<String> = Vec::new();
-            for path in &paths {
-                let result = match path.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::delete_file(path),
-                    Ok(meta) if meta.is_dir() => ops::file_ops::delete_dir_recursive(path),
-                    Ok(_) => ops::file_ops::delete_file(path),
-                    Err(e) => Err(e),
-                };
-                if let Err(e) = result {
-                    errors.push(format!("{}: {}", path.display(), e));
-                }
-            }
-            state.active_panel_mut().clear_selection();
-            if !errors.is_empty() {
-                state.status_message = Some(format!("Delete errors: {}", errors.join("; ")));
-            }
-            refresh_both(state);
-        }
+
+    let action_label = match &action {
+        app::types::PendingAction::Copy { .. } => "Copy",
+        app::types::PendingAction::Move { .. } => "Move",
+        app::types::PendingAction::Delete { .. } => "Delete",
+    };
+
+    let report = ops::batch::execute_batch(action);
+    state.active_panel_mut().clear_selection();
+    if !report.errors.is_empty() {
+        state.status_message = Some(format!(
+            "{} errors: {}",
+            action_label,
+            report.errors.join("; ")
+        ));
     }
+    refresh_both(state);
 }
 
 fn apply_search_filter(panel: &mut PanelState) {
@@ -2777,137 +2709,9 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
 }
 
 fn compare_directories(state: &mut AppState, mode: CompareMode) {
-    use std::collections::{HashMap, HashSet};
-
-    // Reset all selections first.
-    for entry in &mut state.left_panel.entries {
-        entry.selected = false;
-    }
-    for entry in &mut state.right_panel.entries {
-        entry.selected = false;
-    }
-
-    // Build lookup: name → metadata needed for comparison.
-    // We collect only what we need: (is_dir, size, mtime) to avoid holding references.
-    #[derive(Clone, Copy, PartialEq)]
-    struct EntryMeta {
-        is_dir: bool,
-        size: u64,
-        mtime: std::time::SystemTime,
-    }
-
-    let right_meta: HashMap<&str, EntryMeta> = state
-        .right_panel
-        .entries
-        .iter()
-        .filter(|e| e.name != "..")
-        .map(|e| {
-            (
-                e.name.as_str(),
-                EntryMeta {
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    mtime: e.modified,
-                },
-            )
-        })
-        .collect();
-
-    let left_meta: HashMap<&str, EntryMeta> = state
-        .left_panel
-        .entries
-        .iter()
-        .filter(|e| e.name != "..")
-        .map(|e| {
-            (
-                e.name.as_str(),
-                EntryMeta {
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    mtime: e.modified,
-                },
-            )
-        })
-        .collect();
-
-    // Helper: check if two entries match by mode.
-    fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool {
-        if left.is_dir != right.is_dir {
-            return false;
-        }
-        if left.is_dir {
-            return true;
-        }
-        match mode {
-            CompareMode::Quick => true,
-            CompareMode::Size => left.size == right.size,
-            CompareMode::Thorough => left.size == right.size && left.mtime == right.mtime,
-        }
-    }
-
-    // Count unique-left, unique-right, differing.
-    let mut unique_left: usize = 0;
-    let mut unique_right: usize = 0;
-    let mut differing: usize = 0;
-
-    for (name, left_meta) in &left_meta {
-        match right_meta.get(name) {
-            None => unique_left += 1,
-            Some(right_meta) => {
-                if !meta_matches(left_meta, right_meta, mode) {
-                    differing += 1;
-                }
-            }
-        }
-    }
-    for name in right_meta.keys() {
-        if !left_meta.contains_key(name) {
-            unique_right += 1;
-        }
-    }
-
-    // Collect names to mark (no references to entries held).
-    let mut left_to_mark: HashSet<String> = HashSet::new();
-    let mut right_to_mark: HashSet<String> = HashSet::new();
-
-    for (name, left_meta) in &left_meta {
-        let should_mark = match right_meta.get(name) {
-            None => true,
-            Some(right_meta) => !meta_matches(left_meta, right_meta, mode),
-        };
-        if should_mark {
-            left_to_mark.insert(name.to_string());
-        }
-    }
-
-    for (name, right_entry) in &right_meta {
-        match left_meta.get(name) {
-            None => right_to_mark.insert(name.to_string()),
-            Some(left_entry) => {
-                if meta_matches(left_entry, right_entry, mode) {
-                    false
-                } else {
-                    right_to_mark.insert(name.to_string())
-                }
-            }
-        };
-    }
-
-    // Apply selection (now we only mutate, no references held).
-    for entry in &mut state.left_panel.entries {
-        if entry.name == ".." {
-            continue;
-        }
-        entry.selected = left_to_mark.contains(&entry.name);
-    }
-    state.left_panel.recalculate_selection_stats();
-    for entry in &mut state.right_panel.entries {
-        if entry.name == ".." {
-            continue;
-        }
-        entry.selected = right_to_mark.contains(&entry.name);
-    }
-    state.right_panel.recalculate_selection_stats();
+    let report =
+        ops::compare::compare_entries(&state.left_panel.entries, &state.right_panel.entries, mode);
+    ops::compare::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 
     let mode_name = match mode {
         CompareMode::Quick => "Quick",
@@ -2917,7 +2721,8 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
     state.status_message = None;
     state.dialog_selection = 0;
     state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(format!(
-        "Compare dirs ({mode_name}):\nUnique in left:  {unique_left}\nUnique in right: {unique_right}\nDiffering:       {differing}"
+        "Compare dirs ({mode_name}):\nUnique in left:  {}\nUnique in right: {}\nDiffering:       {}",
+        report.unique_left, report.unique_right, report.differing
     )));
 }
 
