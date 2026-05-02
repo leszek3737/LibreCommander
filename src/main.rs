@@ -385,68 +385,15 @@ fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
     panel.unfiltered_entries.clear();
     match reader::read_directory(&panel.path, panel.show_hidden) {
         Ok((entries, errors)) => {
-            if errors.is_empty() {
-                panel.last_error = None;
-            } else {
-                let error_summary = errors
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                panel.last_error = Some(format!(
-                    "{} file(s) failed to read: {error_summary}",
-                    errors.len()
-                ));
-            }
-            let current_name = panel
-                .entries
-                .get(panel.cursor)
-                .filter(|e| e.name != "..")
-                .map(|e| e.name.clone());
-            let saved: HashSet<PathBuf> = panel
-                .entries
-                .iter()
-                .filter(|e| e.selected)
-                .map(|e| e.path.clone())
-                .collect();
-            let sort_mode = panel.sort_mode;
-            let mut sort_entries: Vec<reader::FileEntry> = entries
-                .iter()
-                .filter(|e| {
-                    if e.name == ".." {
-                        true
-                    } else if let Some(filter) = &panel.filter {
-                        ops::search::FileSearch::matches_pattern(&e.name, filter, false)
-                    } else {
-                        true
-                    }
-                })
-                .cloned()
-                .collect();
-            sorting::sort_entries(&mut sort_entries, sort_mode);
-            panel.entries = sort_entries;
-            for entry in &mut panel.entries {
-                if saved.contains(&entry.path) {
-                    entry.selected = true;
-                }
-            }
+            update_panel_read_errors(panel, &errors);
+            let current_name = current_panel_entry_name(panel);
+            let saved = selected_panel_paths(panel);
+            panel.entries =
+                filtered_sorted_entries(&entries, panel.filter.as_deref(), panel.sort_mode);
+            restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();
-            if let Some(ref name) = current_name
-                && let Some(pos) = panel.entries.iter().position(|e| e.name == *name)
-            {
-                panel.cursor = pos;
-            }
-            if panel.cursor >= panel.entries.len() && !panel.entries.is_empty() {
-                panel.cursor = panel.entries.len() - 1;
-            }
-            let max_scroll = panel.entries.len().saturating_sub(1);
-            if panel.scroll_offset > max_scroll {
-                panel.scroll_offset = max_scroll;
-            }
-            if panel.scroll_offset > panel.cursor {
-                panel.scroll_offset = panel.cursor;
-            }
-            panel.ensure_cursor_visible(visible_height);
+            restore_panel_cursor(panel, current_name.as_deref());
+            clamp_panel_scroll(panel, visible_height);
         }
         Err(e) => {
             panel.entries.clear();
@@ -456,6 +403,91 @@ fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             panel.recalculate_selection_stats();
         }
     }
+}
+
+fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Error]) {
+    if errors.is_empty() {
+        panel.last_error = None;
+    } else {
+        let error_summary = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        panel.last_error = Some(format!(
+            "{} file(s) failed to read: {error_summary}",
+            errors.len()
+        ));
+    }
+}
+
+fn current_panel_entry_name(panel: &PanelState) -> Option<String> {
+    panel
+        .entries
+        .get(panel.cursor)
+        .filter(|e| e.name != "..")
+        .map(|e| e.name.clone())
+}
+
+fn selected_panel_paths(panel: &PanelState) -> HashSet<PathBuf> {
+    panel
+        .entries
+        .iter()
+        .filter(|e| e.selected)
+        .map(|e| e.path.clone())
+        .collect()
+}
+
+fn filtered_sorted_entries(
+    entries: &[reader::FileEntry],
+    filter: Option<&str>,
+    sort_mode: app::types::SortMode,
+) -> Vec<reader::FileEntry> {
+    let mut sort_entries: Vec<reader::FileEntry> = entries
+        .iter()
+        .filter(|e| {
+            if e.name == ".." {
+                true
+            } else if let Some(filter) = filter {
+                ops::search::FileSearch::matches_pattern(&e.name, filter, false)
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    sorting::sort_entries(&mut sort_entries, sort_mode);
+    sort_entries
+}
+
+fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
+    for entry in &mut panel.entries {
+        if saved.contains(&entry.path) {
+            entry.selected = true;
+        }
+    }
+}
+
+fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
+    if let Some(name) = current_name
+        && let Some(pos) = panel.entries.iter().position(|e| e.name == name)
+    {
+        panel.cursor = pos;
+    }
+    if panel.cursor >= panel.entries.len() && !panel.entries.is_empty() {
+        panel.cursor = panel.entries.len() - 1;
+    }
+}
+
+fn clamp_panel_scroll(panel: &mut PanelState, visible_height: usize) {
+    let max_scroll = panel.entries.len().saturating_sub(1);
+    if panel.scroll_offset > max_scroll {
+        panel.scroll_offset = max_scroll;
+    }
+    if panel.scroll_offset > panel.cursor {
+        panel.scroll_offset = panel.cursor;
+    }
+    panel.ensure_cursor_visible(visible_height);
 }
 
 fn refresh_active(state: &mut AppState) {
@@ -2551,23 +2583,12 @@ fn finish_running_job(
 }
 
 fn apply_search_filter(panel: &mut PanelState) {
-    let sort_mode = panel.sort_mode;
-    let mut filtered: Vec<app::types::FileEntry> = panel
-        .unfiltered_entries
-        .iter()
-        .filter(|e| {
-            if e.name == ".." {
-                true
-            } else if let Some(f) = &panel.filter {
-                ops::search::FileSearch::matches_pattern(&e.name, f, false)
-            } else {
-                true
-            }
-        })
-        .cloned()
-        .collect();
-    sorting::sort_entries(&mut filtered, sort_mode);
-    panel.entries = filtered;
+    panel.sync_unfiltered_selection();
+    panel.entries = filtered_sorted_entries(
+        &panel.unfiltered_entries,
+        panel.filter.as_deref(),
+        panel.sort_mode,
+    );
     panel.cursor = 0;
     panel.scroll_offset = 0;
     panel.recalculate_selection_stats();

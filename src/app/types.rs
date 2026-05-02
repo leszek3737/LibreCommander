@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -454,9 +454,7 @@ impl PanelState {
             let selected = entry.selected;
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
-            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == path) {
-                ue.selected = selected;
-            }
+            self.set_unfiltered_selection(&path, selected);
         }
     }
 
@@ -469,8 +467,29 @@ impl PanelState {
             let size = entry.size;
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
-            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == path) {
-                ue.selected = selected;
+            self.set_unfiltered_selection(&path, selected);
+        }
+    }
+
+    fn set_unfiltered_selection(&mut self, path: &PathBuf, selected: bool) {
+        if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == *path) {
+            ue.selected = selected;
+        }
+    }
+
+    pub fn sync_unfiltered_selection(&mut self) {
+        if self.unfiltered_entries.is_empty() {
+            return;
+        }
+
+        let selected_by_path: HashMap<PathBuf, bool> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.selected))
+            .collect();
+        for entry in &mut self.unfiltered_entries {
+            if let Some(selected) = selected_by_path.get(&entry.path) {
+                entry.selected = *selected;
             }
         }
     }
@@ -811,6 +830,26 @@ mod tests {
         assert!(!panel.entries[0].selected);
         assert_eq!(panel.selected_count, 0);
         assert_eq!(panel.selected_size, 0);
+    }
+
+    #[test]
+    fn test_panel_state_sync_unfiltered_selection() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("file1.txt", false, 100, 0o644, true),
+            create_test_entry("file2.txt", false, 200, 0o644, false),
+        ];
+        panel.unfiltered_entries = vec![
+            create_test_entry("file1.txt", false, 100, 0o644, false),
+            create_test_entry("file2.txt", false, 200, 0o644, true),
+            create_test_entry("file3.txt", false, 300, 0o644, true),
+        ];
+
+        panel.sync_unfiltered_selection();
+
+        assert!(panel.unfiltered_entries[0].selected);
+        assert!(!panel.unfiltered_entries[1].selected);
+        assert!(panel.unfiltered_entries[2].selected);
     }
 
     #[test]
