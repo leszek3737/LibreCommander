@@ -1,11 +1,13 @@
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 const MAX_RECURSION_DEPTH: usize = 256;
 
 pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
+    ensure_destination_absent(dest)?;
+
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
         _ => src == dest,
@@ -50,9 +52,8 @@ fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result
             "cannot copy directory into its descendant",
         ));
     }
-    if !dest.exists() {
-        fs::create_dir_all(dest)?;
-    }
+    ensure_destination_absent(dest)?;
+    fs::create_dir(dest)?;
     let src_perms = fs::metadata(src)?.permissions();
 
     let mut total_bytes: u64 = 0;
@@ -78,6 +79,8 @@ fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result
 }
 
 pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
+    ensure_destination_absent(dest)?;
+
     let target = fs::read_link(src)?;
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, dest)?;
@@ -93,6 +96,8 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
     if src == dest {
         return Ok(());
     }
+    ensure_destination_absent(dest)?;
+
     if src.is_dir() && path_contains(src, dest) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -167,7 +172,16 @@ pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
 }
 
 pub fn create_directory(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path must not contain parent components",
+        ));
+    }
+    fs::create_dir(path)
 }
 
 pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
@@ -206,6 +220,14 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
 }
 
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "chmod refuses to follow symlinks",
+        ));
+    }
+
     let permissions = fs::Permissions::from_mode(mode & 0o7777);
     fs::set_permissions(path, permissions)
 }
@@ -243,11 +265,14 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
 }
 
 fn path_contains(parent: &Path, child: &Path) -> bool {
-    if let (Ok(canonical_parent), Ok(canonical_child)) =
-        (parent.canonicalize(), child.canonicalize())
-    {
-        return canonical_child.starts_with(&canonical_parent);
+    if let (Ok(canonical_parent), Ok(canonical_child)) = (
+        canonicalize_existing_path(parent),
+        canonicalize_with_nearest_existing_parent(child),
+    ) {
+        return canonical_child != canonical_parent
+            && canonical_child.starts_with(&canonical_parent);
     }
+
     let parent_components = parent.components().peekable();
     let mut child_components = child.components().peekable();
 
@@ -259,6 +284,60 @@ fn path_contains(parent: &Path, child: &Path) -> bool {
     }
 
     child_components.peek().is_some()
+}
+
+fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(dest) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
+    path.canonicalize()
+}
+
+fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Result<PathBuf> {
+    let mut ancestor = path;
+
+    loop {
+        if let Ok(canonical_ancestor) = ancestor.canonicalize() {
+            let suffix = path
+                .strip_prefix(ancestor)
+                .unwrap_or_else(|_| Path::new(""));
+            return normalize_suffix(canonical_ancestor, suffix);
+        }
+
+        match ancestor.parent() {
+            Some(parent) if parent != ancestor => ancestor = parent,
+            _ => return normalize_suffix(std::env::current_dir()?, path),
+        }
+    }
+}
+
+fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
+    for component in suffix.components() {
+        match component {
+            Component::Normal(name) => base.push(name),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !base.pop() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "path escapes filesystem root",
+                    ));
+                }
+            }
+            Component::RootDir => base = PathBuf::from(std::path::MAIN_SEPARATOR.to_string()),
+            Component::Prefix(prefix) => base = PathBuf::from(prefix.as_os_str()),
+        }
+    }
+
+    Ok(base)
 }
 
 fn components_equal(left: Component<'_>, right: Component<'_>) -> bool {
