@@ -170,11 +170,26 @@ pub enum ActivePanel {
 // 5. DialogKind enum definition
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputAction {
+    CreateDirectory,
+    Rename,
+    Chmod,
+    Filter,
+    QuickCd,
+    FindFile,
+    ViewerSearch,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum DialogKind {
     Confirm(String),
-    Input(String, String), // (prompt, default_text)
+    Input {
+        prompt: String,
+        default_text: String,
+        action: InputAction,
+    },
     Error(String),
     Help(String),          // Help message, exits on any key
     Progress(String, f32), // (message, progress 0.0-1.0)
@@ -967,10 +982,20 @@ mod tests {
 
     #[test]
     fn test_dialog_kind_input() {
-        let dialog = DialogKind::Input("Enter name:".to_string(), "default".to_string());
-        if let DialogKind::Input(prompt, default) = dialog {
+        let dialog = DialogKind::Input {
+            prompt: "Enter name:".to_string(),
+            default_text: "default".to_string(),
+            action: InputAction::Rename,
+        };
+        if let DialogKind::Input {
+            prompt,
+            default_text,
+            action,
+        } = dialog
+        {
             assert_eq!(prompt, "Enter name:");
-            assert_eq!(default, "default");
+            assert_eq!(default_text, "default");
+            assert_eq!(action, InputAction::Rename);
         } else {
             panic!("Expected Input variant");
         }

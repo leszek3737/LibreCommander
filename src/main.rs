@@ -23,7 +23,9 @@ use ratatui::{
     prelude::*,
 };
 
-use app::types::{ActivePanel, AppMode, AppState, CompareMode, PanelState, PickerKind};
+use app::types::{
+    ActivePanel, AppMode, AppState, CompareMode, InputAction, PanelState, PickerKind,
+};
 use app::{dir_tree, user_menu};
 use fs::reader;
 use ops::sorting;
@@ -81,6 +83,91 @@ const MENU_ITEMS: [&[&str]; 5] = [
         "Encoding...",
     ],
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    ToggleListingMode,
+    CycleSortOrder,
+    OpenFilter,
+    RefreshPanel,
+    OpenUserMenu,
+    ViewFile,
+    EditFile,
+    Copy,
+    Move,
+    MakeDirectory,
+    Delete,
+    Rename,
+    Chmod,
+    Quit,
+    DirectoryTree,
+    FindFile,
+    SwapPanels,
+    SwitchPanels,
+    CompareDirs,
+    History,
+    DirectoryHotlist,
+    SaveCurrentPathToHotlist,
+    ToggleLayoutMode,
+    TogglePanelHidden,
+    ResetPanelFilter,
+    ToggleHiddenFiles,
+    SaveSetup,
+}
+
+const LEFT_RIGHT_MENU_ACTIONS: [MenuAction; 4] = [
+    MenuAction::ToggleListingMode,
+    MenuAction::CycleSortOrder,
+    MenuAction::OpenFilter,
+    MenuAction::RefreshPanel,
+];
+
+const FILE_MENU_ACTIONS: [MenuAction; 10] = [
+    MenuAction::OpenUserMenu,
+    MenuAction::ViewFile,
+    MenuAction::EditFile,
+    MenuAction::Copy,
+    MenuAction::Move,
+    MenuAction::MakeDirectory,
+    MenuAction::Delete,
+    MenuAction::Rename,
+    MenuAction::Chmod,
+    MenuAction::Quit,
+];
+
+const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
+    MenuAction::DirectoryTree,
+    MenuAction::FindFile,
+    MenuAction::SwapPanels,
+    MenuAction::SwitchPanels,
+    MenuAction::CompareDirs,
+    MenuAction::History,
+    MenuAction::DirectoryHotlist,
+];
+
+const OPTIONS_MENU_ACTIONS: [MenuAction; 6] = [
+    MenuAction::SaveCurrentPathToHotlist,
+    MenuAction::ToggleLayoutMode,
+    MenuAction::TogglePanelHidden,
+    MenuAction::ResetPanelFilter,
+    MenuAction::ToggleHiddenFiles,
+    MenuAction::SaveSetup,
+];
+
+const MENU_ACTIONS: [&[MenuAction]; 5] = [
+    &LEFT_RIGHT_MENU_ACTIONS,
+    &FILE_MENU_ACTIONS,
+    &COMMAND_MENU_ACTIONS,
+    &OPTIONS_MENU_ACTIONS,
+    &LEFT_RIGHT_MENU_ACTIONS,
+];
+
+fn menu_action_at(menu: usize, item: usize) -> Option<MenuAction> {
+    MENU_ACTIONS
+        .get(menu)
+        .and_then(|actions| actions.get(item))
+        .copied()
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -468,7 +555,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
                 message: msg.clone(),
                 selection: state.dialog_selection,
             },
-            app::types::DialogKind::Input(prompt, _) => dialogs::DialogKind::Input {
+            app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
                 title: "Input".to_string(),
                 prompt: prompt.clone(),
                 value: state.dialog_input.clone(),
@@ -1152,10 +1239,11 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::F(7) => {
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                "Create directory:".to_string(),
-                String::new(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Create directory:".to_string(),
+                default_text: String::new(),
+                action: InputAction::CreateDirectory,
+            });
             state.dialog_input.clear();
             state.dialog_cursor_pos = 0;
         }
@@ -1191,10 +1279,11 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             navigate_to_hotlist(state, (c as usize) - ('1' as usize));
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::ALT) => {
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                "Quick cd:".to_string(),
-                state.active_panel().path.display().to_string(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Quick cd:".to_string(),
+                default_text: state.active_panel().path.display().to_string(),
+                action: InputAction::QuickCd,
+            });
             state.dialog_input = state.active_panel().path.display().to_string();
             state.dialog_cursor_pos = state.dialog_input.chars().count();
         }
@@ -1272,10 +1361,11 @@ fn handle_viewer_mode(
             KeyCode::Char('/') => {
                 state.dialog_input = vs.search_query.clone().unwrap_or_default();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Viewer search:".to_string(),
-                    state.dialog_input.clone(),
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Viewer search:".to_string(),
+                    default_text: state.dialog_input.clone(),
+                    action: InputAction::ViewerSearch,
+                });
             }
             _ => {}
         }
@@ -1476,36 +1566,35 @@ fn handle_dialog(
             }
             _ => {}
         },
-        app::types::DialogKind::Input(_, _) => match key {
+        app::types::DialogKind::Input { action, .. } => match key {
             KeyCode::Enter => {
                 let input = state.dialog_input.clone();
-                if let AppMode::Dialog(app::types::DialogKind::Input(ref prompt, _)) = state.mode
-                    && prompt == "Viewer search:"
-                {
-                    if let Some(vs) = viewer_state.as_mut() {
-                        vs.search(&input, terminal_height.saturating_sub(3) as usize);
+                match action {
+                    InputAction::ViewerSearch => {
+                        if let Some(vs) = viewer_state.as_mut() {
+                            vs.search(&input, terminal_height.saturating_sub(3) as usize);
+                        }
+                        state.mode = AppMode::Viewing;
+                        state.dialog_input.clear();
+                        state.dialog_cursor_pos = 0;
+                        return;
                     }
-                    state.mode = AppMode::Viewing;
-                    state.dialog_input.clear();
-                    state.dialog_cursor_pos = 0;
-                    return;
-                }
-                if let AppMode::Dialog(app::types::DialogKind::Input(prompt, _)) = &state.mode {
-                    let prompt = prompt.clone();
-                    if prompt == "Create directory:" && !input.trim().is_empty() {
+                    InputAction::CreateDirectory if !input.trim().is_empty() => {
                         let dir = state.active_panel().path.clone();
                         if let Err(err) = ops::file_ops::create_directory(&dir.join(&input)) {
                             state.status_message = Some(format!("Create directory failed: {err}"));
                         } else {
                             refresh_active(state);
                         }
-                    } else if prompt == "Rename to:" && !input.is_empty() {
+                    }
+                    InputAction::Rename if !input.is_empty() => {
                         if let Some(entry) = state.active_panel().current_entry()
                             && let Err(err) = ops::file_ops::rename_entry(&entry.path, &input)
                         {
                             state.status_message = Some(format!("Rename failed: {err}"));
                         }
-                    } else if prompt == "Chmod (octal):" && !input.is_empty() {
+                    }
+                    InputAction::Chmod if !input.is_empty() => {
                         if let Some(mode) = parse_octal_mode(&input) {
                             if let Some(entry) = state.active_panel().current_entry()
                                 && let Err(err) = ops::file_ops::chmod(&entry.path, mode)
@@ -1515,14 +1604,16 @@ fn handle_dialog(
                         } else {
                             state.status_message = Some(format!("Invalid octal mode '{input}'"));
                         }
-                    } else if prompt == "Filter:" {
+                    }
+                    InputAction::Filter => {
                         let panel = state.active_panel_mut();
                         panel.filter = if input.trim().is_empty() {
                             None
                         } else {
                             Some(input)
                         };
-                    } else if prompt == "Quick cd:" {
+                    }
+                    InputAction::QuickCd => {
                         let expanded = if let Some(stripped) = input.strip_prefix('~') {
                             if let Some(home) = std::env::var_os("HOME") {
                                 std::path::PathBuf::from(home)
@@ -1553,7 +1644,8 @@ fn handle_dialog(
                         } else {
                             state.status_message = Some(format!("Directory not found: {input}"));
                         }
-                    } else if prompt == "Find file:" {
+                    }
+                    InputAction::FindFile => {
                         let dir = state.active_panel().path.clone();
                         let results =
                             ops::search::FileSearch::search_files(&dir, &input, true, false);
@@ -1577,6 +1669,7 @@ fn handle_dialog(
                             state.status_message = Some(format!("No matches for '{input}'"));
                         }
                     }
+                    _ => {}
                 }
                 state.mode = AppMode::Normal;
                 state.dialog_input.clear();
@@ -1587,11 +1680,7 @@ fn handle_dialog(
                 }
             }
             KeyCode::Esc => {
-                let return_to_viewing = matches!(
-                    &state.mode,
-                    AppMode::Dialog(app::types::DialogKind::Input(p, _)) if p == "Viewer search:"
-                );
-                state.mode = if return_to_viewing {
+                state.mode = if action == InputAction::ViewerSearch {
                     AppMode::Viewing
                 } else {
                     AppMode::Normal
@@ -2397,8 +2486,13 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
-    let menu_counts: [usize; 5] = [4, 10, 7, 6, 4];
-    let max_items = menu_counts[state.menu_selected];
+    let max_items = MENU_ACTIONS
+        .get(state.menu_selected)
+        .map_or(0, |actions| actions.len());
+    if max_items == 0 {
+        state.mode = AppMode::Normal;
+        return;
+    }
 
     match key {
         KeyCode::Esc | KeyCode::F(9 | 10) => {
@@ -2406,14 +2500,14 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
         }
         KeyCode::Left => {
             state.menu_selected = if state.menu_selected == 0 {
-                4
+                MENU_ACTIONS.len() - 1
             } else {
                 state.menu_selected - 1
             };
             state.menu_item_selected = 0;
         }
         KeyCode::Right => {
-            state.menu_selected = (state.menu_selected + 1) % 5;
+            state.menu_selected = (state.menu_selected + 1) % MENU_ACTIONS.len();
             state.menu_item_selected = 0;
         }
         KeyCode::Up => {
@@ -2447,8 +2541,8 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
 }
 
 fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
-    match (state.menu_selected, state.menu_item_selected) {
-        (0 | 4, 0) => {
+    match menu_action_at(state.menu_selected, state.menu_item_selected) {
+        Some(MenuAction::ToggleListingMode) => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
                 panel.listing_mode = match panel.listing_mode {
@@ -2458,7 +2552,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             });
             None
         }
-        (0 | 4, 1) => {
+        Some(MenuAction::CycleSortOrder) => {
             with_menu_panel(state, |state| {
                 let p = state.active_panel_mut();
                 p.sort_mode = sorting::cycle_sort_mode(p.sort_mode);
@@ -2466,23 +2560,23 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             });
             None
         }
-        (0 | 4, 2) => {
+        Some(MenuAction::OpenFilter) => {
             with_menu_panel(state, |state| {
                 state.dialog_input = state.active_panel().filter.clone().unwrap_or_default();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Filter:".to_string(),
-                    state.dialog_input.clone(),
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Filter:".to_string(),
+                    default_text: state.dialog_input.clone(),
+                    action: InputAction::Filter,
+                });
             });
             None
         }
-        (0 | 4, 3) => {
+        Some(MenuAction::RefreshPanel) => {
             with_menu_panel(state, refresh_active);
             None
         }
-        // File menu: "User menu"(0), "View file"(1), "Edit file"(2), "Copy"(3), "Move"(4), "Mkdir"(5), "Delete"(6), "Rename"(7), "Chmod"(8), "Quit"(9)
-        (1, 0) => {
+        Some(MenuAction::OpenUserMenu) => {
             let panel_dir = state.active_panel().path.clone();
             let current_file = state
                 .active_panel()
@@ -2506,27 +2600,28 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             }
             None
         }
-        (1, 1) => Some(KeyCode::F(3)),
-        (1, 2) => Some(KeyCode::F(4)),
-        (1, 3) => Some(KeyCode::F(5)),
-        (1, 4) => Some(KeyCode::F(6)),
-        (1, 5) => Some(KeyCode::F(7)),
-        (1, 6) => Some(KeyCode::F(8)),
-        (1, 7) => {
+        Some(MenuAction::ViewFile) => Some(KeyCode::F(3)),
+        Some(MenuAction::EditFile) => Some(KeyCode::F(4)),
+        Some(MenuAction::Copy) => Some(KeyCode::F(5)),
+        Some(MenuAction::Move) => Some(KeyCode::F(6)),
+        Some(MenuAction::MakeDirectory) => Some(KeyCode::F(7)),
+        Some(MenuAction::Delete) => Some(KeyCode::F(8)),
+        Some(MenuAction::Rename) => {
             let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
             if let Some(name) = entry_name
                 && name != ".."
             {
                 state.dialog_input = name.clone();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Rename to:".to_string(),
-                    name,
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Rename to:".to_string(),
+                    default_text: name,
+                    action: InputAction::Rename,
+                });
             }
             None
         }
-        (1, 8) => {
+        Some(MenuAction::Chmod) => {
             let entry_info = state
                 .active_panel()
                 .current_entry()
@@ -2536,19 +2631,19 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             {
                 state.dialog_input = format!("{:o}", permissions & 0o7777);
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Chmod (octal):".to_string(),
-                    state.dialog_input.clone(),
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Chmod (octal):".to_string(),
+                    default_text: state.dialog_input.clone(),
+                    action: InputAction::Chmod,
+                });
             }
             None
         }
-        (1, 9) => {
+        Some(MenuAction::Quit) => {
             state.should_quit = true;
             None
         }
-        // Command menu: "Directory tree"(0), "Find file"(1), "Swap panels"(2), "Switch panels"(3), ...
-        (2, 0) => {
+        Some(MenuAction::DirectoryTree) => {
             let path = state.active_panel().path.clone();
             let show_hidden = state.active_panel().show_hidden;
             state.tree_root = path.clone();
@@ -2558,16 +2653,17 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             state.mode = AppMode::DirectoryTree;
             None
         }
-        (2, 1) => {
+        Some(MenuAction::FindFile) => {
             state.dialog_input.clear();
             state.dialog_cursor_pos = 0;
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                "Find file:".to_string(),
-                String::new(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Find file:".to_string(),
+                default_text: String::new(),
+                action: InputAction::FindFile,
+            });
             None
         }
-        (2, 2) => {
+        Some(MenuAction::SwapPanels) => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
             state.active_panel = match state.active_panel {
                 ActivePanel::Left => ActivePanel::Right,
@@ -2575,30 +2671,29 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             };
             None
         }
-        (2, 3) => {
+        Some(MenuAction::SwitchPanels) => {
             state.active_panel = match state.active_panel {
                 ActivePanel::Left => ActivePanel::Right,
                 ActivePanel::Right => ActivePanel::Left,
             };
             None
         }
-        (2, 4) => {
+        Some(MenuAction::CompareDirs) => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::CompareMode);
             None
         }
-        (2, 5) => {
+        Some(MenuAction::History) => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::History);
             None
         }
-        (2, 6) => {
+        Some(MenuAction::DirectoryHotlist) => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::Hotlist);
             None
         }
-        // Options menu: "Configuration..."(0), "Layout..."(1), "Panel options..."(2), "Appearance..."(3), "Show hidden files"(4), "Save setup"(5)
-        (3, 0) => {
+        Some(MenuAction::SaveCurrentPathToHotlist) => {
             if !state
                 .directory_hotlist
                 .iter()
@@ -2612,7 +2707,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
                 Some("Configuration saved current path into hotlist".to_string());
             None
         }
-        (3, 1) => {
+        Some(MenuAction::ToggleLayoutMode) => {
             let panel = state.active_panel_mut();
             panel.listing_mode = match panel.listing_mode {
                 app::types::ListingMode::Long => app::types::ListingMode::Brief,
@@ -2621,7 +2716,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
             None
         }
-        (3, 2) => {
+        Some(MenuAction::TogglePanelHidden) => {
             let panel = state.active_panel_mut();
             panel.show_hidden = !panel.show_hidden;
             refresh_active(state);
@@ -2631,14 +2726,14 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             ));
             None
         }
-        (3, 3) => {
+        Some(MenuAction::ResetPanelFilter) => {
             let panel = state.active_panel_mut();
             panel.filter = None;
             refresh_active(state);
             state.status_message = Some("Appearance reset active panel filter".to_string());
             None
         }
-        (3, 4) => {
+        Some(MenuAction::ToggleHiddenFiles) => {
             let p = state.active_panel_mut();
             p.show_hidden = !p.show_hidden;
             p.cursor = 0;
@@ -2646,7 +2741,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             refresh_active(state);
             None
         }
-        (3, 5) => {
+        Some(MenuAction::SaveSetup) => {
             match app::config::save_setup(state) {
                 Ok(path) => {
                     state.status_message = Some(format!("Setup saved to {}", path.display()));
@@ -2657,7 +2752,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             }
             None
         }
-        _ => None,
+        None => None,
     }
 }
 
@@ -2884,10 +2979,11 @@ mod tests {
         assert_eq!(state.dialog_input, "old.txt");
         assert_eq!(
             state.mode,
-            AppMode::Dialog(app::types::DialogKind::Input(
-                "Rename to:".to_string(),
-                "old.txt".to_string(),
-            ))
+            AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Rename to:".to_string(),
+                default_text: "old.txt".to_string(),
+                action: InputAction::Rename,
+            })
         );
     }
 
@@ -2896,6 +2992,24 @@ mod tests {
         assert_eq!(parse_octal_mode("755"), Some(0o755));
         assert_eq!(parse_octal_mode("0644"), Some(0o644));
         assert_eq!(parse_octal_mode("bad"), None);
+    }
+
+    #[test]
+    fn menu_action_at_maps_panel_menus() {
+        assert_eq!(menu_action_at(0, 0), Some(MenuAction::ToggleListingMode));
+        assert_eq!(menu_action_at(4, 2), Some(MenuAction::OpenFilter));
+    }
+
+    #[test]
+    fn menu_action_at_maps_file_and_command_menus() {
+        assert_eq!(menu_action_at(1, 7), Some(MenuAction::Rename));
+        assert_eq!(menu_action_at(2, 4), Some(MenuAction::CompareDirs));
+    }
+
+    #[test]
+    fn menu_action_at_rejects_out_of_range_items() {
+        assert_eq!(menu_action_at(3, 6), None);
+        assert_eq!(menu_action_at(5, 0), None);
     }
 
     #[test]
