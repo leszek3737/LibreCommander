@@ -5,7 +5,6 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -13,6 +12,14 @@ use std::path::{Path, PathBuf};
 use crate::app::types::ViewMode;
 
 use super::theme::Theme;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SearchLineMatch {
+    line: usize,
+    global_idx: usize,
+    start_byte: usize,
+    end_byte: usize,
+}
 
 pub struct ViewerState {
     pub file_path: PathBuf,
@@ -22,11 +29,13 @@ pub struct ViewerState {
     pub line_count: usize,
     pub search_query: Option<String>,
     pub search_matches: Vec<(usize, usize, usize)>, // (line, col, highlight_len)
+    search_matches_by_line: Vec<SearchLineMatch>,
     pub current_match: usize,
     pub wrap_lines: bool,
     pub show_line_numbers: bool,
     pub view_mode: ViewMode,
     raw_bytes: Vec<u8>,
+    max_line_width: usize,
 }
 
 impl ViewerState {
@@ -50,6 +59,11 @@ impl ViewerState {
             content.push(String::new());
         }
         let line_count = content.len();
+        let max_line_width = content
+            .iter()
+            .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
+            .max()
+            .unwrap_or(0);
 
         Ok(ViewerState {
             file_path: path.to_path_buf(),
@@ -59,6 +73,7 @@ impl ViewerState {
             line_count,
             search_query: None,
             search_matches: Vec::new(),
+            search_matches_by_line: Vec::new(),
             current_match: 0,
             wrap_lines: true,
             show_line_numbers: false,
@@ -67,6 +82,7 @@ impl ViewerState {
                 line_numbers: false,
             },
             raw_bytes,
+            max_line_width,
         })
     }
 
@@ -117,6 +133,7 @@ impl ViewerState {
     pub fn search(&mut self, query: &str, page_height: usize) {
         self.search_query = Some(query.to_string());
         self.search_matches.clear();
+        self.search_matches_by_line.clear();
         self.current_match = 0;
 
         if query.is_empty() {
@@ -135,8 +152,15 @@ impl ViewerState {
                 let orig_byte_end = byte_map.get(match_byte_end).copied().unwrap_or(line.len());
                 let char_pos = line[..orig_byte_start].chars().count();
                 let match_char_len = line[orig_byte_start..orig_byte_end].chars().count().max(1);
+                let global_idx = self.search_matches.len();
                 self.search_matches
                     .push((line_idx, char_pos, match_char_len));
+                self.search_matches_by_line.push(SearchLineMatch {
+                    line: line_idx,
+                    global_idx,
+                    start_byte: orig_byte_start,
+                    end_byte: orig_byte_end,
+                });
                 search_start = match_byte_end;
             }
         }
@@ -231,11 +255,7 @@ impl ViewerState {
         let max_line = if self.is_hex_mode() {
             unicode_width::UnicodeWidthStr::width(format_hex_line(0, &[0u8; 16]).as_str())
         } else {
-            self.content
-                .iter()
-                .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
-                .max()
-                .unwrap_or(0)
+            self.max_line_width
         };
         let max_offset = if effective_width > 0 {
             max_line.saturating_sub(effective_width)
@@ -258,13 +278,6 @@ fn paragraph_horizontal_scroll(horizontal_offset: usize) -> u16 {
     horizontal_offset.min(u16::MAX as usize) as u16
 }
 
-fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(s.len())
-}
-
 fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
     let mut lower = String::with_capacity(original.len());
     let mut byte_map = Vec::with_capacity(original.len());
@@ -280,7 +293,7 @@ fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
 
 fn format_line_with_highlight<'a>(
     line: &'a str,
-    line_matches: &[(usize, usize, usize)],
+    line_matches: &[SearchLineMatch],
     current_match_idx: usize,
 ) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
@@ -289,20 +302,18 @@ fn format_line_with_highlight<'a>(
         return vec![Span::raw(line)];
     }
 
-    let mut last_end = 0;
-    for &(global_idx, col, match_len) in line_matches {
-        let start_byte = char_to_byte_idx(line, col);
+    let mut last_end = 0usize;
+    for line_match in line_matches {
+        let start_byte = line_match.start_byte.min(line.len());
 
-        if col > last_end {
-            let last_end_byte = char_to_byte_idx(line, last_end);
-            spans.push(Span::raw(&line[last_end_byte..start_byte]));
+        if start_byte > last_end {
+            spans.push(Span::raw(&line[last_end..start_byte]));
         }
 
-        let end_char = col + match_len.min(line.chars().count().saturating_sub(col));
-        let end_byte = char_to_byte_idx(line, end_char);
+        let end_byte = line_match.end_byte.min(line.len());
         let match_text = &line[start_byte..end_byte];
 
-        let is_current = global_idx == current_match_idx;
+        let is_current = line_match.global_idx == current_match_idx;
 
         let style = if is_current {
             Theme::highlight()
@@ -313,12 +324,11 @@ fn format_line_with_highlight<'a>(
         };
 
         spans.push(Span::styled(match_text, style));
-        last_end = end_char;
+        last_end = end_byte;
     }
 
-    if last_end < line.chars().count() {
-        let last_end_byte = char_to_byte_idx(line, last_end);
-        spans.push(Span::raw(&line[last_end_byte..]));
+    if last_end < line.len() {
+        spans.push(Span::raw(&line[last_end..]));
     }
 
     spans
@@ -355,18 +365,15 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let start_idx = state.scroll_offset;
     let end_idx = (start_idx + visible_height).min(state.content.len());
 
-    let mut matches_by_line: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-    for (idx, &(line, col, len)) in state.search_matches.iter().enumerate() {
-        matches_by_line
-            .entry(line)
-            .or_default()
-            .push((idx, col, len));
-    }
-
+    let visible_matches = &state.search_matches_by_line;
+    let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
     for i in start_idx..end_idx {
         let line_content = &state.content[i];
-        let line_matches: &[(usize, usize, usize)] =
-            matches_by_line.get(&i).map(Vec::as_slice).unwrap_or(&[]);
+        let line_match_start = match_start;
+        while match_start < visible_matches.len() && visible_matches[match_start].line == i {
+            match_start += 1;
+        }
+        let line_matches = &visible_matches[line_match_start..match_start];
         let spans: Vec<Span> = if state.show_line_numbers {
             let line_num = format!(
                 "{:>width$}  ",
@@ -707,7 +714,16 @@ mod tests {
 
     #[test]
     fn test_format_line_with_highlight_handles_unicode() {
-        let spans = format_line_with_highlight("zażółć gęślą jaźń", &[(0, 7, 4)], 0);
+        let spans = format_line_with_highlight(
+            "zażółć gęślą jaźń",
+            &[SearchLineMatch {
+                line: 0,
+                global_idx: 0,
+                start_byte: 11,
+                end_byte: 17,
+            }],
+            0,
+        );
 
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "zażółć ");
@@ -767,6 +783,80 @@ mod tests {
         assert!(state.search_matches.is_empty());
         assert_eq!(state.current_match, 0);
         assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_search_keeps_line_match_cache_ordered() {
+        let file = create_test_file("alpha beta alpha\nbeta\nalpha");
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        state.search("alpha", 20);
+
+        assert_eq!(state.search_matches, vec![(0, 0, 5), (0, 11, 5), (2, 0, 5)]);
+        assert_eq!(
+            state.search_matches_by_line,
+            vec![
+                SearchLineMatch {
+                    line: 0,
+                    global_idx: 0,
+                    start_byte: 0,
+                    end_byte: 5,
+                },
+                SearchLineMatch {
+                    line: 0,
+                    global_idx: 1,
+                    start_byte: 11,
+                    end_byte: 16,
+                },
+                SearchLineMatch {
+                    line: 2,
+                    global_idx: 2,
+                    start_byte: 0,
+                    end_byte: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_search_line_match_cache_stores_unicode_byte_ranges() {
+        let file = create_test_file("zażółć gęślą jaźń");
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        state.search("gęśl", 20);
+
+        assert_eq!(
+            state.search_matches_by_line,
+            vec![SearchLineMatch {
+                line: 0,
+                global_idx: 0,
+                start_byte: 11,
+                end_byte: 17,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_search_replace_clears_line_match_cache() {
+        let file = create_test_file("alpha\nbeta");
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        state.search("alpha", 20);
+        state.search("missing", 20);
+
+        assert!(state.search_matches.is_empty());
+        assert!(state.search_matches_by_line.is_empty());
+    }
+
+    #[test]
+    fn test_horizontal_scroll_uses_cached_max_line_width() {
+        let file = create_test_file("short\nabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ");
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.max_line_width, 46);
+        state.scroll_right(100, 10);
+
+        assert_eq!(state.horizontal_offset, 36);
     }
 
     #[test]
