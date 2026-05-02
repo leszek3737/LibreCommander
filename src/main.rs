@@ -10,6 +10,10 @@ mod ui;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crossterm::{
@@ -36,6 +40,20 @@ const EVENT_POLL_TIMEOUT_MS: u64 = 100;
 const MAX_HISTORY: usize = 100;
 const LAYOUT_OVERHEAD_ROWS: u16 = 6;
 const DIR_TREE_OVERHEAD_ROWS: u16 = 3;
+
+enum JobMessage {
+    Progress(ops::batch::BatchProgress),
+    Finished {
+        action_label: &'static str,
+        report: ops::batch::BatchReport,
+    },
+}
+
+struct RunningJob {
+    receiver: Receiver<JobMessage>,
+    cancel: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
 
 struct TerminalGuard;
 
@@ -254,6 +272,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         state.status_message = Some(e);
     }
     let mut viewer_state: Option<viewer::ViewerState> = None;
+    let mut running_job: Option<RunningJob> = None;
 
     refresh_panel(&mut state.left_panel, 0);
     refresh_panel(&mut state.right_panel, 0);
@@ -261,6 +280,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut dirty = true;
 
     loop {
+        if poll_running_job(&mut state, &mut running_job) {
+            dirty = true;
+        }
+
         if dirty {
             terminal.draw(|f| render_ui(f, &state, &viewer_state))?;
             dirty = false;
@@ -299,6 +322,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         handle_dialog(
                             &mut state,
                             &mut viewer_state,
+                            &mut running_job,
                             key.code,
                             terminal.size()?.height,
                         );
@@ -334,7 +358,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 },
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
-                    handle_mouse_event(&mut state, &mut viewer_state, mouse_event, size, terminal);
+                    handle_mouse_event(
+                        &mut state,
+                        &mut viewer_state,
+                        &mut running_job,
+                        mouse_event,
+                        size,
+                        terminal,
+                    );
                     dirty = true;
                 }
                 Event::Resize(_, _) => {
@@ -1507,6 +1538,7 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
 fn handle_dialog(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
     key: KeyCode,
     terminal_height: u16,
 ) {
@@ -1520,7 +1552,7 @@ fn handle_dialog(
         app::types::DialogKind::Confirm(_) => match key {
             KeyCode::Char('y' | 'Y') => {
                 if state.pending_action.is_some() {
-                    execute_confirmed_action(state);
+                    start_confirmed_action(state, running_job);
                     state.dialog_selection = 0;
                     if state.status_message.is_some() {
                         state.mode = AppMode::Normal;
@@ -1541,7 +1573,7 @@ fn handle_dialog(
                 if state.dialog_selection == 1 {
                     dismiss_dialog(state);
                 } else if state.pending_action.is_some() {
-                    execute_confirmed_action(state);
+                    start_confirmed_action(state, running_job);
                     state.dialog_selection = 0;
                     if state.status_message.is_some() {
                         state.mode = AppMode::Normal;
@@ -1778,11 +1810,10 @@ fn handle_dialog(
             }
         }
         app::types::DialogKind::Progress(_, _) => {
-            // Progress dialog - exits on Esc
             if key == KeyCode::Esc {
-                state.mode = AppMode::Normal;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
+                if let Some(job) = running_job.as_ref() {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    state.status_message = Some("Cancel requested".to_string());
                 }
             }
         }
@@ -1957,6 +1988,7 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
 fn handle_mouse_event(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
     mouse_event: crossterm::event::MouseEvent,
     terminal_size: ratatui::layout::Size,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -1983,7 +2015,7 @@ fn handle_mouse_event(
         return;
     }
 
-    if handle_mouse_dialog(state, col, row, width, height) {
+    if handle_mouse_dialog(state, running_job, col, row, width, height) {
         return;
     }
     if handle_mouse_menu_bar(state, viewer_state, col, row, width, height, terminal) {
@@ -2053,7 +2085,21 @@ fn dismiss_dialog(state: &mut AppState) {
     }
 }
 
-fn handle_mouse_dialog(state: &mut AppState, col: u16, row: u16, width: u16, height: u16) -> bool {
+fn handle_mouse_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) -> bool {
+    if matches!(
+        state.mode,
+        AppMode::Dialog(app::types::DialogKind::Progress(_, _))
+    ) {
+        return true;
+    }
+
     if let AppMode::Dialog(app::types::DialogKind::Input { .. }) = state.mode {
         let dialog_width = ((width as u32 * 50) / 100).max(30).min(width as u32) as u16;
         let dialog_height = ((height as u32 * 40) / 100).max(5).min(height as u32) as u16;
@@ -2080,7 +2126,7 @@ fn handle_mouse_dialog(state: &mut AppState, col: u16, row: u16, width: u16, hei
             if state.dialog_selection == new_sel {
                 if new_sel == 0 {
                     if state.pending_action.is_some() {
-                        execute_confirmed_action(state);
+                        start_confirmed_action(state, running_job);
                         state.dialog_selection = 0;
                         if state.status_message.is_some() {
                             dismiss_dialog(state);
@@ -2356,26 +2402,128 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn execute_confirmed_action(state: &mut AppState) {
+fn action_label(action: &app::types::PendingAction) -> &'static str {
+    match action {
+        app::types::PendingAction::Copy { .. } => "Copy",
+        app::types::PendingAction::Move { .. } => "Move",
+        app::types::PendingAction::Delete { .. } => "Delete",
+    }
+}
+
+fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<RunningJob>) {
     let action = match state.pending_action.take() {
         Some(a) => a,
         None => return,
     };
+    if running_job.is_some() {
+        state.status_message = Some("Another job is already running".to_string());
+        return;
+    }
 
-    let action_label = match &action {
-        app::types::PendingAction::Copy { .. } => "Copy",
-        app::types::PendingAction::Move { .. } => "Move",
-        app::types::PendingAction::Delete { .. } => "Delete",
-    };
+    let action_label = action_label(&action);
+    let (sender, receiver) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_for_worker = Arc::clone(&cancel);
+    let handle = thread::spawn(move || {
+        let progress_sender = sender.clone();
+        let report = ops::batch::execute_batch_with_progress(
+            action,
+            move |progress| {
+                let _ = progress_sender.send(JobMessage::Progress(progress));
+            },
+            Some(cancel_for_worker),
+        );
+        let _ = sender.send(JobMessage::Finished {
+            action_label,
+            report,
+        });
+    });
 
-    let report = ops::batch::execute_batch(action);
     state.active_panel_mut().clear_selection();
-    if !report.errors.is_empty() {
+    state.status_message = None;
+    state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
+        format!("{action_label} starting..."),
+        0.0,
+    ));
+    *running_job = Some(RunningJob {
+        receiver,
+        cancel,
+        handle: Some(handle),
+    });
+}
+
+fn poll_running_job(state: &mut AppState, running_job: &mut Option<RunningJob>) -> bool {
+    let Some(job) = running_job.as_mut() else {
+        return false;
+    };
+    let mut dirty = false;
+    let mut finished = None;
+
+    while let Ok(message) = job.receiver.try_recv() {
+        dirty = true;
+        match message {
+            JobMessage::Progress(progress) => {
+                let current = progress
+                    .current
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "done".to_string());
+                let message = if job.cancel.load(Ordering::Relaxed) {
+                    format!("Canceling after current item: {current}")
+                } else {
+                    format!("{} of {}: {current}", progress.completed, progress.total)
+                };
+                state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
+                    message,
+                    progress.percent(),
+                ));
+            }
+            JobMessage::Finished {
+                action_label,
+                report,
+            } => finished = Some((action_label, report)),
+        }
+    }
+
+    if let Some((action_label, report)) = finished {
+        if let Some(mut job) = running_job.take()
+            && let Some(handle) = job.handle.take()
+        {
+            let _ = handle.join();
+        }
+        finish_running_job(state, action_label, report);
+        dirty = true;
+    }
+
+    dirty
+}
+
+fn finish_running_job(
+    state: &mut AppState,
+    action_label: &'static str,
+    report: ops::batch::BatchReport,
+) {
+    if report.canceled {
+        state.status_message = Some(format!(
+            "{action_label} canceled after {} item(s)",
+            report.success_count
+        ));
+    } else if !report.errors.is_empty() {
         state.status_message = Some(format!(
             "{} errors: {}",
             action_label,
             report.errors.join("; ")
         ));
+    } else {
+        state.status_message = Some(format!(
+            "{action_label} finished: {} item(s)",
+            report.success_count
+        ));
+    }
+    state.mode = AppMode::Normal;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
     }
     refresh_both(state);
 }
@@ -3163,7 +3311,8 @@ mod tests {
             ..Default::default()
         };
 
-        let handled = handle_mouse_dialog(&mut state, 0, 0, 100, 40);
+        let mut running_job = None;
+        let handled = handle_mouse_dialog(&mut state, &mut running_job, 0, 0, 100, 40);
 
         assert!(!handled);
         assert!(matches!(
@@ -3186,7 +3335,8 @@ mod tests {
             ..Default::default()
         };
 
-        let handled = handle_mouse_dialog(&mut state, 50, 20, 100, 40);
+        let mut running_job = None;
+        let handled = handle_mouse_dialog(&mut state, &mut running_job, 50, 20, 100, 40);
 
         assert!(handled);
         assert!(matches!(

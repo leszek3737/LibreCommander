@@ -303,7 +303,11 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(2), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     let msg_paragraph = Paragraph::new(message.to_string())
@@ -317,6 +321,11 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         .percent(clamped)
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
+
+    let hint = Paragraph::new("Esc: cancel after current item")
+        .style(Theme::warning())
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[2]);
 }
 
 #[allow(clippy::too_many_arguments)]
