@@ -9,7 +9,6 @@ impl Theme {
     pub const PANEL_BG: Color = Color::Rgb(0, 0, 128);
     pub const STATUS_BAR_BG: Color = Color::Rgb(0, 0, 128);
     pub const MENU_BAR_BG: Color = Color::Rgb(0, 0, 128);
-    pub const FUNCTION_BAR_BG: Color = Color::Rgb(0, 0, 128);
     pub const DIALOG_BG: Color = Color::Black;
     pub const HIGHLIGHT_BG: Color = Color::Cyan;
 
@@ -17,7 +16,6 @@ impl Theme {
     pub const PANEL_FG: Color = Color::White;
     pub const STATUS_BAR_FG: Color = Color::White;
     pub const MENU_BAR_FG: Color = Color::White;
-    pub const FUNCTION_BAR_FG: Color = Color::White;
     pub const DIALOG_FG: Color = Color::White;
     pub const HIGHLIGHT_FG: Color = Color::Black;
 
@@ -60,12 +58,6 @@ impl Theme {
 
     pub fn menu_bar() -> Style {
         Style::default().fg(Self::MENU_BAR_FG).bg(Self::MENU_BAR_BG)
-    }
-
-    pub fn function_bar() -> Style {
-        Style::default()
-            .fg(Self::FUNCTION_BAR_FG)
-            .bg(Self::FUNCTION_BAR_BG)
     }
 
     pub fn dialog() -> Style {

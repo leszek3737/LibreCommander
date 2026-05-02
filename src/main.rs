@@ -1,14 +1,3 @@
-#[allow(dead_code)]
-mod app;
-#[allow(dead_code)]
-mod fs;
-#[allow(dead_code)]
-mod menu;
-#[allow(dead_code)]
-mod ops;
-#[allow(dead_code)]
-mod ui;
-
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
@@ -28,6 +17,8 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     prelude::*,
 };
+
+use lc::{app, fs, menu, ops, ui};
 
 use app::types::{
     ActivePanel, AppMode, AppState, CompareMode, InputAction, PanelState, PickerKind,

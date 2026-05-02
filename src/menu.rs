@@ -1,8 +1,8 @@
 use ratatui::layout::Rect;
 
-pub(crate) const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
+pub const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
 
-pub(crate) const MENU_ITEMS: [&[&str]; 5] = [
+pub const MENU_ITEMS: [&[&str]; 5] = [
     &[
         "Listing mode...",
         "Sort order...",
@@ -47,7 +47,7 @@ pub(crate) const MENU_ITEMS: [&[&str]; 5] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MenuAction {
+pub enum MenuAction {
     ToggleListingMode,
     CycleSortOrder,
     OpenFilter,
@@ -124,22 +124,22 @@ const MENU_ACTIONS: [&[MenuAction]; 5] = [
     &LEFT_RIGHT_MENU_ACTIONS,
 ];
 
-pub(crate) fn menu_action_at(menu: usize, item: usize) -> Option<MenuAction> {
+pub fn menu_action_at(menu: usize, item: usize) -> Option<MenuAction> {
     MENU_ACTIONS
         .get(menu)
         .and_then(|actions| actions.get(item))
         .copied()
 }
 
-pub(crate) fn menu_item_count(menu: usize) -> usize {
+pub fn menu_item_count(menu: usize) -> usize {
     MENU_ACTIONS.get(menu).map_or(0, |actions| actions.len())
 }
 
-pub(crate) fn menu_total_count() -> usize {
+pub fn menu_total_count() -> usize {
     MENU_ACTIONS.len()
 }
 
-pub(crate) fn menu_bar_text_width() -> u16 {
+pub fn menu_bar_text_width() -> u16 {
     MENU_TITLES
         .iter()
         .map(|title| menu_title_width(title))
@@ -147,15 +147,15 @@ pub(crate) fn menu_bar_text_width() -> u16 {
         + MENU_TITLES.len().saturating_sub(1) as u16
 }
 
-pub(crate) fn menu_bar_start_x(width: u16) -> u16 {
+pub fn menu_bar_start_x(width: u16) -> u16 {
     width.saturating_sub(menu_bar_text_width()) / 2
 }
 
-pub(crate) fn menu_title_width(title: &str) -> u16 {
+pub fn menu_title_width(title: &str) -> u16 {
     title.len() as u16 + 2
 }
 
-pub(crate) fn menu_title_x(width: u16, index: usize) -> u16 {
+pub fn menu_title_x(width: u16, index: usize) -> u16 {
     let mut x = menu_bar_start_x(width);
     for title in MENU_TITLES.iter().take(index) {
         x = x.saturating_add(menu_title_width(title) + 1);
@@ -163,11 +163,7 @@ pub(crate) fn menu_title_x(width: u16, index: usize) -> u16 {
     x
 }
 
-pub(crate) fn menu_dropdown_x(
-    menu_bar_area: Rect,
-    selected_menu: usize,
-    dropdown_width: u16,
-) -> u16 {
+pub fn menu_dropdown_x(menu_bar_area: Rect, selected_menu: usize, dropdown_width: u16) -> u16 {
     let dropdown_x = menu_bar_area.x + menu_title_x(menu_bar_area.width, selected_menu);
     let max_dropdown_x = menu_bar_area
         .x

@@ -8,51 +8,6 @@ use super::dir_tree::TreeEntry;
 use super::user_menu::MenuEntry;
 
 // ============================================================================
-// 1a. Permissions newtype
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Permissions(pub u32);
-
-impl Permissions {
-    pub fn from_mode(mode: u32) -> Self {
-        Self(mode & 0o7777)
-    }
-}
-
-impl std::fmt::Display for Permissions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mode = self.0;
-        let mut result = String::with_capacity(9);
-        // owner
-        result.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o4000 != 0 {
-            if mode & 0o100 != 0 { 's' } else { 'S' }
-        } else {
-            if mode & 0o100 != 0 { 'x' } else { '-' }
-        });
-        // group
-        result.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o2000 != 0 {
-            if mode & 0o010 != 0 { 's' } else { 'S' }
-        } else {
-            if mode & 0o010 != 0 { 'x' } else { '-' }
-        });
-        // others
-        result.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o1000 != 0 {
-            if mode & 0o001 != 0 { 't' } else { 'T' }
-        } else {
-            if mode & 0o001 != 0 { 'x' } else { '-' }
-        });
-        write!(f, "{result}")
-    }
-}
-
-// ============================================================================
 // 1b. FileSize newtype
 // ============================================================================
 
@@ -182,7 +137,6 @@ pub enum InputAction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum DialogKind {
     Confirm(String),
     Input {
@@ -243,7 +197,6 @@ pub enum CompareMode {
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum AppMode {
     Normal,
     Viewing,
@@ -447,10 +400,6 @@ impl FileEntry {
         });
 
         result
-    }
-
-    pub fn is_parent_entry(&self) -> bool {
-        self.name == ".."
     }
 
     pub fn display_modified(&self) -> String {

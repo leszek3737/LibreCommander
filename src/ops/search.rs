@@ -26,30 +26,15 @@ impl<T> Default for SearchOutcome<T> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FileSearch {
-    pub query: String,
-    pub search_path: PathBuf,
-    pub results: Vec<PathBuf>,
-    pub case_sensitive: bool,
-}
-
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
-impl FileSearch {
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            query: String::new(),
-            search_path: path,
-            results: Vec::new(),
-            case_sensitive: false,
-        }
-    }
+pub struct FileSearch;
 
+impl FileSearch {
     pub fn search_files(
         path: &Path,
         pattern: &str,

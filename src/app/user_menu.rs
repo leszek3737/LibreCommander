@@ -252,12 +252,6 @@ pub fn locate_menu_file(panel_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Load and parse entries from the best menu file, applying filename filter.
-/// Returns `Err` if no menu file is found or file cannot be read.
-pub fn load_menu(panel_dir: &Path, filename: &str) -> Result<Vec<MenuEntry>, String> {
-    load_menu_with_warnings(panel_dir, filename).map(|loaded| loaded.entries)
-}
-
 #[derive(Debug, Clone)]
 pub struct LoadedMenu {
     pub entries: Vec<MenuEntry>,
