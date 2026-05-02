@@ -640,7 +640,7 @@ fn render_menu_dropdown(
     selected_menu: usize,
     selected_item: usize,
 ) {
-    use ratatui::widgets::{Block, Borders, Paragraph};
+    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
     // Highlight selected menu title in menu bar
     for (i, title) in MENU_TITLES.iter().enumerate() {
@@ -672,6 +672,7 @@ fn render_menu_dropdown(
     let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);
 
     // Fill dropdown area with blue background
+    f.render_widget(Clear, dropdown_area);
     let bg_block = ratatui::widgets::Block::default().style(Theme::panel_bg());
     f.render_widget(bg_block, dropdown_area);
 
