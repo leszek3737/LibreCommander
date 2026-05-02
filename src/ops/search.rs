@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::app::types::FileEntry;
+use crate::fs::reader::get_file_info;
 
 #[derive(Debug, Clone)]
 pub struct SearchOutcome<T> {
@@ -137,37 +138,13 @@ impl FileSearch {
             let name = entry.file_name();
             let name_lossy = name.to_string_lossy();
             if Self::matches_pattern(&name_lossy, pattern, case_sensitive) {
-                let metadata = entry.metadata().ok();
-                let is_hidden = name_lossy.starts_with('.');
-                outcome.matches.push(FileEntry {
-                    name: name_lossy.into_owned(),
-                    path: entry_path.clone(),
-                    is_dir: file_type.is_dir(),
-                    is_hidden,
-                    size: metadata.as_ref().map(|m| m.len()).unwrap_or(0),
-                    permissions: metadata
-                        .as_ref()
-                        .map(|m| {
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                m.permissions().mode()
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                0u32
-                            }
-                        })
-                        .unwrap_or(0),
-                    modified: metadata
-                        .and_then(|m| m.modified().ok())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-                    is_symlink: file_type.is_symlink(),
-                    is_executable: false,
-                    owner: String::new(),
-                    group: String::new(),
-                    selected: false,
-                });
+                match get_file_info(&entry_path) {
+                    Ok(file_entry) => outcome.matches.push(file_entry),
+                    Err(err) => outcome.errors.push(format!(
+                        "Failed to read metadata for {}: {err}",
+                        entry_path.display()
+                    )),
+                }
             }
 
             if recursive && file_type.is_dir() && !file_type.is_symlink() {
@@ -450,6 +427,28 @@ mod tests {
         eprintln!("Non-recursive search results: {:?}", results);
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_search_files_populates_owner_and_group() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_metadata_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("target.txt"), "metadata").unwrap();
+
+        let results = FileSearch::search_files(&dir, "target.txt", false, false);
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].owner.is_empty());
+        assert!(!results[0].group.is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }

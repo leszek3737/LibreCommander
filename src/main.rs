@@ -26,7 +26,7 @@ use ratatui::{
 use app::types::{
     ActivePanel, AppMode, AppState, CompareMode, InputAction, PanelState, PickerKind,
 };
-use app::{dir_tree, user_menu};
+use app::{dir_tree, paths, user_menu};
 use fs::reader;
 use ops::sorting;
 use ui::theme::Theme;
@@ -212,10 +212,7 @@ fn resume_terminal_stdout() -> io::Result<()> {
 }
 
 fn terminal_state_file_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".cache").join("lc").join("terminal_state"))
-        .unwrap_or_else(|| std::env::temp_dir().join("lc_terminal_state"))
+    paths::terminal_state_file_path()
 }
 
 fn main() -> io::Result<()> {
@@ -2042,7 +2039,7 @@ fn handle_mouse_scroll(
             }
             panel.ensure_cursor_visible(visible_rows);
         }
-        _ => unreachable!(),
+        _ => {}
     }
 }
 
@@ -2057,6 +2054,19 @@ fn dismiss_dialog(state: &mut AppState) {
 }
 
 fn handle_mouse_dialog(state: &mut AppState, col: u16, row: u16, width: u16, height: u16) -> bool {
+    if let AppMode::Dialog(app::types::DialogKind::Input { .. }) = state.mode {
+        let dialog_width = ((width as u32 * 50) / 100).max(30).min(width as u32) as u16;
+        let dialog_height = ((height as u32 * 40) / 100).max(5).min(height as u32) as u16;
+        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
+        let dialog_top = (height.saturating_sub(dialog_height)) / 2;
+        let inside_dialog = col >= dialog_left
+            && col < dialog_left.saturating_add(dialog_width)
+            && row >= dialog_top
+            && row < dialog_top.saturating_add(dialog_height);
+
+        return inside_dialog;
+    }
+
     if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
         let dialog_height = height * 40 / 100;
         let dialog_y = (height.saturating_sub(dialog_height)) / 2;
@@ -2535,14 +2545,34 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
                 .current_entry()
                 .map(|e| e.name.clone())
                 .unwrap_or_default();
-            match user_menu::load_menu(&panel_dir, &current_file) {
-                Ok(entries) if entries.is_empty() => {
-                    state.mode = AppMode::Dialog(app::types::DialogKind::Error(
-                        "No matching menu entries found.".to_string(),
-                    ));
+            match user_menu::load_menu_with_warnings(&panel_dir, &current_file) {
+                Ok(loaded) if loaded.entries.is_empty() => {
+                    let message = if loaded.warnings.is_empty() {
+                        "No matching menu entries found.".to_string()
+                    } else {
+                        format!(
+                            "No matching menu entries found.\n{}",
+                            loaded
+                                .warnings
+                                .iter()
+                                .map(|warning| format!(
+                                    "Line {}: {}",
+                                    warning.line, warning.message
+                                ))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    };
+                    state.mode = AppMode::Dialog(app::types::DialogKind::Error(message));
                 }
-                Ok(entries) => {
-                    state.user_menu_entries = entries;
+                Ok(loaded) => {
+                    if let Some(warning) = loaded.warnings.first() {
+                        state.status_message = Some(format!(
+                            "User menu warning: Line {}: {}",
+                            warning.line, warning.message
+                        ));
+                    }
+                    state.user_menu_entries = loaded.entries;
                     state.picker_selected = 0;
                     state.mode = AppMode::ListPicker(PickerKind::UserMenu);
                 }
@@ -3118,6 +3148,52 @@ mod tests {
         let state = AppState::new();
         let paths = selected_or_current_paths(&state);
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn mouse_input_dialog_outside_preserves_text() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Name:".to_string(),
+                default_text: "".to_string(),
+                action: InputAction::CreateDirectory,
+            }),
+            dialog_input: "draft".to_string(),
+            dialog_cursor_pos: 5,
+            ..Default::default()
+        };
+
+        let handled = handle_mouse_dialog(&mut state, 0, 0, 100, 40);
+
+        assert!(!handled);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(app::types::DialogKind::Input { .. })
+        ));
+        assert_eq!(state.dialog_input, "draft");
+        assert_eq!(state.dialog_cursor_pos, 5);
+    }
+
+    #[test]
+    fn mouse_input_dialog_inside_consumes_click() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Name:".to_string(),
+                default_text: "".to_string(),
+                action: InputAction::CreateDirectory,
+            }),
+            dialog_input: "draft".to_string(),
+            ..Default::default()
+        };
+
+        let handled = handle_mouse_dialog(&mut state, 50, 20, 100, 40);
+
+        assert!(handled);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(app::types::DialogKind::Input { .. })
+        ));
+        assert_eq!(state.dialog_input, "draft");
     }
 
     #[test]

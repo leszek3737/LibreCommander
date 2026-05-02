@@ -507,6 +507,8 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
 
 /// Render function bar (F-keys)
 pub fn render_function_bar(f: &mut Frame, area: Rect) {
+    const CONSTRAINTS: [Constraint; 10] = [Constraint::Percentage(10); 10];
+
     let keys = [
         ("F1", "Help"),
         ("F2", "Menu"),
@@ -520,11 +522,9 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
         ("F10", "Quit"),
     ];
 
-    let constraints: Vec<Constraint> = keys.iter().map(|_| Constraint::Percentage(10)).collect();
-
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(constraints)
+        .constraints(CONSTRAINTS)
         .split(area);
 
     for (i, (key, label)) in keys.iter().enumerate() {

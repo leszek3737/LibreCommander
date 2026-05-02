@@ -389,12 +389,23 @@ pub fn render_list_picker(
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {
-        let list_items: Vec<ListItem> = items.iter().map(|s| ListItem::new(s.as_str())).collect();
+        let visible_height = chunks[0].height as usize;
+        let selected = selected.min(items.len().saturating_sub(1));
+        let start_idx = if visible_height == 0 {
+            selected
+        } else {
+            selected.saturating_sub(visible_height.saturating_sub(1))
+        };
+        let end_idx = (start_idx + visible_height).min(items.len());
+        let list_items: Vec<ListItem> = items[start_idx..end_idx]
+            .iter()
+            .map(|s| ListItem::new(s.as_str()))
+            .collect();
         let list = List::new(list_items)
             .highlight_style(Theme::highlight_bold())
             .highlight_symbol("> ");
         let mut list_state = ListState::default();
-        list_state.select(Some(selected));
+        list_state.select(Some(selected - start_idx));
         f.render_stateful_widget(list, chunks[0], &mut list_state);
     }
 
@@ -428,6 +439,8 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn test_centered_rect_basic() {
@@ -457,5 +470,25 @@ mod tests {
         assert_eq!(rect.height, 20);
         assert_eq!(rect.x, 30);
         assert_eq!(rect.y, 15);
+    }
+
+    #[test]
+    fn list_picker_keeps_selected_visible() {
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items: Vec<String> = (0..20).map(|i| format!("Item {i}")).collect();
+
+        terminal
+            .draw(|f| render_list_picker(f, "Pick", &items, 19, "hint"))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Item 19"));
+        assert!(!rendered.contains("Item 0"));
     }
 }

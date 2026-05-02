@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::paths;
 use crate::app::types::{ActivePanel, AppState, ListingMode, SortMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -46,13 +47,7 @@ pub struct PersistedSetup {
 }
 
 fn config_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("lc")
-            .join("config.toml"),
-    )
+    paths::config_file_path()
 }
 
 fn panel_to_persisted(panel: &crate::app::types::PanelState) -> PersistedPanel {
