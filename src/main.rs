@@ -909,22 +909,13 @@ fn shift_select(panel: &mut app::types::PanelState, next: usize) {
     let old = panel.cursor;
     panel.cursor = next;
 
-    if anchor == next {
-        panel.set_selection_at(old, false);
-        panel.set_selection_at(next, false);
-        panel.selection_anchor = None;
-        return;
-    }
-
     let lo = anchor.min(next);
     let hi = anchor.max(next);
+    let affected_lo = anchor.min(old).min(next);
+    let affected_hi = anchor.max(old).max(next);
 
-    for i in 0..panel.entries.len() {
-        if i >= lo && i <= hi {
-            panel.set_selection_at(i, true);
-        } else if panel.entries[i].selected {
-            panel.set_selection_at(i, false);
-        }
+    for i in affected_lo..=affected_hi {
+        panel.set_selection_at(i, i >= lo && i <= hi);
     }
 }
 
@@ -994,6 +985,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         }
         KeyCode::Home => {
             let p = state.active_panel_mut();
+            p.selection_anchor = None;
             p.cursor = 0;
             p.scroll_offset = 0;
         }
@@ -1001,18 +993,21 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let len = state.active_panel().entries.len();
             if len > 0 {
                 let p = state.active_panel_mut();
+                p.selection_anchor = None;
                 p.cursor = len - 1;
                 p.ensure_cursor_visible(visible);
             }
         }
         KeyCode::PageUp => {
             let p = state.active_panel_mut();
+            p.selection_anchor = None;
             p.cursor = p.cursor.saturating_sub(visible);
             p.scroll_offset = p.scroll_offset.saturating_sub(visible);
         }
         KeyCode::PageDown => {
             let len = state.active_panel().entries.len();
             let p = state.active_panel_mut();
+            p.selection_anchor = None;
             p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
             p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
         }
@@ -3016,6 +3011,68 @@ mod tests {
         );
 
         assert_eq!(state.left_panel.cursor, 1);
+        assert!(state.left_panel.entries[0].selected);
+        assert!(state.left_panel.entries[1].selected);
+        assert!(!state.left_panel.entries[2].selected);
+    }
+
+    #[test]
+    fn shift_selection_preserves_unrelated_entries() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, true),
+            make_test_entry("b.txt", 20, false),
+            make_test_entry("c.txt", 30, false),
+            make_test_entry("d.txt", 40, false),
+        ];
+        state.left_panel.cursor = 2;
+        state.left_panel.recalculate_selection_stats();
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Down,
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
+        assert!(state.left_panel.entries[0].selected);
+        assert!(!state.left_panel.entries[1].selected);
+        assert!(state.left_panel.entries[2].selected);
+        assert!(state.left_panel.entries[3].selected);
+    }
+
+    #[test]
+    fn home_resets_selection_anchor() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
+            make_test_entry("c.txt", 30, false),
+        ];
+        state.left_panel.cursor = 2;
+        state.left_panel.selection_anchor = Some(1);
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Home,
+            KeyModifiers::NONE,
+            24,
+            &mut terminal,
+        );
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Down,
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
         assert!(state.left_panel.entries[0].selected);
         assert!(state.left_panel.entries[1].selected);
         assert!(!state.left_panel.entries[2].selected);
