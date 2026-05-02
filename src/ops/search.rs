@@ -36,6 +36,9 @@ pub struct FileSearch {
 
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
+pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
+pub const MAX_CONTENT_RESULTS: usize = 1000;
 
 impl FileSearch {
     pub fn new(path: PathBuf) -> Self {
@@ -167,7 +170,16 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
     ) -> Vec<(PathBuf, usize, String)> {
-        let mut results = Vec::new();
+        Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
+    }
+
+    pub fn search_content_with_diagnostics(
+        path: &Path,
+        pattern: &str,
+        recursive: bool,
+        case_sensitive: bool,
+    ) -> SearchOutcome<(PathBuf, usize, String)> {
+        let mut outcome = SearchOutcome::default();
         let mut item_count: usize = 0;
         Self::search_content_recursive(
             path,
@@ -175,10 +187,10 @@ impl FileSearch {
             recursive,
             case_sensitive,
             0,
-            &mut results,
+            &mut outcome,
             &mut item_count,
         );
-        results
+        outcome
     }
 
     fn search_content_recursive(
@@ -187,26 +199,54 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
         depth: usize,
-        results: &mut Vec<(PathBuf, usize, String)>,
+        outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
         item_count: &mut usize,
     ) {
-        if !path.is_dir() || depth >= MAX_SEARCH_DEPTH || *item_count >= MAX_SEARCH_ITEMS {
+        if !path.is_dir() {
+            return;
+        }
+        if depth >= MAX_SEARCH_DEPTH
+            || *item_count >= MAX_SEARCH_ITEMS
+            || outcome.matches.len() >= MAX_CONTENT_RESULTS
+        {
+            outcome.truncated = true;
             return;
         }
 
         let entries = match std::fs::read_dir(path) {
             Ok(entries) => entries,
-            Err(_) => return,
+            Err(err) => {
+                outcome
+                    .errors
+                    .push(format!("Failed to read {}: {err}", path.display()));
+                return;
+            }
         };
 
         for entry in entries {
-            if *item_count >= MAX_SEARCH_ITEMS {
+            if *item_count >= MAX_SEARCH_ITEMS || outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                outcome.truncated = true;
                 return;
             }
-            let Ok(entry) = entry else { continue };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    outcome
+                        .errors
+                        .push(format!("Failed to read entry in {}: {err}", path.display()));
+                    continue;
+                }
+            };
             let entry_path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => {
+                    outcome.errors.push(format!(
+                        "Failed to read type for {}: {err}",
+                        entry_path.display()
+                    ));
+                    continue;
+                }
             };
 
             *item_count += 1;
@@ -219,14 +259,29 @@ impl FileSearch {
                         recursive,
                         case_sensitive,
                         depth + 1,
-                        results,
+                        outcome,
                         item_count,
                     );
                 }
             } else {
-                let target_meta = std::fs::metadata(&entry_path).ok();
-                if target_meta.as_ref().is_some_and(|m| m.is_file()) {
-                    Self::search_in_file(&entry_path, pattern, case_sensitive, results);
+                let target_meta = match std::fs::metadata(&entry_path) {
+                    Ok(meta) => meta,
+                    Err(err) => {
+                        outcome.errors.push(format!(
+                            "Failed to read metadata for {}: {err}",
+                            entry_path.display()
+                        ));
+                        continue;
+                    }
+                };
+                if target_meta.is_file() {
+                    Self::search_in_file(
+                        &entry_path,
+                        pattern,
+                        case_sensitive,
+                        target_meta.len(),
+                        outcome,
+                    );
                 }
             }
         }
@@ -236,22 +291,55 @@ impl FileSearch {
         path: &Path,
         pattern: &str,
         case_sensitive: bool,
-        results: &mut Vec<(PathBuf, usize, String)>,
+        file_len: u64,
+        outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
     ) {
         if pattern.is_empty() {
+            return;
+        }
+        if file_len > MAX_CONTENT_FILE_BYTES {
+            outcome.truncated = true;
             return;
         }
 
         let file = match File::open(path) {
             Ok(f) => f,
-            Err(_) => return,
+            Err(err) => {
+                outcome
+                    .errors
+                    .push(format!("Failed to open {}: {err}", path.display()));
+                return;
+            }
         };
 
         let reader = BufReader::new(file);
         let pattern_lower: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
 
-        for (line_no, line) in reader.lines().enumerate() {
-            let Ok(line_text) = line else { continue };
+        for (line_no, line) in reader.split(b'\n').enumerate() {
+            if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                outcome.truncated = true;
+                return;
+            }
+            let line = match line {
+                Ok(line) => line,
+                Err(err) => {
+                    outcome
+                        .errors
+                        .push(format!("Failed to read {}: {err}", path.display()));
+                    return;
+                }
+            };
+            if line.contains(&0) {
+                return;
+            }
+            if line.len() > MAX_CONTENT_LINE_BYTES {
+                outcome.truncated = true;
+                continue;
+            }
+            let line_text = match String::from_utf8(line) {
+                Ok(line_text) => line_text,
+                Err(_) => return,
+            };
             let match_found = if case_sensitive {
                 line_text.contains(pattern)
             } else {
@@ -259,7 +347,9 @@ impl FileSearch {
             };
 
             if match_found {
-                results.push((path.to_path_buf(), line_no + 1, line_text));
+                outcome
+                    .matches
+                    .push((path.to_path_buf(), line_no + 1, line_text));
             }
         }
     }
@@ -526,6 +616,83 @@ mod tests {
 
         let results = FileSearch::search_content(&dir, "", true, false);
         assert!(results.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_reports_result_limit_truncation() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_content_limit_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let content = std::iter::repeat_n("needle\n", MAX_CONTENT_RESULTS + 1).collect::<String>();
+        fs::write(dir.join("many.txt"), content).unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert_eq!(outcome.matches.len(), MAX_CONTENT_RESULTS);
+        assert!(outcome.truncated);
+        assert!(outcome.errors.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_skips_large_files() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_content_large_file_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let file = File::create(dir.join("large.txt")).unwrap();
+        file.set_len(MAX_CONTENT_FILE_BYTES + 1).unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert!(outcome.matches.is_empty());
+        assert!(outcome.truncated);
+        assert!(outcome.errors.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_skips_binary_files() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_content_binary_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("binary.bin"), b"needle\0needle\n").unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert!(outcome.matches.is_empty());
+        assert!(!outcome.truncated);
+        assert!(outcome.errors.is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }

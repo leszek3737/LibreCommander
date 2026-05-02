@@ -950,12 +950,13 @@ fn handle_directory_tree(
 
             if is_dir {
                 let show_hidden = state.active_panel().show_hidden;
-                dir_tree::toggle_expand(
+                let diagnostics = dir_tree::toggle_expand_with_diagnostics(
                     &mut state.tree_entries,
                     selected,
                     &state.tree_root,
                     show_hidden,
                 );
+                set_tree_diagnostic_status(&mut state.status_message, diagnostics);
                 // Clamp selection after toggle
                 if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty()
                 {
@@ -1007,6 +1008,27 @@ fn handle_directory_tree(
 
 fn directory_tree_visible_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(DIR_TREE_OVERHEAD_ROWS) as usize
+}
+
+fn set_tree_diagnostic_status(
+    status_message: &mut Option<String>,
+    diagnostics: Vec<dir_tree::TreeDiagnostic>,
+) {
+    if diagnostics.is_empty() {
+        return;
+    }
+
+    let first = &diagnostics[0];
+    *status_message = Some(format!(
+        "Directory tree warning: {}: {}{}",
+        first.path.display(),
+        first.message,
+        if diagnostics.len() > 1 {
+            format!(", {} more", diagnostics.len() - 1)
+        } else {
+            String::new()
+        }
+    ));
 }
 
 fn panel_visible_height(terminal_height: u16) -> usize {
@@ -2776,11 +2798,13 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
         Some(MenuAction::DirectoryTree) => {
             let path = state.active_panel().path.clone();
             let show_hidden = state.active_panel().show_hidden;
+            let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
             state.tree_root = path.clone();
-            state.tree_entries = dir_tree::build_tree(&path, 2, show_hidden);
+            state.tree_entries = tree.entries;
             state.tree_selected = 0;
             state.tree_scroll = 0;
             state.mode = AppMode::DirectoryTree;
+            set_tree_diagnostic_status(&mut state.status_message, tree.diagnostics);
             None
         }
         Some(MenuAction::FindFile) => {
