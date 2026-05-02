@@ -84,27 +84,44 @@ const MENU_ITEMS: [&[&str]; 5] = [
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let mut stdout = io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, Show);
+        let _ = leave_tui_stdout();
     }
 }
 
-fn suspend_terminal_stdout() -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = leave_tui_stdout();
+        default_hook(panic_info);
+    }));
+}
+
+fn enter_tui_stdout() -> io::Result<()> {
+    enable_raw_mode()?;
+    if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide) {
+        let _ = disable_raw_mode();
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn leave_tui_stdout() -> io::Result<()> {
+    let raw_result = disable_raw_mode();
+    let screen_result = execute!(
         io::stdout(),
         LeaveAlternateScreen,
         DisableMouseCapture,
         Show
-    )?;
-    Ok(())
+    );
+    raw_result.and(screen_result)
+}
+
+fn suspend_terminal_stdout() -> io::Result<()> {
+    leave_tui_stdout()
 }
 
 fn resume_terminal_stdout() -> io::Result<()> {
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide)?;
-    Ok(())
+    enter_tui_stdout()
 }
 
 fn terminal_state_file_path() -> PathBuf {
@@ -115,20 +132,22 @@ fn terminal_state_file_path() -> PathBuf {
 }
 
 fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    install_panic_hook();
+    enter_tui_stdout()?;
 
-    let _guard = TerminalGuard;
+    let result = {
+        let _guard = TerminalGuard;
+        let backend = CrosstermBackend::new(io::stdout());
+        match Terminal::new(backend) {
+            Ok(mut terminal) => run_app(&mut terminal),
+            Err(err) => Err(err),
+        }
+    };
 
-    let result = run_app(&mut terminal);
-
-    if let Err(err) = result {
+    if let Err(err) = &result {
         eprintln!("Error: {err}");
     }
-    Ok(())
+    result
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
@@ -137,21 +156,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     // Terminal state recovery: if editor was SIGKILL'd, Drop was skipped.
     // Detect leftover state file and restore terminal before doing anything else.
     if std::fs::metadata(&terminal_state_file).is_ok() {
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
-            crossterm::cursor::Show
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture,
-            crossterm::cursor::Show
-        );
-        let _ = crossterm::terminal::enable_raw_mode();
-        let _ = std::fs::remove_file(&terminal_state_file);
+        let leave_result = leave_tui_stdout();
+        let resume_result = resume_terminal_stdout();
+        if resume_result.is_ok() {
+            let _ = std::fs::remove_file(&terminal_state_file);
+        }
+        leave_result?;
+        resume_result?;
     }
 
     let mut state = AppState::new();
@@ -1022,7 +1033,10 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 && !is_dir
             {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                let _ = suspend_terminal_stdout();
+                if let Err(e) = suspend_terminal_stdout() {
+                    state.status_message = Some(format!("Terminal suspend failed: {e}"));
+                    return;
+                }
                 // Write state file before launching editor – if editor is SIGKILL'd,
                 // Drop is skipped but we can detect this on next startup.
                 let terminal_state_file = terminal_state_file_path();
@@ -1041,11 +1055,20 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())
                     .status();
-                // Clean up state file on normal exit
-                let _ = std::fs::remove_file(&terminal_state_file);
-                let _ = resume_terminal_stdout();
-                if let Err(e) = status {
-                    state.status_message = Some(format!("Editor error: {e}"));
+                let resume_result = resume_terminal_stdout();
+                if resume_result.is_ok() {
+                    let _ = std::fs::remove_file(&terminal_state_file);
+                }
+                match (status, resume_result) {
+                    (Err(e), _) => state.status_message = Some(format!("Editor error: {e}")),
+                    (_, Err(e)) => {
+                        state.status_message =
+                            Some(format!("Terminal restore failed after editor: {e}"));
+                    }
+                    (Ok(s), _) if !s.success() => {
+                        state.status_message = Some(format!("Editor exited with status: {s}"));
+                    }
+                    (Ok(_), Ok(_)) => {}
                 }
                 refresh_active(state);
             }
@@ -1304,7 +1327,9 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
     impl Drop for ShellRestoreGuard {
         fn drop(&mut self) {
             if !self.restore_ok {
-                eprintln!("Terminal restore failed after shell command");
+                if let Err(err) = resume_terminal_stdout() {
+                    eprintln!("Terminal restore failed after shell command: {err}");
+                }
             }
         }
     }
@@ -1330,11 +1355,11 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
     let mut buf = String::new();
     // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for
     let _ = io::stdin().read_line(&mut buf);
-    let ok = resume_terminal_stdout().is_ok();
-    if ok {
-        restore_guard.restore_ok = true;
-    } else {
-        state.status_message = Some("Terminal restore failed – display may be corrupted".into());
+    match resume_terminal_stdout() {
+        Ok(()) => restore_guard.restore_ok = true,
+        Err(e) => {
+            state.status_message = Some(format!("Terminal restore failed: {e}"));
+        }
     }
     refresh_active(state);
 }
@@ -2138,6 +2163,20 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
 ) -> io::Result<()> {
     suspend_terminal_stdout()?;
 
+    struct ExternalViewRestoreGuard {
+        restore_ok: bool,
+    }
+
+    impl Drop for ExternalViewRestoreGuard {
+        fn drop(&mut self) {
+            if !self.restore_ok {
+                let _ = resume_terminal_stdout();
+            }
+        }
+    }
+
+    let mut restore_guard = ExternalViewRestoreGuard { restore_ok: false };
+
     // Show message to user
     println!("External view active. Press Ctrl+O to return to Libre Commander.");
     println!("Press Enter to continue...");
@@ -2163,6 +2202,7 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     }
 
     resume_terminal_stdout()?;
+    restore_guard.restore_ok = true;
 
     // Refresh display
     refresh_both(state);
