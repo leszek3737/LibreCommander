@@ -348,9 +348,11 @@ Run these checks before submitting changes:
 
 ```bash
 cargo fmt --check
-cargo clippy
-cargo test
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
 ```
+
+File operations include safety guards: system directories are protected from deletion, symlinks are handled correctly during copy/move/delete, and terminal state is always restored (even on panic).
 
 ## License
 
