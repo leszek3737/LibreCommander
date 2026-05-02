@@ -469,7 +469,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     // If viewing, render viewer fullscreen
     if state.mode == AppMode::Viewing {
         if let Some(vs) = viewer_state {
-            if vs.hex_mode {
+            if vs.is_hex_mode() {
                 viewer::render_hex_view(f, f.area(), vs);
             } else {
                 viewer::render_viewer(f, f.area(), vs);

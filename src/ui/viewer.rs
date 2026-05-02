@@ -10,6 +10,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use crate::app::types::ViewMode;
+
 use super::theme::Theme;
 
 pub struct ViewerState {
@@ -23,7 +25,7 @@ pub struct ViewerState {
     pub current_match: usize,
     pub wrap_lines: bool,
     pub show_line_numbers: bool,
-    pub hex_mode: bool, // TODO: migrate to ViewMode enum from types.rs
+    pub view_mode: ViewMode,
     raw_bytes: Vec<u8>,
 }
 
@@ -60,9 +62,16 @@ impl ViewerState {
             current_match: 0,
             wrap_lines: true,
             show_line_numbers: false,
-            hex_mode: false,
+            view_mode: ViewMode::Text {
+                wrap: true,
+                line_numbers: false,
+            },
             raw_bytes,
         })
+    }
+
+    pub fn is_hex_mode(&self) -> bool {
+        matches!(self.view_mode, ViewMode::Hex)
     }
 
     pub fn scroll_up(&mut self, lines: usize) {
@@ -70,7 +79,7 @@ impl ViewerState {
     }
 
     fn max_scroll(&self) -> usize {
-        if self.hex_mode {
+        if self.is_hex_mode() {
             self.raw_bytes.len().div_ceil(16).saturating_sub(1)
         } else {
             self.line_count.saturating_sub(1)
@@ -97,7 +106,7 @@ impl ViewerState {
     }
 
     pub fn go_to_bottom(&mut self, page_height: usize) {
-        let total = if self.hex_mode {
+        let total = if self.is_hex_mode() {
             self.raw_bytes.len().div_ceil(16)
         } else {
             self.line_count
@@ -174,6 +183,12 @@ impl ViewerState {
 
     pub fn toggle_line_numbers(&mut self) {
         self.show_line_numbers = !self.show_line_numbers;
+        if !self.is_hex_mode() {
+            self.view_mode = ViewMode::Text {
+                wrap: self.wrap_lines,
+                line_numbers: self.show_line_numbers,
+            };
+        }
     }
 
     pub fn toggle_wrap(&mut self) {
@@ -181,10 +196,23 @@ impl ViewerState {
         if self.wrap_lines {
             self.horizontal_offset = 0;
         }
+        if !self.is_hex_mode() {
+            self.view_mode = ViewMode::Text {
+                wrap: self.wrap_lines,
+                line_numbers: self.show_line_numbers,
+            };
+        }
     }
 
     pub fn toggle_hex_mode(&mut self) {
-        self.hex_mode = !self.hex_mode;
+        self.view_mode = if self.is_hex_mode() {
+            ViewMode::Text {
+                wrap: self.wrap_lines,
+                line_numbers: self.show_line_numbers,
+            }
+        } else {
+            ViewMode::Hex
+        };
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
     }
@@ -200,7 +228,7 @@ impl ViewerState {
             0
         };
         let effective_width = visible_width.saturating_sub(line_num_width);
-        let max_line = if self.hex_mode {
+        let max_line = if self.is_hex_mode() {
             unicode_width::UnicodeWidthStr::width(format_hex_line(0, &[0u8; 16]).as_str())
         } else {
             self.content
@@ -766,9 +794,18 @@ mod tests {
         state.toggle_wrap();
         assert!(!state.wrap_lines);
 
-        assert!(!state.hex_mode);
+        assert!(!state.is_hex_mode());
         state.toggle_hex_mode();
-        assert!(state.hex_mode);
+        assert!(state.is_hex_mode());
+        assert_eq!(state.view_mode, ViewMode::Hex);
+        state.toggle_hex_mode();
+        assert_eq!(
+            state.view_mode,
+            ViewMode::Text {
+                wrap: state.wrap_lines,
+                line_numbers: state.show_line_numbers,
+            }
+        );
     }
 
     #[test]
