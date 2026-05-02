@@ -1,15 +1,10 @@
-#[allow(dead_code)]
-mod app;
-#[allow(dead_code)]
-mod fs;
-#[allow(dead_code)]
-mod ops;
-#[allow(dead_code)]
-mod ui;
-
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crossterm::{
@@ -23,9 +18,17 @@ use ratatui::{
     prelude::*,
 };
 
-use app::types::{ActivePanel, AppMode, AppState, CompareMode, PanelState, PickerKind};
-use app::{dir_tree, user_menu};
+use lc::{app, fs, menu, ops, ui};
+
+use app::types::{
+    ActivePanel, AppMode, AppState, CompareMode, InputAction, PanelState, PickerKind,
+};
+use app::{dir_tree, paths, user_menu};
 use fs::reader;
+use menu::{
+    MENU_ITEMS, MENU_TITLES, MenuAction, menu_action_at, menu_dropdown_x, menu_item_count,
+    menu_title_width, menu_title_x, menu_total_count,
+};
 use ops::sorting;
 use ui::theme::Theme;
 use ui::{dialogs, panels, viewer};
@@ -35,100 +38,85 @@ const MAX_HISTORY: usize = 100;
 const LAYOUT_OVERHEAD_ROWS: u16 = 6;
 const DIR_TREE_OVERHEAD_ROWS: u16 = 3;
 
-struct TerminalGuard;
+enum JobMessage {
+    Progress(ops::batch::BatchProgress),
+    Finished {
+        action_label: &'static str,
+        report: ops::batch::BatchReport,
+    },
+}
 
-const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
-const MENU_ITEMS: [&[&str]; 5] = [
-    &[
-        "Listing mode...",
-        "Sort order...",
-        "Filter...",
-        "Encoding...",
-    ],
-    &[
-        "User menu",
-        "View file",
-        "Edit file",
-        "Copy",
-        "Move",
-        "Mkdir",
-        "Delete",
-        "Rename",
-        "Chmod",
-        "Quit",
-    ],
-    &[
-        "Directory tree",
-        "Find file",
-        "Swap panels",
-        "Switch panels",
-        "Compare dirs",
-        "History",
-        "Directory hotlist",
-    ],
-    &[
-        "Configuration...",
-        "Layout...",
-        "Panel options...",
-        "Appearance...",
-        "Show hidden files",
-        "Save setup",
-    ],
-    &[
-        "Listing mode...",
-        "Sort order...",
-        "Filter...",
-        "Encoding...",
-    ],
-];
+struct RunningJob {
+    receiver: Receiver<JobMessage>,
+    cancel: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let mut stdout = io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, Show);
+        let _ = leave_tui_stdout();
     }
+}
+
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = leave_tui_stdout();
+        default_hook(panic_info);
+    }));
+}
+
+fn enter_tui_stdout() -> io::Result<()> {
+    enable_raw_mode()?;
+    if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide) {
+        let _ = disable_raw_mode();
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn leave_tui_stdout() -> io::Result<()> {
+    let raw_result = disable_raw_mode();
+    let screen_result = execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        Show
+    );
+    raw_result.and(screen_result)
 }
 
 fn suspend_terminal_stdout() -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, Show)?;
-    Ok(())
+    leave_tui_stdout()
 }
 
 fn resume_terminal_stdout() -> io::Result<()> {
-    enable_raw_mode()?;
-    execute!(
-        io::stdout(),
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        Hide
-    )?;
-    Ok(())
+    enter_tui_stdout()
 }
 
 fn terminal_state_file_path() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".cache").join("lc").join("terminal_state"))
-        .unwrap_or_else(|| std::env::temp_dir().join("lc_terminal_state"))
+    paths::terminal_state_file_path()
 }
 
 fn main() -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    install_panic_hook();
+    enter_tui_stdout()?;
 
-    let _guard = TerminalGuard;
+    let result = {
+        let _guard = TerminalGuard;
+        let backend = CrosstermBackend::new(io::stdout());
+        match Terminal::new(backend) {
+            Ok(mut terminal) => run_app(&mut terminal),
+            Err(err) => Err(err),
+        }
+    };
 
-    let result = run_app(&mut terminal);
-
-    if let Err(err) = result {
+    if let Err(err) = &result {
         eprintln!("Error: {err}");
     }
-    Ok(())
+    result
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
@@ -137,21 +125,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     // Terminal state recovery: if editor was SIGKILL'd, Drop was skipped.
     // Detect leftover state file and restore terminal before doing anything else.
     if std::fs::metadata(&terminal_state_file).is_ok() {
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
-            crossterm::cursor::Show
-        );
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(
-            io::stdout(),
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture,
-            crossterm::cursor::Show
-        );
-        let _ = crossterm::terminal::enable_raw_mode();
-        let _ = std::fs::remove_file(&terminal_state_file);
+        let leave_result = leave_tui_stdout();
+        let resume_result = resume_terminal_stdout();
+        if resume_result.is_ok() {
+            let _ = std::fs::remove_file(&terminal_state_file);
+        }
+        leave_result?;
+        resume_result?;
     }
 
     let mut state = AppState::new();
@@ -159,12 +139,22 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         state.status_message = Some(e);
     }
     let mut viewer_state: Option<viewer::ViewerState> = None;
+    let mut running_job: Option<RunningJob> = None;
 
     refresh_panel(&mut state.left_panel, 0);
     refresh_panel(&mut state.right_panel, 0);
 
+    let mut dirty = true;
+
     loop {
-        terminal.draw(|f| render_ui(f, &state, &viewer_state))?;
+        if poll_running_job(&mut state, &mut running_job) {
+            dirty = true;
+        }
+
+        if dirty {
+            terminal.draw(|f| render_ui(f, &state, &viewer_state))?;
+            dirty = false;
+        }
 
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
             match event::read()? {
@@ -178,6 +168,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             terminal.size()?.height,
                             terminal,
                         );
+                        dirty = true;
                     }
                     AppMode::Viewing => {
                         let sz = terminal.size()?;
@@ -188,35 +179,64 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             sz.height,
                             sz.width,
                         );
+                        dirty = true;
                     }
-                    AppMode::CommandLine => handle_command_line(&mut state, key.code),
-                    AppMode::Dialog(_) => handle_dialog(
-                        &mut state,
-                        &mut viewer_state,
-                        key.code,
-                        terminal.size()?.height,
-                    ),
+                    AppMode::CommandLine => {
+                        handle_command_line(&mut state, key.code);
+                        dirty = true;
+                    }
+                    AppMode::Dialog(_) => {
+                        handle_dialog(
+                            &mut state,
+                            &mut viewer_state,
+                            &mut running_job,
+                            key.code,
+                            terminal.size()?.height,
+                        );
+                        dirty = true;
+                    }
                     AppMode::Search => {
-                        handle_search_mode(&mut state, key.code, terminal.size()?.height)
+                        handle_search_mode(&mut state, key.code, terminal.size()?.height);
+                        dirty = true;
                     }
-                    AppMode::Menu => handle_menu_mode(
-                        &mut state,
-                        &mut viewer_state,
-                        key.code,
-                        terminal.size()?.height,
-                        terminal,
-                    ),
-                    AppMode::ListPicker(_) => handle_list_picker(&mut state, key.code),
-                    AppMode::DirectoryTree => handle_directory_tree(
-                        &mut state,
-                        &mut viewer_state,
-                        key.code,
-                        terminal.size()?.height,
-                    ),
+                    AppMode::Menu => {
+                        handle_menu_mode(
+                            &mut state,
+                            &mut viewer_state,
+                            key.code,
+                            terminal.size()?.height,
+                            terminal,
+                        );
+                        dirty = true;
+                    }
+                    AppMode::ListPicker(_) => {
+                        handle_list_picker(&mut state, key.code);
+                        dirty = true;
+                    }
+                    AppMode::DirectoryTree => {
+                        handle_directory_tree(
+                            &mut state,
+                            &mut viewer_state,
+                            key.code,
+                            terminal.size()?.height,
+                        );
+                        dirty = true;
+                    }
                 },
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
-                    handle_mouse_event(&mut state, &mut viewer_state, mouse_event, size, terminal);
+                    handle_mouse_event(
+                        &mut state,
+                        &mut viewer_state,
+                        &mut running_job,
+                        mouse_event,
+                        size,
+                        terminal,
+                    );
+                    dirty = true;
+                }
+                Event::Resize(_, _) => {
+                    dirty = true;
                 }
                 _ => {}
             }
@@ -232,68 +252,15 @@ fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
     panel.unfiltered_entries.clear();
     match reader::read_directory(&panel.path, panel.show_hidden) {
         Ok((entries, errors)) => {
-            if errors.is_empty() {
-                panel.last_error = None;
-            } else {
-                let error_summary = errors
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                panel.last_error = Some(format!(
-                    "{} file(s) failed to read: {error_summary}",
-                    errors.len()
-                ));
-            }
-            let current_name = panel
-                .entries
-                .get(panel.cursor)
-                .filter(|e| e.name != "..")
-                .map(|e| e.name.clone());
-            let saved: HashSet<PathBuf> = panel
-                .entries
-                .iter()
-                .filter(|e| e.selected)
-                .map(|e| e.path.clone())
-                .collect();
-            let sort_mode = panel.sort_mode;
-            let mut sort_entries: Vec<reader::FileEntry> = entries
-                .iter()
-                .filter(|e| {
-                    if e.name == ".." {
-                        true
-                    } else if let Some(filter) = &panel.filter {
-                        ops::search::FileSearch::matches_pattern(&e.name, filter, false)
-                    } else {
-                        true
-                    }
-                })
-                .cloned()
-                .collect();
-            sorting::sort_entries(&mut sort_entries, sort_mode);
-            panel.entries = sort_entries;
-            for entry in &mut panel.entries {
-                if saved.contains(&entry.path) {
-                    entry.selected = true;
-                }
-            }
+            update_panel_read_errors(panel, &errors);
+            let current_name = current_panel_entry_name(panel);
+            let saved = selected_panel_paths(panel);
+            panel.entries =
+                filtered_sorted_entries(&entries, panel.filter.as_deref(), panel.sort_mode);
+            restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();
-            if let Some(ref name) = current_name
-                && let Some(pos) = panel.entries.iter().position(|e| e.name == *name)
-            {
-                panel.cursor = pos;
-            }
-            if panel.cursor >= panel.entries.len() && !panel.entries.is_empty() {
-                panel.cursor = panel.entries.len() - 1;
-            }
-            let max_scroll = panel.entries.len().saturating_sub(1);
-            if panel.scroll_offset > max_scroll {
-                panel.scroll_offset = max_scroll;
-            }
-            if panel.scroll_offset > panel.cursor {
-                panel.scroll_offset = panel.cursor;
-            }
-            panel.ensure_cursor_visible(visible_height);
+            restore_panel_cursor(panel, current_name.as_deref());
+            clamp_panel_scroll(panel, visible_height);
         }
         Err(e) => {
             panel.entries.clear();
@@ -303,6 +270,91 @@ fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             panel.recalculate_selection_stats();
         }
     }
+}
+
+fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Error]) {
+    if errors.is_empty() {
+        panel.last_error = None;
+    } else {
+        let error_summary = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        panel.last_error = Some(format!(
+            "{} file(s) failed to read: {error_summary}",
+            errors.len()
+        ));
+    }
+}
+
+fn current_panel_entry_name(panel: &PanelState) -> Option<String> {
+    panel
+        .entries
+        .get(panel.cursor)
+        .filter(|e| e.name != "..")
+        .map(|e| e.name.clone())
+}
+
+fn selected_panel_paths(panel: &PanelState) -> HashSet<PathBuf> {
+    panel
+        .entries
+        .iter()
+        .filter(|e| e.selected)
+        .map(|e| e.path.clone())
+        .collect()
+}
+
+fn filtered_sorted_entries(
+    entries: &[reader::FileEntry],
+    filter: Option<&str>,
+    sort_mode: app::types::SortMode,
+) -> Vec<reader::FileEntry> {
+    let mut sort_entries: Vec<reader::FileEntry> = entries
+        .iter()
+        .filter(|e| {
+            if e.name == ".." {
+                true
+            } else if let Some(filter) = filter {
+                ops::search::FileSearch::matches_pattern(&e.name, filter, false)
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    sorting::sort_entries(&mut sort_entries, sort_mode);
+    sort_entries
+}
+
+fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
+    for entry in &mut panel.entries {
+        if saved.contains(&entry.path) {
+            entry.selected = true;
+        }
+    }
+}
+
+fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
+    if let Some(name) = current_name
+        && let Some(pos) = panel.entries.iter().position(|e| e.name == name)
+    {
+        panel.cursor = pos;
+    }
+    if panel.cursor >= panel.entries.len() && !panel.entries.is_empty() {
+        panel.cursor = panel.entries.len() - 1;
+    }
+}
+
+fn clamp_panel_scroll(panel: &mut PanelState, visible_height: usize) {
+    let max_scroll = panel.entries.len().saturating_sub(1);
+    if panel.scroll_offset > max_scroll {
+        panel.scroll_offset = max_scroll;
+    }
+    if panel.scroll_offset > panel.cursor {
+        panel.scroll_offset = panel.cursor;
+    }
+    panel.ensure_cursor_visible(visible_height);
 }
 
 fn refresh_active(state: &mut AppState) {
@@ -347,7 +399,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     // If viewing, render viewer fullscreen
     if state.mode == AppMode::Viewing {
         if let Some(vs) = viewer_state {
-            if vs.hex_mode {
+            if vs.is_hex_mode() {
                 viewer::render_hex_view(f, f.area(), vs);
             } else {
                 viewer::render_viewer(f, f.area(), vs);
@@ -430,7 +482,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
                 message: msg.clone(),
                 selection: state.dialog_selection,
             },
-            app::types::DialogKind::Input(prompt, _) => dialogs::DialogKind::Input {
+            app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
                 title: "Input".to_string(),
                 prompt: prompt.clone(),
                 value: state.dialog_input.clone(),
@@ -645,39 +697,6 @@ fn render_menu_dropdown(
     }
 }
 
-fn menu_bar_text_width() -> u16 {
-    MENU_TITLES
-        .iter()
-        .map(|title| menu_title_width(title))
-        .sum::<u16>()
-        + MENU_TITLES.len().saturating_sub(1) as u16
-}
-
-fn menu_bar_start_x(width: u16) -> u16 {
-    width.saturating_sub(menu_bar_text_width()) / 2
-}
-
-fn menu_title_width(title: &str) -> u16 {
-    title.len() as u16 + 2
-}
-
-fn menu_title_x(width: u16, index: usize) -> u16 {
-    let mut x = menu_bar_start_x(width);
-    for title in MENU_TITLES.iter().take(index) {
-        x = x.saturating_add(menu_title_width(title) + 1);
-    }
-    x
-}
-
-fn menu_dropdown_x(menu_bar_area: Rect, selected_menu: usize, dropdown_width: u16) -> u16 {
-    let dropdown_x = menu_bar_area.x + menu_title_x(menu_bar_area.width, selected_menu);
-    let max_dropdown_x = menu_bar_area
-        .x
-        .saturating_add(menu_bar_area.width)
-        .saturating_sub(dropdown_width);
-    dropdown_x.min(max_dropdown_x)
-}
-
 fn render_directory_tree(f: &mut Frame, state: &AppState) {
     use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -762,36 +781,34 @@ fn handle_directory_tree(
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up | KeyCode::Char('k')
-            if state.tree_selected > 0 => {
-                state.tree_selected -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if state.tree_selected > 0 => {
+            state.tree_selected -= 1;
+        }
         KeyCode::Down | KeyCode::Char('j')
-            if !state.tree_entries.is_empty() && state.tree_selected + 1 < state.tree_entries.len()
-            => {
-                state.tree_selected += 1;
-            }
+            if !state.tree_entries.is_empty()
+                && state.tree_selected + 1 < state.tree_entries.len() =>
+        {
+            state.tree_selected += 1;
+        }
         KeyCode::Home => {
             state.tree_selected = 0;
             state.tree_scroll = 0;
         }
-        KeyCode::End
-            if !state.tree_entries.is_empty() => {
-                state.tree_selected = state.tree_entries.len() - 1;
-            }
+        KeyCode::End if !state.tree_entries.is_empty() => {
+            state.tree_selected = state.tree_entries.len() - 1;
+        }
         KeyCode::PageUp => {
             state.tree_selected = state.tree_selected.saturating_sub(visible_height);
             state.tree_scroll = state.tree_scroll.saturating_sub(visible_height);
         }
-        KeyCode::PageDown
-            if !state.tree_entries.is_empty() => {
-                state.tree_selected =
-                    (state.tree_selected + visible_height).min(state.tree_entries.len() - 1);
-                state.tree_scroll = state
-                    .tree_scroll
-                    .saturating_add(visible_height)
-                    .min(state.tree_entries.len().saturating_sub(visible_height));
-            }
+        KeyCode::PageDown if !state.tree_entries.is_empty() => {
+            state.tree_selected =
+                (state.tree_selected + visible_height).min(state.tree_entries.len() - 1);
+            state.tree_scroll = state
+                .tree_scroll
+                .saturating_add(visible_height)
+                .min(state.tree_entries.len().saturating_sub(visible_height));
+        }
         KeyCode::Enter => {
             let selected = state.tree_selected;
             let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
@@ -799,12 +816,13 @@ fn handle_directory_tree(
 
             if is_dir {
                 let show_hidden = state.active_panel().show_hidden;
-                dir_tree::toggle_expand(
+                let diagnostics = dir_tree::toggle_expand_with_diagnostics(
                     &mut state.tree_entries,
                     selected,
                     &state.tree_root,
                     show_hidden,
                 );
+                set_tree_diagnostic_status(&mut state.status_message, diagnostics);
                 // Clamp selection after toggle
                 if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty()
                 {
@@ -858,6 +876,27 @@ fn directory_tree_visible_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(DIR_TREE_OVERHEAD_ROWS) as usize
 }
 
+fn set_tree_diagnostic_status(
+    status_message: &mut Option<String>,
+    diagnostics: Vec<dir_tree::TreeDiagnostic>,
+) {
+    if diagnostics.is_empty() {
+        return;
+    }
+
+    let first = &diagnostics[0];
+    *status_message = Some(format!(
+        "Directory tree warning: {}: {}{}",
+        first.path.display(),
+        first.message,
+        if diagnostics.len() > 1 {
+            format!(", {} more", diagnostics.len() - 1)
+        } else {
+            String::new()
+        }
+    ));
+}
+
 fn panel_visible_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(LAYOUT_OVERHEAD_ROWS) as usize
 }
@@ -877,14 +916,15 @@ fn shift_select(panel: &mut app::types::PanelState, next: usize) {
 
 fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     if let Some(path) = state.directory_hotlist.get(index).cloned()
-        && path.is_dir() {
-            let panel = state.active_panel_mut();
-            panel.path = path.clone();
-            panel.cursor = 0;
-            panel.scroll_offset = 0;
-            refresh_active(state);
-            state.status_message = Some(format!("cd to {}", path.display()));
-        }
+        && path.is_dir()
+    {
+        let panel = state.active_panel_mut();
+        panel.path = path.clone();
+        panel.cursor = 0;
+        panel.scroll_offset = 0;
+        refresh_active(state);
+        state.status_message = Some(format!("cd to {}", path.display()));
+    }
 }
 
 fn handle_normal_mode<B: ratatui::backend::Backend>(
@@ -961,21 +1001,25 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
             // Alt+Enter: Show file properties dialog
             if let Some(entry) = state.active_panel().current_entry()
-                && entry.name != ".." {
-                    state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
-                        name: entry.name.clone(),
-                        size: entry.size,
-                        mtime: entry.modified,
-                        permissions: entry.permissions,
-                        owner: entry.owner.clone(),
-                        group: entry.group.clone(),
-                        is_dir: entry.is_dir,
-                        is_symlink: entry.is_symlink,
-                    });
-                }
+                && entry.name != ".."
+            {
+                state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
+                    name: entry.name.clone(),
+                    size: entry.size,
+                    mtime: entry.modified,
+                    permissions: entry.permissions,
+                    owner: entry.owner.clone(),
+                    group: entry.group.clone(),
+                    is_dir: entry.is_dir,
+                    is_symlink: entry.is_symlink,
+                });
+            }
         }
         KeyCode::Enter => {
-            let entry_info = state.active_panel().current_entry().map(|e| (e.is_dir, e.path.clone()));
+            let entry_info = state
+                .active_panel()
+                .current_entry()
+                .map(|e| (e.is_dir, e.path.clone()));
             if let Some((is_dir, path)) = entry_info
                 && is_dir
             {
@@ -1011,12 +1055,18 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::F(4) => {
-            let entry_info = state.active_panel().current_entry().map(|e| (e.is_dir, e.path.clone()));
+            let entry_info = state
+                .active_panel()
+                .current_entry()
+                .map(|e| (e.is_dir, e.path.clone()));
             if let Some((is_dir, path)) = entry_info
                 && !is_dir
             {
                 let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-                let _ = suspend_terminal_stdout();
+                if let Err(e) = suspend_terminal_stdout() {
+                    state.status_message = Some(format!("Terminal suspend failed: {e}"));
+                    return;
+                }
                 // Write state file before launching editor – if editor is SIGKILL'd,
                 // Drop is skipped but we can detect this on next startup.
                 let terminal_state_file = terminal_state_file_path();
@@ -1035,11 +1085,20 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit())
                     .status();
-                // Clean up state file on normal exit
-                let _ = std::fs::remove_file(&terminal_state_file);
-                let _ = resume_terminal_stdout();
-                if let Err(e) = status {
-                    state.status_message = Some(format!("Editor error: {e}"));
+                let resume_result = resume_terminal_stdout();
+                if resume_result.is_ok() {
+                    let _ = std::fs::remove_file(&terminal_state_file);
+                }
+                match (status, resume_result) {
+                    (Err(e), _) => state.status_message = Some(format!("Editor error: {e}")),
+                    (_, Err(e)) => {
+                        state.status_message =
+                            Some(format!("Terminal restore failed after editor: {e}"));
+                    }
+                    (Ok(s), _) if !s.success() => {
+                        state.status_message = Some(format!("Editor exited with status: {s}"));
+                    }
+                    (Ok(_), Ok(_)) => {}
                 }
                 refresh_active(state);
             }
@@ -1096,10 +1155,11 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::F(7) => {
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                "Create directory:".to_string(),
-                String::new(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Create directory:".to_string(),
+                default_text: String::new(),
+                action: InputAction::CreateDirectory,
+            });
             state.dialog_input.clear();
             state.dialog_cursor_pos = 0;
         }
@@ -1122,22 +1182,24 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
             let panel = state.active_panel_mut();
             if let Some(prev_path) = panel.history.pop()
-                && prev_path.is_dir() {
-                    panel.path = prev_path.clone();
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
-                    state.status_message = Some(format!("cd to {}", prev_path.display()));
-                }
+                && prev_path.is_dir()
+            {
+                panel.path = prev_path.clone();
+                panel.cursor = 0;
+                panel.scroll_offset = 0;
+                refresh_active(state);
+                state.status_message = Some(format!("cd to {}", prev_path.display()));
+            }
         }
         KeyCode::Char(c) if modifiers.contains(KeyModifiers::ALT) && ('1'..='9').contains(&c) => {
             navigate_to_hotlist(state, (c as usize) - ('1' as usize));
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::ALT) => {
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                "Quick cd:".to_string(),
-                state.active_panel().path.display().to_string(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Quick cd:".to_string(),
+                default_text: state.active_panel().path.display().to_string(),
+                action: InputAction::QuickCd,
+            });
             state.dialog_input = state.active_panel().path.display().to_string();
             state.dialog_cursor_pos = state.dialog_input.chars().count();
         }
@@ -1166,19 +1228,20 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         }
         _ => {
             if let KeyCode::Char(c) = key
-                && modifiers.is_empty() {
-                    state.search_query.push(c);
-                    state.mode = AppMode::Search;
-                    let filter_query = state.search_query.clone();
-                    let panel = state.active_panel_mut();
-                    if panel.unfiltered_entries.is_empty() {
-                        panel.unfiltered_entries = panel.entries.clone();
-                    }
-                    panel.filter = Some(filter_query);
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    refresh_active(state);
+                && modifiers.is_empty()
+            {
+                state.search_query.push(c);
+                state.mode = AppMode::Search;
+                let filter_query = state.search_query.clone();
+                let panel = state.active_panel_mut();
+                if panel.unfiltered_entries.is_empty() {
+                    panel.unfiltered_entries = panel.entries.clone();
                 }
+                panel.filter = Some(filter_query);
+                panel.cursor = 0;
+                panel.scroll_offset = 0;
+                refresh_active(state);
+            }
         }
     }
 }
@@ -1214,10 +1277,11 @@ fn handle_viewer_mode(
             KeyCode::Char('/') => {
                 state.dialog_input = vs.search_query.clone().unwrap_or_default();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Viewer search:".to_string(),
-                    state.dialog_input.clone(),
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Viewer search:".to_string(),
+                    default_text: state.dialog_input.clone(),
+                    action: InputAction::ViewerSearch,
+                });
             }
             _ => {}
         }
@@ -1246,19 +1310,18 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
             state.command_line.pop();
             state.history_index = None;
         }
-        KeyCode::Up
-            if !state.command_history.is_empty() => {
-                if state.history_index.is_none() {
-                    state.command_draft = state.command_line.clone();
-                }
-                let idx = match state.history_index {
-                    Some(i) if i > 0 => i - 1,
-                    Some(i) => i,
-                    None => state.command_history.len() - 1,
-                };
-                state.history_index = Some(idx);
-                state.command_line = state.command_history[idx].clone();
+        KeyCode::Up if !state.command_history.is_empty() => {
+            if state.history_index.is_none() {
+                state.command_draft = state.command_line.clone();
             }
+            let idx = match state.history_index {
+                Some(i) if i > 0 => i - 1,
+                Some(i) => i,
+                None => state.command_history.len() - 1,
+            };
+            state.history_index = Some(idx);
+            state.command_line = state.command_history[idx].clone();
+        }
         KeyCode::Down => {
             if let Some(idx) = state.history_index {
                 if idx + 1 < state.command_history.len() {
@@ -1297,7 +1360,9 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
     impl Drop for ShellRestoreGuard {
         fn drop(&mut self) {
             if !self.restore_ok {
-                eprintln!("Terminal restore failed after shell command");
+                if let Err(err) = resume_terminal_stdout() {
+                    eprintln!("Terminal restore failed after shell command: {err}");
+                }
             }
         }
     }
@@ -1323,11 +1388,11 @@ fn run_shell_command(state: &mut AppState, cmd: &str) {
     let mut buf = String::new();
     // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for
     let _ = io::stdin().read_line(&mut buf);
-    let ok = resume_terminal_stdout().is_ok();
-    if ok {
-        restore_guard.restore_ok = true;
-    } else {
-        state.status_message = Some("Terminal restore failed – display may be corrupted".into());
+    match resume_terminal_stdout() {
+        Ok(()) => restore_guard.restore_ok = true,
+        Err(e) => {
+            state.status_message = Some(format!("Terminal restore failed: {e}"));
+        }
     }
     refresh_active(state);
 }
@@ -1361,6 +1426,7 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
 fn handle_dialog(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
     key: KeyCode,
     terminal_height: u16,
 ) {
@@ -1374,7 +1440,7 @@ fn handle_dialog(
         app::types::DialogKind::Confirm(_) => match key {
             KeyCode::Char('y' | 'Y') => {
                 if state.pending_action.is_some() {
-                    execute_confirmed_action(state);
+                    start_confirmed_action(state, running_job);
                     state.dialog_selection = 0;
                     if state.status_message.is_some() {
                         state.mode = AppMode::Normal;
@@ -1395,7 +1461,7 @@ fn handle_dialog(
                 if state.dialog_selection == 1 {
                     dismiss_dialog(state);
                 } else if state.pending_action.is_some() {
-                    execute_confirmed_action(state);
+                    start_confirmed_action(state, running_job);
                     state.dialog_selection = 0;
                     if state.status_message.is_some() {
                         state.mode = AppMode::Normal;
@@ -1417,36 +1483,35 @@ fn handle_dialog(
             }
             _ => {}
         },
-        app::types::DialogKind::Input(_, _) => match key {
+        app::types::DialogKind::Input { action, .. } => match key {
             KeyCode::Enter => {
                 let input = state.dialog_input.clone();
-                if let AppMode::Dialog(app::types::DialogKind::Input(ref prompt, _)) = state.mode
-                    && prompt == "Viewer search:"
-                {
-                    if let Some(vs) = viewer_state.as_mut() {
-                        vs.search(&input, terminal_height.saturating_sub(3) as usize);
+                match action {
+                    InputAction::ViewerSearch => {
+                        if let Some(vs) = viewer_state.as_mut() {
+                            vs.search(&input, terminal_height.saturating_sub(3) as usize);
+                        }
+                        state.mode = AppMode::Viewing;
+                        state.dialog_input.clear();
+                        state.dialog_cursor_pos = 0;
+                        return;
                     }
-                    state.mode = AppMode::Viewing;
-                    state.dialog_input.clear();
-                    state.dialog_cursor_pos = 0;
-                    return;
-                }
-                if let AppMode::Dialog(app::types::DialogKind::Input(prompt, _)) = &state.mode {
-                    let prompt = prompt.clone();
-                    if prompt == "Create directory:" && !input.trim().is_empty() {
+                    InputAction::CreateDirectory if !input.trim().is_empty() => {
                         let dir = state.active_panel().path.clone();
                         if let Err(err) = ops::file_ops::create_directory(&dir.join(&input)) {
                             state.status_message = Some(format!("Create directory failed: {err}"));
                         } else {
                             refresh_active(state);
                         }
-                    } else if prompt == "Rename to:" && !input.is_empty() {
+                    }
+                    InputAction::Rename if !input.is_empty() => {
                         if let Some(entry) = state.active_panel().current_entry()
                             && let Err(err) = ops::file_ops::rename_entry(&entry.path, &input)
                         {
                             state.status_message = Some(format!("Rename failed: {err}"));
                         }
-                    } else if prompt == "Chmod (octal):" && !input.is_empty() {
+                    }
+                    InputAction::Chmod if !input.is_empty() => {
                         if let Some(mode) = parse_octal_mode(&input) {
                             if let Some(entry) = state.active_panel().current_entry()
                                 && let Err(err) = ops::file_ops::chmod(&entry.path, mode)
@@ -1456,14 +1521,16 @@ fn handle_dialog(
                         } else {
                             state.status_message = Some(format!("Invalid octal mode '{input}'"));
                         }
-                    } else if prompt == "Filter:" {
+                    }
+                    InputAction::Filter => {
                         let panel = state.active_panel_mut();
                         panel.filter = if input.trim().is_empty() {
                             None
                         } else {
                             Some(input)
                         };
-                    } else if prompt == "Quick cd:" {
+                    }
+                    InputAction::QuickCd => {
                         let expanded = if let Some(stripped) = input.strip_prefix('~') {
                             if let Some(home) = std::env::var_os("HOME") {
                                 std::path::PathBuf::from(home)
@@ -1494,11 +1561,16 @@ fn handle_dialog(
                         } else {
                             state.status_message = Some(format!("Directory not found: {input}"));
                         }
-                    } else if prompt == "Find file:" {
+                    }
+                    InputAction::FindFile => {
                         let dir = state.active_panel().path.clone();
-                        let results =
-                            ops::search::FileSearch::search_files(&dir, &input, true, false);
-                        if let Some(first) = results.first() {
+                        let outcome = ops::search::FileSearch::search_files_with_diagnostics(
+                            &dir, &input, true, false,
+                        );
+                        let result_count = outcome.matches.len();
+                        let error_count = outcome.errors.len();
+                        let truncated = outcome.truncated;
+                        if let Some(first) = outcome.matches.first() {
                             if let Some(parent) = first.path.parent() {
                                 state.active_panel_mut().path = parent.to_path_buf();
                                 refresh_active(state);
@@ -1514,10 +1586,27 @@ fn handle_dialog(
                                     );
                                 }
                             }
+                            let mut message =
+                                format!("Found {result_count} match(es) for '{input}'");
+                            if error_count > 0 {
+                                message.push_str(&format!(", {error_count} error(s)"));
+                            }
+                            if truncated {
+                                message.push_str(", truncated");
+                            }
+                            state.status_message = Some(message);
                         } else {
-                            state.status_message = Some(format!("No matches for '{input}'"));
+                            let mut message = format!("No matches for '{input}'");
+                            if error_count > 0 {
+                                message.push_str(&format!(", {error_count} error(s)"));
+                            }
+                            if truncated {
+                                message.push_str(", truncated");
+                            }
+                            state.status_message = Some(message);
                         }
                     }
+                    _ => {}
                 }
                 state.mode = AppMode::Normal;
                 state.dialog_input.clear();
@@ -1528,11 +1617,7 @@ fn handle_dialog(
                 }
             }
             KeyCode::Esc => {
-                let return_to_viewing = matches!(
-                    &state.mode,
-                    AppMode::Dialog(app::types::DialogKind::Input(p, _)) if p == "Viewer search:"
-                );
-                state.mode = if return_to_viewing {
+                state.mode = if action == InputAction::ViewerSearch {
                     AppMode::Viewing
                 } else {
                     AppMode::Normal
@@ -1543,22 +1628,21 @@ fn handle_dialog(
                     set_active_panel(state, panel);
                 }
             }
-            KeyCode::Backspace
-                if state.dialog_cursor_pos > 0 => {
-                    state.dialog_cursor_pos -= 1;
-                    let byte_pos = state
-                        .dialog_input
-                        .char_indices()
-                        .nth(state.dialog_cursor_pos)
-                        .map(|(i, _)| i)
-                        .unwrap_or(state.dialog_input.len());
-                    let next_byte = state.dialog_input[byte_pos..]
-                        .chars()
-                        .next()
-                        .map(|c| byte_pos + c.len_utf8())
-                        .unwrap_or(state.dialog_input.len());
-                    state.dialog_input.drain(byte_pos..next_byte);
-                }
+            KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
+                state.dialog_cursor_pos -= 1;
+                let byte_pos = state
+                    .dialog_input
+                    .char_indices()
+                    .nth(state.dialog_cursor_pos)
+                    .map(|(i, _)| i)
+                    .unwrap_or(state.dialog_input.len());
+                let next_byte = state.dialog_input[byte_pos..]
+                    .chars()
+                    .next()
+                    .map(|c| byte_pos + c.len_utf8())
+                    .unwrap_or(state.dialog_input.len());
+                state.dialog_input.drain(byte_pos..next_byte);
+            }
             KeyCode::Delete => {
                 let byte_pos = state
                     .dialog_input
@@ -1584,14 +1668,12 @@ fn handle_dialog(
                 state.dialog_input.insert(byte_pos, c);
                 state.dialog_cursor_pos += 1;
             }
-            KeyCode::Left
-                if state.dialog_cursor_pos > 0 => {
-                    state.dialog_cursor_pos -= 1;
-                }
-            KeyCode::Right
-                if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
-                    state.dialog_cursor_pos += 1;
-                }
+            KeyCode::Left if state.dialog_cursor_pos > 0 => {
+                state.dialog_cursor_pos -= 1;
+            }
+            KeyCode::Right if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
+                state.dialog_cursor_pos += 1;
+            }
             KeyCode::Home => {
                 state.dialog_cursor_pos = 0;
             }
@@ -1616,11 +1698,10 @@ fn handle_dialog(
             }
         }
         app::types::DialogKind::Progress(_, _) => {
-            // Progress dialog - exits on Esc
             if key == KeyCode::Esc {
-                state.mode = AppMode::Normal;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
+                if let Some(job) = running_job.as_ref() {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    state.status_message = Some("Cancel requested".to_string());
                 }
             }
         }
@@ -1658,14 +1739,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if len > 0 && state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if len > 0 && state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
                     if let Some(cmd) = state.command_history.get(idx).cloned() {
@@ -1684,14 +1763,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if len > 0 && state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if len > 0 && state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     if let Some(path) = state.directory_hotlist.get(state.picker_selected).cloned()
                     {
@@ -1717,15 +1794,14 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                             Some("Added current directory to hotlist".to_string());
                     }
                 }
-                KeyCode::Char('d')
-                    if state.picker_selected < state.directory_hotlist.len() => {
-                        state.directory_hotlist.remove(state.picker_selected);
-                        if state.picker_selected > 0
-                            && state.picker_selected >= state.directory_hotlist.len()
-                        {
-                            state.picker_selected -= 1;
-                        }
+                KeyCode::Char('d') if state.picker_selected < state.directory_hotlist.len() => {
+                    state.directory_hotlist.remove(state.picker_selected);
+                    if state.picker_selected > 0
+                        && state.picker_selected >= state.directory_hotlist.len()
+                    {
+                        state.picker_selected -= 1;
                     }
+                }
                 _ => {}
             }
         }
@@ -1737,14 +1813,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     let chosen = MODES[state.picker_selected.min(len - 1)];
                     state.mode = AppMode::Normal;
@@ -1759,14 +1833,12 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                 KeyCode::Esc => {
                     state.mode = AppMode::Normal;
                 }
-                KeyCode::Up
-                    if len > 0 && state.picker_selected > 0 => {
-                        state.picker_selected -= 1;
-                    }
-                KeyCode::Down
-                    if len > 0 && state.picker_selected + 1 < len => {
-                        state.picker_selected += 1;
-                    }
+                KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+                    state.picker_selected -= 1;
+                }
+                KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+                    state.picker_selected += 1;
+                }
                 KeyCode::Enter => {
                     let idx = state.picker_selected.min(len.saturating_sub(1));
                     state.mode = AppMode::Normal;
@@ -1804,6 +1876,7 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
 fn handle_mouse_event(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
     mouse_event: crossterm::event::MouseEvent,
     terminal_size: ratatui::layout::Size,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -1830,7 +1903,7 @@ fn handle_mouse_event(
         return;
     }
 
-    if handle_mouse_dialog(state, col, row, width, height) {
+    if handle_mouse_dialog(state, running_job, col, row, width, height) {
         return;
     }
     if handle_mouse_menu_bar(state, viewer_state, col, row, width, height, terminal) {
@@ -1886,7 +1959,7 @@ fn handle_mouse_scroll(
             }
             panel.ensure_cursor_visible(visible_rows);
         }
-        _ => unreachable!(),
+        _ => {}
     }
 }
 
@@ -1900,7 +1973,34 @@ fn dismiss_dialog(state: &mut AppState) {
     }
 }
 
-fn handle_mouse_dialog(state: &mut AppState, col: u16, row: u16, width: u16, height: u16) -> bool {
+fn handle_mouse_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) -> bool {
+    if matches!(
+        state.mode,
+        AppMode::Dialog(app::types::DialogKind::Progress(_, _))
+    ) {
+        return true;
+    }
+
+    if let AppMode::Dialog(app::types::DialogKind::Input { .. }) = state.mode {
+        let dialog_width = ((width as u32 * 50) / 100).max(30).min(width as u32) as u16;
+        let dialog_height = ((height as u32 * 40) / 100).max(5).min(height as u32) as u16;
+        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
+        let dialog_top = (height.saturating_sub(dialog_height)) / 2;
+        let inside_dialog = col >= dialog_left
+            && col < dialog_left.saturating_add(dialog_width)
+            && row >= dialog_top
+            && row < dialog_top.saturating_add(dialog_height);
+
+        return inside_dialog;
+    }
+
     if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
         let dialog_height = height * 40 / 100;
         let dialog_y = (height.saturating_sub(dialog_height)) / 2;
@@ -1914,7 +2014,7 @@ fn handle_mouse_dialog(state: &mut AppState, col: u16, row: u16, width: u16, hei
             if state.dialog_selection == new_sel {
                 if new_sel == 0 {
                     if state.pending_action.is_some() {
-                        execute_confirmed_action(state);
+                        start_confirmed_action(state, running_job);
                         state.dialog_selection = 0;
                         if state.status_message.is_some() {
                             dismiss_dialog(state);
@@ -2143,6 +2243,20 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
 ) -> io::Result<()> {
     suspend_terminal_stdout()?;
 
+    struct ExternalViewRestoreGuard {
+        restore_ok: bool,
+    }
+
+    impl Drop for ExternalViewRestoreGuard {
+        fn drop(&mut self) {
+            if !self.restore_ok {
+                let _ = resume_terminal_stdout();
+            }
+        }
+    }
+
+    let mut restore_guard = ExternalViewRestoreGuard { restore_ok: false };
+
     // Show message to user
     println!("External view active. Press Ctrl+O to return to Libre Commander.");
     println!("Press Enter to continue...");
@@ -2151,22 +2265,24 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     enable_raw_mode()?;
     loop {
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
-            && let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    break;
-                }
-                // Also allow Enter to return
-                if key.code == KeyCode::Enter {
-                    break;
-                }
-                // Esc to return
-                if key.code == KeyCode::Esc {
-                    break;
-                }
+            && let Event::Key(key) = event::read()?
+        {
+            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                break;
             }
+            // Also allow Enter to return
+            if key.code == KeyCode::Enter {
+                break;
+            }
+            // Esc to return
+            if key.code == KeyCode::Esc {
+                break;
+            }
+        }
     }
 
     resume_terminal_stdout()?;
+    restore_guard.restore_ok = true;
 
     // Refresh display
     refresh_both(state);
@@ -2174,116 +2290,139 @@ fn toggle_external_view<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn execute_confirmed_action(state: &mut AppState) {
+fn action_label(action: &app::types::PendingAction) -> &'static str {
+    match action {
+        app::types::PendingAction::Copy { .. } => "Copy",
+        app::types::PendingAction::Move { .. } => "Move",
+        app::types::PendingAction::Delete { .. } => "Delete",
+    }
+}
+
+fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<RunningJob>) {
     let action = match state.pending_action.take() {
         Some(a) => a,
         None => return,
     };
-    match action {
-        app::types::PendingAction::Copy {
-            sources: paths,
-            dest: dest_dir,
-        } => {
-            let mut errors: Vec<String> = Vec::new();
-            let mut used_dests: HashSet<PathBuf> = HashSet::new();
-            for src in &paths {
-                let file_name = src.file_name().unwrap_or_default();
-                let dest = dest_dir.join(file_name);
-                if !used_dests.insert(dest.clone()) {
-                    errors.push(format!(
-                        "{}: duplicate destination {}",
-                        src.display(),
-                        dest.display()
-                    ));
-                    continue;
-                }
-                let result = match src.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => {
-                        ops::file_ops::copy_symlink(src, &dest)
-                    }
-                    Ok(meta) if meta.is_dir() => {
-                        ops::file_ops::copy_dir_recursive(src, &dest).map(|_| ())
-                    }
-                    Ok(_) => ops::file_ops::copy_file(src, &dest).map(|_| ()),
-                    Err(e) => Err(e),
+    if running_job.is_some() {
+        state.status_message = Some("Another job is already running".to_string());
+        return;
+    }
+
+    let action_label = action_label(&action);
+    let (sender, receiver) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_for_worker = Arc::clone(&cancel);
+    let handle = thread::spawn(move || {
+        let progress_sender = sender.clone();
+        let report = ops::batch::execute_batch_with_progress(
+            action,
+            move |progress| {
+                let _ = progress_sender.send(JobMessage::Progress(progress));
+            },
+            Some(cancel_for_worker),
+        );
+        let _ = sender.send(JobMessage::Finished {
+            action_label,
+            report,
+        });
+    });
+
+    state.active_panel_mut().clear_selection();
+    state.status_message = None;
+    state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
+        format!("{action_label} starting..."),
+        0.0,
+    ));
+    *running_job = Some(RunningJob {
+        receiver,
+        cancel,
+        handle: Some(handle),
+    });
+}
+
+fn poll_running_job(state: &mut AppState, running_job: &mut Option<RunningJob>) -> bool {
+    let Some(job) = running_job.as_mut() else {
+        return false;
+    };
+    let mut dirty = false;
+    let mut finished = None;
+
+    while let Ok(message) = job.receiver.try_recv() {
+        dirty = true;
+        match message {
+            JobMessage::Progress(progress) => {
+                let current = progress
+                    .current
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "done".to_string());
+                let message = if job.cancel.load(Ordering::Relaxed) {
+                    format!("Canceling after current item: {current}")
+                } else {
+                    format!("{} of {}: {current}", progress.completed, progress.total)
                 };
-                if let Err(e) = result {
-                    errors.push(format!("{}: {}", src.display(), e));
-                }
+                state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
+                    message,
+                    progress.percent(),
+                ));
             }
-            state.active_panel_mut().clear_selection();
-            if !errors.is_empty() {
-                state.status_message = Some(format!("Copy errors: {}", errors.join("; ")));
-            }
-            refresh_both(state);
-        }
-        app::types::PendingAction::Move {
-            sources: paths,
-            dest: dest_dir,
-        } => {
-            let mut errors: Vec<String> = Vec::new();
-            let mut used_dests: HashSet<PathBuf> = HashSet::new();
-            for src in &paths {
-                let file_name = src.file_name().unwrap_or_default();
-                let dest = dest_dir.join(file_name);
-                if !used_dests.insert(dest.clone()) {
-                    errors.push(format!(
-                        "{}: duplicate destination {}",
-                        src.display(),
-                        dest.display()
-                    ));
-                    continue;
-                }
-                if let Err(e) = ops::file_ops::move_entry(src, &dest) {
-                    errors.push(format!("{}: {}", src.display(), e));
-                }
-            }
-            state.active_panel_mut().clear_selection();
-            if !errors.is_empty() {
-                state.status_message = Some(format!("Move errors: {}", errors.join("; ")));
-            }
-            refresh_both(state);
-        }
-        app::types::PendingAction::Delete { paths } => {
-            let mut errors: Vec<String> = Vec::new();
-            for path in &paths {
-                let result = match path.symlink_metadata() {
-                    Ok(meta) if meta.file_type().is_symlink() => ops::file_ops::delete_file(path),
-                    Ok(meta) if meta.is_dir() => ops::file_ops::delete_dir_recursive(path),
-                    Ok(_) => ops::file_ops::delete_file(path),
-                    Err(e) => Err(e),
-                };
-                if let Err(e) = result {
-                    errors.push(format!("{}: {}", path.display(), e));
-                }
-            }
-            state.active_panel_mut().clear_selection();
-            if !errors.is_empty() {
-                state.status_message = Some(format!("Delete errors: {}", errors.join("; ")));
-            }
-            refresh_both(state);
+            JobMessage::Finished {
+                action_label,
+                report,
+            } => finished = Some((action_label, report)),
         }
     }
+
+    if let Some((action_label, report)) = finished {
+        if let Some(mut job) = running_job.take()
+            && let Some(handle) = job.handle.take()
+        {
+            let _ = handle.join();
+        }
+        finish_running_job(state, action_label, report);
+        dirty = true;
+    }
+
+    dirty
+}
+
+fn finish_running_job(
+    state: &mut AppState,
+    action_label: &'static str,
+    report: ops::batch::BatchReport,
+) {
+    if report.canceled {
+        state.status_message = Some(format!(
+            "{action_label} canceled after {} item(s)",
+            report.success_count
+        ));
+    } else if !report.errors.is_empty() {
+        state.status_message = Some(format!(
+            "{} errors: {}",
+            action_label,
+            report.errors.join("; ")
+        ));
+    } else {
+        state.status_message = Some(format!(
+            "{action_label} finished: {} item(s)",
+            report.success_count
+        ));
+    }
+    state.mode = AppMode::Normal;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+    refresh_both(state);
 }
 
 fn apply_search_filter(panel: &mut PanelState) {
-    let sort_mode = panel.sort_mode;
-    let mut filtered: Vec<app::types::FileEntry> = panel
-        .unfiltered_entries
-        .iter()
-        .filter(|e| {
-            if e.name == ".." {
-                true
-            } else if let Some(f) = &panel.filter {
-                ops::search::FileSearch::matches_pattern(&e.name, f, false)
-            } else {
-                true
-            }
-        })
-        .cloned()
-        .collect();
-    sorting::sort_entries(&mut filtered, sort_mode);
-    panel.entries = filtered;
+    panel.sync_unfiltered_selection();
+    panel.entries = filtered_sorted_entries(
+        &panel.unfiltered_entries,
+        panel.filter.as_deref(),
+        panel.sort_mode,
+    );
     panel.cursor = 0;
     panel.scroll_offset = 0;
     panel.recalculate_selection_stats();
@@ -2334,8 +2473,11 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
-    let menu_counts: [usize; 5] = [4, 10, 7, 6, 4];
-    let max_items = menu_counts[state.menu_selected];
+    let max_items = menu_item_count(state.menu_selected);
+    if max_items == 0 {
+        state.mode = AppMode::Normal;
+        return;
+    }
 
     match key {
         KeyCode::Esc | KeyCode::F(9 | 10) => {
@@ -2343,14 +2485,14 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
         }
         KeyCode::Left => {
             state.menu_selected = if state.menu_selected == 0 {
-                4
+                menu_total_count() - 1
             } else {
                 state.menu_selected - 1
             };
             state.menu_item_selected = 0;
         }
         KeyCode::Right => {
-            state.menu_selected = (state.menu_selected + 1) % 5;
+            state.menu_selected = (state.menu_selected + 1) % menu_total_count();
             state.menu_item_selected = 0;
         }
         KeyCode::Up => {
@@ -2384,8 +2526,8 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
 }
 
 fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
-    match (state.menu_selected, state.menu_item_selected) {
-        (0 | 4, 0) => {
+    match menu_action_at(state.menu_selected, state.menu_item_selected) {
+        Some(MenuAction::ToggleListingMode) => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
                 panel.listing_mode = match panel.listing_mode {
@@ -2395,7 +2537,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             });
             None
         }
-        (0 | 4, 1) => {
+        Some(MenuAction::CycleSortOrder) => {
             with_menu_panel(state, |state| {
                 let p = state.active_panel_mut();
                 p.sort_mode = sorting::cycle_sort_mode(p.sort_mode);
@@ -2403,37 +2545,57 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             });
             None
         }
-        (0 | 4, 2) => {
+        Some(MenuAction::OpenFilter) => {
             with_menu_panel(state, |state| {
                 state.dialog_input = state.active_panel().filter.clone().unwrap_or_default();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Filter:".to_string(),
-                    state.dialog_input.clone(),
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Filter:".to_string(),
+                    default_text: state.dialog_input.clone(),
+                    action: InputAction::Filter,
+                });
             });
             None
         }
-        (0 | 4, 3) => {
+        Some(MenuAction::RefreshPanel) => {
             with_menu_panel(state, refresh_active);
             None
         }
-        // File menu: "User menu"(0), "View file"(1), "Edit file"(2), "Copy"(3), "Move"(4), "Mkdir"(5), "Delete"(6), "Rename"(7), "Chmod"(8), "Quit"(9)
-        (1, 0) => {
+        Some(MenuAction::OpenUserMenu) => {
             let panel_dir = state.active_panel().path.clone();
             let current_file = state
                 .active_panel()
                 .current_entry()
                 .map(|e| e.name.clone())
                 .unwrap_or_default();
-            match user_menu::load_menu(&panel_dir, &current_file) {
-                Ok(entries) if entries.is_empty() => {
-                    state.mode = AppMode::Dialog(app::types::DialogKind::Error(
-                        "No matching menu entries found.".to_string(),
-                    ));
+            match user_menu::load_menu_with_warnings(&panel_dir, &current_file) {
+                Ok(loaded) if loaded.entries.is_empty() => {
+                    let message = if loaded.warnings.is_empty() {
+                        "No matching menu entries found.".to_string()
+                    } else {
+                        format!(
+                            "No matching menu entries found.\n{}",
+                            loaded
+                                .warnings
+                                .iter()
+                                .map(|warning| format!(
+                                    "Line {}: {}",
+                                    warning.line, warning.message
+                                ))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    };
+                    state.mode = AppMode::Dialog(app::types::DialogKind::Error(message));
                 }
-                Ok(entries) => {
-                    state.user_menu_entries = entries;
+                Ok(loaded) => {
+                    if let Some(warning) = loaded.warnings.first() {
+                        state.status_message = Some(format!(
+                            "User menu warning: Line {}: {}",
+                            warning.line, warning.message
+                        ));
+                    }
+                    state.user_menu_entries = loaded.entries;
                     state.picker_selected = 0;
                     state.mode = AppMode::ListPicker(PickerKind::UserMenu);
                 }
@@ -2443,65 +2605,72 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             }
             None
         }
-        (1, 1) => Some(KeyCode::F(3)),
-        (1, 2) => Some(KeyCode::F(4)),
-        (1, 3) => Some(KeyCode::F(5)),
-        (1, 4) => Some(KeyCode::F(6)),
-        (1, 5) => Some(KeyCode::F(7)),
-        (1, 6) => Some(KeyCode::F(8)),
-        (1, 7) => {
+        Some(MenuAction::ViewFile) => Some(KeyCode::F(3)),
+        Some(MenuAction::EditFile) => Some(KeyCode::F(4)),
+        Some(MenuAction::Copy) => Some(KeyCode::F(5)),
+        Some(MenuAction::Move) => Some(KeyCode::F(6)),
+        Some(MenuAction::MakeDirectory) => Some(KeyCode::F(7)),
+        Some(MenuAction::Delete) => Some(KeyCode::F(8)),
+        Some(MenuAction::Rename) => {
             let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
             if let Some(name) = entry_name
                 && name != ".."
             {
                 state.dialog_input = name.clone();
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Rename to:".to_string(),
-                    name,
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Rename to:".to_string(),
+                    default_text: name,
+                    action: InputAction::Rename,
+                });
             }
             None
         }
-        (1, 8) => {
-            let entry_info = state.active_panel().current_entry().map(|e| (e.name.clone(), e.permissions));
+        Some(MenuAction::Chmod) => {
+            let entry_info = state
+                .active_panel()
+                .current_entry()
+                .map(|e| (e.name.clone(), e.permissions));
             if let Some((name, permissions)) = entry_info
                 && name != ".."
             {
                 state.dialog_input = format!("{:o}", permissions & 0o7777);
                 state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                    "Chmod (octal):".to_string(),
-                    state.dialog_input.clone(),
-                ));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Chmod (octal):".to_string(),
+                    default_text: state.dialog_input.clone(),
+                    action: InputAction::Chmod,
+                });
             }
             None
         }
-        (1, 9) => {
+        Some(MenuAction::Quit) => {
             state.should_quit = true;
             None
         }
-        // Command menu: "Directory tree"(0), "Find file"(1), "Swap panels"(2), "Switch panels"(3), ...
-        (2, 0) => {
+        Some(MenuAction::DirectoryTree) => {
             let path = state.active_panel().path.clone();
             let show_hidden = state.active_panel().show_hidden;
+            let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
             state.tree_root = path.clone();
-            state.tree_entries = dir_tree::build_tree(&path, 2, show_hidden);
+            state.tree_entries = tree.entries;
             state.tree_selected = 0;
             state.tree_scroll = 0;
             state.mode = AppMode::DirectoryTree;
+            set_tree_diagnostic_status(&mut state.status_message, tree.diagnostics);
             None
         }
-        (2, 1) => {
+        Some(MenuAction::FindFile) => {
             state.dialog_input.clear();
             state.dialog_cursor_pos = 0;
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input(
-                "Find file:".to_string(),
-                String::new(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Find file:".to_string(),
+                default_text: String::new(),
+                action: InputAction::FindFile,
+            });
             None
         }
-        (2, 2) => {
+        Some(MenuAction::SwapPanels) => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
             state.active_panel = match state.active_panel {
                 ActivePanel::Left => ActivePanel::Right,
@@ -2509,30 +2678,29 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             };
             None
         }
-        (2, 3) => {
+        Some(MenuAction::SwitchPanels) => {
             state.active_panel = match state.active_panel {
                 ActivePanel::Left => ActivePanel::Right,
                 ActivePanel::Right => ActivePanel::Left,
             };
             None
         }
-        (2, 4) => {
+        Some(MenuAction::CompareDirs) => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::CompareMode);
             None
         }
-        (2, 5) => {
+        Some(MenuAction::History) => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::History);
             None
         }
-        (2, 6) => {
+        Some(MenuAction::DirectoryHotlist) => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::Hotlist);
             None
         }
-        // Options menu: "Configuration..."(0), "Layout..."(1), "Panel options..."(2), "Appearance..."(3), "Show hidden files"(4), "Save setup"(5)
-        (3, 0) => {
+        Some(MenuAction::SaveCurrentPathToHotlist) => {
             if !state
                 .directory_hotlist
                 .iter()
@@ -2546,7 +2714,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
                 Some("Configuration saved current path into hotlist".to_string());
             None
         }
-        (3, 1) => {
+        Some(MenuAction::ToggleLayoutMode) => {
             let panel = state.active_panel_mut();
             panel.listing_mode = match panel.listing_mode {
                 app::types::ListingMode::Long => app::types::ListingMode::Brief,
@@ -2555,7 +2723,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
             None
         }
-        (3, 2) => {
+        Some(MenuAction::TogglePanelHidden) => {
             let panel = state.active_panel_mut();
             panel.show_hidden = !panel.show_hidden;
             refresh_active(state);
@@ -2565,14 +2733,14 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             ));
             None
         }
-        (3, 3) => {
+        Some(MenuAction::ResetPanelFilter) => {
             let panel = state.active_panel_mut();
             panel.filter = None;
             refresh_active(state);
             state.status_message = Some("Appearance reset active panel filter".to_string());
             None
         }
-        (3, 4) => {
+        Some(MenuAction::ToggleHiddenFiles) => {
             let p = state.active_panel_mut();
             p.show_hidden = !p.show_hidden;
             p.cursor = 0;
@@ -2580,7 +2748,7 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             refresh_active(state);
             None
         }
-        (3, 5) => {
+        Some(MenuAction::SaveSetup) => {
             match app::config::save_setup(state) {
                 Ok(path) => {
                     state.status_message = Some(format!("Setup saved to {}", path.display()));
@@ -2591,142 +2759,14 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             }
             None
         }
-        _ => None,
+        None => None,
     }
 }
 
 fn compare_directories(state: &mut AppState, mode: CompareMode) {
-    use std::collections::{HashMap, HashSet};
-
-    // Reset all selections first.
-    for entry in &mut state.left_panel.entries {
-        entry.selected = false;
-    }
-    for entry in &mut state.right_panel.entries {
-        entry.selected = false;
-    }
-
-    // Build lookup: name → metadata needed for comparison.
-    // We collect only what we need: (is_dir, size, mtime) to avoid holding references.
-    #[derive(Clone, Copy, PartialEq)]
-    struct EntryMeta {
-        is_dir: bool,
-        size: u64,
-        mtime: std::time::SystemTime,
-    }
-
-    let right_meta: HashMap<&str, EntryMeta> = state
-        .right_panel
-        .entries
-        .iter()
-        .filter(|e| e.name != "..")
-        .map(|e| {
-            (
-                e.name.as_str(),
-                EntryMeta {
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    mtime: e.modified,
-                },
-            )
-        })
-        .collect();
-
-    let left_meta: HashMap<&str, EntryMeta> = state
-        .left_panel
-        .entries
-        .iter()
-        .filter(|e| e.name != "..")
-        .map(|e| {
-            (
-                e.name.as_str(),
-                EntryMeta {
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    mtime: e.modified,
-                },
-            )
-        })
-        .collect();
-
-    // Helper: check if two entries match by mode.
-    fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool {
-        if left.is_dir != right.is_dir {
-            return false;
-        }
-        if left.is_dir {
-            return true;
-        }
-        match mode {
-            CompareMode::Quick => true,
-            CompareMode::Size => left.size == right.size,
-            CompareMode::Thorough => left.size == right.size && left.mtime == right.mtime,
-        }
-    }
-
-    // Count unique-left, unique-right, differing.
-    let mut unique_left: usize = 0;
-    let mut unique_right: usize = 0;
-    let mut differing: usize = 0;
-
-    for (name, left_meta) in &left_meta {
-        match right_meta.get(name) {
-            None => unique_left += 1,
-            Some(right_meta) => {
-                if !meta_matches(left_meta, right_meta, mode) {
-                    differing += 1;
-                }
-            }
-        }
-    }
-    for name in right_meta.keys() {
-        if !left_meta.contains_key(name) {
-            unique_right += 1;
-        }
-    }
-
-    // Collect names to mark (no references to entries held).
-    let mut left_to_mark: HashSet<String> = HashSet::new();
-    let mut right_to_mark: HashSet<String> = HashSet::new();
-
-    for (name, left_meta) in &left_meta {
-        let should_mark = match right_meta.get(name) {
-            None => true,
-            Some(right_meta) => !meta_matches(left_meta, right_meta, mode),
-        };
-        if should_mark {
-            left_to_mark.insert(name.to_string());
-        }
-    }
-
-    for (name, right_entry) in &right_meta {
-        match left_meta.get(name) {
-            None => right_to_mark.insert(name.to_string()),
-            Some(left_entry) => {
-                if meta_matches(left_entry, right_entry, mode) {
-                    false
-                } else {
-                    right_to_mark.insert(name.to_string())
-                }
-            }
-        };
-    }
-
-    // Apply selection (now we only mutate, no references held).
-    for entry in &mut state.left_panel.entries {
-        if entry.name == ".." {
-            continue;
-        }
-        entry.selected = left_to_mark.contains(&entry.name);
-    }
-    state.left_panel.recalculate_selection_stats();
-    for entry in &mut state.right_panel.entries {
-        if entry.name == ".." {
-            continue;
-        }
-        entry.selected = right_to_mark.contains(&entry.name);
-    }
-    state.right_panel.recalculate_selection_stats();
+    let report =
+        ops::compare::compare_entries(&state.left_panel.entries, &state.right_panel.entries, mode);
+    ops::compare::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 
     let mode_name = match mode {
         CompareMode::Quick => "Quick",
@@ -2736,7 +2776,8 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
     state.status_message = None;
     state.dialog_selection = 0;
     state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(format!(
-        "Compare dirs ({mode_name}):\nUnique in left:  {unique_left}\nUnique in right: {unique_right}\nDiffering:       {differing}"
+        "Compare dirs ({mode_name}):\nUnique in left:  {}\nUnique in right: {}\nDiffering:       {}",
+        report.unique_left, report.unique_right, report.differing
     )));
 }
 
@@ -2818,10 +2859,11 @@ mod tests {
         assert_eq!(state.dialog_input, "old.txt");
         assert_eq!(
             state.mode,
-            AppMode::Dialog(app::types::DialogKind::Input(
-                "Rename to:".to_string(),
-                "old.txt".to_string(),
-            ))
+            AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Rename to:".to_string(),
+                default_text: "old.txt".to_string(),
+                action: InputAction::Rename,
+            })
         );
     }
 
@@ -3116,17 +3158,67 @@ mod tests {
     }
 
     #[test]
+    fn mouse_input_dialog_outside_preserves_text() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Name:".to_string(),
+                default_text: "".to_string(),
+                action: InputAction::CreateDirectory,
+            }),
+            dialog_input: "draft".to_string(),
+            dialog_cursor_pos: 5,
+            ..Default::default()
+        };
+
+        let mut running_job = None;
+        let handled = handle_mouse_dialog(&mut state, &mut running_job, 0, 0, 100, 40);
+
+        assert!(!handled);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(app::types::DialogKind::Input { .. })
+        ));
+        assert_eq!(state.dialog_input, "draft");
+        assert_eq!(state.dialog_cursor_pos, 5);
+    }
+
+    #[test]
+    fn mouse_input_dialog_inside_consumes_click() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Input {
+                prompt: "Name:".to_string(),
+                default_text: "".to_string(),
+                action: InputAction::CreateDirectory,
+            }),
+            dialog_input: "draft".to_string(),
+            ..Default::default()
+        };
+
+        let mut running_job = None;
+        let handled = handle_mouse_dialog(&mut state, &mut running_job, 50, 20, 100, 40);
+
+        assert!(handled);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(app::types::DialogKind::Input { .. })
+        ));
+        assert_eq!(state.dialog_input, "draft");
+    }
+
+    #[test]
     fn directory_tree_page_down_uses_terminal_height() {
-        let mut state = AppState::default();
-        state.tree_entries = (0..50)
-            .map(|i| app::dir_tree::TreeEntry {
-                path: PathBuf::from(format!("/tmp/{i}")),
-                depth: 0,
-                is_dir: false,
-                expanded: false,
-                name: format!("entry-{i}"),
-            })
-            .collect();
+        let mut state = AppState {
+            tree_entries: (0..50)
+                .map(|i| app::dir_tree::TreeEntry {
+                    path: PathBuf::from(format!("/tmp/{i}")),
+                    depth: 0,
+                    is_dir: false,
+                    expanded: false,
+                    name: format!("entry-{i}"),
+                })
+                .collect(),
+            ..Default::default()
+        };
 
         handle_directory_tree(&mut state, &mut None, KeyCode::PageDown, 12);
 
@@ -3136,18 +3228,20 @@ mod tests {
 
     #[test]
     fn directory_tree_page_up_uses_terminal_height() {
-        let mut state = AppState::default();
-        state.tree_entries = (0..50)
-            .map(|i| app::dir_tree::TreeEntry {
-                path: PathBuf::from(format!("/tmp/{i}")),
-                depth: 0,
-                is_dir: false,
-                expanded: false,
-                name: format!("entry-{i}"),
-            })
-            .collect();
-        state.tree_selected = 25;
-        state.tree_scroll = 25;
+        let mut state = AppState {
+            tree_entries: (0..50)
+                .map(|i| app::dir_tree::TreeEntry {
+                    path: PathBuf::from(format!("/tmp/{i}")),
+                    depth: 0,
+                    is_dir: false,
+                    expanded: false,
+                    name: format!("entry-{i}"),
+                })
+                .collect(),
+            tree_selected: 25,
+            tree_scroll: 25,
+            ..Default::default()
+        };
 
         handle_directory_tree(&mut state, &mut None, KeyCode::PageUp, 12);
 

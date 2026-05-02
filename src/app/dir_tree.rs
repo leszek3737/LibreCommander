@@ -3,6 +3,18 @@ use std::path::{Path, PathBuf};
 use crate::ops::sorting::cmp_ignore_case;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeDiagnostic {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeBuildResult {
+    pub entries: Vec<TreeEntry>,
+    pub diagnostics: Vec<TreeDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeEntry {
     pub path: PathBuf,
     pub depth: usize,
@@ -15,9 +27,28 @@ pub struct TreeEntry {
 /// Returns the list sorted: directories first (alphabetically), then files (alphabetically),
 /// within each parent directory.
 pub fn build_tree(root: &Path, initial_depth: usize, show_hidden: bool) -> Vec<TreeEntry> {
+    build_tree_with_diagnostics(root, initial_depth, show_hidden).entries
+}
+
+pub fn build_tree_with_diagnostics(
+    root: &Path,
+    initial_depth: usize,
+    show_hidden: bool,
+) -> TreeBuildResult {
     let mut entries = Vec::new();
-    build_tree_recursive(root, 0, initial_depth, show_hidden, &mut entries);
-    entries
+    let mut diagnostics = Vec::new();
+    build_tree_recursive(
+        root,
+        0,
+        initial_depth,
+        show_hidden,
+        &mut entries,
+        &mut diagnostics,
+    );
+    TreeBuildResult {
+        entries,
+        diagnostics,
+    }
 }
 
 fn build_tree_recursive(
@@ -26,15 +57,31 @@ fn build_tree_recursive(
     max_expand_depth: usize,
     show_hidden: bool,
     out: &mut Vec<TreeEntry>,
+    diagnostics: &mut Vec<TreeDiagnostic>,
 ) {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
-        Err(_) => return,
+        Err(err) => {
+            diagnostics.push(TreeDiagnostic {
+                path: dir.to_path_buf(),
+                message: format!("Failed to read directory: {err}"),
+            });
+            return;
+        }
     };
 
     let mut children: Vec<TreeEntry> = Vec::new();
     for entry in read_dir {
-        let Ok(entry) = entry else { continue };
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                diagnostics.push(TreeDiagnostic {
+                    path: dir.to_path_buf(),
+                    message: format!("Failed to read directory entry: {err}"),
+                });
+                continue;
+            }
+        };
         let path = entry.path();
         let name = path
             .file_name()
@@ -45,7 +92,17 @@ fn build_tree_recursive(
             continue;
         }
 
-        let is_dir = path.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false);
+        let metadata = match path.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                diagnostics.push(TreeDiagnostic {
+                    path,
+                    message: format!("Failed to read metadata: {err}"),
+                });
+                continue;
+            }
+        };
+        let is_dir = metadata.is_dir();
         let expanded = is_dir && current_depth < max_expand_depth;
 
         children.push(TreeEntry {
@@ -72,6 +129,7 @@ fn build_tree_recursive(
                 max_expand_depth,
                 show_hidden,
                 out,
+                diagnostics,
             );
         }
     }
@@ -90,13 +148,22 @@ fn sort_entries(entries: &mut [TreeEntry]) {
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
 pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, _root: &Path, show_hidden: bool) {
+    let _diagnostics = toggle_expand_with_diagnostics(entries, index, _root, show_hidden);
+}
+
+pub fn toggle_expand_with_diagnostics(
+    entries: &mut Vec<TreeEntry>,
+    index: usize,
+    _root: &Path,
+    show_hidden: bool,
+) -> Vec<TreeDiagnostic> {
     let (is_dir, expanded, depth, path) = match entries.get(index) {
         Some(e) => (e.is_dir, e.expanded, e.depth, e.path.clone()),
-        None => return,
+        None => return Vec::new(),
     };
 
     if !is_dir {
-        return;
+        return Vec::new();
     }
 
     if expanded {
@@ -106,13 +173,25 @@ pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, _root: &Path, s
         }
         entries.drain(index + 1..end);
         entries[index].expanded = false;
+        Vec::new()
     } else {
         let mut children = Vec::new();
-        build_tree_recursive(&path, depth + 1, depth + 1, show_hidden, &mut children);
+        let mut diagnostics = Vec::new();
+        build_tree_recursive(
+            &path,
+            depth + 1,
+            depth + 1,
+            show_hidden,
+            &mut children,
+            &mut diagnostics,
+        );
 
-        let insert_pos = index + 1;
-        entries.splice(insert_pos..insert_pos, children);
-        entries[index].expanded = true;
+        if diagnostics.is_empty() {
+            let insert_pos = index + 1;
+            entries.splice(insert_pos..insert_pos, children);
+            entries[index].expanded = true;
+        }
+        diagnostics
     }
 }
 
@@ -269,5 +348,67 @@ mod tests {
         let len_before = entries.len();
         toggle_expand(&mut entries, 9999, dir.path(), false);
         assert_eq!(entries.len(), len_before);
+    }
+
+    #[test]
+    fn build_tree_reports_unreadable_root() {
+        let missing = std::env::temp_dir().join(format!(
+            "lc_dir_tree_missing_{}_{}",
+            std::process::id(),
+            "root"
+        ));
+
+        let result = build_tree_with_diagnostics(&missing, 0, false);
+
+        assert!(result.entries.is_empty());
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].path, missing);
+        assert!(
+            result.diagnostics[0]
+                .message
+                .starts_with("Failed to read directory:")
+        );
+    }
+
+    #[test]
+    fn build_tree_keeps_broken_symlink_as_symlink_not_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let broken_link = dir.path().join("broken-link");
+        std::os::unix::fs::symlink(dir.path().join("missing-target"), &broken_link).unwrap();
+
+        let result = build_tree_with_diagnostics(dir.path(), 0, false);
+
+        let entry = result
+            .entries
+            .iter()
+            .find(|entry| entry.path == broken_link)
+            .unwrap();
+        assert!(!entry.is_dir);
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn toggle_expand_reports_read_errors_and_keeps_collapsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let mut entries = vec![TreeEntry {
+            path: missing.clone(),
+            depth: 0,
+            is_dir: true,
+            expanded: false,
+            name: "missing".to_string(),
+        }];
+
+        let diagnostics = toggle_expand_with_diagnostics(&mut entries, 0, dir.path(), false);
+
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].expanded);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path, missing);
+        assert!(
+            diagnostics[0]
+                .message
+                .starts_with("Failed to read directory:")
+        );
     }
 }

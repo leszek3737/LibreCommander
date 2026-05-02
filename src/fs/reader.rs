@@ -53,7 +53,20 @@ pub fn read_directory(
     }
 
     for entry in fs::read_dir(path)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                errors.push(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to read directory entry in '{}': {}",
+                        path.display(),
+                        e
+                    ),
+                ));
+                continue;
+            }
+        };
         let entry_path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
 
@@ -453,5 +466,20 @@ mod tests {
         }
 
         fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_read_directory_missing_path_still_returns_error() {
+        let missing = std::env::temp_dir().join(format!(
+            "lc_reader_missing_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let err = read_directory(&missing, false).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }

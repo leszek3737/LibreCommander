@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::types::{ActivePanel, AppState, ListingMode, SortMode};
+use crate::app::paths;
+use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PersistedPanel {
     #[serde(default)]
     pub path: Option<String>,
@@ -31,7 +32,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedSetup {
     #[serde(default)]
     pub version: u32,
@@ -45,17 +46,73 @@ pub struct PersistedSetup {
     pub hotlist: Vec<String>,
 }
 
-fn config_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("lc")
-            .join("config.toml"),
-    )
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub active_panel: ActivePanel,
+    pub left: PersistedPanel,
+    pub right: PersistedPanel,
+    pub hotlist: Vec<PathBuf>,
 }
 
-fn panel_to_persisted(panel: &crate::app::types::PanelState) -> PersistedPanel {
+impl Settings {
+    pub fn from_state(state: &AppState) -> Self {
+        Self {
+            active_panel: state.active_panel,
+            left: panel_to_persisted(&state.left_panel),
+            right: panel_to_persisted(&state.right_panel),
+            hotlist: state.directory_hotlist.clone(),
+        }
+    }
+
+    pub fn apply_to_state(&self, state: &mut AppState) {
+        apply_panel(&mut state.left_panel, &self.left);
+        apply_panel(&mut state.right_panel, &self.right);
+        state.active_panel = self.active_panel;
+        if !self.hotlist.is_empty() {
+            state.directory_hotlist = self.hotlist.clone();
+        }
+    }
+}
+
+impl From<&Settings> for PersistedSetup {
+    fn from(settings: &Settings) -> Self {
+        Self {
+            version: 1,
+            active_panel: match settings.active_panel {
+                ActivePanel::Left => "left",
+                ActivePanel::Right => "right",
+            }
+            .to_string(),
+            left: settings.left.clone(),
+            right: settings.right.clone(),
+            hotlist: settings
+                .hotlist
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistedSetup> for Settings {
+    fn from(setup: PersistedSetup) -> Self {
+        Self {
+            active_panel: match setup.active_panel.as_str() {
+                "right" => ActivePanel::Right,
+                _ => ActivePanel::Left,
+            },
+            left: setup.left,
+            right: setup.right,
+            hotlist: setup.hotlist.into_iter().map(PathBuf::from).collect(),
+        }
+    }
+}
+
+fn config_path() -> Option<PathBuf> {
+    paths::config_file_path()
+}
+
+fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
     PersistedPanel {
         path: Some(panel.path.display().to_string()),
         listing_mode: panel.listing_mode,
@@ -66,6 +123,10 @@ fn panel_to_persisted(panel: &crate::app::types::PanelState) -> PersistedPanel {
 }
 
 pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
+    save_settings(&Settings::from_state(state))
+}
+
+pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
     let Some(path) = config_path() else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
     };
@@ -74,21 +135,7 @@ pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
         fs::create_dir_all(parent)?;
     }
 
-    let setup = PersistedSetup {
-        version: 1,
-        active_panel: match state.active_panel {
-            ActivePanel::Left => "left",
-            ActivePanel::Right => "right",
-        }
-        .to_string(),
-        left: panel_to_persisted(&state.left_panel),
-        right: panel_to_persisted(&state.right_panel),
-        hotlist: state
-            .directory_hotlist
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect(),
-    };
+    let setup = PersistedSetup::from(settings);
 
     let content = toml::to_string_pretty(&setup)
         .map_err(|e| io::Error::other(format!("serialize config: {e}")))?;
@@ -97,30 +144,27 @@ pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
 }
 
 pub fn load_setup(state: &mut AppState) -> Result<(), String> {
-    let Some(path) = config_path() else {
-        return Ok(());
-    };
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("Failed to read config {}: {e}", path.display())),
-    };
-    let setup: PersistedSetup = toml::from_str(&content)
-        .map_err(|e| format!("Failed to parse config {}: {e}", path.display()))?;
-
-    apply_panel(&mut state.left_panel, &setup.left);
-    apply_panel(&mut state.right_panel, &setup.right);
-    state.active_panel = match setup.active_panel.as_str() {
-        "right" => ActivePanel::Right,
-        _ => ActivePanel::Left,
-    };
-    if !setup.hotlist.is_empty() {
-        state.directory_hotlist = setup.hotlist.iter().map(PathBuf::from).collect();
+    if let Some(settings) = load_settings()? {
+        settings.apply_to_state(state);
     }
     Ok(())
 }
 
-fn apply_panel(panel: &mut crate::app::types::PanelState, persisted: &PersistedPanel) {
+pub fn load_settings() -> Result<Option<Settings>, String> {
+    let Some(path) = config_path() else {
+        return Ok(None);
+    };
+    let content = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Failed to read config {}: {e}", path.display())),
+    };
+    let setup: PersistedSetup = toml::from_str(&content)
+        .map_err(|e| format!("Failed to parse config {}: {e}", path.display()))?;
+    Ok(Some(Settings::from(setup)))
+}
+
+fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
     if let Some(ref path_str) = persisted.path {
         let path = PathBuf::from(path_str);
         let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -136,4 +180,99 @@ fn apply_panel(panel: &mut crate::app::types::PanelState, persisted: &PersistedP
         Some(persisted.filter.clone())
     };
     panel.show_hidden = persisted.show_hidden;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::types::{ListingMode, SortMode};
+
+    #[test]
+    fn settings_from_state_captures_persisted_fields() {
+        let tmp_dir = std::env::temp_dir();
+        let state = AppState {
+            active_panel: ActivePanel::Right,
+            directory_hotlist: vec![tmp_dir.clone(), PathBuf::from("/usr")],
+            left_panel: PanelState {
+                path: tmp_dir.clone(),
+                listing_mode: ListingMode::Brief,
+                sort_mode: SortMode::SizeDesc,
+                filter: Some("rs".to_string()),
+                show_hidden: false,
+                ..PanelState::new(tmp_dir.clone())
+            },
+            ..AppState::default()
+        };
+
+        let settings = Settings::from_state(&state);
+
+        assert_eq!(settings.active_panel, ActivePanel::Right);
+        assert_eq!(settings.left.path, Some(tmp_dir.display().to_string()));
+        assert_eq!(settings.left.listing_mode, ListingMode::Brief);
+        assert_eq!(settings.left.sort_mode, SortMode::SizeDesc);
+        assert_eq!(settings.left.filter, "rs");
+        assert!(!settings.left.show_hidden);
+        assert_eq!(settings.hotlist, state.directory_hotlist);
+    }
+
+    #[test]
+    fn settings_apply_to_state_updates_persisted_fields() {
+        let tmp_dir = std::env::temp_dir();
+        let mut state = AppState::default();
+        let settings = Settings {
+            active_panel: ActivePanel::Right,
+            left: PersistedPanel {
+                path: Some(tmp_dir.display().to_string()),
+                listing_mode: ListingMode::Brief,
+                sort_mode: SortMode::ExtensionAsc,
+                filter: "txt".to_string(),
+                show_hidden: false,
+            },
+            right: PersistedPanel::default(),
+            hotlist: vec![tmp_dir.clone(), PathBuf::from("/usr")],
+        };
+
+        settings.apply_to_state(&mut state);
+
+        assert_eq!(state.active_panel, ActivePanel::Right);
+        assert_eq!(
+            state.left_panel.path,
+            tmp_dir.canonicalize().unwrap_or(tmp_dir)
+        );
+        assert_eq!(state.left_panel.listing_mode, ListingMode::Brief);
+        assert_eq!(state.left_panel.sort_mode, SortMode::ExtensionAsc);
+        assert_eq!(state.left_panel.filter, Some("txt".to_string()));
+        assert!(!state.left_panel.show_hidden);
+        assert_eq!(state.directory_hotlist, settings.hotlist);
+    }
+
+    #[test]
+    fn persisted_setup_roundtrips_through_settings() {
+        let setup = PersistedSetup {
+            version: 1,
+            active_panel: "right".to_string(),
+            left: PersistedPanel {
+                path: Some("/tmp".to_string()),
+                listing_mode: ListingMode::Brief,
+                sort_mode: SortMode::ModTimeDesc,
+                filter: "log".to_string(),
+                show_hidden: true,
+            },
+            right: PersistedPanel::default(),
+            hotlist: vec!["/tmp".to_string(), "/usr".to_string()],
+        };
+
+        let settings = Settings::from(setup.clone());
+        let persisted = PersistedSetup::from(&settings);
+
+        assert_eq!(settings.active_panel, ActivePanel::Right);
+        assert_eq!(
+            settings.hotlist,
+            vec![PathBuf::from("/tmp"), PathBuf::from("/usr")]
+        );
+        assert_eq!(persisted.active_panel, setup.active_panel);
+        assert_eq!(persisted.left, setup.left);
+        assert_eq!(persisted.right, setup.right);
+        assert_eq!(persisted.hotlist, setup.hotlist);
+    }
 }

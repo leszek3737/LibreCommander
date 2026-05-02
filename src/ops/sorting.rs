@@ -4,6 +4,7 @@
 //! implementations for various sorting modes.
 //!
 use std::cmp::Ordering;
+use std::cmp::Reverse;
 
 pub use crate::app::types::FileEntry;
 pub use crate::app::types::SortMode;
@@ -100,7 +101,59 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
 /// - Directories are sorted before files
 /// - Case-insensitive name sorting
 pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode) {
-    entries.sort_by(|a, b| compare_entries(a, b, mode));
+    match mode {
+        SortMode::NameAsc => {
+            entries.sort_by_cached_key(|entry| (entry_group(entry), lower_name(entry)))
+        }
+        SortMode::NameDesc => {
+            entries.sort_by_cached_key(|entry| (entry_group(entry), Reverse(lower_name(entry))))
+        }
+        SortMode::ExtensionAsc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry),
+                lower_extension(entry),
+                lower_name(entry),
+            )
+        }),
+        SortMode::ExtensionDesc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry),
+                Reverse(lower_extension(entry)),
+                lower_name(entry),
+            )
+        }),
+        SortMode::SizeAsc => {
+            entries.sort_by_cached_key(|entry| (entry_group(entry), entry.size, lower_name(entry)))
+        }
+        SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
+            (entry_group(entry), Reverse(entry.size), lower_name(entry))
+        }),
+        SortMode::ModTimeAsc => entries
+            .sort_by_cached_key(|entry| (entry_group(entry), entry.modified, lower_name(entry))),
+        SortMode::ModTimeDesc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry),
+                Reverse(entry.modified),
+                lower_name(entry),
+            )
+        }),
+    }
+}
+
+fn entry_group(entry: &FileEntry) -> u8 {
+    match (entry.name.as_str(), entry.is_dir) {
+        ("..", _) => 0,
+        (_, true) => 1,
+        (_, false) => 2,
+    }
+}
+
+fn lower_name(entry: &FileEntry) -> String {
+    entry.name.to_lowercase()
+}
+
+fn lower_extension(entry: &FileEntry) -> String {
+    get_extension(&entry.name).to_lowercase()
 }
 
 /// Cycles through sort modes in the specified order.

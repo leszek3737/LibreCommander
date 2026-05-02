@@ -332,7 +332,7 @@ Run the test suite:
 cargo test
 ```
 
-The project has 263 unit tests across 11 source files covering:
+The test suite covers:
 - File operations (copy, move, delete, rename, chmod)
 - Search (incremental, glob, content, symlink safety)
 - Sorting (all 8 modes, edge cases)
@@ -341,6 +341,18 @@ The project has 263 unit tests across 11 source files covering:
 - User menu parsing and substitution
 - Directory tree building and toggling
 - Viewer (scroll, search, hex mode, Unicode)
+
+## Quality Gates
+
+Run these checks before submitting changes:
+
+```bash
+cargo fmt --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+```
+
+File operations include safety guards: system directories are protected from deletion, symlinks are handled correctly during copy/move/delete, and terminal state is always restored (even on panic).
 
 ## License
 

@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+use crate::app::paths;
+
 /// A single entry parsed from a user menu file.
 #[derive(Debug, Clone)]
 pub struct MenuEntry {
@@ -9,6 +11,18 @@ pub struct MenuEntry {
     pub title: String,
     pub command: String,
     pub condition: Option<Regex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuWarning {
+    pub line: usize,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedMenu {
+    pub entries: Vec<MenuEntry>,
+    pub warnings: Vec<MenuWarning>,
 }
 
 impl PartialEq for MenuEntry {
@@ -106,11 +120,18 @@ fn tagged_name(path: &Path, active_dir: &Path) -> String {
 
 /// Parse the menu file content and return all entries.
 pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
-    let mut entries: Vec<MenuEntry> = Vec::new();
-    let mut lines = content.lines().peekable();
-    let mut pending_condition: Option<String> = None;
+    parse_menu_with_warnings(content).entries
+}
 
-    while let Some(line) = lines.next() {
+/// Parse the menu file content and return entries plus non-fatal warnings.
+pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
+    let mut entries: Vec<MenuEntry> = Vec::new();
+    let mut warnings: Vec<MenuWarning> = Vec::new();
+    let mut lines = content.lines().enumerate().peekable();
+    let mut pending_condition: Option<String> = None;
+    let mut pending_condition_line: usize = 0;
+
+    while let Some((line_idx, line)) = lines.next() {
         // Skip blank lines and comments.
         if line.trim().is_empty() || line.starts_with('#') {
             continue;
@@ -119,6 +140,7 @@ pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
         // Condition line (`+ f <regex>`): consumed before the hotkey line.
         if line.starts_with('+') {
             pending_condition = parse_condition(line.trim());
+            pending_condition_line = line_idx + 1;
             continue;
         }
 
@@ -137,8 +159,9 @@ pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
         let mut body_lines: Vec<String> = Vec::new();
         // Collect trailing condition lines that follow the body.
         let mut condition: Option<String> = pending_condition.take();
+        let mut condition_line = pending_condition_line;
 
-        while let Some(next) = lines.peek() {
+        while let Some((_, next)) = lines.peek() {
             let trimmed = next.trim();
             if trimmed.is_empty() {
                 // Blank line ends the entry; consume it.
@@ -147,8 +170,9 @@ pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
             }
             if next.starts_with('+') {
                 // Condition line for this entry.
-                let cond_line = lines.next().unwrap_or_default();
+                let (cond_line_idx, cond_line) = lines.next().unwrap_or_default();
                 condition = parse_condition(cond_line.trim());
+                condition_line = cond_line_idx + 1;
                 continue;
             }
             if next.starts_with('\t') || next.starts_with(' ') {
@@ -167,7 +191,13 @@ pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
         let compiled_condition = match condition {
             Some(s) => match Regex::new(&s) {
                 Ok(re) => Some(re),
-                Err(_) => continue,
+                Err(err) => {
+                    warnings.push(MenuWarning {
+                        line: condition_line,
+                        message: format!("Invalid filename regex `{s}`: {err}"),
+                    });
+                    continue;
+                }
             },
             None => None,
         };
@@ -180,7 +210,7 @@ pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
         });
     }
 
-    entries
+    ParsedMenu { entries, warnings }
 }
 
 /// Parse a condition line of the form `+ f <regex>`.
@@ -214,18 +244,22 @@ pub fn locate_menu_file(panel_dir: &Path) -> Option<PathBuf> {
     if local.exists() {
         return Some(local);
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let cfg = PathBuf::from(home).join(".config").join("lc").join("menu");
-        if cfg.exists() {
-            return Some(cfg);
-        }
+    if let Some(cfg) = paths::user_menu_path()
+        && cfg.exists()
+    {
+        return Some(cfg);
     }
     None
 }
 
-/// Load and parse entries from the best menu file, applying filename filter.
-/// Returns `Err` if no menu file is found or file cannot be read.
-pub fn load_menu(panel_dir: &Path, filename: &str) -> Result<Vec<MenuEntry>, String> {
+#[derive(Debug, Clone)]
+pub struct LoadedMenu {
+    pub entries: Vec<MenuEntry>,
+    pub warnings: Vec<MenuWarning>,
+}
+
+/// Load and parse entries from the best menu file, preserving non-fatal warnings.
+pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<LoadedMenu, String> {
     let path = locate_menu_file(panel_dir).ok_or_else(|| {
         format!(
             "No user menu file found (searched: {}/.mc.menu, ~/.config/lc/menu)",
@@ -234,11 +268,15 @@ pub fn load_menu(panel_dir: &Path, filename: &str) -> Result<Vec<MenuEntry>, Str
     })?;
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read menu file {}: {e}", path.display()))?;
-    let all = parse_menu(&content);
-    Ok(filter_entries(&all, filename)
+    let parsed = parse_menu_with_warnings(&content);
+    let entries = filter_entries(&parsed.entries, filename)
         .into_iter()
         .cloned()
-        .collect())
+        .collect();
+    Ok(LoadedMenu {
+        entries,
+        warnings: parsed.warnings,
+    })
 }
 
 // ============================================================================
@@ -478,5 +516,20 @@ mod tests {
         let src = "+ f [invalid\nT  Test\n\tcmd\n";
         let entries = parse_menu(src);
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_invalid_regex_reports_warning_and_keeps_valid_entries() {
+        let src = "+ f [invalid\nT  Test\n\tcmd\n\nB  Build\n\tcargo build\n";
+        let parsed = parse_menu_with_warnings(src);
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].hotkey, 'B');
+        assert_eq!(parsed.warnings.len(), 1);
+        assert_eq!(parsed.warnings[0].line, 1);
+        assert!(
+            parsed.warnings[0]
+                .message
+                .starts_with("Invalid filename regex `[invalid`:")
+        );
     }
 }

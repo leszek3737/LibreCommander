@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -6,51 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use super::dir_tree::TreeEntry;
 use super::user_menu::MenuEntry;
-
-// ============================================================================
-// 1a. Permissions newtype
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Permissions(pub u32);
-
-impl Permissions {
-    pub fn from_mode(mode: u32) -> Self {
-        Self(mode & 0o7777)
-    }
-}
-
-impl std::fmt::Display for Permissions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mode = self.0;
-        let mut result = String::with_capacity(9);
-        // owner
-        result.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o4000 != 0 {
-            if mode & 0o100 != 0 { 's' } else { 'S' }
-        } else {
-            if mode & 0o100 != 0 { 'x' } else { '-' }
-        });
-        // group
-        result.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o2000 != 0 {
-            if mode & 0o010 != 0 { 's' } else { 'S' }
-        } else {
-            if mode & 0o010 != 0 { 'x' } else { '-' }
-        });
-        // others
-        result.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o1000 != 0 {
-            if mode & 0o001 != 0 { 't' } else { 'T' }
-        } else {
-            if mode & 0o001 != 0 { 'x' } else { '-' }
-        });
-        write!(f, "{result}")
-    }
-}
 
 // ============================================================================
 // 1b. FileSize newtype
@@ -170,11 +125,25 @@ pub enum ActivePanel {
 // 5. DialogKind enum definition
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputAction {
+    CreateDirectory,
+    Rename,
+    Chmod,
+    Filter,
+    QuickCd,
+    FindFile,
+    ViewerSearch,
+}
+
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum DialogKind {
     Confirm(String),
-    Input(String, String), // (prompt, default_text)
+    Input {
+        prompt: String,
+        default_text: String,
+        action: InputAction,
+    },
     Error(String),
     Help(String),          // Help message, exits on any key
     Progress(String, f32), // (message, progress 0.0-1.0)
@@ -228,7 +197,6 @@ pub enum CompareMode {
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum AppMode {
     Normal,
     Viewing,
@@ -241,7 +209,75 @@ pub enum AppMode {
 }
 
 // ============================================================================
-// 7. AppState struct definition
+// 7. AppState substates
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelsState {
+    pub left_panel: PanelState,
+    pub right_panel: PanelState,
+    pub active_panel: ActivePanel,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CommandState {
+    pub command_line: String,
+    pub command_history: VecDeque<String>,
+    pub history_index: Option<usize>,
+    pub command_draft: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DialogState {
+    pub dialog_input: String,
+    pub dialog_cursor_pos: usize,
+    pub dialog_selection: usize,
+    pub pending_action: Option<PendingAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MenuState {
+    pub directory_hotlist: Vec<PathBuf>,
+    pub menu_selected: usize,
+    pub menu_item_selected: usize,
+    pub user_menu_entries: Vec<MenuEntry>,
+    pub menu_restore_panel: Option<ActivePanel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PickerState {
+    pub picker_selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DirectoryTreeState {
+    pub tree_root: PathBuf,
+    pub tree_entries: Vec<TreeEntry>,
+    pub tree_selected: usize,
+    pub tree_scroll: usize,
+}
+
+impl PanelsState {
+    pub fn new(current_dir: PathBuf) -> Self {
+        Self {
+            left_panel: PanelState::new(current_dir.clone()),
+            right_panel: PanelState::new(current_dir),
+            active_panel: ActivePanel::Left,
+        }
+    }
+}
+
+impl MenuState {
+    pub fn new(initial_hotlist_path: PathBuf) -> Self {
+        Self {
+            directory_hotlist: vec![initial_hotlist_path],
+            ..Self::default()
+        }
+    }
+}
+
+// ============================================================================
+// 7b. AppState struct definition
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -366,10 +402,6 @@ impl FileEntry {
         result
     }
 
-    pub fn is_parent_entry(&self) -> bool {
-        self.name == ".."
-    }
-
     pub fn display_modified(&self) -> String {
         use std::time::UNIX_EPOCH;
 
@@ -439,9 +471,7 @@ impl PanelState {
             let selected = entry.selected;
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
-            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == path) {
-                ue.selected = selected;
-            }
+            self.set_unfiltered_selection(&path, selected);
         }
     }
 
@@ -454,8 +484,29 @@ impl PanelState {
             let size = entry.size;
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
-            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == path) {
-                ue.selected = selected;
+            self.set_unfiltered_selection(&path, selected);
+        }
+    }
+
+    fn set_unfiltered_selection(&mut self, path: &PathBuf, selected: bool) {
+        if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == *path) {
+            ue.selected = selected;
+        }
+    }
+
+    pub fn sync_unfiltered_selection(&mut self) {
+        if self.unfiltered_entries.is_empty() {
+            return;
+        }
+
+        let selected_by_path: HashMap<&PathBuf, bool> = self
+            .entries
+            .iter()
+            .map(|entry| (&entry.path, entry.selected))
+            .collect();
+        for entry in &mut self.unfiltered_entries {
+            if let Some(selected) = selected_by_path.get(&entry.path) {
+                entry.selected = *selected;
             }
         }
     }
@@ -536,38 +587,43 @@ impl PanelState {
 impl AppState {
     pub fn new() -> Self {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-        let left_path = current_dir.clone();
+        let panels = PanelsState::new(current_dir.clone());
+        let command = CommandState::default();
+        let dialog = DialogState::default();
+        let menu = MenuState::new(current_dir);
+        let picker = PickerState::default();
+        let tree = DirectoryTreeState::default();
 
         Self {
-            left_panel: PanelState::new(left_path.clone()),
-            right_panel: PanelState::new(current_dir.clone()),
-            active_panel: ActivePanel::Left,
+            left_panel: panels.left_panel,
+            right_panel: panels.right_panel,
+            active_panel: panels.active_panel,
             mode: AppMode::Normal,
-            command_line: String::new(),
+            command_line: command.command_line,
             search_query: String::new(),
             should_quit: false,
             status_message: None,
-            dialog_input: String::new(),
-            dialog_cursor_pos: 0,
-            command_history: VecDeque::new(),
-            history_index: None,
-            command_draft: String::new(),
-            directory_hotlist: vec![left_path.clone()],
-            menu_selected: 0,
-            menu_item_selected: 0,
-            picker_selected: 0,
-            user_menu_entries: Vec::new(),
-            tree_root: PathBuf::new(),
-            tree_entries: Vec::new(),
-            tree_selected: 0,
-            tree_scroll: 0,
+            dialog_input: dialog.dialog_input,
+            dialog_cursor_pos: dialog.dialog_cursor_pos,
+            command_history: command.command_history,
+            history_index: command.history_index,
+            command_draft: command.command_draft,
+            directory_hotlist: menu.directory_hotlist,
+            menu_selected: menu.menu_selected,
+            menu_item_selected: menu.menu_item_selected,
+            picker_selected: picker.picker_selected,
+            user_menu_entries: menu.user_menu_entries,
+            tree_root: tree.tree_root,
+            tree_entries: tree.tree_entries,
+            tree_selected: tree.tree_selected,
+            tree_scroll: tree.tree_scroll,
             prev_mode: None,
-            menu_restore_panel: None,
-            dialog_selection: 0,
+            menu_restore_panel: menu.menu_restore_panel,
+            dialog_selection: dialog.dialog_selection,
             // Mouse support fields
             last_click_time: None,
             last_click_position: None,
-            pending_action: None,
+            pending_action: dialog.pending_action,
         }
     }
 
@@ -799,6 +855,26 @@ mod tests {
     }
 
     #[test]
+    fn test_panel_state_sync_unfiltered_selection() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("file1.txt", false, 100, 0o644, true),
+            create_test_entry("file2.txt", false, 200, 0o644, false),
+        ];
+        panel.unfiltered_entries = vec![
+            create_test_entry("file1.txt", false, 100, 0o644, false),
+            create_test_entry("file2.txt", false, 200, 0o644, true),
+            create_test_entry("file3.txt", false, 300, 0o644, true),
+        ];
+
+        panel.sync_unfiltered_selection();
+
+        assert!(panel.unfiltered_entries[0].selected);
+        assert!(!panel.unfiltered_entries[1].selected);
+        assert!(panel.unfiltered_entries[2].selected);
+    }
+
+    #[test]
     fn test_panel_state_selected_entries() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
@@ -909,6 +985,21 @@ mod tests {
     }
 
     #[test]
+    fn test_app_state_substate_defaults() {
+        let current_dir = PathBuf::from("/tmp");
+        let panels = PanelsState::new(current_dir.clone());
+        let menu = MenuState::new(current_dir.clone());
+
+        assert_eq!(panels.left_panel.path, current_dir.clone());
+        assert_eq!(panels.right_panel.path, PathBuf::from("/tmp"));
+        assert_eq!(panels.active_panel, ActivePanel::Left);
+        assert_eq!(menu.directory_hotlist, vec![PathBuf::from("/tmp")]);
+        assert_eq!(DialogState::default().dialog_cursor_pos, 0);
+        assert_eq!(PickerState::default().picker_selected, 0);
+        assert!(DirectoryTreeState::default().tree_entries.is_empty());
+    }
+
+    #[test]
     fn test_app_state_active_panel_left() {
         let state = AppState::new();
         let panel = state.active_panel();
@@ -967,10 +1058,20 @@ mod tests {
 
     #[test]
     fn test_dialog_kind_input() {
-        let dialog = DialogKind::Input("Enter name:".to_string(), "default".to_string());
-        if let DialogKind::Input(prompt, default) = dialog {
+        let dialog = DialogKind::Input {
+            prompt: "Enter name:".to_string(),
+            default_text: "default".to_string(),
+            action: InputAction::Rename,
+        };
+        if let DialogKind::Input {
+            prompt,
+            default_text,
+            action,
+        } = dialog
+        {
             assert_eq!(prompt, "Enter name:");
-            assert_eq!(default, "default");
+            assert_eq!(default_text, "default");
+            assert_eq!(action, InputAction::Rename);
         } else {
             panic!("Expected Input variant");
         }

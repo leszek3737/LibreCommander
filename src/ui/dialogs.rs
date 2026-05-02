@@ -1,3 +1,5 @@
+use super::theme::Theme;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -5,9 +7,6 @@ use ratatui::{
     text::Line,
     widgets::{Block, BorderType, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
-use unicode_width::UnicodeWidthStr;
-
-use super::theme::Theme;
 
 #[derive(Debug, Clone)]
 pub enum DialogKind {
@@ -183,16 +182,62 @@ pub fn render_input_dialog(
         .borders(Borders::ALL)
         .border_type(BorderType::Plain);
     let input_inner = input_block.inner(chunks[1]);
-    let input_paragraph = Paragraph::new(value.to_string()).block(input_block);
-    f.render_widget(input_paragraph, chunks[1]);
 
-    if cursor_pos <= value.chars().count() && input_inner.height > 0 {
-        let prefix: String = value.chars().take(cursor_pos).collect();
-        let display_col: usize = UnicodeWidthStr::width(prefix.as_str());
-        let cursor_x = input_inner.x + display_col.min(input_inner.width as usize) as u16;
-        let cursor_y = input_inner.y;
-        f.set_cursor_position((cursor_x, cursor_y));
+    let visible_width = input_inner.width as usize;
+    if visible_width == 0 || input_inner.height == 0 {
+        let input_paragraph = Paragraph::new(value.to_string()).block(input_block);
+        f.render_widget(input_paragraph, chunks[1]);
+        return;
     }
+
+    let chars: Vec<char> = value.chars().collect();
+    let char_count = chars.len();
+    let clamped_cursor = cursor_pos.min(char_count);
+
+    let char_widths: Vec<usize> = chars
+        .iter()
+        .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
+        .collect();
+
+    let mut cum_widths = vec![0usize; char_count + 1];
+    for i in 0..char_count {
+        cum_widths[i + 1] = cum_widths[i] + char_widths[i];
+    }
+
+    let cursor_display = cum_widths[clamped_cursor];
+    let scroll_display = if cursor_display >= visible_width {
+        cursor_display.saturating_sub(visible_width.saturating_sub(1))
+    } else {
+        0
+    };
+
+    let start_idx = if scroll_display == 0 {
+        0
+    } else {
+        cum_widths
+            .iter()
+            .position(|&w| w > scroll_display)
+            .map(|p| p.saturating_sub(1))
+            .unwrap_or(0)
+    };
+
+    let mut visible = String::new();
+    let mut vis_width = 0;
+    for i in start_idx..char_count {
+        if vis_width + char_widths[i] > visible_width {
+            break;
+        }
+        visible.push(chars[i]);
+        vis_width += char_widths[i];
+    }
+
+    let display_cursor_col = cursor_display.saturating_sub(cum_widths[start_idx]);
+    let cursor_x = input_inner.x + display_cursor_col.min(visible_width.saturating_sub(1)) as u16;
+    let cursor_y = input_inner.y;
+
+    let input_paragraph = Paragraph::new(visible).block(input_block);
+    f.render_widget(input_paragraph, chunks[1]);
+    f.set_cursor_position((cursor_x, cursor_y));
 }
 
 pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str) {
@@ -258,7 +303,11 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(2), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     let msg_paragraph = Paragraph::new(message.to_string())
@@ -272,6 +321,11 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         .percent(clamped)
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
+
+    let hint = Paragraph::new("Esc: cancel after current item")
+        .style(Theme::warning())
+        .alignment(Alignment::Center);
+    f.render_widget(hint, chunks[2]);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,12 +398,23 @@ pub fn render_list_picker(
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {
-        let list_items: Vec<ListItem> = items.iter().map(|s| ListItem::new(s.as_str())).collect();
+        let visible_height = chunks[0].height as usize;
+        let selected = selected.min(items.len().saturating_sub(1));
+        let start_idx = if visible_height == 0 {
+            selected
+        } else {
+            selected.saturating_sub(visible_height.saturating_sub(1))
+        };
+        let end_idx = (start_idx + visible_height).min(items.len());
+        let list_items: Vec<ListItem> = items[start_idx..end_idx]
+            .iter()
+            .map(|s| ListItem::new(s.as_str()))
+            .collect();
         let list = List::new(list_items)
             .highlight_style(Theme::highlight_bold())
             .highlight_symbol("> ");
         let mut list_state = ListState::default();
-        list_state.select(Some(selected));
+        list_state.select(Some(selected - start_idx));
         f.render_stateful_widget(list, chunks[0], &mut list_state);
     }
 
@@ -360,8 +425,19 @@ pub fn render_list_picker(
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let dialog_width = (area.width as u32 * percent_x as u32 / 100) as u16;
-    let dialog_height = (area.height as u32 * percent_y as u32 / 100) as u16;
+    const MIN_WIDTH: u16 = 30;
+    const MIN_HEIGHT: u16 = 5;
+
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        return area;
+    }
+
+    let dialog_width = ((area.width as u32 * percent_x as u32) / 100)
+        .max(MIN_WIDTH as u32)
+        .min(area.width as u32) as u16;
+    let dialog_height = ((area.height as u32 * percent_y as u32) / 100)
+        .max(MIN_HEIGHT as u32)
+        .min(area.height as u32) as u16;
 
     let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
     let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
@@ -372,6 +448,8 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn test_centered_rect_basic() {
@@ -401,5 +479,25 @@ mod tests {
         assert_eq!(rect.height, 20);
         assert_eq!(rect.x, 30);
         assert_eq!(rect.y, 15);
+    }
+
+    #[test]
+    fn list_picker_keeps_selected_visible() {
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items: Vec<String> = (0..20).map(|i| format!("Item {i}")).collect();
+
+        terminal
+            .draw(|f| render_list_picker(f, "Pick", &items, 19, "hint"))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Item 19"));
+        assert!(!rendered.contains("Item 0"));
     }
 }

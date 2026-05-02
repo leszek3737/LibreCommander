@@ -1,11 +1,45 @@
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 const MAX_RECURSION_DEPTH: usize = 256;
+const CRITICAL_DIRS: &[&str] = &[
+    "/",
+    "/Applications",
+    "/System",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/private",
+    "/proc",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+];
+const CRITICAL_DIR_PREFIXES: &[&str] = &[
+    "/Applications",
+    "/System",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/proc",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+];
 
 pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
+    ensure_destination_absent(dest)?;
+
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
         _ => src == dest,
@@ -23,37 +57,42 @@ pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
 }
 
 pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
-    copy_dir_recursive_inner(src, dest, 0)
+    let src_root = canonicalize_existing_path(src)?;
+    let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
+    copy_dir_recursive_inner(src, dest, &src_root, &dest_root, 0)
 }
 
-fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result<u64> {
+fn copy_dir_recursive_inner(
+    src: &Path,
+    dest: &Path,
+    src_root: &Path,
+    dest_root: &Path,
+    depth: usize,
+) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::other(
-            format!(
-                "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
-                src.display()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
+            src.display()
+        )));
     }
 
-    let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
-        (Some(s), Some(d)) => s == d,
-        _ => src == dest,
-    };
-    if same {
+    if depth == 0 && src_root == dest_root {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into itself",
         ));
     }
-    if path_contains(src, dest) {
+    if depth == 0 && path_contains_canonical(src_root, dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
         ));
     }
-    if !dest.exists() {
+    ensure_destination_absent(dest)?;
+    if depth == 0 {
         fs::create_dir_all(dest)?;
+    } else {
+        fs::create_dir(dest)?;
     }
     let src_perms = fs::metadata(src)?.permissions();
 
@@ -65,13 +104,15 @@ fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result
         let file_type = entry.file_type()?;
 
         if file_type.is_dir() {
-            total_bytes += copy_dir_recursive_inner(&entry_path, &dest_path, depth + 1)?;
+            let copied =
+                copy_dir_recursive_inner(&entry_path, &dest_path, src_root, dest_root, depth + 1)?;
+            total_bytes = total_bytes.saturating_add(copied);
         } else if file_type.is_symlink() {
             let target = fs::read_link(&entry_path)?;
             #[cfg(unix)]
             std::os::unix::fs::symlink(&target, &dest_path)?;
         } else {
-            total_bytes += copy_file(&entry_path, &dest_path)?;
+            total_bytes = total_bytes.saturating_add(copy_file(&entry_path, &dest_path)?);
         }
     }
 
@@ -80,6 +121,8 @@ fn copy_dir_recursive_inner(src: &Path, dest: &Path, depth: usize) -> io::Result
 }
 
 pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
+    ensure_destination_absent(dest)?;
+
     let target = fs::read_link(src)?;
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, dest)?;
@@ -92,9 +135,19 @@ pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
 }
 
 pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
-    if src == dest {
-        return Ok(());
+    let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
+        (Some(s), Some(d)) => s == d,
+        _ => src == dest,
+    };
+    if same_file {
+        return if src == dest {
+            Ok(())
+        } else {
+            fs::rename(src, dest)
+        };
     }
+    ensure_destination_absent(dest)?;
+
     if src.is_dir() && path_contains(src, dest) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -108,33 +161,28 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(
-                        format!(
-                            "copied {:?} to {:?} but failed to remove source: {}",
-                            src, dest, del_err
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
                 if !path_contains(src, dest)
-                    && let Err(del_err) = delete_dir_recursive(src) {
-                        return Err(io::Error::other(
-                            format!(
-                                "copied {:?} to {:?} but failed to remove source: {}",
-                                src, dest, del_err
-                            ),
-                        ));
-                    }
+                    && let Err(del_err) = delete_dir_recursive(src)
+                {
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
+                }
             } else {
                 copy_file(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(
-                        format!(
-                            "copied {:?} to {:?} but failed to remove source: {}",
-                            src, dest, del_err
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
                 }
             }
             Ok(())
@@ -148,11 +196,6 @@ pub fn delete_file(path: &Path) -> io::Result<()> {
 }
 
 pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
-    const CRITICAL_DIRS: &[&str] = &[
-        "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/lib64", "/var", "/dev", "/sys",
-        "/proc",
-    ];
-
     if let Ok(canonical) = path.canonicalize() {
         if canonical.parent().is_none() {
             return Err(io::Error::new(
@@ -162,7 +205,15 @@ pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
         }
         let canonical_str = canonical.to_string_lossy();
         for critical in CRITICAL_DIRS {
-            if canonical_str == *critical || canonical_str.starts_with(&format!("{critical}/")) {
+            if canonical_str == *critical {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("refusing to delete critical system directory: {critical}"),
+                ));
+            }
+        }
+        for critical in CRITICAL_DIR_PREFIXES {
+            if canonical_str.starts_with(&format!("{critical}/")) {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     format!("refusing to delete critical system directory: {critical}"),
@@ -174,6 +225,15 @@ pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
 }
 
 pub fn create_directory(path: &Path) -> io::Result<()> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path must not contain parent components",
+        ));
+    }
     fs::create_dir_all(path)
 }
 
@@ -213,6 +273,14 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
 }
 
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "chmod refuses to follow symlinks",
+        ));
+    }
+
     let permissions = fs::Permissions::from_mode(mode & 0o7777);
     fs::set_permissions(path, permissions)
 }
@@ -223,12 +291,10 @@ pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
 
 fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::other(
-            format!(
-                "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
-                path.display()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
+            path.display()
+        )));
     }
 
     let mut total: u64 = 0;
@@ -238,11 +304,11 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
             let entry_path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                total += calculate_dir_size_inner(&entry_path, depth + 1)?;
+                total = total.saturating_add(calculate_dir_size_inner(&entry_path, depth + 1)?);
             } else if file_type.is_symlink() {
                 continue;
             } else {
-                total += entry.metadata()?.len();
+                total = total.saturating_add(entry.metadata()?.len());
             }
         }
     } else {
@@ -252,11 +318,13 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
 }
 
 fn path_contains(parent: &Path, child: &Path) -> bool {
-    if let (Ok(canonical_parent), Ok(canonical_child)) =
-        (parent.canonicalize(), child.canonicalize())
-    {
-        return canonical_child.starts_with(&canonical_parent);
+    if let (Ok(canonical_parent), Ok(canonical_child)) = (
+        canonicalize_existing_path(parent),
+        canonicalize_with_nearest_existing_parent(child),
+    ) {
+        return path_contains_canonical(&canonical_parent, &canonical_child);
     }
+
     let parent_components = parent.components().peekable();
     let mut child_components = child.components().peekable();
 
@@ -268,6 +336,64 @@ fn path_contains(parent: &Path, child: &Path) -> bool {
     }
 
     child_components.peek().is_some()
+}
+
+fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
+    child != parent && child.starts_with(parent)
+}
+
+fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(dest) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
+    path.canonicalize()
+}
+
+fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Result<PathBuf> {
+    let mut ancestor = path;
+
+    loop {
+        if let Ok(canonical_ancestor) = ancestor.canonicalize() {
+            let suffix = path
+                .strip_prefix(ancestor)
+                .unwrap_or_else(|_| Path::new(""));
+            return normalize_suffix(canonical_ancestor, suffix);
+        }
+
+        match ancestor.parent() {
+            Some(parent) if parent != ancestor => ancestor = parent,
+            _ => return normalize_suffix(std::env::current_dir()?, path),
+        }
+    }
+}
+
+fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
+    for component in suffix.components() {
+        match component {
+            Component::Normal(name) => base.push(name),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !base.pop() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "path escapes filesystem root",
+                    ));
+                }
+            }
+            Component::RootDir => base = PathBuf::from(std::path::MAIN_SEPARATOR.to_string()),
+            Component::Prefix(prefix) => base = PathBuf::from(prefix.as_os_str()),
+        }
+    }
+
+    Ok(base)
 }
 
 fn components_equal(left: Component<'_>, right: Component<'_>) -> bool {
@@ -388,6 +514,38 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_file_existing_destination_does_not_overwrite() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"new content").unwrap();
+        fs::write(&dest, b"existing content").unwrap();
+
+        let err = copy_file(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_move_entry_existing_destination_does_not_overwrite() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"new content").unwrap();
+        fs::write(&dest, b"existing content").unwrap();
+
+        let err = move_entry(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn test_copy_dir_recursive_rejects_descendant_destination() {
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
@@ -401,6 +559,36 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_dir_recursive_rejects_parent_component_descendant_destination() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        let subdir = src.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let dest = subdir.join("..").join("nested");
+        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_existing_file_destination_does_not_overwrite() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"new content").unwrap();
+        let dest = tmp.join("dest.txt");
+        fs::write(&dest, b"existing content").unwrap();
+
+        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn test_move_entry_rejects_descendant_destination() {
         let tmp = unique_temp_dir();
         let src = tmp.join("move_dir");
@@ -409,6 +597,21 @@ mod tests {
         let dest = src.join("nested");
         let err = move_entry(&src, &dest).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_move_entry_rejects_parent_component_descendant_destination() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("move_dir");
+        let subdir = src.join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+
+        let dest = subdir.join("..").join("nested");
+        let err = move_entry(&src, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(src.exists());
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -493,6 +696,40 @@ mod tests {
         let new_dir = tmp.join("new_folder");
         create_directory(&new_dir).unwrap();
         assert!(new_dir.is_dir());
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_create_directory_rejects_parent_component() {
+        let tmp = unique_temp_dir();
+        let base = tmp.join("base");
+        fs::create_dir(&base).unwrap();
+        let path = base.join("..").join("escaped");
+
+        let err = create_directory(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!tmp.join("escaped").exists());
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_chmod_does_not_follow_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = unique_temp_dir();
+        let target = tmp.join("target.txt");
+        let link = tmp.join("link.txt");
+        fs::write(&target, b"target").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let err = chmod(&link, 0o777).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        let target_mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(target_mode, 0o600);
 
         fs::remove_dir_all(&tmp).unwrap();
     }
