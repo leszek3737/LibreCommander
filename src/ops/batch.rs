@@ -95,6 +95,8 @@ impl BatchProgress {
     pub fn byte_percent(&self) -> f32 {
         if self.bytes_total == 0 {
             self.percent() * 100.0
+        } else if self.bytes_done >= self.bytes_total {
+            100.0
         } else {
             (self.bytes_done as f32 / self.bytes_total as f32 * 100.0).min(99.99)
         }
@@ -907,7 +909,7 @@ mod tests {
         assert!(!report.canceled);
         assert_eq!(updates.first().map(|p| p.bytes_total), Some(7));
         assert_eq!(updates.last().map(|p| p.bytes_done), Some(7));
-        assert_eq!(updates.last().map(BatchProgress::byte_percent), Some(99.99));
+        assert_eq!(updates.last().map(BatchProgress::byte_percent), Some(100.0));
     }
 
     #[test]

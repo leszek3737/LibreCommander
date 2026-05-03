@@ -1,11 +1,13 @@
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 pub enum WatchEvent {
     Created(PathBuf),
@@ -20,18 +22,29 @@ pub struct Watcher {
     watched_dirs: HashSet<PathBuf>,
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
+    #[allow(dead_code)] // used in make_handler closure
+    debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 }
 
 impl Watcher {
     pub fn new(event_tx: Sender<WatchEvent>) -> io::Result<Self> {
         let paused = Arc::new(AtomicBool::new(false));
+        let debounce_state = Arc::new(Mutex::new(HashMap::new()));
         let primary = RecommendedWatcher::new(
-            make_handler(event_tx.clone(), Arc::clone(&paused)),
+            make_handler(
+                event_tx.clone(),
+                Arc::clone(&paused),
+                Arc::clone(&debounce_state),
+            ),
             Config::default(),
         )
         .map_err(notify_to_io)?;
         let fallback = PollWatcher::new(
-            make_handler(event_tx.clone(), Arc::clone(&paused)),
+            make_handler(
+                event_tx.clone(),
+                Arc::clone(&paused),
+                Arc::clone(&debounce_state),
+            ),
             Config::default(),
         )
         .map_err(notify_to_io)?;
@@ -42,6 +55,7 @@ impl Watcher {
             watched_dirs: HashSet::new(),
             event_tx,
             paused,
+            debounce_state,
         })
     }
 
@@ -84,11 +98,11 @@ impl Watcher {
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::SeqCst);
+        self.paused.store(true, Ordering::Release);
     }
 
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::Release);
     }
 
     pub fn sender(&self) -> &Sender<WatchEvent> {
@@ -99,9 +113,10 @@ impl Watcher {
 fn make_handler(
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
+    debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
-        if paused.load(Ordering::SeqCst) {
+        if paused.load(Ordering::Acquire) {
             return;
         }
 
@@ -110,6 +125,42 @@ fn make_handler(
         };
 
         for watch_event in convert_event(event) {
+            let path = match &watch_event {
+                WatchEvent::Created(p) | WatchEvent::Deleted(p) | WatchEvent::Modified(p) => {
+                    Some(p.clone())
+                }
+                WatchEvent::Renamed { from, to } => {
+                    // For renames, debounce both paths independently
+                    let now = Instant::now();
+                    let mut debounce = debounce_state.lock().unwrap();
+                    let from_allowed = debounce
+                        .get(from)
+                        .is_none_or(|last| now.duration_since(*last) >= Duration::from_millis(300));
+                    let to_allowed = debounce
+                        .get(to)
+                        .is_none_or(|last| now.duration_since(*last) >= Duration::from_millis(300));
+                    if from_allowed && to_allowed {
+                        debounce.insert(from.clone(), now);
+                        debounce.insert(to.clone(), now);
+                        drop(debounce);
+                        let _ = event_tx.send(watch_event);
+                    }
+                    continue;
+                }
+            };
+
+            if let Some(path) = path {
+                let now = Instant::now();
+                let mut debounce = debounce_state.lock().unwrap();
+                if let Some(last) = debounce.get(&path) {
+                    if now.duration_since(*last) < Duration::from_millis(300) {
+                        continue;
+                    }
+                }
+                debounce.insert(path, now);
+                drop(debounce);
+            }
+
             let _ = event_tx.send(watch_event);
         }
     }

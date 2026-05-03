@@ -83,7 +83,8 @@ fn temp_path_for(dest: &Path) -> std::path::PathBuf {
         .file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| OsString::from("copy"));
-    name.push(format!(".lc-copy-{}.tmp", std::process::id()));
+    let tid = std::thread::current().id();
+    name.push(format!(".lc-copy-{}-{:?}.tmp", std::process::id(), tid));
     dest.with_file_name(name)
 }
 

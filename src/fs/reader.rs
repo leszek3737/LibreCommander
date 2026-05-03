@@ -14,6 +14,8 @@ use crate::app::types::PanelState;
 use crate::ops::search::FileSearch;
 use crate::ops::sorting::sort_entries;
 
+const CACHE_MAX_SIZE: usize = 1024;
+
 #[cfg(test)]
 use crate::app::types::format_permissions;
 
@@ -143,6 +145,12 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     let (owner, group) = {
         UID_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
+            if cache.uid_to_name.len() >= CACHE_MAX_SIZE {
+                cache.uid_to_name.clear();
+            }
+            if cache.gid_to_name.len() >= CACHE_MAX_SIZE {
+                cache.gid_to_name.clear();
+            }
             let owner = cache
                 .uid_to_name
                 .entry(uid)
@@ -192,9 +200,6 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     }
 
     if panel.unfiltered_entries.is_empty() {
-        if panel.filter.is_some() {
-            return;
-        }
         panel.unfiltered_entries = panel.entries.clone();
     }
 
@@ -226,9 +231,6 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
     }
 
     if panel.unfiltered_entries.is_empty() {
-        if panel.filter.is_some() {
-            return;
-        }
         panel.unfiltered_entries = panel.entries.clone();
     }
 
@@ -769,7 +771,12 @@ mod tests {
             .map(|entry| entry.name.as_str())
             .collect();
         assert_eq!(names, vec!["..", "main.rs"]);
-        assert!(panel.unfiltered_entries.is_empty());
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.name == "notes.txt")
+        );
     }
 
     #[test]

@@ -264,6 +264,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 }
 
+fn file_names_from_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| p.clone())
+        })
+        .collect()
+}
+
 fn sync_watcher_job_state(
     watcher: &Option<Watcher>,
     job_running: bool,
@@ -1291,14 +1302,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let paths = selected_or_current_paths(state);
             if !paths.is_empty() {
                 let dest_dir = state.inactive_panel().path.clone();
-                let file_names: Vec<PathBuf> = paths
-                    .iter()
-                    .map(|p| {
-                        p.file_name()
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| p.clone())
-                    })
-                    .collect();
+                let file_names = file_names_from_paths(&paths);
                 let msg = if paths.len() == 1 {
                     let name = paths[0]
                         .file_name()
@@ -1321,14 +1325,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let paths = selected_or_current_paths(state);
             if !paths.is_empty() {
                 let dest_dir = state.inactive_panel().path.clone();
-                let file_names: Vec<PathBuf> = paths
-                    .iter()
-                    .map(|p| {
-                        p.file_name()
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| p.clone())
-                    })
-                    .collect();
+                let file_names = file_names_from_paths(&paths);
                 let msg = if paths.len() == 1 {
                     let name = paths[0]
                         .file_name()
@@ -1359,14 +1356,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::F(8) => {
             let paths = selected_or_current_paths(state);
             if !paths.is_empty() {
-                let file_names: Vec<PathBuf> = paths
-                    .iter()
-                    .map(|p| {
-                        p.file_name()
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| p.clone())
-                    })
-                    .collect();
+                let file_names = file_names_from_paths(&paths);
                 let msg = if paths.len() == 1 {
                     let name = paths[0]
                         .file_name()

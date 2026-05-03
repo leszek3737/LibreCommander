@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use crate::app::types::ViewMode;
+use crate::app::types::{ViewMode, format_size};
 
 use super::theme::Theme;
 
@@ -336,10 +336,6 @@ fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
         return false;
     }
 
-    if crate::app::file_type::is_source_code(name) || crate::app::file_type::is_config(name) {
-        return true;
-    }
-
     true
 }
 
@@ -526,7 +522,7 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     };
     let mode_label = if state.is_hex_mode() { "Hex" } else { "Text" };
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
-    let size_label = format_size(state.file_size);
+    let size_label = format_size(state.file_size as u64);
     let status_text = format!(
         " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}",
         state.line_count,
@@ -595,26 +591,11 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         state.scroll_offset + 1
     };
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
-    let size_label = format_size(state.file_size);
+    let size_label = format_size(state.file_size as u64);
     let status_text =
         format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}",);
     let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
-}
-
-fn format_size(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = 1024 * KB;
-    const GB: usize = 1024 * MB;
-    if bytes >= GB {
-        format!("{:.1} GiB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MiB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KiB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
@@ -1121,10 +1102,10 @@ mod tests {
     fn test_format_size() {
         assert_eq!(format_size(0), "0 B");
         assert_eq!(format_size(512), "512 B");
-        assert_eq!(format_size(1024), "1.0 KiB");
-        assert_eq!(format_size(1536), "1.5 KiB");
-        assert_eq!(format_size(1048576), "1.0 MiB");
-        assert_eq!(format_size(1073741824), "1.0 GiB");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+        assert_eq!(format_size(1048576), "1.0 MB");
+        assert_eq!(format_size(1073741824), "1.0 GB");
     }
 
     #[test]

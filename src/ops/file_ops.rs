@@ -366,29 +366,30 @@ pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::
 
 fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
     check_optional_canceled(cancel)?;
-    if let Ok(canonical) = path.canonicalize() {
-        if canonical.parent().is_none() {
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?;
+    if canonical.parent().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to delete root directory",
+        ));
+    }
+    let canonical_str = canonical.to_string_lossy();
+    for critical in CRITICAL_DIRS {
+        if canonical_str == *critical {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "refusing to delete root directory",
+                format!("refusing to delete critical system directory: {critical}"),
             ));
         }
-        let canonical_str = canonical.to_string_lossy();
-        for critical in CRITICAL_DIRS {
-            if canonical_str == *critical {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("refusing to delete critical system directory: {critical}"),
-                ));
-            }
-        }
-        for critical in CRITICAL_DIR_PREFIXES {
-            if canonical_str.starts_with(&format!("{critical}/")) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("refusing to delete critical system directory: {critical}"),
-                ));
-            }
+    }
+    for critical in CRITICAL_DIR_PREFIXES {
+        if canonical_str.starts_with(&format!("{critical}/")) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("refusing to delete critical system directory: {critical}"),
+            ));
         }
     }
     delete_dir_contents(path, cancel)?;
@@ -462,7 +463,7 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
         )
     })?;
     let new_path = parent.join(new_name);
-    if new_path.exists() {
+    if fs::symlink_metadata(&new_path).is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "file already exists",
