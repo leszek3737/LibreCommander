@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
 use std::time::SystemTime;
@@ -10,110 +10,14 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
+use crate::app::file_type;
 use crate::app::types::{FileEntry, PanelState, format_permissions, format_size};
-
-fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
-    s.get(s.len().saturating_sub(suffix.len())..)
-        .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
-}
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
-    let color = if entry.is_dir {
-        Theme::DIRECTORY
-    } else if entry.is_executable {
-        Theme::EXECUTABLE
-    } else if entry.is_symlink {
-        Theme::SYMLINK
-    } else if entry.is_hidden {
-        Theme::HIDDEN_FILE
-    } else if is_archive(&entry.name) {
-        Theme::ARCHIVE
-    } else if is_image(&entry.name) {
-        Theme::IMAGE
-    } else if is_source_code(&entry.name) {
-        Theme::SOURCE_CODE
-    } else {
-        Theme::REGULAR_FILE
-    };
-
+    let category = entry.category();
+    let color = Theme::category_color(category);
     Theme::panel_item(color, entry.is_dir || entry.is_executable)
-}
-
-/// Check if file is an archive
-pub fn is_archive(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".tar.gz")
-        || ends_with_ignore_ascii_case(name, ".tar.bz2")
-        || ends_with_ignore_ascii_case(name, ".tar.xz")
-        || ends_with_ignore_ascii_case(name, ".tar")
-        || ends_with_ignore_ascii_case(name, ".gz")
-        || ends_with_ignore_ascii_case(name, ".zip")
-        || ends_with_ignore_ascii_case(name, ".bz2")
-        || ends_with_ignore_ascii_case(name, ".xz")
-        || ends_with_ignore_ascii_case(name, ".7z")
-        || ends_with_ignore_ascii_case(name, ".rar")
-}
-
-/// Check if file is an image
-pub fn is_image(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".jpg")
-        || ends_with_ignore_ascii_case(name, ".jpeg")
-        || ends_with_ignore_ascii_case(name, ".png")
-        || ends_with_ignore_ascii_case(name, ".gif")
-        || ends_with_ignore_ascii_case(name, ".bmp")
-        || ends_with_ignore_ascii_case(name, ".svg")
-}
-
-/// Check if file is source code
-pub fn is_source_code(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".rs")
-        || ends_with_ignore_ascii_case(name, ".py")
-        || ends_with_ignore_ascii_case(name, ".js")
-        || ends_with_ignore_ascii_case(name, ".ts")
-        || ends_with_ignore_ascii_case(name, ".c")
-        || ends_with_ignore_ascii_case(name, ".h")
-        || ends_with_ignore_ascii_case(name, ".cpp")
-        || ends_with_ignore_ascii_case(name, ".go")
-        || ends_with_ignore_ascii_case(name, ".java")
-}
-
-/// Check if file is a document
-pub fn is_document(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".pdf")
-        || ends_with_ignore_ascii_case(name, ".doc")
-        || ends_with_ignore_ascii_case(name, ".docx")
-        || ends_with_ignore_ascii_case(name, ".xls")
-        || ends_with_ignore_ascii_case(name, ".xlsx")
-        || ends_with_ignore_ascii_case(name, ".odt")
-}
-
-/// Check if file is audio
-pub fn is_audio(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".mp3")
-        || ends_with_ignore_ascii_case(name, ".wav")
-        || ends_with_ignore_ascii_case(name, ".flac")
-        || ends_with_ignore_ascii_case(name, ".ogg")
-        || ends_with_ignore_ascii_case(name, ".m4a")
-}
-
-/// Check if file is video
-pub fn is_video(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".mp4")
-        || ends_with_ignore_ascii_case(name, ".avi")
-        || ends_with_ignore_ascii_case(name, ".mkv")
-        || ends_with_ignore_ascii_case(name, ".mov")
-        || ends_with_ignore_ascii_case(name, ".webm")
-}
-
-/// Check if file is a config/data file
-pub fn is_config(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".json")
-        || ends_with_ignore_ascii_case(name, ".toml")
-        || ends_with_ignore_ascii_case(name, ".yaml")
-        || ends_with_ignore_ascii_case(name, ".yml")
-        || ends_with_ignore_ascii_case(name, ".ini")
-        || ends_with_ignore_ascii_case(name, ".conf")
-        || ends_with_ignore_ascii_case(name, ".cfg")
 }
 
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
@@ -122,31 +26,31 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
         return "📁 ";
     }
 
-    if is_document(&entry.name) {
+    if file_type::is_document(&entry.name) {
         return "📄 ";
     }
 
-    if is_archive(&entry.name) {
+    if file_type::is_archive(&entry.name) {
         return "📦 ";
     }
 
-    if is_image(&entry.name) {
+    if file_type::is_image(&entry.name) {
         return "🖼 ";
     }
 
-    if is_audio(&entry.name) {
+    if file_type::is_audio(&entry.name) {
         return "🎵 ";
     }
 
-    if is_video(&entry.name) {
+    if file_type::is_video(&entry.name) {
         return "🎬 ";
     }
 
-    if is_config(&entry.name) {
+    if file_type::is_config(&entry.name) {
         return "⚙ ";
     }
 
-    if is_source_code(&entry.name) {
+    if file_type::is_source_code(&entry.name) {
         return "💻 ";
     }
 
@@ -238,7 +142,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
 
         // Get base style from file type
         let line_style = if entry.selected {
-            get_file_color(entry).fg(Color::LightYellow)
+            get_file_color(entry).fg(Theme::SELECTED_FILE_FG)
         } else {
             get_file_color(entry)
         };
@@ -394,21 +298,19 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let total_entries = panel.entries.len();
-    let visible_height = area.height as usize;
     let scroll_offset = panel.scroll_offset;
 
     let height = area.height as usize;
-    let scrollbar_height = height;
     let max_scroll = total_entries.saturating_sub(height);
-    let thumb_pos = if max_scroll > 0 && scrollbar_height > 1 {
-        scroll_offset * (scrollbar_height - 1) / max_scroll
+    let thumb_pos = if max_scroll > 0 && height > 1 {
+        scroll_offset * (height - 1) / max_scroll
     } else {
         0
     };
 
     let mut scrollbar = String::with_capacity(height * 4);
     for i in 0..height {
-        if i == thumb_pos && total_entries > visible_height {
+        if i == thumb_pos && total_entries > height {
             scrollbar.push_str("█\n");
         } else {
             scrollbar.push_str("│\n");
@@ -416,9 +318,9 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let style = if is_active {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Theme::SCROLLBAR_ACTIVE)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Theme::SCROLLBAR_INACTIVE)
     };
 
     let paragraph = Paragraph::new(scrollbar)
@@ -428,21 +330,41 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     f.render_widget(paragraph, area);
 }
 
+/// Compute compact panel status summary string.
+/// Format: "  5/100  5%  Sel: 3 [1.2 MB]"
+/// Returns (summary_string, summary_display_width).
+pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
+    let total = panel.entries.len();
+    if total == 0 {
+        return (String::new(), 0);
+    }
+
+    let pos = (panel.cursor + 1).min(total);
+    let pct = pos * 100 / total;
+
+    let mut parts = Vec::new();
+    parts.push(format!("{}/{}", pos, total));
+    parts.push(format!("{}%", pct));
+
+    if panel.selected_count > 0 {
+        parts.push(format!(
+            "Sel: {} [{}]",
+            panel.selected_count,
+            format_size(panel.selected_size)
+        ));
+    }
+
+    let summary = format!(" {} ", parts.join(" "));
+    let width = UnicodeWidthStr::width(summary.as_str());
+    (summary, width)
+}
+
 /// Render status bar showing current file info
 pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let available = area.width as usize;
 
-    let mut selected_info = String::new();
-    if panel.selected_count > 0 {
-        selected_info = format!(
-            "  Selected: {} files ({})",
-            panel.selected_count,
-            format_size(panel.selected_size)
-        );
-    }
-
-    let selected_width = UnicodeWidthStr::width(selected_info.as_str());
-    let remaining = available.saturating_sub(selected_width);
+    let (right_info, right_width) = panel_status_summary(panel);
+    let remaining = available.saturating_sub(right_width);
 
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
@@ -496,10 +418,10 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
         String::new()
     };
 
-    let full_text = format!("{info_line}{selected_info}");
+    let full_text = format!("{info_line}{right_info}");
 
     let paragraph = Paragraph::new(full_text)
-        .style(Style::default().fg(Color::LightCyan))
+        .style(Style::default().fg(Theme::STATUS_BAR_FG))
         .block(Block::default().borders(Borders::TOP));
 
     f.render_widget(paragraph, area);
@@ -528,7 +450,9 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
         .split(area);
 
     for (i, (key, label)) in keys.iter().enumerate() {
-        let label_style = Style::default().fg(Color::LightBlue).bg(Color::DarkGray);
+        let label_style = Style::default()
+            .fg(Theme::FUNCTION_BAR_FG)
+            .bg(Theme::FUNCTION_BAR_BG);
 
         let text = format!(" {key} {label} ");
         let paragraph = Paragraph::new(Span::styled(text, label_style))
@@ -541,11 +465,16 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 /// Render menu bar at top
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let menu_text = "   Left   File   Command   Options   Right   ";
-    let x = area.x + area.width.saturating_sub(menu_text.len() as u16) / 2;
-    let centered_area = Rect::new(x, area.y, menu_text.len() as u16, area.height);
+    let text_width = UnicodeWidthStr::width(menu_text) as u16;
+    let x = area.x + area.width.saturating_sub(text_width) / 2;
+    let centered_area = Rect::new(x, area.y, text_width, area.height);
 
     let paragraph = Paragraph::new(menu_text)
-        .style(Style::default().fg(Color::LightBlue).bg(Color::DarkGray))
+        .style(
+            Style::default()
+                .fg(Theme::MENU_BAR_FG)
+                .bg(Theme::MENU_BAR_BG),
+        )
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, centered_area);
@@ -554,6 +483,8 @@ pub fn render_menu_bar(f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::file_type::*;
+    use ratatui::style::Color;
     use std::path::PathBuf;
 
     fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
@@ -570,6 +501,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: name.starts_with('.'),
+            mime_type: None,
         }
     }
 
@@ -626,9 +558,16 @@ mod tests {
 
     #[test]
     fn test_get_file_color_regular() {
-        let entry = create_test_entry("document.txt", false, false, false);
+        let entry = create_test_entry("unknown.xyz", false, false, false);
         let style = get_file_color(&entry);
         assert_eq!(style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn test_get_file_color_document() {
+        let entry = create_test_entry("document.txt", false, false, false);
+        let style = get_file_color(&entry);
+        assert_eq!(style.fg, Some(Color::LightYellow));
     }
 
     #[test]
@@ -841,5 +780,66 @@ mod tests {
         // Verify basic construction works
         assert_eq!(panel.path, PathBuf::from("/test"));
         assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_panel_status_summary_empty_panel() {
+        let panel = PanelState::new(PathBuf::from("/test"));
+        let (summary, width) = panel_status_summary(&panel);
+        assert_eq!(summary, "");
+        assert_eq!(width, 0);
+    }
+
+    #[test]
+    fn test_panel_status_summary_first_item() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, false, false),
+            create_test_entry("b.txt", false, false, false),
+            create_test_entry("c.txt", false, false, false),
+        ];
+        panel.cursor = 0;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(summary.contains("1/3"));
+        assert!(summary.contains("33%"));
+    }
+
+    #[test]
+    fn test_panel_status_summary_last_item() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, false, false),
+            create_test_entry("b.txt", false, false, false),
+            create_test_entry("c.txt", false, false, false),
+        ];
+        panel.cursor = 2;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(summary.contains("3/3"));
+        assert!(summary.contains("100%"));
+    }
+
+    #[test]
+    fn test_panel_status_summary_with_selection() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, false, false),
+            create_test_entry("b.txt", false, false, false),
+        ];
+        panel.cursor = 0;
+        panel.selected_count = 1;
+        panel.selected_size = 1024;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(summary.contains("Sel: 1"));
+        assert!(summary.contains("1.0 KB"));
+    }
+
+    #[test]
+    fn test_panel_status_summary_no_selection_when_zero() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![create_test_entry("a.txt", false, false, false)];
+        panel.cursor = 0;
+        panel.selected_count = 0;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(!summary.contains("Sel:"));
     }
 }

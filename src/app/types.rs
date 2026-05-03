@@ -32,6 +32,22 @@ impl std::fmt::Display for FileSize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileCategory {
+    Dir,
+    Archive,
+    Image,
+    Video,
+    Audio,
+    Document,
+    Code,
+    Config,
+    Executable,
+    Symlink,
+    Hidden,
+    Other,
+}
+
 // ============================================================================
 // 1c. Free functions for formatting
 // ============================================================================
@@ -62,6 +78,7 @@ pub struct FileEntry {
     pub group: String,
     pub selected: bool,
     pub is_hidden: bool,
+    pub mime_type: Option<String>,
 }
 
 // ============================================================================
@@ -106,10 +123,12 @@ pub struct PanelState {
     pub filter: Option<String>,
     pub selected_count: usize,
     pub selected_size: u64,
+    pub total_size: u64,
     pub selection_anchor: Option<usize>,
     pub last_error: Option<String>,
     pub history: Vec<PathBuf>,
     pub unfiltered_entries: Vec<FileEntry>,
+    pub unfiltered_dirty: bool,
 }
 
 // ============================================================================
@@ -120,6 +139,35 @@ pub struct PanelState {
 pub enum ActivePanel {
     Left,
     Right,
+}
+
+// ============================================================================
+// 4b. ConfirmDetails struct
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmDetails {
+    pub title: String,
+    pub message: String,
+    pub files: Option<Vec<PathBuf>>,
+}
+
+impl ConfirmDetails {
+    pub fn simple(title: &str, message: &str) -> Self {
+        Self {
+            title: title.to_string(),
+            message: message.to_string(),
+            files: None,
+        }
+    }
+
+    pub fn with_files(title: &str, message: &str, files: Vec<PathBuf>) -> Self {
+        Self {
+            title: title.to_string(),
+            message: message.to_string(),
+            files: if files.is_empty() { None } else { Some(files) },
+        }
+    }
 }
 
 // ============================================================================
@@ -139,7 +187,7 @@ pub enum InputAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DialogKind {
-    Confirm(String),
+    Confirm(ConfirmDetails),
     Input {
         prompt: String,
         default_text: String,
@@ -348,6 +396,57 @@ pub enum PendingAction {
 // ============================================================================
 
 impl FileEntry {
+    /// Returns the primary `FileCategory` based on a priority hierarchy.
+    ///
+    /// Priority (highest to lowest):
+    /// 1. `Symlink` — always a symlink (regardless of target type)
+    /// 2. `Dir` — always a directory
+    /// 3. `Hidden` — dot-prefixed files (e.g. `.bashrc`, `.archive.zip`)
+    /// 4. `Executable` — files with execute permission
+    /// 5. `Code` → `Config` → `Archive` → `Image` → `Video` → `Audio` → `Document`
+    /// 6. `Other` — fallback
+    ///
+    /// A hidden executable (`.script.sh`) is categorized as `Hidden`, not `Executable`.
+    /// A hidden archive (`.backup.zip`) is `Hidden`, not `Archive`.
+    /// A symlink to a directory is `Symlink`, not `Dir`.
+    pub fn category(&self) -> FileCategory {
+        use crate::app::file_type as ft;
+        if self.is_symlink {
+            return FileCategory::Symlink;
+        }
+        if self.is_dir {
+            return FileCategory::Dir;
+        }
+        if self.is_hidden {
+            return FileCategory::Hidden;
+        }
+        if self.is_executable {
+            return FileCategory::Executable;
+        }
+        if ft::is_source_code(&self.name) {
+            return FileCategory::Code;
+        }
+        if ft::is_config(&self.name) {
+            return FileCategory::Config;
+        }
+        if ft::is_archive(&self.name) {
+            return FileCategory::Archive;
+        }
+        if ft::is_image(&self.name) {
+            return FileCategory::Image;
+        }
+        if ft::is_video(&self.name) {
+            return FileCategory::Video;
+        }
+        if ft::is_audio(&self.name) {
+            return FileCategory::Audio;
+        }
+        if ft::is_document(&self.name) {
+            return FileCategory::Document;
+        }
+        FileCategory::Other
+    }
+
     pub fn display_size(&self) -> String {
         Self::format_size(self.size)
     }
@@ -438,10 +537,12 @@ impl PanelState {
             filter: None,
             selected_count: 0,
             selected_size: 0,
+            total_size: 0,
             selection_anchor: None,
             last_error: None,
             history: Vec::new(),
             unfiltered_entries: Vec::new(),
+            unfiltered_dirty: true,
         }
     }
 
@@ -532,12 +633,14 @@ impl PanelState {
     pub fn recalculate_selection_stats(&mut self) {
         self.selected_count = 0;
         self.selected_size = 0;
+        self.total_size = 0;
         let source = if self.unfiltered_entries.is_empty() {
             &self.entries
         } else {
             &self.unfiltered_entries
         };
         for entry in source {
+            self.total_size += entry.size;
             if entry.selected {
                 self.selected_count += 1;
                 self.selected_size += entry.size;
@@ -689,6 +792,7 @@ mod tests {
             group: "testgroup".to_string(),
             selected: is_selected,
             is_hidden: name.starts_with('.'),
+            mime_type: None,
         }
     }
 
@@ -1051,12 +1155,36 @@ mod tests {
 
     #[test]
     fn test_dialog_kind_confirm() {
-        let dialog = DialogKind::Confirm("Are you sure?".to_string());
-        if let DialogKind::Confirm(msg) = dialog {
-            assert_eq!(msg, "Are you sure?");
+        let details = ConfirmDetails::simple("Confirm", "Are you sure?");
+        let dialog = DialogKind::Confirm(details);
+        if let DialogKind::Confirm(cd) = dialog {
+            assert_eq!(cd.title, "Confirm");
+            assert_eq!(cd.message, "Are you sure?");
+            assert!(cd.files.is_none());
         } else {
             panic!("Expected Confirm variant");
         }
+    }
+
+    #[test]
+    fn test_confirm_details_simple() {
+        let cd = ConfirmDetails::simple("Delete", "Delete 'foo.txt'?");
+        assert_eq!(cd.title, "Delete");
+        assert_eq!(cd.message, "Delete 'foo.txt'?");
+        assert!(cd.files.is_none());
+    }
+
+    #[test]
+    fn test_confirm_details_with_files() {
+        let files = vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")];
+        let cd = ConfirmDetails::with_files("Delete", "Delete 2 entries?", files.clone());
+        assert_eq!(cd.files.as_ref().unwrap(), &files);
+    }
+
+    #[test]
+    fn test_confirm_details_with_empty_files() {
+        let cd = ConfirmDetails::with_files("Delete", "Nothing?", vec![]);
+        assert!(cd.files.is_none());
     }
 
     #[test]
@@ -1135,9 +1263,9 @@ mod tests {
         let cmd_line = AppMode::CommandLine;
         assert_eq!(cmd_line, AppMode::CommandLine);
 
-        let dialog = AppMode::Dialog(DialogKind::Confirm("test".to_string()));
-        if let AppMode::Dialog(DialogKind::Confirm(msg)) = &dialog {
-            assert_eq!(msg, "test");
+        let dialog = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple("Test", "test")));
+        if let AppMode::Dialog(DialogKind::Confirm(cd)) = &dialog {
+            assert_eq!(cd.message, "test");
         }
 
         let search = AppMode::Search;
@@ -1330,5 +1458,151 @@ mod tests {
         // Actually with formula "cursor >= scroll_offset + max_height",
         // 6 >= 3 + 4 = 7 is false, so no scroll
         assert_eq!(panel.scroll_offset, 3);
+    }
+
+    #[test]
+    fn test_total_size_computed_by_recalculate() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, 100, 0o644, false),
+            create_test_entry("b.txt", false, 200, 0o644, false),
+            create_test_entry("c.txt", false, 300, 0o644, true),
+        ];
+        panel.recalculate_selection_stats();
+        assert_eq!(panel.total_size, 600);
+        assert_eq!(panel.selected_count, 1);
+        assert_eq!(panel.selected_size, 300);
+    }
+
+    #[test]
+    fn test_hidden_executable_is_hidden() {
+        let entry = FileEntry {
+            name: ".script.sh".to_string(),
+            path: PathBuf::from(".script.sh"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: true,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o755,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Hidden);
+    }
+
+    #[test]
+    fn test_hidden_archive_is_hidden() {
+        let entry = FileEntry {
+            name: ".backup.zip".to_string(),
+            path: PathBuf::from(".backup.zip"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: false,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o644,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Hidden);
+    }
+
+    #[test]
+    fn test_symlink_overrides_dir() {
+        let entry = FileEntry {
+            name: "link_to_dir".to_string(),
+            path: PathBuf::from("link_to_dir"),
+            is_dir: true,
+            is_symlink: true,
+            is_executable: false,
+            size: 0,
+            modified: UNIX_EPOCH,
+            permissions: 0o777,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Symlink);
+    }
+
+    #[test]
+    fn test_symlink_overrides_hidden() {
+        let entry = FileEntry {
+            name: ".hidden_link".to_string(),
+            path: PathBuf::from(".hidden_link"),
+            is_dir: false,
+            is_symlink: true,
+            is_executable: false,
+            size: 0,
+            modified: UNIX_EPOCH,
+            permissions: 0o777,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Symlink);
+    }
+
+    #[test]
+    fn test_executable_archive_is_executable() {
+        let entry = FileEntry {
+            name: "installer.exe".to_string(),
+            path: PathBuf::from("installer.exe"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: true,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o755,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Executable);
+    }
+
+    #[test]
+    fn test_hidden_apk_is_hidden() {
+        let entry = FileEntry {
+            name: ".app.apk".to_string(),
+            path: PathBuf::from(".app.apk"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: false,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o644,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Hidden);
+    }
+
+    #[test]
+    fn test_total_size_includes_all_entries() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("small.txt", false, 50, 0o644, false),
+            create_test_entry("big.txt", false, 5000, 0o644, true),
+        ];
+        panel.recalculate_selection_stats();
+        assert_eq!(panel.total_size, 5050);
+        assert_eq!(panel.selected_size, 5000);
     }
 }

@@ -1,3 +1,4 @@
+use crate::app::types::FileCategory;
 use ratatui::style::Modifier;
 use ratatui::style::{Color, Style};
 
@@ -28,13 +29,28 @@ impl Theme {
     pub const WARNING: Color = Color::Yellow;
     pub const INFO: Color = Color::Cyan;
 
+    // UI element colors
+    pub const SELECTED_FILE_FG: Color = Color::LightYellow;
+    pub const SCROLLBAR_ACTIVE: Color = Color::Yellow;
+    pub const SCROLLBAR_INACTIVE: Color = Color::DarkGray;
+    pub const FUNCTION_BAR_FG: Color = Color::LightBlue;
+    pub const FUNCTION_BAR_BG: Color = Color::DarkGray;
+    pub const SEARCH_MATCH_FG: Color = Color::Black;
+    pub const SEARCH_MATCH_BG: Color = Color::LightGreen;
+    pub const SEARCH_MATCH_CURRENT_FG: Color = Color::Yellow;
+
     // File type colors
     pub const DIRECTORY: Color = Color::White;
     pub const EXECUTABLE: Color = Color::Green;
     pub const SYMLINK: Color = Color::Cyan;
     pub const ARCHIVE: Color = Color::Red;
     pub const IMAGE: Color = Color::Magenta;
+    pub const VIDEO: Color = Color::LightMagenta;
+    pub const AUDIO: Color = Color::LightGreen;
+    pub const DOCUMENT: Color = Color::LightYellow;
     pub const SOURCE_CODE: Color = Color::Yellow;
+    pub const CODE: Color = Self::SOURCE_CODE;
+    pub const CONFIG: Color = Color::LightBlue;
     pub const REGULAR_FILE: Color = Color::White;
 
     // Styles
@@ -100,6 +116,23 @@ impl Theme {
         Style::default().fg(color).bg(Self::PANEL_BG)
     }
 
+    pub fn category_color(category: FileCategory) -> Color {
+        match category {
+            FileCategory::Dir => Self::DIRECTORY,
+            FileCategory::Executable => Self::EXECUTABLE,
+            FileCategory::Symlink => Self::SYMLINK,
+            FileCategory::Hidden => Self::HIDDEN_FILE,
+            FileCategory::Archive => Self::ARCHIVE,
+            FileCategory::Image => Self::IMAGE,
+            FileCategory::Video => Self::VIDEO,
+            FileCategory::Audio => Self::AUDIO,
+            FileCategory::Document => Self::DOCUMENT,
+            FileCategory::Code => Self::SOURCE_CODE,
+            FileCategory::Config => Self::CONFIG,
+            FileCategory::Other => Self::REGULAR_FILE,
+        }
+    }
+
     pub fn panel_item(color: Color, bold: bool) -> Style {
         let style = Self::panel_file(color);
         if bold {
@@ -131,5 +164,37 @@ impl Theme {
 
     pub fn info() -> Style {
         Style::default().fg(Self::INFO)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn category_color_maps_file_categories_to_theme_colors() {
+        let cases = [
+            (FileCategory::Dir, Theme::DIRECTORY),
+            (FileCategory::Executable, Theme::EXECUTABLE),
+            (FileCategory::Symlink, Theme::SYMLINK),
+            (FileCategory::Hidden, Theme::HIDDEN_FILE),
+            (FileCategory::Archive, Theme::ARCHIVE),
+            (FileCategory::Image, Theme::IMAGE),
+            (FileCategory::Video, Theme::VIDEO),
+            (FileCategory::Audio, Theme::AUDIO),
+            (FileCategory::Document, Theme::DOCUMENT),
+            (FileCategory::Code, Theme::SOURCE_CODE),
+            (FileCategory::Config, Theme::CONFIG),
+            (FileCategory::Other, Theme::REGULAR_FILE),
+        ];
+
+        for (category, color) in cases {
+            assert_eq!(Theme::category_color(category), color);
+        }
+    }
+
+    #[test]
+    fn code_color_aliases_source_code_color() {
+        assert_eq!(Theme::CODE, Theme::SOURCE_CODE);
     }
 }

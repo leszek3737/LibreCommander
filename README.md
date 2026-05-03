@@ -5,8 +5,8 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 ## Features
 
 - **Dual-panel interface** - Navigate and manage files in two panels side-by-side
-- **Fast file operations** - Copy, move, delete, rename, chmod files and directories
-- **Recursive copy/move** - Handles directories with symlink preservation and cross-device fallback
+- **Async file operations** - Copy, move, delete, rename, chmod files and directories with background progress and cancellation
+- **Safe recursive copy/move/delete** - Handles directories with symlink preservation, no-clobber copy, cross-device fallback, partial-copy cleanup, and cancellation safeguards
 - **Advanced search** - Incremental panel filter, recursive file search (glob patterns), content search (grep-like)
 - **File viewer** - Built-in text viewer with search, hex dump, line numbers, and word wrap
 - **Directory tree** - Interactive expandable directory tree view
@@ -15,10 +15,11 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 - **Directory history** - Navigate back with Alt+Backspace
 - **User menu** - Extensible menu system via `.mc.menu` or `~/.config/lc/menu` (MC-compatible)
 - **Sorting** - 8 sort modes: by name, size, modification time, or extension (ascending/descending)
+- **File watcher** - Automatic panel refresh on external filesystem changes while preserving filters, sorting, and selection
 - **Panel views** - Long (detailed) and Brief (compact) listing modes
 - **File type icons** - Emoji icons and color coding for archives, images, source code, audio, video, config files
 - **Mouse support** - Single click to select, double click to open/view, click to switch panels
-- **Keyboard-driven** - 70+ keyboard shortcuts for power users
+- **Keyboard-driven** - 45+ keyboard shortcuts for power users
 - **Configurable** - Customizable settings stored in `~/.config/lc/config.toml`
 - **System protection** - Refuses to delete critical system directories (`/`, `/etc`, `/usr`, etc.)
 
@@ -56,13 +57,15 @@ cargo install --path .
 |-------|---------|
 | `ratatui` 0.30 | Terminal UI framework |
 | `crossterm` 0.29 | Cross-platform terminal I/O |
-| `tokio` 1.51 | Async runtime |
 | `serde` 1.0 | Config serialization |
 | `toml` 0.9 | Config file parsing |
 | `chrono` 0.4 | Date/time formatting |
 | `regex` 1.0 | User menu condition matching |
 | `unicode-width` 0.2 | Unicode character width for alignment |
 | `users` 0.11 | File owner/group lookup |
+| `notify` 8 | Filesystem watcher for auto-refresh |
+| `infer` 0.19 | MIME type detection |
+| `filetime` 0.2 | File modification time handling |
 
 Dev dependency: `tempfile` 3 (for tests).
 
@@ -85,7 +88,6 @@ Dev dependency: `tempfile` 3 (for tests).
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
 | `Enter` | Open directory / Execute file |
-| `Backspace` | Go to parent directory |
 | `Alt+Backspace` | Go to previous directory (history) |
 | `Home` | Go to first entry |
 | `End` | Go to last entry |
@@ -100,7 +102,7 @@ Dev dependency: `tempfile` 3 (for tests).
 | `F3` | View file |
 | `F4` | Edit file (opens in `$EDITOR`) |
 | `F5` | Copy file(s) |
-| `F6` | Move/Rename file(s) |
+| `F6` | Move file(s) |
 | `F7` | Create directory |
 | `F8` | Delete file(s) |
 | `Alt+Enter` | Show file properties |
@@ -270,6 +272,18 @@ D  Diff panels
 
 Commands are executed via `sh -c` with the active panel's directory as working directory.
 
+## File Operations
+
+Long-running copy, move, and delete operations run as background jobs with live item and byte progress. Operations can be canceled between safe boundaries; move operations finish cleanup after a successful cross-device copy so source and destination do not diverge unexpectedly.
+
+Safety guarantees:
+
+- Existing destinations are not overwritten by chunked copies.
+- Recursive directory copies publish through a temporary sibling and clean up partial output on failure or cancellation.
+- Symlinks are copied or deleted as symlinks rather than following their targets.
+- Cross-device moves fall back to copy-then-delete only after the copy succeeds.
+- Critical system directories are protected from deletion.
+
 ## File Viewer
 
 The built-in viewer (F3) supports:
@@ -348,8 +362,8 @@ Run these checks before submitting changes:
 
 ```bash
 cargo fmt --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
 File operations include safety guards: system directories are protected from deletion, symlinks are handled correctly during copy/move/delete, and terminal state is always restored (even on panic).
@@ -362,5 +376,6 @@ MIT License
 
 Libre Commander is inspired by:
 - [Midnight Commander](https://midnight-commander.org/) - The original dual-panel file manager
+- [Yazi](https://github.com/sxyazi/yazi) - Some code components were adapted from this project by [Sxyazi](https://github.com/sxyazi) (MIT License)
 - [Rust](https://www.rust-lang.org/) - The programming language
 - [Ratatui](https://ratatui.rs/) - Terminal UI library

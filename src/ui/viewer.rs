@@ -2,14 +2,14 @@ use ratatui::{
     Frame,
     layout::Margin,
     prelude::*,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use crate::app::types::ViewMode;
+use crate::app::types::{ViewMode, format_size};
 
 use super::theme::Theme;
 
@@ -36,6 +36,8 @@ pub struct ViewerState {
     pub view_mode: ViewMode,
     raw_bytes: Vec<u8>,
     max_line_width: usize,
+    pub detected_mime: Option<String>,
+    pub file_size: usize,
 }
 
 impl ViewerState {
@@ -53,11 +55,26 @@ impl ViewerState {
             )));
         }
 
-        let content_str = String::from_utf8_lossy(&raw_bytes);
-        let mut content: Vec<String> = content_str.lines().map(String::from).collect();
-        if raw_bytes.last() == Some(&b'\n') {
-            content.push(String::new());
-        }
+        let file_size = raw_bytes.len();
+        let mime =
+            crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
+        let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
+
+        let content = if raw_bytes.is_empty() {
+            vec!["[Empty file]".to_string()]
+        } else if open_as_text {
+            let content_str = String::from_utf8_lossy(&raw_bytes);
+            let mut content: Vec<String> = content_str.lines().map(String::from).collect();
+            if raw_bytes.last() == Some(&b'\n') {
+                content.push(String::new());
+            }
+            content
+        } else {
+            let mime_label = mime.as_deref().unwrap_or("unknown MIME");
+            vec![format!(
+                "Binary file ({mime_label}, {file_size} bytes). Opened in Hex mode."
+            )]
+        };
         let line_count = content.len();
         let max_line_width = content
             .iter()
@@ -77,12 +94,18 @@ impl ViewerState {
             current_match: 0,
             wrap_lines: true,
             show_line_numbers: false,
-            view_mode: ViewMode::Text {
-                wrap: true,
-                line_numbers: false,
+            view_mode: if open_as_text {
+                ViewMode::Text {
+                    wrap: true,
+                    line_numbers: false,
+                }
+            } else {
+                ViewMode::Hex
             },
             raw_bytes,
             max_line_width,
+            detected_mime: mime,
+            file_size,
         })
     }
 
@@ -291,6 +314,85 @@ fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
     (lower, byte_map)
 }
 
+fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+
+    if crate::app::file_type::is_source_code(name) || crate::app::file_type::is_config(name) {
+        return true;
+    }
+
+    if let Some(mime) = mime {
+        if is_known_binary_mime(mime) {
+            return false;
+        }
+    }
+
+    if bytes.contains(&0) {
+        return false;
+    }
+
+    if let Some(mime) = mime {
+        if mime.starts_with("text/") || is_text_application_mime(mime) {
+            return true;
+        }
+    }
+
+    true
+}
+
+fn is_text_application_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "application/json"
+            | "application/toml"
+            | "application/yaml"
+            | "application/x-yaml"
+            | "application/xml"
+            | "application/javascript"
+            | "application/typescript"
+            | "application/ecmascript"
+            | "application/sql"
+            | "application/x-httpd-php"
+            | "application/x-sh"
+    )
+}
+
+fn is_known_binary_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+        || mime.starts_with("audio/")
+        || mime.starts_with("video/")
+        || mime.starts_with("application/vnd.oasis.opendocument.")
+        || mime.starts_with("application/vnd.openxmlformats-officedocument.")
+        || mime.starts_with("application/vnd.ms-")
+        || matches!(
+            mime,
+            "application/octet-stream"
+                | "application/zip"
+                | "application/x-tar"
+                | "application/gzip"
+                | "application/x-gzip"
+                | "application/x-bzip2"
+                | "application/x-xz"
+                | "application/x-7z-compressed"
+                | "application/vnd.rar"
+                | "application/x-rar-compressed"
+                | "application/zstd"
+                | "application/pdf"
+                | "application/msword"
+                | "application/rtf"
+                | "application/epub+zip"
+                | "application/wasm"
+                | "application/x-mach-binary"
+                | "application/x-dosexec"
+                | "application/x-executable"
+                | "application/x-sharedlib"
+                | "application/x-object"
+        )
+}
+
 fn format_line_with_highlight<'a>(
     line: &'a str,
     line_matches: &[SearchLineMatch],
@@ -317,10 +419,12 @@ fn format_line_with_highlight<'a>(
 
         let style = if is_current {
             Theme::highlight()
-                .fg(Color::Yellow)
+                .fg(Theme::SEARCH_MATCH_CURRENT_FG)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Black).bg(Color::LightGreen)
+            Style::default()
+                .fg(Theme::SEARCH_MATCH_FG)
+                .bg(Theme::SEARCH_MATCH_BG)
         };
 
         spans.push(Span::styled(match_text, style));
@@ -335,11 +439,9 @@ fn format_line_with_highlight<'a>(
 }
 
 pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
-    let bg_block = Block::default().style(Theme::panel());
-    f.render_widget(bg_block, area);
-
     let block = Block::default()
         .borders(Borders::ALL)
+        .style(Theme::panel())
         .title(state.file_path.display().to_string())
         .title_style(Theme::title());
     f.render_widget(block, area);
@@ -422,16 +524,12 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     } else {
         state.scroll_offset + 1
     };
+    let mode_label = if state.is_hex_mode() { "Hex" } else { "Text" };
+    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
+    let size_label = format_size(state.file_size as u64);
     let status_text = format!(
-        " Line: {}/{}  {}  {}",
-        current_line,
+        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}",
         state.line_count,
-        state
-            .file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy(),
-        if state.wrap_lines { "Wrap" } else { "No Wrap" }
     );
     let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
@@ -496,16 +594,10 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     } else {
         state.scroll_offset + 1
     };
-    let status_text = format!(
-        " Offset: {}/{}  {}  Hex",
-        current_line,
-        total_lines,
-        state
-            .file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy(),
-    );
+    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
+    let size_label = format_size(state.file_size as u64);
+    let status_text =
+        format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}",);
     let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
 }
@@ -683,13 +775,80 @@ mod tests {
     }
 
     #[test]
-    fn test_open_empty_file_has_zero_lines() {
+    fn test_open_empty_file_has_placeholder() {
         let file = create_test_file("");
         let state = ViewerState::open(file.path()).unwrap();
 
-        assert_eq!(state.content.len(), 0);
-        assert_eq!(state.line_count, 0);
+        assert_eq!(state.content.len(), 1);
+        assert_eq!(state.content[0], "[Empty file]");
+        assert_eq!(state.line_count, 1);
+        assert_eq!(state.file_size, 0);
         assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_should_open_as_text_allows_text_mime() {
+        assert!(should_open_as_text(
+            Path::new("README"),
+            Some("text/plain"),
+            b"hello"
+        ));
+    }
+
+    #[test]
+    fn test_should_open_as_text_allows_source_and_config_extensions() {
+        assert!(should_open_as_text(
+            Path::new("main.rs"),
+            Some("application/octet-stream"),
+            b"fn main() {}"
+        ));
+        assert!(should_open_as_text(
+            Path::new("config.toml"),
+            Some("application/octet-stream"),
+            b"key = \"value\""
+        ));
+    }
+
+    #[test]
+    fn test_should_open_as_text_rejects_known_binary_mime() {
+        assert!(!should_open_as_text(
+            Path::new("archive.zip"),
+            Some("application/zip"),
+            b"PK\0\0"
+        ));
+        assert!(!should_open_as_text(
+            Path::new("image.png"),
+            Some("image/png"),
+            b"\x89PNG\r\n"
+        ));
+    }
+
+    #[test]
+    fn test_should_open_as_text_rejects_unknown_nul_bytes() {
+        assert!(!should_open_as_text(
+            Path::new("unknown.bin"),
+            None,
+            b"abc\0def"
+        ));
+    }
+
+    #[test]
+    fn test_open_binary_file_defaults_to_hex_mode() {
+        let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+        file.write_all(b"abc\0def").unwrap();
+
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(state.is_hex_mode());
+        assert_eq!(state.raw_bytes, b"abc\0def");
+    }
+
+    #[test]
+    fn test_source_code_ext_opens_as_text_even_with_nul_bytes() {
+        let mut file = NamedTempFile::with_suffix(".rs").unwrap();
+        file.write_all(b"fn main() {}\0\0\0\0binary").unwrap();
+        let state = ViewerState::open(file.path()).unwrap();
+        assert!(!state.is_hex_mode());
     }
 
     #[test]
@@ -952,6 +1111,16 @@ mod tests {
     }
 
     #[test]
+    fn test_format_size() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+        assert_eq!(format_size(1048576), "1.0 MB");
+        assert_eq!(format_size(1073741824), "1.0 GB");
+    }
+
+    #[test]
     fn test_paragraph_horizontal_scroll_clamps_to_u16() {
         assert_eq!(paragraph_horizontal_scroll(usize::MAX), u16::MAX);
     }
@@ -962,11 +1131,13 @@ mod tests {
         let mut state = ViewerState::open(file.path()).unwrap();
         state.wrap_lines = false;
 
-        let buffer = render_viewer_buffer(&state, 20, 5);
+        let buffer = render_viewer_buffer(&state, 60, 5);
 
         assert!(buffer_line(&buffer, 1).contains("line 1"));
         assert!(buffer_line(&buffer, 2).contains("line 2"));
-        assert!(buffer_line(&buffer, 3).contains("Line: 1/3"));
-        assert!(!buffer_line(&buffer, 3).contains("line 3"));
+        let status = buffer_line(&buffer, 3);
+        assert!(status.contains("Line: 1/3"));
+        assert!(status.contains("Text"));
+        assert!(!status.contains("line 3"));
     }
 }

@@ -5,7 +5,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Style,
     text::Line,
-    widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -14,6 +16,7 @@ pub enum DialogKind {
         title: String,
         message: String,
         selection: usize,
+        files: Option<Vec<String>>,
     },
     Input {
         title: String,
@@ -58,8 +61,16 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
             title,
             message,
             selection,
+            files,
         } => {
-            render_confirm_dialog(f, dialog_area, title, message, *selection);
+            render_confirm_dialog(
+                f,
+                dialog_area,
+                title,
+                message,
+                *selection,
+                files.as_deref().unwrap_or_default(),
+            );
         }
         DialogKind::Input {
             title,
@@ -106,12 +117,24 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     }
 }
 
+fn truncate_path(path: &str, max_width: usize) -> String {
+    if path.chars().count() <= max_width {
+        path.to_string()
+    } else if max_width > 3 {
+        let suffix: String = path.chars().rev().take(max_width - 3).collect();
+        format!("...{}", suffix.chars().rev().collect::<String>())
+    } else {
+        path.chars().take(max_width).collect()
+    }
+}
+
 pub fn render_confirm_dialog(
     f: &mut Frame,
     area: Rect,
     title: &str,
     message: &str,
     selection: usize,
+    files: &[String],
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -121,15 +144,48 @@ pub fn render_confirm_dialog(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let has_files = !files.is_empty();
+    let max_rows = inner.height.saturating_sub(5).max(3);
+    let file_rows = if has_files {
+        (files.len() as u16 + 1).min(max_rows)
+    } else {
+        0
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Length(file_rows),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
-    let message_paragraph = Paragraph::new(message.to_string())
+    let msg_paragraph = Paragraph::new(message.to_string())
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
-    f.render_widget(message_paragraph, chunks[0]);
+    f.render_widget(msg_paragraph, chunks[0]);
+
+    if has_files {
+        let max_visible = chunks[1].height as usize;
+        let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
+        let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
+        if files.len() <= show_count {
+            for name in files {
+                let display = truncate_path(name, inner.width as usize - 2);
+                lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+            }
+        } else {
+            for name in files.iter().take(show_count.saturating_sub(1)) {
+                let display = truncate_path(name, inner.width as usize - 2);
+                lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+            }
+            let remaining = files.len() - show_count + 1;
+            lines.push(Line::from(format!("  ... +{remaining} more")));
+        }
+        let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
+        f.render_widget(file_paragraph, chunks[1]);
+    }
 
     let yes_style = if selection == 0 {
         Theme::highlight_bold()
@@ -147,7 +203,7 @@ pub fn render_confirm_dialog(
         ratatui::text::Span::styled("[ No ]", no_style),
     ]);
     let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
-    f.render_widget(btn_paragraph, chunks[1]);
+    f.render_widget(btn_paragraph, chunks[2]);
 }
 
 pub fn render_input_dialog(
@@ -280,9 +336,16 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(inner);
 
-    let message_paragraph = Paragraph::new(message.to_string())
+    let max_lines = chunks[0].height as usize;
+    let visible_message = message
+        .lines()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let message_paragraph = Paragraph::new(visible_message)
         .wrap(Wrap { trim: true })
-        .alignment(Alignment::Center)
+        .alignment(Alignment::Left)
         .style(Theme::info());
     f.render_widget(message_paragraph, chunks[0]);
 
@@ -480,6 +543,21 @@ mod tests {
         assert_eq!(rect.height, 20);
         assert_eq!(rect.x, 30);
         assert_eq!(rect.y, 15);
+    }
+
+    #[test]
+    fn truncate_path_keeps_short_utf8_path() {
+        assert_eq!(truncate_path("zażółć", 6), "zażółć");
+    }
+
+    #[test]
+    fn truncate_path_truncates_utf8_suffix_safely() {
+        assert_eq!(truncate_path("/tmp/zażółć/plik", 9), "...ć/plik");
+    }
+
+    #[test]
+    fn truncate_path_truncates_tiny_utf8_width_safely() {
+        assert_eq!(truncate_path("żółć", 3), "żół");
     }
 
     #[test]

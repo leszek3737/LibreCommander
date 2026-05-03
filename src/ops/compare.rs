@@ -165,6 +165,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -182,6 +183,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -228,6 +230,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
         let right = vec![FileEntry {
             name: "a.txt".into(),
@@ -242,6 +245,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -264,6 +268,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
         let right = vec![];
 
@@ -299,10 +304,12 @@ mod tests {
             filter: None,
             selected_count: 0,
             selected_size: 0,
+            total_size: 0,
             selection_anchor: None,
             last_error: None,
             history: vec![],
             unfiltered_entries: vec![],
+            unfiltered_dirty: true,
         };
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
@@ -315,10 +322,12 @@ mod tests {
             filter: None,
             selected_count: 0,
             selected_size: 0,
+            total_size: 0,
             selection_anchor: None,
             last_error: None,
             history: vec![],
             unfiltered_entries: vec![],
+            unfiltered_dirty: true,
         };
 
         let report = CompareReport {
