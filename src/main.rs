@@ -82,6 +82,7 @@ fn terminal_state_file_path() -> PathBuf {
     paths::terminal_state_file_path()
 }
 
+#[allow(clippy::print_stderr)]
 fn main() -> io::Result<()> {
     install_panic_hook();
     enter_tui_stdout()?;
@@ -121,14 +122,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         state.status_message = Some(e);
     }
 
-    // Startup validation: warn if duplicate key bindings detected
-    let duplicates = app::keymap::find_duplicate_keys();
-    if !duplicates.is_empty() {
-        eprintln!("warning: duplicate key bindings detected:");
-        for (mode, key) in &duplicates {
-            eprintln!("  mode={mode} key={key}");
-        }
-    }
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut running_job: Option<RunningJob> = None;
     let (watch_tx, watch_rx) = mpsc::channel();
@@ -745,7 +738,7 @@ fn handle_directory_tree(
                     &state.tree_root,
                     show_hidden,
                 );
-                set_tree_diagnostic_status(&mut state.status_message, diagnostics);
+                set_tree_diagnostic_status(&mut state.status_message, &diagnostics);
                 // Clamp selection after toggle
                 if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty()
                 {
@@ -801,7 +794,7 @@ fn directory_tree_visible_height(terminal_height: u16) -> usize {
 
 fn set_tree_diagnostic_status(
     status_message: &mut Option<String>,
-    diagnostics: Vec<dir_tree::TreeDiagnostic>,
+    diagnostics: &[dir_tree::TreeDiagnostic],
 ) {
     if diagnostics.is_empty() {
         return;
@@ -1021,8 +1014,8 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 if let Some(parent) = terminal_state_file.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
-                    eprintln!("Warning: failed to write terminal state file: {e}");
+                if let Err(_e) = std::fs::write(&terminal_state_file, "alternate_screen") {
+                    // Best-effort state file; ignore write failures.
                 }
                 let mut parts = editor.split_whitespace();
                 let cmd = parts.next().unwrap_or("vi");
@@ -1698,7 +1691,7 @@ fn handle_dialog(
 
     // Extract action early to avoid borrow issues
     let input_action = if let AppMode::Dialog(app::types::DialogKind::Input { ref action, .. }) = state.mode {
-        Some(action.clone())
+        Some(*action)
     } else {
         None
     };
@@ -1716,7 +1709,6 @@ fn handle_dialog(
         app::types::DialogKind::Input { .. } => {
             if let Some(action) = input_action {
                 if handle_input_dialog(state, viewer_state, &action, key, terminal_height) {
-                    return;
                 }
             }
         }
@@ -2490,12 +2482,12 @@ fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             let path = state.active_panel().path.clone();
             let show_hidden = state.active_panel().show_hidden;
             let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
-            state.tree_root = path.clone();
+            state.tree_root = path;
             state.tree_entries = tree.entries;
             state.tree_selected = 0;
             state.tree_scroll = 0;
             state.mode = AppMode::DirectoryTree;
-            set_tree_diagnostic_status(&mut state.status_message, tree.diagnostics);
+            set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
             None
         }
         Some(MenuAction::FindFile) => {

@@ -26,13 +26,7 @@ pub fn sync_watcher_paths(
     let desired: HashSet<PathBuf> = [&left, &right]
         .into_iter()
         .filter_map(|path| {
-            match path.canonicalize() {
-                Ok(canonical) => Some(canonical),
-                Err(_) => {
-                    // Skip paths that cannot be canonicalized (e.g., deleted, inaccessible)
-                    None
-                }
-            }
+            path.canonicalize().ok()
         })
         .collect();
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();

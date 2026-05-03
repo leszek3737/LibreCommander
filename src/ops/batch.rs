@@ -171,6 +171,7 @@ struct ProgressSnapshot<'a> {
     start_time: Instant,
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressSnapshot<'_>) {
     progress(BatchProgress {
         completed: snapshot.completed,
@@ -244,6 +245,7 @@ fn move_entry(
     })
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn wait_for_result_with_progress<T>(
     result_rx: mpsc::Receiver<io::Result<T>>,
     progress_rx: mpsc::Receiver<u64>,
@@ -304,6 +306,7 @@ fn batch_move(
     )
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn execute_batch_generic<F>(
     sources: &[PathBuf],
     dest_dir: &Path,
@@ -443,6 +446,7 @@ where
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn batch_delete(
     paths: &[PathBuf],
     progress: &mut impl FnMut(BatchProgress),

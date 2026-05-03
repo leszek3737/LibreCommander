@@ -13,18 +13,10 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
     if left.is_dir != right.is_dir {
         return false;
     }
-    if left.is_dir {
-        match mode {
-            CompareMode::Quick => true,
-            CompareMode::Size => left.size == right.size,
-            CompareMode::Thorough => left.size == right.size && left.mtime == right.mtime,
-        }
-    } else {
-        match mode {
-            CompareMode::Quick => true,
-            CompareMode::Size => left.size == right.size,
-            CompareMode::Thorough => left.size == right.size && left.mtime == right.mtime,
-        }
+    match mode {
+        CompareMode::Quick => true,
+        CompareMode::Size => left.size == right.size,
+        CompareMode::Thorough => left.size == right.size && left.mtime == right.mtime,
     }
 }
 

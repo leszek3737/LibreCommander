@@ -650,15 +650,6 @@ pub fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
 
 /// Build a help message string grouped by mode (for F1 display).
 pub fn build_help_message() -> String {
-    // Runtime validation: warn if duplicate keys detected
-    let duplicates = find_duplicate_keys();
-    if !duplicates.is_empty() {
-        eprintln!("warning: duplicate key bindings detected:");
-        for (mode, key) in &duplicates {
-            eprintln!("  mode={mode} key={key}");
-        }
-    }
-
     let mut msg = String::new();
     let mut current_mode = "";
     for b in KEYBINDINGS {

@@ -74,6 +74,7 @@ pub fn run_shell_command(
         restore_ok: bool,
     }
 
+    #[allow(clippy::print_stderr)]
     impl Drop for ShellRestoreGuard {
         fn drop(&mut self) {
             if !self.restore_ok {
@@ -97,6 +98,8 @@ pub fn run_shell_command(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status();
+    // Intentional stdout: TUI is suspended, user must see the prompt.
+    #[allow(clippy::print_stdout)]
     match status {
         Ok(s) if s.success() => println!("\n[Command succeeded. Press Enter to return]"),
         Ok(s) => println!("\n[Command exited with status: {s}. Press Enter to return]"),
@@ -115,6 +118,7 @@ pub fn run_shell_command(
 }
 
 /// Toggle external panel view (Ctrl+O) - hide panels to see terminal output.
+#[allow(clippy::print_stdout)]
 pub fn toggle_external_view<B: Backend>(
     state: &mut AppState,
     _terminal: &mut ratatui::Terminal<B>,

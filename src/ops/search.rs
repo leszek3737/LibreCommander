@@ -255,6 +255,7 @@ impl FileSearch {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn search_content_recursive_inner(
         path: &Path,
         pattern: &str,
@@ -438,9 +439,9 @@ impl FileSearch {
             }
             if filled == needle_len {
                 let mut all_match = true;
-                for i in 0..needle_len {
+                for (i, &nc) in needle_lower.iter().enumerate() {
                     let idx = (head + i) % needle_len;
-                    if buf[idx] != needle_lower[i] {
+                    if buf[idx] != nc {
                         all_match = false;
                         break;
                     }

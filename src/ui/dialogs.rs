@@ -369,24 +369,20 @@ pub fn render_help_dialog(
     // Show scrollbar indicator if content exceeds visible area
     if total_lines > max_lines {
         let scrollbar_height = max_lines.min(total_lines);
+        #[allow(clippy::manual_checked_ops)]
         let scrollbar_pos = if total_lines > 0 {
             clamped_offset * scrollbar_height / total_lines
         } else {
             0
         };
+        let thumb_height = (max_lines * max_lines / total_lines.max(1)).max(1);
         let scrollbar_x = inner.x + inner.width.saturating_sub(1);
         let scrollbar_y = inner.y;
         for i in 0..scrollbar_height {
             let y = scrollbar_y + i as u16;
-            let symbol = if i == scrollbar_pos {
-                "█"
-            } else if i >= scrollbar_pos
-                && i < scrollbar_pos + (max_lines * max_lines / total_lines.max(1))
-            {
-                "█"
-            } else {
-                "░"
-            };
+            let in_thumb = i == scrollbar_pos
+                || (i >= scrollbar_pos && i < scrollbar_pos + thumb_height);
+            let symbol = if in_thumb { "█" } else { "░" };
             let cell = ratatui::text::Span::styled(
                 symbol,
                 Style::default().fg(Theme::SCROLLBAR_ACTIVE),

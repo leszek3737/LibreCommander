@@ -44,7 +44,7 @@ impl Watcher {
             ),
             Config::default(),
         )
-        .map_err(notify_to_io)?;
+        .map_err(|e| notify_to_io(&e))?;
 
         Ok(Self {
             primary,
@@ -67,9 +67,11 @@ impl Watcher {
                 ),
                 Config::default(),
             )
-            .map_err(notify_to_io)?;
+            .map_err(|e| notify_to_io(&e))?;
             self.fallback = Some(fallback);
         }
+        // Safe: guaranteed Some by is_none() check above or prior call
+        #[allow(clippy::unwrap_used)]
         Ok(self.fallback.as_mut().unwrap())
     }
 
@@ -110,13 +112,13 @@ impl Watcher {
         })?;
 
         let result = match self.watchers.get(&path) {
-            Some(WhichWatcher::Primary) => self.primary.unwatch(&path).map_err(notify_to_io),
+            Some(WhichWatcher::Primary) => self.primary.unwatch(&path).map_err(|e| notify_to_io(&e)),
             Some(WhichWatcher::Fallback) => self
                 .fallback
                 .as_mut()
                 .ok_or_else(|| io::Error::other("fallback watcher not initialized"))?
                 .unwatch(&path)
-                .map_err(notify_to_io),
+                .map_err(|e| notify_to_io(&e)),
             None => Ok(()),
         };
 
@@ -138,6 +140,7 @@ impl Watcher {
     }
 }
 
+#[allow(clippy::print_stderr)]
 fn make_handler(
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
@@ -161,7 +164,6 @@ fn make_handler(
                     // For renames, debounce both paths independently
                     let now = Instant::now();
                     let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
-                        eprintln!("warning: mutex poisoned in watcher debounce (rename), recovering: {e}");
                         e.into_inner()
                     });
                     let from_allowed = debounce
@@ -183,7 +185,6 @@ fn make_handler(
             if let Some(path) = path {
                 let now = Instant::now();
                 let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
-                    eprintln!("warning: mutex poisoned in watcher debounce, recovering: {e}");
                     e.into_inner()
                 });
                 if let Some(last) = debounce.get(&path) {
@@ -231,7 +232,7 @@ fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<Wa
     paths.into_iter().map(map).collect()
 }
 
-fn notify_to_io(err: notify::Error) -> io::Error {
+fn notify_to_io(err: &notify::Error) -> io::Error {
     io::Error::other(err.to_string())
 }
 
