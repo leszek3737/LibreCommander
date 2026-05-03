@@ -1,7 +1,11 @@
+use crate::ops::chunk_copy;
+
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 
 const MAX_RECURSION_DEPTH: usize = 256;
 const CRITICAL_DIRS: &[&str] = &[
@@ -40,26 +44,42 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
 pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
     ensure_destination_absent(dest)?;
 
-    let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
-        (Some(s), Some(d)) => s == d,
-        _ => src == dest,
-    };
-    if same {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "source and destination are the same file",
-        ));
-    }
+    reject_same_file(src, dest)?;
     let src_perms = fs::metadata(src)?.permissions();
     let bytes = fs::copy(src, dest)?;
     fs::set_permissions(dest, src_perms)?;
     Ok(bytes)
 }
 
+pub fn copy_file_with_progress(
+    src: &Path,
+    dest: &Path,
+    progress_tx: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> io::Result<u64> {
+    check_canceled(cancel)?;
+    ensure_destination_absent(dest)?;
+    reject_same_file(src, dest)?;
+
+    chunk_copy::copy_with_progress(src, dest, progress_tx, cancel)
+}
+
 pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
     copy_dir_recursive_inner(src, dest, &src_root, &dest_root, 0)
+}
+
+pub fn copy_dir_recursive_with_progress(
+    src: &Path,
+    dest: &Path,
+    progress_tx: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> io::Result<u64> {
+    check_canceled(cancel)?;
+    let src_root = canonicalize_existing_path(src)?;
+    let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
+    copy_dir_recursive_with_progress_inner(src, dest, &src_root, &dest_root, progress_tx, cancel, 0)
 }
 
 fn copy_dir_recursive_inner(
@@ -116,6 +136,79 @@ fn copy_dir_recursive_inner(
         }
     }
 
+    fs::set_permissions(dest, src_perms)?;
+    Ok(total_bytes)
+}
+
+fn copy_dir_recursive_with_progress_inner(
+    src: &Path,
+    dest: &Path,
+    src_root: &Path,
+    dest_root: &Path,
+    progress_tx: &Sender<u64>,
+    cancel: &AtomicBool,
+    depth: usize,
+) -> io::Result<u64> {
+    check_canceled(cancel)?;
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(io::Error::other(format!(
+            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
+            src.display()
+        )));
+    }
+
+    if depth == 0 && src_root == dest_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into itself",
+        ));
+    }
+    if depth == 0 && path_contains_canonical(src_root, dest_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into its descendant",
+        ));
+    }
+    ensure_destination_absent(dest)?;
+    if depth == 0 {
+        fs::create_dir_all(dest)?;
+    } else {
+        fs::create_dir(dest)?;
+    }
+    let src_perms = fs::metadata(src)?.permissions();
+
+    let mut total_bytes: u64 = 0;
+    for entry in fs::read_dir(src)? {
+        check_canceled(cancel)?;
+        let entry = entry?;
+        let entry_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            let copied = copy_dir_recursive_with_progress_inner(
+                &entry_path,
+                &dest_path,
+                src_root,
+                dest_root,
+                progress_tx,
+                cancel,
+                depth + 1,
+            )?;
+            total_bytes = total_bytes.saturating_add(copied);
+        } else if file_type.is_symlink() {
+            copy_symlink(&entry_path, &dest_path)?;
+        } else {
+            total_bytes = total_bytes.saturating_add(copy_file_with_progress(
+                &entry_path,
+                &dest_path,
+                progress_tx,
+                cancel,
+            )?);
+        }
+    }
+
+    check_canceled(cancel)?;
     fs::set_permissions(dest, src_perms)?;
     Ok(total_bytes)
 }
@@ -178,6 +271,73 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 }
             } else {
                 copy_file(src, dest)?;
+                if let Err(del_err) = fs::remove_file(src) {
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
+                }
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+pub fn move_entry_with_progress(
+    src: &Path,
+    dest: &Path,
+    progress_tx: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    check_canceled(cancel)?;
+    let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
+        (Some(s), Some(d)) => s == d,
+        _ => src == dest,
+    };
+    if same_file {
+        return if src == dest {
+            Ok(())
+        } else {
+            fs::rename(src, dest)
+        };
+    }
+    ensure_destination_absent(dest)?;
+
+    if src.is_dir() && path_contains(src, dest) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot move directory into its descendant",
+        ));
+    }
+    match fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+            check_canceled(cancel)?;
+            let meta = src.symlink_metadata()?;
+            if meta.file_type().is_symlink() {
+                copy_symlink(src, dest)?;
+                check_canceled(cancel)?;
+                if let Err(del_err) = fs::remove_file(src) {
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
+                }
+            } else if meta.is_dir() {
+                copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
+                check_canceled(cancel)?;
+                if !path_contains(src, dest)
+                    && let Err(del_err) = delete_dir_recursive(src)
+                {
+                    return Err(io::Error::other(format!(
+                        "copied {:?} to {:?} but failed to remove source: {}",
+                        src, dest, del_err
+                    )));
+                }
+            } else {
+                copy_file_with_progress(src, dest, progress_tx, cancel)?;
+                check_canceled(cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "copied {:?} to {:?} but failed to remove source: {}",
@@ -353,6 +513,29 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     }
 }
 
+fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
+    let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
+        (Some(s), Some(d)) => s == d,
+        _ => src == dest,
+    };
+    if same {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "source and destination are the same file",
+        ));
+    }
+
+    Ok(())
+}
+
+fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+    }
+
+    Ok(())
+}
+
 fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
     path.canonicalize()
 }
@@ -405,7 +588,8 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -462,6 +646,45 @@ mod tests {
         copy_file(&src, &dest).unwrap();
         let dest_mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(dest_mode, 0o755);
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_file_with_progress_reports_bytes() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        let content = b"progress copy";
+        fs::write(&src, content).unwrap();
+
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        let bytes = copy_file_with_progress(&src, &dest, &progress_tx, &cancel).unwrap();
+
+        assert_eq!(bytes, content.len() as u64);
+        assert_eq!(fs::read(&dest).unwrap(), content);
+        assert_eq!(progress_rx.try_iter().collect::<Vec<_>>(), vec![bytes]);
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_move_entry_with_progress_cancel_before_start_preserves_source() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"keep source").unwrap();
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(true);
+
+        let err = move_entry_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(fs::read_to_string(&src).unwrap(), "keep source");
+        assert!(!dest.exists());
 
         fs::remove_dir_all(&tmp).unwrap();
     }

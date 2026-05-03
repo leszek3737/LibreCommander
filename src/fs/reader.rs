@@ -10,6 +10,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::SystemTime;
 
+use crate::app::types::PanelState;
+use crate::ops::sorting::sort_entries;
+
 #[cfg(test)]
 use crate::app::types::format_permissions;
 
@@ -49,6 +52,7 @@ pub fn read_directory(
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         });
     }
 
@@ -173,7 +177,91 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         group,
         selected: false,
         is_hidden: file_name.starts_with('.'),
+        mime_type: None,
     })
+}
+
+pub fn get_single_entry(path: &Path) -> io::Result<FileEntry> {
+    get_file_info(path)
+}
+
+pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
+    if entry.name == ".." {
+        return;
+    }
+
+    if panel.unfiltered_entries.is_empty() {
+        panel.unfiltered_entries = panel.entries.clone();
+    }
+
+    if let Some(existing) = panel
+        .unfiltered_entries
+        .iter()
+        .chain(panel.entries.iter())
+        .find(|existing| existing.path == entry.path)
+    {
+        entry.selected = existing.selected;
+    }
+
+    if let Some(existing) = panel
+        .unfiltered_entries
+        .iter_mut()
+        .find(|existing| existing.path == entry.path)
+    {
+        *existing = entry;
+    } else {
+        panel.unfiltered_entries.push(entry);
+    }
+
+    rebuild_panel_entries(panel);
+}
+
+pub fn remove_entry(panel: &mut PanelState, path: &Path) {
+    if path.file_name().is_some_and(|name| name == "..") {
+        return;
+    }
+
+    if panel.unfiltered_entries.is_empty() {
+        panel.unfiltered_entries = panel.entries.clone();
+    }
+
+    panel
+        .unfiltered_entries
+        .retain(|entry| entry.name == ".." || entry.path != path);
+    panel
+        .entries
+        .retain(|entry| entry.name == ".." || entry.path != path);
+
+    rebuild_panel_entries(panel);
+}
+
+fn rebuild_panel_entries(panel: &mut PanelState) {
+    panel.entries = panel
+        .unfiltered_entries
+        .iter()
+        .filter(|entry| {
+            entry.name == ".."
+                || (panel.show_hidden || !entry.is_hidden)
+                    && panel.filter.as_ref().is_none_or(|filter| {
+                        entry.name.to_lowercase().contains(&filter.to_lowercase())
+                    })
+        })
+        .cloned()
+        .collect();
+
+    sort_entries(&mut panel.entries, panel.sort_mode);
+
+    if panel.entries.is_empty() {
+        panel.cursor = 0;
+        panel.scroll_offset = 0;
+    } else {
+        panel.cursor = panel.cursor.min(panel.entries.len() - 1);
+        if panel.scroll_offset > panel.cursor {
+            panel.scroll_offset = panel.cursor;
+        }
+    }
+
+    panel.recalculate_selection_stats();
 }
 
 pub fn format_date(time: SystemTime) -> String {
@@ -197,7 +285,7 @@ pub fn is_executable(mode: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::FileEntry as CanonicalFileEntry;
+    use crate::app::types::{FileEntry as CanonicalFileEntry, SortMode};
     use std::fs::{self, File};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -221,6 +309,49 @@ mod tests {
         path
     }
 
+    fn test_entry(name: &str, selected: bool) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: PathBuf::from("/tmp").join(name),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: false,
+            size: 10,
+            modified: SystemTime::now(),
+            permissions: 0o644,
+            owner: "user".to_string(),
+            group: "group".to_string(),
+            selected,
+            is_hidden: name.starts_with('.'),
+            mime_type: None,
+        }
+    }
+
+    fn parent_entry() -> FileEntry {
+        FileEntry {
+            name: "..".to_string(),
+            path: PathBuf::from("/tmp"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: true,
+            size: 0,
+            modified: SystemTime::now(),
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }
+    }
+
+    fn test_panel(entries: Vec<FileEntry>) -> PanelState {
+        let mut panel = PanelState::new(PathBuf::from("/tmp"));
+        panel.entries = entries;
+        panel.recalculate_selection_stats();
+        panel
+    }
+
     #[test]
     fn test_format_size_zero() {
         let entry = CanonicalFileEntry {
@@ -236,6 +367,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         };
         assert_eq!(entry.display_size(), "     0 B");
     }
@@ -255,6 +387,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         };
         assert_eq!(entry.display_size(), "   500 B");
     }
@@ -274,6 +407,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         };
         let result = entry.display_size();
         assert!(result.contains("KB"));
@@ -294,6 +428,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         };
         let result = entry.display_size();
         assert!(result.contains("MB"));
@@ -314,6 +449,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         };
         let result = entry.display_size();
         assert!(result.contains("GB"));
@@ -334,6 +470,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         };
         let result = entry.display_size();
         assert!(result.contains("TB"));
@@ -481,5 +618,131 @@ mod tests {
 
         let err = read_directory(&missing, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn test_upsert_entry_adds_new_entry() {
+        let mut panel = test_panel(vec![parent_entry(), test_entry("b.txt", false)]);
+        upsert_entry(&mut panel, test_entry("a.txt", false));
+
+        let names: Vec<&str> = panel
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "a.txt", "b.txt"]);
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.name == "a.txt")
+        );
+    }
+
+    #[test]
+    fn test_upsert_entry_updates_existing_and_preserves_selection() {
+        let mut panel = test_panel(vec![test_entry("file.txt", true)]);
+        let mut updated = test_entry("file.txt", false);
+        updated.size = 99;
+
+        upsert_entry(&mut panel, updated);
+
+        assert_eq!(panel.entries.len(), 1);
+        assert_eq!(panel.entries[0].size, 99);
+        assert!(panel.entries[0].selected);
+        assert_eq!(panel.selected_count, 1);
+        assert_eq!(panel.selected_size, 99);
+    }
+
+    #[test]
+    fn test_remove_entry_removes_matching_path() {
+        let removed = test_entry("remove.txt", true);
+        let mut panel = test_panel(vec![
+            parent_entry(),
+            removed.clone(),
+            test_entry("keep.txt", false),
+        ]);
+        panel.unfiltered_entries = panel.entries.clone();
+
+        remove_entry(&mut panel, &removed.path);
+
+        assert!(!panel.entries.iter().any(|entry| entry.name == "remove.txt"));
+        assert!(
+            !panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.name == "remove.txt")
+        );
+        assert_eq!(panel.selected_count, 0);
+    }
+
+    #[test]
+    fn test_rebuild_panel_entries_respects_hidden_filter() {
+        let mut panel = test_panel(vec![parent_entry(), test_entry("visible.txt", false)]);
+        panel.show_hidden = false;
+        upsert_entry(&mut panel, test_entry(".hidden", false));
+
+        let names: Vec<&str> = panel
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "visible.txt"]);
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.name == ".hidden")
+        );
+    }
+
+    #[test]
+    fn test_rebuild_panel_entries_respects_text_filter_case_insensitive() {
+        let mut panel = test_panel(vec![
+            parent_entry(),
+            test_entry("Alpha.txt", false),
+            test_entry("beta.txt", false),
+        ]);
+        panel.filter = Some("ALP".to_string());
+        panel.unfiltered_entries = panel.entries.clone();
+
+        rebuild_panel_entries(&mut panel);
+
+        let names: Vec<&str> = panel
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "Alpha.txt"]);
+    }
+
+    #[test]
+    fn test_remove_entry_preserves_parent_entry() {
+        let mut panel = test_panel(vec![parent_entry(), test_entry("file.txt", false)]);
+        panel.unfiltered_entries = panel.entries.clone();
+
+        remove_entry(&mut panel, &PathBuf::from("/tmp"));
+
+        assert!(panel.entries.iter().any(|entry| entry.name == ".."));
+    }
+
+    #[test]
+    fn test_rebuild_panel_entries_sorts_and_clamps_cursor() {
+        let mut panel = test_panel(vec![test_entry("z.txt", false), test_entry("a.txt", false)]);
+        panel.sort_mode = SortMode::NameAsc;
+        panel.cursor = 10;
+        panel.scroll_offset = 10;
+        panel.unfiltered_entries = panel.entries.clone();
+
+        rebuild_panel_entries(&mut panel);
+
+        let names: Vec<&str> = panel
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a.txt", "z.txt"]);
+        assert_eq!(panel.cursor, 1);
+        assert_eq!(panel.scroll_offset, 1);
     }
 }

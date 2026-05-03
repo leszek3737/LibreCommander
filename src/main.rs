@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -25,6 +25,7 @@ use app::types::{
 };
 use app::{dir_tree, paths, user_menu};
 use fs::reader;
+use fs::watcher::{WatchEvent, Watcher};
 use menu::{
     MENU_ITEMS, MENU_TITLES, MenuAction, menu_action_at, menu_dropdown_x, menu_item_count,
     menu_title_width, menu_title_x, menu_total_count,
@@ -140,13 +141,23 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut running_job: Option<RunningJob> = None;
+    let (watch_tx, watch_rx) = mpsc::channel();
+    let mut watcher = fs::watcher::Watcher::new(watch_tx).ok();
+    let mut watcher_paused = false;
 
     refresh_panel(&mut state.left_panel, 0);
     refresh_panel(&mut state.right_panel, 0);
+    sync_watcher_paths(&mut watcher, &state);
 
     let mut dirty = true;
 
     loop {
+        sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
+        sync_watcher_paths(&mut watcher, &state);
+        if poll_watcher_events(&mut state, &watch_rx) {
+            dirty = true;
+        }
+
         if poll_running_job(&mut state, &mut running_job) {
             dirty = true;
         }
@@ -246,6 +257,134 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             return Ok(());
         }
     }
+}
+
+fn sync_watcher_job_state(watcher: &Option<Watcher>, job_running: bool, watcher_paused: &mut bool) {
+    let Some(watcher) = watcher.as_ref() else {
+        return;
+    };
+
+    if job_running && !*watcher_paused {
+        watcher.pause();
+        *watcher_paused = true;
+    } else if !job_running && *watcher_paused {
+        watcher.resume();
+        *watcher_paused = false;
+    }
+}
+
+fn sync_watcher_paths(watcher: &mut Option<Watcher>, state: &AppState) {
+    let Some(watcher) = watcher.as_mut() else {
+        return;
+    };
+
+    let desired: HashSet<PathBuf> = [&state.left_panel.path, &state.right_panel.path]
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+        .collect();
+    let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
+
+    for path in current.difference(&desired) {
+        let _ = watcher.unwatch(path);
+    }
+    for path in desired.difference(&current) {
+        let _ = watcher.watch(path);
+    }
+}
+
+fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
+    let mut dirty = false;
+
+    while let Ok(event) = receiver.try_recv() {
+        match event {
+            WatchEvent::Created(path) | WatchEvent::Modified(path) => {
+                dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &path);
+                dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &path);
+            }
+            WatchEvent::Deleted(path) => {
+                dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &path);
+                dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &path);
+            }
+            WatchEvent::Renamed { from, to } => {
+                dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &from);
+                dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &from);
+                dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &to);
+                dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &to);
+            }
+        }
+    }
+
+    dirty
+}
+
+fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
+    if !path_parent_matches(path, &panel.path) {
+        return false;
+    }
+
+    let Some(path) = panel_event_path(panel, path) else {
+        return false;
+    };
+    apply_watcher_upsert(panel, &path)
+}
+
+fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
+    if !path_parent_matches(path, &panel.path) {
+        return false;
+    }
+
+    let Some(path) = panel_event_path(panel, path) else {
+        return false;
+    };
+    apply_watcher_remove(panel, &path)
+}
+
+fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
+    path.file_name().map(|name| panel.path.join(name))
+}
+
+fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
+    if path.file_name().is_none() {
+        return false;
+    }
+
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+
+    if parent == panel_path {
+        return true;
+    }
+
+    let parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    let panel_path = panel_path
+        .canonicalize()
+        .unwrap_or_else(|_| panel_path.to_path_buf());
+    parent == panel_path
+}
+
+fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
+    let Ok(entry) = reader::get_single_entry(path) else {
+        return false;
+    };
+
+    reader::upsert_entry(panel, entry);
+    true
+}
+
+fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
+    let existed = panel
+        .unfiltered_entries
+        .iter()
+        .chain(panel.entries.iter())
+        .any(|entry| entry.path == path);
+    if existed {
+        reader::remove_entry(panel, path);
+    }
+
+    existed
 }
 
 fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
@@ -2327,7 +2466,7 @@ fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Running
     let cancel_for_worker = Arc::clone(&cancel);
     let handle = thread::spawn(move || {
         let progress_sender = sender.clone();
-        let report = ops::batch::execute_batch_with_progress(
+        let report = ops::batch::execute_batch_with_byte_progress(
             action,
             move |progress| {
                 let _ = progress_sender.send(JobMessage::Progress(progress));
@@ -2364,20 +2503,11 @@ fn poll_running_job(state: &mut AppState, running_job: &mut Option<RunningJob>) 
         dirty = true;
         match message {
             JobMessage::Progress(progress) => {
-                let current = progress
-                    .current
-                    .as_ref()
-                    .and_then(|path| path.file_name())
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "done".to_string());
-                let message = if job.cancel.load(Ordering::Relaxed) {
-                    format!("Canceling after current item: {current}")
-                } else {
-                    format!("{} of {}: {current}", progress.completed, progress.total)
-                };
+                let message =
+                    format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
                 state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
                     message,
-                    progress.percent(),
+                    progress.byte_percent() / 100.0,
                 ));
             }
             JobMessage::Finished {
@@ -2398,6 +2528,47 @@ fn poll_running_job(state: &mut AppState, running_job: &mut Option<RunningJob>) 
     }
 
     dirty
+}
+
+fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool) -> String {
+    let current = progress
+        .current
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "done".to_string());
+
+    let mut message = format!("{} of {}: {current}", progress.completed, progress.total);
+    if progress.bytes_total > 0 {
+        message.push_str(&format!(
+            " | {} / {} | {}/s",
+            ops::batch::BatchProgress::format_bytes(progress.bytes_done),
+            ops::batch::BatchProgress::format_bytes(progress.bytes_total),
+            ops::batch::BatchProgress::format_bytes(progress.speed() as u64),
+        ));
+        if let Some(eta) = progress.eta() {
+            message.push_str(&format!(" | ETA {}", format_duration_short(eta)));
+        }
+    }
+
+    if canceling {
+        format!("Canceling: {message}")
+    } else {
+        message
+    }
+}
+
+fn format_duration_short(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
 }
 
 fn finish_running_job(
@@ -2822,6 +2993,7 @@ mod tests {
             group: String::new(),
             selected,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -2862,6 +3034,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         });
         state.mode = AppMode::Menu;
         state.menu_selected = 1;
@@ -2888,6 +3061,30 @@ mod tests {
     }
 
     #[test]
+    fn format_duration_short_uses_clock_format() {
+        assert_eq!(format_duration_short(Duration::from_secs(15)), "00:15");
+        assert_eq!(format_duration_short(Duration::from_secs(75)), "01:15");
+        assert_eq!(
+            format_duration_short(Duration::from_secs(3_665)),
+            "01:01:05"
+        );
+    }
+
+    #[test]
+    fn format_progress_message_uses_item_fallback_without_bytes() {
+        let progress = ops::batch::BatchProgress::new(3, 10, Some(PathBuf::from("file.txt")));
+
+        assert_eq!(
+            format_progress_message(&progress, false),
+            "3 of 10: file.txt"
+        );
+        assert_eq!(
+            format_progress_message(&progress, true),
+            "Canceling: 3 of 10: file.txt"
+        );
+    }
+
+    #[test]
     fn compare_directories_reports_summary() {
         let mut state = AppState::default();
         state.left_panel.entries = vec![app::types::FileEntry {
@@ -2903,6 +3100,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
         state.right_panel.entries = vec![app::types::FileEntry {
             name: "b.txt".to_string(),
@@ -2917,6 +3115,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
 
         compare_directories(&mut state, CompareMode::Quick);
@@ -3105,6 +3304,7 @@ mod tests {
                 group: String::new(),
                 selected: false,
                 is_hidden: false,
+                mime_type: None,
             },
             app::types::FileEntry {
                 name: "left.txt".to_string(),
@@ -3119,6 +3319,7 @@ mod tests {
                 group: String::new(),
                 selected: false,
                 is_hidden: false,
+                mime_type: None,
             },
         ];
         state.right_panel.entries = vec![
@@ -3135,6 +3336,7 @@ mod tests {
                 group: String::new(),
                 selected: false,
                 is_hidden: false,
+                mime_type: None,
             },
             app::types::FileEntry {
                 name: "right.txt".to_string(),
@@ -3149,6 +3351,7 @@ mod tests {
                 group: String::new(),
                 selected: false,
                 is_hidden: false,
+                mime_type: None,
             },
         ];
 
@@ -3174,6 +3377,7 @@ mod tests {
             group: "group".to_string(),
             selected,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -3653,6 +3857,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
         state.mode = AppMode::ListPicker(PickerKind::CompareMode);
         state.picker_selected = 0;
@@ -3688,6 +3893,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
 
         handle_list_picker(&mut state, KeyCode::Down);

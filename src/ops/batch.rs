@@ -1,10 +1,17 @@
 use std::collections::HashSet;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::app::types::PendingAction;
-use crate::ops::file_ops;
+use crate::ops::{chunk_copy, file_ops};
+
+const COPY_PROGRESS_POLL: Duration = Duration::from_millis(20);
+const MAX_BATCH_COPY_RECURSION_DEPTH: usize = 256;
 
 pub struct BatchReport {
     pub errors: Vec<String>,
@@ -17,14 +24,78 @@ pub struct BatchProgress {
     pub completed: usize,
     pub total: usize,
     pub current: Option<PathBuf>,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub current_file_bytes: u64,
+    pub current_file_total: u64,
+    pub start_time: Option<Instant>,
 }
 
 impl BatchProgress {
+    pub fn new(completed: usize, total: usize, current: Option<PathBuf>) -> Self {
+        Self {
+            completed,
+            total,
+            current,
+            bytes_done: 0,
+            bytes_total: 0,
+            current_file_bytes: 0,
+            current_file_total: 0,
+            start_time: None,
+        }
+    }
+
     pub fn percent(&self) -> f32 {
         if self.total == 0 {
             1.0
         } else {
             self.completed as f32 / self.total as f32
+        }
+    }
+
+    pub fn byte_percent(&self) -> f32 {
+        if self.bytes_total == 0 {
+            self.percent()
+        } else {
+            (self.bytes_done as f32 / self.bytes_total as f32 * 100.0).min(99.99)
+        }
+    }
+
+    pub fn speed(&self) -> f64 {
+        match self.start_time {
+            Some(t) => {
+                let elapsed = t.elapsed().as_secs_f64();
+                if elapsed > 0.0 {
+                    self.bytes_done as f64 / elapsed
+                } else {
+                    0.0
+                }
+            }
+            None => 0.0,
+        }
+    }
+
+    pub fn eta(&self) -> Option<Duration> {
+        let speed = self.speed();
+        if speed <= 0.0 || self.bytes_total <= self.bytes_done {
+            return None;
+        }
+        let remaining = (self.bytes_total - self.bytes_done) as f64 / speed;
+        Some(Duration::from_secs_f64(remaining))
+    }
+
+    pub fn format_bytes(bytes: u64) -> String {
+        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+        let mut val = bytes as f64;
+        let mut idx = 0;
+        while val >= 1024.0 && idx < UNITS.len() - 1 {
+            val /= 1024.0;
+            idx += 1;
+        }
+        if idx == 0 {
+            format!("{} {}", bytes, UNITS[idx])
+        } else {
+            format!("{:.1} {}", val, UNITS[idx])
         }
     }
 }
@@ -34,6 +105,14 @@ pub fn execute_batch(action: PendingAction) -> BatchReport {
 }
 
 pub fn execute_batch_with_progress(
+    action: PendingAction,
+    progress: impl FnMut(BatchProgress),
+    cancel: Option<Arc<AtomicBool>>,
+) -> BatchReport {
+    execute_batch_with_byte_progress(action, progress, cancel)
+}
+
+pub fn execute_batch_with_byte_progress(
     action: PendingAction,
     mut progress: impl FnMut(BatchProgress),
     cancel: Option<Arc<AtomicBool>>,
@@ -51,17 +130,206 @@ fn is_canceled(cancel: &Option<Arc<AtomicBool>>) -> bool {
         .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
 }
 
-fn report_progress(
-    progress: &mut impl FnMut(BatchProgress),
+struct ProgressSnapshot<'a> {
     completed: usize,
     total: usize,
-    current: Option<&Path>,
-) {
+    current: Option<&'a Path>,
+    bytes_done: u64,
+    bytes_total: u64,
+    current_file_bytes: u64,
+    current_file_total: u64,
+    start_time: Instant,
+}
+
+fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressSnapshot<'_>) {
     progress(BatchProgress {
-        completed,
-        total,
-        current: current.map(Path::to_path_buf),
+        completed: snapshot.completed,
+        total: snapshot.total,
+        current: snapshot.current.map(Path::to_path_buf),
+        bytes_done: snapshot.bytes_done,
+        bytes_total: snapshot.bytes_total,
+        current_file_bytes: snapshot.current_file_bytes,
+        current_file_total: snapshot.current_file_total,
+        start_time: Some(snapshot.start_time),
     });
+}
+
+fn path_size(path: &Path) -> u64 {
+    match path.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => 0,
+        Ok(meta) if meta.is_dir() => file_ops::calculate_dir_size(path).unwrap_or(0),
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    }
+}
+
+fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
+    paths.iter().map(|path| path_size(path)).collect()
+}
+
+fn sum_sizes(sizes: &[u64]) -> u64 {
+    sizes
+        .iter()
+        .fold(0, |total, size| total.saturating_add(*size))
+}
+
+fn next_path(paths: &[PathBuf], idx: usize) -> Option<&Path> {
+    paths.get(idx).map(PathBuf::as_path)
+}
+
+fn copy_file_with_progress(
+    src: &Path,
+    dest: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+    mut on_progress: impl FnMut(u64),
+) -> io::Result<u64> {
+    ensure_destination_absent(dest)?;
+
+    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+    let worker_cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let src = src.to_path_buf();
+    let dest = dest.to_path_buf();
+    let handle = thread::spawn(move || {
+        chunk_copy::copy_with_progress(&src, &dest, &progress_tx, &worker_cancel)
+    });
+
+    while !handle.is_finished() {
+        match progress_rx.recv_timeout(COPY_PROGRESS_POLL) {
+            Ok(current) => on_progress(current),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    for current in progress_rx.try_iter() {
+        on_progress(current);
+    }
+
+    handle
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("copy worker panicked")))
+}
+
+fn copy_dir_recursive_with_progress(
+    src: &Path,
+    dest: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+    mut on_progress: impl FnMut(u64),
+) -> io::Result<u64> {
+    let src_root = src.canonicalize()?;
+    let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
+    if src_root == dest_root || path_contains_canonical(&src_root, &dest_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into itself",
+        ));
+    }
+
+    copy_dir_recursive_with_progress_inner(src, dest, &cancel, &mut on_progress, 0)
+}
+
+fn copy_dir_recursive_with_progress_inner(
+    src: &Path,
+    dest: &Path,
+    cancel: &Option<Arc<AtomicBool>>,
+    on_progress: &mut dyn FnMut(u64),
+    depth: usize,
+) -> io::Result<u64> {
+    if depth > MAX_BATCH_COPY_RECURSION_DEPTH {
+        return Err(io::Error::other(format!(
+            "directory too deeply nested (>{MAX_BATCH_COPY_RECURSION_DEPTH} levels): {}",
+            src.display()
+        )));
+    }
+    if is_canceled(cancel) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+    }
+
+    ensure_destination_absent(dest)?;
+    if depth == 0 {
+        fs::create_dir_all(dest)?;
+    } else {
+        fs::create_dir(dest)?;
+    }
+    let src_perms = fs::metadata(src)?.permissions();
+    let mut total_bytes = 0_u64;
+
+    for entry in fs::read_dir(src)? {
+        if is_canceled(cancel) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+        }
+
+        let entry = entry?;
+        let entry_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            let before = total_bytes;
+            let mut nested_progress = |current| on_progress(before.saturating_add(current));
+            let copied = copy_dir_recursive_with_progress_inner(
+                &entry_path,
+                &dest_path,
+                cancel,
+                &mut nested_progress,
+                depth + 1,
+            )?;
+            total_bytes = total_bytes.saturating_add(copied);
+            on_progress(total_bytes);
+        } else if file_type.is_symlink() {
+            file_ops::copy_symlink(&entry_path, &dest_path)?;
+        } else {
+            let before = total_bytes;
+            let copied =
+                copy_file_with_progress(&entry_path, &dest_path, cancel.clone(), |current| {
+                    on_progress(before.saturating_add(current))
+                })?;
+            total_bytes = total_bytes.saturating_add(copied);
+            on_progress(total_bytes);
+        }
+    }
+
+    fs::set_permissions(dest, src_perms)?;
+    Ok(total_bytes)
+}
+
+fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(dest) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = path;
+
+    loop {
+        match current.canonicalize() {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                let name = current.file_name().ok_or(err)?;
+                missing.push(name.to_os_string());
+                current = current.parent().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "no existing parent found")
+                })?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
+    child != parent && child.starts_with(parent)
 }
 
 fn batch_copy(
@@ -75,14 +343,43 @@ fn batch_copy(
     let mut success_count: usize = 0;
     let mut canceled = false;
     let total = paths.len();
+    let sizes = path_sizes(paths);
+    let bytes_total = sum_sizes(&sizes);
+    let mut bytes_done = 0_u64;
+    let start_time = Instant::now();
 
-    report_progress(progress, 0, total, paths.first().map(PathBuf::as_path));
+    report_progress(
+        progress,
+        ProgressSnapshot {
+            completed: 0,
+            total,
+            current: next_path(paths, 0),
+            bytes_done,
+            bytes_total,
+            current_file_bytes: 0,
+            current_file_total: sizes.first().copied().unwrap_or(0),
+            start_time,
+        },
+    );
     for (idx, src) in paths.iter().enumerate() {
         if is_canceled(&cancel) {
             canceled = true;
             break;
         }
-        report_progress(progress, idx, total, Some(src));
+        let current_total = sizes[idx];
+        report_progress(
+            progress,
+            ProgressSnapshot {
+                completed: idx,
+                total,
+                current: Some(src),
+                bytes_done,
+                bytes_total,
+                current_file_bytes: 0,
+                current_file_total: current_total,
+                start_time,
+            },
+        );
         let file_name = src.file_name().unwrap_or_default();
         let dest = dest_dir.join(file_name);
         if !used_dests.insert(dest.clone()) {
@@ -93,29 +390,82 @@ fn batch_copy(
             ));
             report_progress(
                 progress,
-                idx + 1,
-                total,
-                paths.get(idx + 1).map(PathBuf::as_path),
+                ProgressSnapshot {
+                    completed: idx + 1,
+                    total,
+                    current: next_path(paths, idx + 1),
+                    bytes_done,
+                    bytes_total,
+                    current_file_bytes: 0,
+                    current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
+                    start_time,
+                },
             );
             continue;
         }
         let result = match src.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => file_ops::copy_symlink(src, &dest),
-            Ok(meta) if meta.is_dir() => file_ops::copy_dir_recursive(src, &dest).map(|_| ()),
-            Ok(_) => file_ops::copy_file(src, &dest).map(|_| ()),
+            Ok(meta) if meta.is_dir() => {
+                copy_dir_recursive_with_progress(src, &dest, cancel.clone(), |current_file_bytes| {
+                    report_progress(
+                        progress,
+                        ProgressSnapshot {
+                            completed: idx,
+                            total,
+                            current: Some(src),
+                            bytes_done: bytes_done.saturating_add(current_file_bytes),
+                            bytes_total,
+                            current_file_bytes,
+                            current_file_total: current_total,
+                            start_time,
+                        },
+                    );
+                })
+                .map(|_| ())
+            }
+            Ok(_) => copy_file_with_progress(src, &dest, cancel.clone(), |current_file_bytes| {
+                report_progress(
+                    progress,
+                    ProgressSnapshot {
+                        completed: idx,
+                        total,
+                        current: Some(src),
+                        bytes_done: bytes_done.saturating_add(current_file_bytes),
+                        bytes_total,
+                        current_file_bytes,
+                        current_file_total: current_total,
+                        start_time,
+                    },
+                );
+            })
+            .map(|_| ()),
             Err(e) => Err(e),
         };
         if let Err(e) = result {
+            if e.kind() == io::ErrorKind::Interrupted && is_canceled(&cancel) {
+                canceled = true;
+            }
             errors.push(format!("{}: {}", src.display(), e));
         } else {
             success_count += 1;
+            bytes_done = bytes_done.saturating_add(current_total);
         }
         report_progress(
             progress,
-            idx + 1,
-            total,
-            paths.get(idx + 1).map(PathBuf::as_path),
+            ProgressSnapshot {
+                completed: idx + 1,
+                total,
+                current: next_path(paths, idx + 1),
+                bytes_done,
+                bytes_total,
+                current_file_bytes: 0,
+                current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
+                start_time,
+            },
         );
+        if canceled {
+            break;
+        }
     }
 
     BatchReport {
@@ -136,14 +486,43 @@ fn batch_move(
     let mut success_count: usize = 0;
     let mut canceled = false;
     let total = paths.len();
+    let sizes = path_sizes(paths);
+    let bytes_total = sum_sizes(&sizes);
+    let mut bytes_done = 0_u64;
+    let start_time = Instant::now();
 
-    report_progress(progress, 0, total, paths.first().map(PathBuf::as_path));
+    report_progress(
+        progress,
+        ProgressSnapshot {
+            completed: 0,
+            total,
+            current: next_path(paths, 0),
+            bytes_done,
+            bytes_total,
+            current_file_bytes: 0,
+            current_file_total: sizes.first().copied().unwrap_or(0),
+            start_time,
+        },
+    );
     for (idx, src) in paths.iter().enumerate() {
         if is_canceled(&cancel) {
             canceled = true;
             break;
         }
-        report_progress(progress, idx, total, Some(src));
+        let current_total = sizes[idx];
+        report_progress(
+            progress,
+            ProgressSnapshot {
+                completed: idx,
+                total,
+                current: Some(src),
+                bytes_done,
+                bytes_total,
+                current_file_bytes: 0,
+                current_file_total: current_total,
+                start_time,
+            },
+        );
         let file_name = src.file_name().unwrap_or_default();
         let dest = dest_dir.join(file_name);
         if !used_dests.insert(dest.clone()) {
@@ -154,9 +533,16 @@ fn batch_move(
             ));
             report_progress(
                 progress,
-                idx + 1,
-                total,
-                paths.get(idx + 1).map(PathBuf::as_path),
+                ProgressSnapshot {
+                    completed: idx + 1,
+                    total,
+                    current: next_path(paths, idx + 1),
+                    bytes_done,
+                    bytes_total,
+                    current_file_bytes: 0,
+                    current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
+                    start_time,
+                },
             );
             continue;
         }
@@ -164,12 +550,20 @@ fn batch_move(
             errors.push(format!("{}: {}", src.display(), e));
         } else {
             success_count += 1;
+            bytes_done = bytes_done.saturating_add(current_total);
         }
         report_progress(
             progress,
-            idx + 1,
-            total,
-            paths.get(idx + 1).map(PathBuf::as_path),
+            ProgressSnapshot {
+                completed: idx + 1,
+                total,
+                current: next_path(paths, idx + 1),
+                bytes_done,
+                bytes_total,
+                current_file_bytes: 0,
+                current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
+                start_time,
+            },
         );
     }
 
@@ -189,14 +583,43 @@ fn batch_delete(
     let mut success_count: usize = 0;
     let mut canceled = false;
     let total = paths.len();
+    let sizes = path_sizes(paths);
+    let bytes_total = sum_sizes(&sizes);
+    let mut bytes_done = 0_u64;
+    let start_time = Instant::now();
 
-    report_progress(progress, 0, total, paths.first().map(PathBuf::as_path));
+    report_progress(
+        progress,
+        ProgressSnapshot {
+            completed: 0,
+            total,
+            current: next_path(paths, 0),
+            bytes_done,
+            bytes_total,
+            current_file_bytes: 0,
+            current_file_total: sizes.first().copied().unwrap_or(0),
+            start_time,
+        },
+    );
     for (idx, path) in paths.iter().enumerate() {
         if is_canceled(&cancel) {
             canceled = true;
             break;
         }
-        report_progress(progress, idx, total, Some(path));
+        let current_total = sizes[idx];
+        report_progress(
+            progress,
+            ProgressSnapshot {
+                completed: idx,
+                total,
+                current: Some(path),
+                bytes_done,
+                bytes_total,
+                current_file_bytes: 0,
+                current_file_total: current_total,
+                start_time,
+            },
+        );
         let result = match path.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => file_ops::delete_file(path),
             Ok(meta) if meta.is_dir() => file_ops::delete_dir_recursive(path),
@@ -207,12 +630,20 @@ fn batch_delete(
             errors.push(format!("{}: {}", path.display(), e));
         } else {
             success_count += 1;
+            bytes_done = bytes_done.saturating_add(current_total);
         }
         report_progress(
             progress,
-            idx + 1,
-            total,
-            paths.get(idx + 1).map(PathBuf::as_path),
+            ProgressSnapshot {
+                completed: idx + 1,
+                total,
+                current: next_path(paths, idx + 1),
+                bytes_done,
+                bytes_total,
+                current_file_bytes: 0,
+                current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
+                start_time,
+            },
         );
     }
 
@@ -385,5 +816,57 @@ mod tests {
         assert!(report.canceled);
         assert!(dest_dir.path().join("first.txt").exists());
         assert!(!dest_dir.path().join("second.txt").exists());
+    }
+
+    #[test]
+    fn batch_copy_reports_cumulative_byte_progress() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let f1 = make_file(src_dir.path(), "first.txt", b"12345");
+        let f2 = make_file(src_dir.path(), "second.txt", b"1234567");
+        let action = PendingAction::Copy {
+            sources: vec![f1, f2],
+            dest: dest_dir.path().to_path_buf(),
+        };
+        let mut updates = Vec::new();
+
+        let report =
+            execute_batch_with_byte_progress(action, |progress| updates.push(progress), None);
+
+        assert_eq!(report.success_count, 2);
+        assert!(report.errors.is_empty());
+        assert!(!report.canceled);
+        assert_eq!(updates.first().map(|p| p.bytes_total), Some(12));
+        assert_eq!(updates.last().map(|p| p.bytes_done), Some(12));
+        assert_eq!(updates.last().map(|p| p.current_file_total), Some(0));
+        assert!(updates.iter().any(|p| {
+            p.current
+                .as_ref()
+                .is_some_and(|path| path.file_name().is_some_and(|name| name == "second.txt"))
+                && p.bytes_done == 12
+                && p.current_file_bytes == 7
+                && p.current_file_total == 7
+        }));
+    }
+
+    #[test]
+    fn batch_delete_reports_item_byte_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = make_file(dir.path(), "one.txt", b"123");
+        let f2 = make_file(dir.path(), "two.txt", b"1234");
+        let action = PendingAction::Delete {
+            paths: vec![f1, f2],
+        };
+        let mut updates = Vec::new();
+
+        let report =
+            execute_batch_with_byte_progress(action, |progress| updates.push(progress), None);
+
+        assert_eq!(report.success_count, 2);
+        assert!(report.errors.is_empty());
+        assert!(!report.canceled);
+        assert_eq!(updates.first().map(|p| p.bytes_total), Some(7));
+        assert_eq!(updates.last().map(|p| p.bytes_done), Some(7));
+        assert_eq!(updates.last().map(BatchProgress::byte_percent), Some(99.99));
     }
 }

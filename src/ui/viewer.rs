@@ -42,6 +42,7 @@ impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
         const MAX_VIEW_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
+        let mime = crate::app::mime::detect_mime(path);
         let file = fs::File::open(path)?;
         let mut raw_bytes = Vec::new();
         file.take((MAX_VIEW_SIZE + 1) as u64)
@@ -53,11 +54,21 @@ impl ViewerState {
             )));
         }
 
-        let content_str = String::from_utf8_lossy(&raw_bytes);
-        let mut content: Vec<String> = content_str.lines().map(String::from).collect();
-        if raw_bytes.last() == Some(&b'\n') {
-            content.push(String::new());
-        }
+        let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
+        let content = if open_as_text {
+            let content_str = String::from_utf8_lossy(&raw_bytes);
+            let mut content: Vec<String> = content_str.lines().map(String::from).collect();
+            if raw_bytes.last() == Some(&b'\n') {
+                content.push(String::new());
+            }
+            content
+        } else {
+            let mime_label = mime.as_deref().unwrap_or("unknown MIME");
+            vec![format!(
+                "Binary file ({mime_label}, {} bytes). Opened in Hex mode.",
+                raw_bytes.len()
+            )]
+        };
         let line_count = content.len();
         let max_line_width = content
             .iter()
@@ -77,9 +88,13 @@ impl ViewerState {
             current_match: 0,
             wrap_lines: true,
             show_line_numbers: false,
-            view_mode: ViewMode::Text {
-                wrap: true,
-                line_numbers: false,
+            view_mode: if open_as_text {
+                ViewMode::Text {
+                    wrap: true,
+                    line_numbers: false,
+                }
+            } else {
+                ViewMode::Hex
             },
             raw_bytes,
             max_line_width,
@@ -289,6 +304,77 @@ fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
         lower.push_str(&lower_ch);
     }
     (lower, byte_map)
+}
+
+fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if crate::app::file_type::is_source_code(name) || crate::app::file_type::is_config(name) {
+        return true;
+    }
+
+    if let Some(mime) = mime {
+        if mime.starts_with("text/") || is_text_application_mime(mime) {
+            return true;
+        }
+        if is_known_binary_mime(mime) {
+            return false;
+        }
+    }
+
+    !bytes.contains(&0)
+}
+
+fn is_text_application_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "application/json"
+            | "application/toml"
+            | "application/yaml"
+            | "application/x-yaml"
+            | "application/xml"
+            | "application/javascript"
+            | "application/typescript"
+            | "application/ecmascript"
+            | "application/sql"
+            | "application/x-httpd-php"
+            | "application/x-sh"
+    )
+}
+
+fn is_known_binary_mime(mime: &str) -> bool {
+    mime.starts_with("image/")
+        || mime.starts_with("audio/")
+        || mime.starts_with("video/")
+        || mime.starts_with("application/vnd.oasis.opendocument.")
+        || mime.starts_with("application/vnd.openxmlformats-officedocument.")
+        || mime.starts_with("application/vnd.ms-")
+        || matches!(
+            mime,
+            "application/octet-stream"
+                | "application/zip"
+                | "application/x-tar"
+                | "application/gzip"
+                | "application/x-gzip"
+                | "application/x-bzip2"
+                | "application/x-xz"
+                | "application/x-7z-compressed"
+                | "application/vnd.rar"
+                | "application/x-rar-compressed"
+                | "application/zstd"
+                | "application/pdf"
+                | "application/msword"
+                | "application/rtf"
+                | "application/epub+zip"
+                | "application/wasm"
+                | "application/x-mach-binary"
+                | "application/x-dosexec"
+                | "application/x-executable"
+                | "application/x-sharedlib"
+                | "application/x-object"
+        )
 }
 
 fn format_line_with_highlight<'a>(
@@ -690,6 +776,63 @@ mod tests {
         assert_eq!(state.content.len(), 0);
         assert_eq!(state.line_count, 0);
         assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_should_open_as_text_allows_text_mime() {
+        assert!(should_open_as_text(
+            Path::new("README"),
+            Some("text/plain"),
+            b"hello"
+        ));
+    }
+
+    #[test]
+    fn test_should_open_as_text_allows_source_and_config_extensions() {
+        assert!(should_open_as_text(
+            Path::new("main.rs"),
+            Some("application/octet-stream"),
+            b"fn main() {}"
+        ));
+        assert!(should_open_as_text(
+            Path::new("config.toml"),
+            Some("application/octet-stream"),
+            b"key = \"value\""
+        ));
+    }
+
+    #[test]
+    fn test_should_open_as_text_rejects_known_binary_mime() {
+        assert!(!should_open_as_text(
+            Path::new("archive.zip"),
+            Some("application/zip"),
+            b"PK\0\0"
+        ));
+        assert!(!should_open_as_text(
+            Path::new("image.png"),
+            Some("image/png"),
+            b"\x89PNG\r\n"
+        ));
+    }
+
+    #[test]
+    fn test_should_open_as_text_rejects_unknown_nul_bytes() {
+        assert!(!should_open_as_text(
+            Path::new("unknown.bin"),
+            None,
+            b"abc\0def"
+        ));
+    }
+
+    #[test]
+    fn test_open_binary_file_defaults_to_hex_mode() {
+        let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+        file.write_all(b"abc\0def").unwrap();
+
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(state.is_hex_mode());
+        assert_eq!(state.raw_bytes, b"abc\0def");
     }
 
     #[test]

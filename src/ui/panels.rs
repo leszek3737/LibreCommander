@@ -10,110 +10,49 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
+use crate::app::file_type;
 use crate::app::types::{FileEntry, PanelState, format_permissions, format_size};
-
-fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
-    s.get(s.len().saturating_sub(suffix.len())..)
-        .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
-}
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
-    let color = if entry.is_dir {
-        Theme::DIRECTORY
-    } else if entry.is_executable {
-        Theme::EXECUTABLE
-    } else if entry.is_symlink {
-        Theme::SYMLINK
-    } else if entry.is_hidden {
-        Theme::HIDDEN_FILE
-    } else if is_archive(&entry.name) {
-        Theme::ARCHIVE
-    } else if is_image(&entry.name) {
-        Theme::IMAGE
-    } else if is_source_code(&entry.name) {
-        Theme::SOURCE_CODE
-    } else {
-        Theme::REGULAR_FILE
-    };
-
+    let category = entry.category();
+    let color = Theme::category_color(category);
     Theme::panel_item(color, entry.is_dir || entry.is_executable)
 }
 
 /// Check if file is an archive
 pub fn is_archive(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".tar.gz")
-        || ends_with_ignore_ascii_case(name, ".tar.bz2")
-        || ends_with_ignore_ascii_case(name, ".tar.xz")
-        || ends_with_ignore_ascii_case(name, ".tar")
-        || ends_with_ignore_ascii_case(name, ".gz")
-        || ends_with_ignore_ascii_case(name, ".zip")
-        || ends_with_ignore_ascii_case(name, ".bz2")
-        || ends_with_ignore_ascii_case(name, ".xz")
-        || ends_with_ignore_ascii_case(name, ".7z")
-        || ends_with_ignore_ascii_case(name, ".rar")
+    file_type::is_archive(name)
 }
 
 /// Check if file is an image
 pub fn is_image(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".jpg")
-        || ends_with_ignore_ascii_case(name, ".jpeg")
-        || ends_with_ignore_ascii_case(name, ".png")
-        || ends_with_ignore_ascii_case(name, ".gif")
-        || ends_with_ignore_ascii_case(name, ".bmp")
-        || ends_with_ignore_ascii_case(name, ".svg")
+    file_type::is_image(name)
 }
 
 /// Check if file is source code
 pub fn is_source_code(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".rs")
-        || ends_with_ignore_ascii_case(name, ".py")
-        || ends_with_ignore_ascii_case(name, ".js")
-        || ends_with_ignore_ascii_case(name, ".ts")
-        || ends_with_ignore_ascii_case(name, ".c")
-        || ends_with_ignore_ascii_case(name, ".h")
-        || ends_with_ignore_ascii_case(name, ".cpp")
-        || ends_with_ignore_ascii_case(name, ".go")
-        || ends_with_ignore_ascii_case(name, ".java")
+    file_type::is_source_code(name)
 }
 
 /// Check if file is a document
 pub fn is_document(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".pdf")
-        || ends_with_ignore_ascii_case(name, ".doc")
-        || ends_with_ignore_ascii_case(name, ".docx")
-        || ends_with_ignore_ascii_case(name, ".xls")
-        || ends_with_ignore_ascii_case(name, ".xlsx")
-        || ends_with_ignore_ascii_case(name, ".odt")
+    file_type::is_document(name)
 }
 
 /// Check if file is audio
 pub fn is_audio(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".mp3")
-        || ends_with_ignore_ascii_case(name, ".wav")
-        || ends_with_ignore_ascii_case(name, ".flac")
-        || ends_with_ignore_ascii_case(name, ".ogg")
-        || ends_with_ignore_ascii_case(name, ".m4a")
+    file_type::is_audio(name)
 }
 
 /// Check if file is video
 pub fn is_video(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".mp4")
-        || ends_with_ignore_ascii_case(name, ".avi")
-        || ends_with_ignore_ascii_case(name, ".mkv")
-        || ends_with_ignore_ascii_case(name, ".mov")
-        || ends_with_ignore_ascii_case(name, ".webm")
+    file_type::is_video(name)
 }
 
 /// Check if file is a config/data file
 pub fn is_config(name: &str) -> bool {
-    ends_with_ignore_ascii_case(name, ".json")
-        || ends_with_ignore_ascii_case(name, ".toml")
-        || ends_with_ignore_ascii_case(name, ".yaml")
-        || ends_with_ignore_ascii_case(name, ".yml")
-        || ends_with_ignore_ascii_case(name, ".ini")
-        || ends_with_ignore_ascii_case(name, ".conf")
-        || ends_with_ignore_ascii_case(name, ".cfg")
+    file_type::is_config(name)
 }
 
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
@@ -570,6 +509,7 @@ mod tests {
             group: "group".to_string(),
             selected: false,
             is_hidden: name.starts_with('.'),
+            mime_type: None,
         }
     }
 
@@ -626,9 +566,16 @@ mod tests {
 
     #[test]
     fn test_get_file_color_regular() {
-        let entry = create_test_entry("document.txt", false, false, false);
+        let entry = create_test_entry("unknown.xyz", false, false, false);
         let style = get_file_color(&entry);
         assert_eq!(style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn test_get_file_color_document() {
+        let entry = create_test_entry("document.txt", false, false, false);
+        let style = get_file_color(&entry);
+        assert_eq!(style.fg, Some(Color::LightYellow));
     }
 
     #[test]

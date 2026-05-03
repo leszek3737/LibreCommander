@@ -206,6 +206,7 @@ mod tests {
             group: "testgroup".to_string(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -419,6 +420,7 @@ mod tests {
                 group: "group".to_string(),
                 selected: false,
                 is_hidden: false,
+                mime_type: None,
             },
             FileEntry {
                 name: "b.txt".to_string(),
@@ -433,6 +435,7 @@ mod tests {
                 group: "group".to_string(),
                 selected: false,
                 is_hidden: false,
+                mime_type: None,
             },
         ];
 

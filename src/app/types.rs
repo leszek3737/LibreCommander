@@ -32,6 +32,22 @@ impl std::fmt::Display for FileSize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileCategory {
+    Dir,
+    Archive,
+    Image,
+    Video,
+    Audio,
+    Document,
+    Code,
+    Config,
+    Executable,
+    Symlink,
+    Hidden,
+    Other,
+}
+
 // ============================================================================
 // 1c. Free functions for formatting
 // ============================================================================
@@ -62,6 +78,7 @@ pub struct FileEntry {
     pub group: String,
     pub selected: bool,
     pub is_hidden: bool,
+    pub mime_type: Option<String>,
 }
 
 // ============================================================================
@@ -348,6 +365,44 @@ pub enum PendingAction {
 // ============================================================================
 
 impl FileEntry {
+    pub fn category(&self) -> FileCategory {
+        use crate::app::file_type as ft;
+        if self.is_dir {
+            return FileCategory::Dir;
+        }
+        if self.is_symlink {
+            return FileCategory::Symlink;
+        }
+        if self.is_hidden {
+            return FileCategory::Hidden;
+        }
+        if self.is_executable {
+            return FileCategory::Executable;
+        }
+        if ft::is_archive(&self.name) {
+            return FileCategory::Archive;
+        }
+        if ft::is_image(&self.name) {
+            return FileCategory::Image;
+        }
+        if ft::is_video(&self.name) {
+            return FileCategory::Video;
+        }
+        if ft::is_audio(&self.name) {
+            return FileCategory::Audio;
+        }
+        if ft::is_document(&self.name) {
+            return FileCategory::Document;
+        }
+        if ft::is_source_code(&self.name) {
+            return FileCategory::Code;
+        }
+        if ft::is_config(&self.name) {
+            return FileCategory::Config;
+        }
+        FileCategory::Other
+    }
+
     pub fn display_size(&self) -> String {
         Self::format_size(self.size)
     }
@@ -689,6 +744,7 @@ mod tests {
             group: "testgroup".to_string(),
             selected: is_selected,
             is_hidden: name.starts_with('.'),
+            mime_type: None,
         }
     }
 

@@ -165,6 +165,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -182,6 +183,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }
     }
 
@@ -228,6 +230,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
         let right = vec![FileEntry {
             name: "a.txt".into(),
@@ -242,6 +245,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -264,6 +268,7 @@ mod tests {
             group: String::new(),
             selected: false,
             is_hidden: false,
+            mime_type: None,
         }];
         let right = vec![];
 

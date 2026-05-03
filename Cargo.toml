@@ -10,9 +10,12 @@ repository = "https://github.com/leszek3737/lc---Libre-Commander"
 
 [dependencies]
 chrono = "0.4.44"
-regex = "1"
 crossterm = "0.29.0"
+filetime = "0.2"
+infer = "0.19"
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 ratatui = "0.30.0"
+regex = "1"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
 unicode-width = "0.2"
