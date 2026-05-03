@@ -49,7 +49,6 @@ impl Theme {
     pub const AUDIO: Color = Color::LightGreen;
     pub const DOCUMENT: Color = Color::LightYellow;
     pub const SOURCE_CODE: Color = Color::Yellow;
-    pub const CODE: Color = Self::SOURCE_CODE;
     pub const CONFIG: Color = Color::LightBlue;
     pub const REGULAR_FILE: Color = Color::White;
 
@@ -191,10 +190,5 @@ mod tests {
         for (category, color) in cases {
             assert_eq!(Theme::category_color(category), color);
         }
-    }
-
-    #[test]
-    fn code_color_aliases_source_code_color() {
-        assert_eq!(Theme::CODE, Theme::SOURCE_CODE);
     }
 }

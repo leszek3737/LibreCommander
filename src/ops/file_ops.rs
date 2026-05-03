@@ -5,10 +5,14 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 const MAX_RECURSION_DEPTH: usize = 256;
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
 const CRITICAL_DIRS: &[&str] = &[
     "/",
     "/Applications",
@@ -19,6 +23,7 @@ const CRITICAL_DIRS: &[&str] = &[
     "/etc",
     "/lib",
     "/lib64",
+    "/nix",
     "/private",
     "/proc",
     "/sbin",
@@ -26,6 +31,29 @@ const CRITICAL_DIRS: &[&str] = &[
     "/usr",
     "/var",
 ];
+
+#[cfg(not(target_os = "macos"))]
+const CRITICAL_DIRS: &[&str] = &[
+    "/",
+    "/System",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/flatpak",
+    "/gnu",
+    "/lib",
+    "/lib64",
+    "/nix",
+    "/proc",
+    "/sbin",
+    "/snap",
+    "/sys",
+    "/usr",
+    "/var",
+];
+
+#[cfg(target_os = "macos")]
 const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/Applications",
     "/System",
@@ -35,8 +63,29 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/etc",
     "/lib",
     "/lib64",
+    "/nix",
     "/proc",
     "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+];
+
+#[cfg(not(target_os = "macos"))]
+const CRITICAL_DIR_PREFIXES: &[&str] = &[
+    "/System",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/flatpak",
+    "/gnu",
+    "/lib",
+    "/lib64",
+    "/nix",
+    "/proc",
+    "/sbin",
+    "/snap",
     "/sys",
     "/usr",
     "/var",
@@ -171,9 +220,7 @@ fn copy_dir_recursive_inner(
                 copy_dir_recursive_inner(&entry_path, &dest_path, src_root, dest_root, depth + 1)?;
             total_bytes = total_bytes.saturating_add(copied);
         } else if file_type.is_symlink() {
-            let target = fs::read_link(&entry_path)?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dest_path)?;
+            copy_symlink(&entry_path, &dest_path)?;
         } else {
             total_bytes = total_bytes.saturating_add(copy_file(&entry_path, &dest_path)?);
         }
@@ -284,7 +331,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
     }
     ensure_destination_absent(dest)?;
 
-    if src.is_dir() && path_contains(src, dest) {
+    if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
@@ -304,13 +351,18 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
-                if !path_contains(src, dest)
-                    && let Err(del_err) = delete_dir_recursive(src)
-                {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                if !path_contains(src, dest)? {
+                    if let Err(del_err) = delete_dir_recursive(src) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "cross-device move: copied from '{}' to '{}' but failed to remove source directory: {}",
+                                src.display(),
+                                dest.display(),
+                                del_err
+                            ),
+                        ));
+                    }
                 }
             } else {
                 copy_file(src, dest)?;
@@ -347,7 +399,7 @@ pub fn move_entry_with_progress(
     }
     ensure_destination_absent(dest)?;
 
-    if src.is_dir() && path_contains(src, dest) {
+    if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
@@ -567,25 +619,12 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     Ok(total)
 }
 
-fn path_contains(parent: &Path, child: &Path) -> bool {
-    if let (Ok(canonical_parent), Ok(canonical_child)) = (
-        canonicalize_existing_path(parent),
-        canonicalize_with_nearest_existing_parent(child),
-    ) {
-        return path_contains_canonical(&canonical_parent, &canonical_child);
-    }
-
-    let parent_components = parent.components().peekable();
-    let mut child_components = child.components().peekable();
-
-    for parent_component in parent_components {
-        match child_components.next() {
-            Some(child_component) if components_equal(parent_component, child_component) => {}
-            _ => return false,
-        }
-    }
-
-    child_components.peek().is_some()
+fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
+    let canonical_parent = canonicalize_existing_path(parent)
+        .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize parent: {e}")))?;
+    let canonical_child = canonicalize_with_nearest_existing_parent(child)
+        .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize child: {e}")))?;
+    Ok(path_contains_canonical(&canonical_parent, &canonical_child))
 }
 
 fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
@@ -604,8 +643,8 @@ fn temp_dir_path_for(dest: &Path) -> PathBuf {
         .file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| "copy".into());
-    let tid = std::thread::current().id();
-    name.push(format!(".lc-dir-copy-{}-{:?}.tmp", std::process::id(), tid));
+    let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+    name.push(format!(".lc-dir-copy-{}-{}.tmp", std::process::id(), seq));
     dest.with_file_name(name)
 }
 
@@ -713,10 +752,6 @@ fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
     }
 
     Ok(base)
-}
-
-fn components_equal(left: Component<'_>, right: Component<'_>) -> bool {
-    left == right
 }
 
 #[cfg(test)]

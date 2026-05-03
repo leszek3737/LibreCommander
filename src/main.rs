@@ -610,9 +610,10 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
             title: "Error".to_string(),
             message: msg.clone(),
         },
-        app::types::DialogKind::Help(msg) => dialogs::DialogKind::Help {
+        app::types::DialogKind::Help { message, scroll_offset } => dialogs::DialogKind::Help {
             title: "Help".to_string(),
-            message: msg.clone(),
+            message: message.clone(),
+            scroll_offset: *scroll_offset,
         },
         app::types::DialogKind::Progress(msg, pct) => dialogs::DialogKind::Progress {
             title: "Progress".to_string(),
@@ -856,9 +857,10 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
     match key {
         KeyCode::F(10) => state.should_quit = true,
         KeyCode::F(1) => {
-            state.mode = AppMode::Dialog(app::types::DialogKind::Help(
-                app::keymap::build_help_message(),
-            ));
+            state.mode = AppMode::Dialog(app::types::DialogKind::Help {
+                message: app::keymap::build_help_message(),
+                scroll_offset: 0,
+            });
         }
         KeyCode::F(2) => {
             state.mode = AppMode::ListPicker(app::types::PickerKind::UserMenu);
@@ -1322,6 +1324,313 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
     }
 }
 
+/// Shared helper to dismiss dialog and restore panel
+fn dismiss_dialog_and_restore(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+}
+
+/// Handle confirm dialog (yes/no with action)
+fn handle_confirm_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    match key {
+        KeyCode::Char('y' | 'Y') => {
+            if state.pending_action.is_some() {
+                start_confirmed_action(state, running_job);
+                state.dialog_selection = 0;
+                let start_failed = state.status_message.is_some();
+                if start_failed {
+                    state.mode = AppMode::Normal;
+                    refresh_both(state);
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                }
+            } else {
+                dismiss_dialog(state);
+                refresh_both(state);
+            }
+        }
+        KeyCode::Char('n' | 'N') => {
+            dismiss_dialog(state);
+        }
+        KeyCode::Enter => {
+            if state.dialog_selection == 1 {
+                dismiss_dialog(state);
+            } else if state.pending_action.is_some() {
+                start_confirmed_action(state, running_job);
+                state.dialog_selection = 0;
+                let start_failed = state.status_message.is_some();
+                if start_failed {
+                    state.mode = AppMode::Normal;
+                    refresh_both(state);
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        set_active_panel(state, panel);
+                    }
+                }
+            } else {
+                dismiss_dialog(state);
+            }
+        }
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+        }
+        _ => {}
+    }
+}
+
+/// Handle input dialog (text entry) - returns true if early return needed
+fn handle_input_dialog(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    action: &InputAction,
+    key: KeyCode,
+    terminal_height: u16,
+) -> bool {
+    match key {
+        KeyCode::Enter => {
+            let input = state.dialog_input.clone();
+            match action {
+                InputAction::ViewerSearch => {
+                    if let Some(vs) = viewer_state.as_mut() {
+                        vs.search(&input, terminal_height.saturating_sub(3) as usize);
+                    }
+                    state.mode = AppMode::Viewing;
+                    state.dialog_input.clear();
+                    state.dialog_cursor_pos = 0;
+                    return true;
+                }
+                InputAction::CreateDirectory if !input.trim().is_empty() => {
+                    let dir = state.active_panel().path.clone();
+                    if let Err(err) = ops::file_ops::create_directory(&dir.join(&input)) {
+                        state.status_message = Some(format!("Create directory failed: {err}"));
+                    } else {
+                        refresh_active(state);
+                    }
+                }
+                InputAction::Rename if !input.is_empty() => {
+                    if let Some(entry) = state.active_panel().current_entry()
+                        && let Err(err) = ops::file_ops::rename_entry(&entry.path, &input)
+                    {
+                        state.status_message = Some(format!("Rename failed: {err}"));
+                    }
+                }
+                InputAction::Chmod if !input.is_empty() => {
+                    if let Some(mode) = parse_octal_mode(&input) {
+                        if let Some(entry) = state.active_panel().current_entry()
+                            && let Err(err) = ops::file_ops::chmod(&entry.path, mode)
+                        {
+                            state.status_message = Some(format!("Chmod failed: {err}"));
+                        }
+                    } else {
+                        state.status_message = Some(format!("Invalid octal mode '{input}'"));
+                    }
+                }
+                InputAction::Filter => {
+                    let panel = state.active_panel_mut();
+                    panel.filter = if input.trim().is_empty() {
+                        None
+                    } else {
+                        Some(input)
+                    };
+                }
+                InputAction::QuickCd => {
+                    let expanded = if let Some(stripped) = input.strip_prefix('~') {
+                        if let Some(home) = std::env::var_os("HOME") {
+                            std::path::PathBuf::from(home)
+                                .join(stripped.trim_start_matches('/'))
+                        } else {
+                            std::path::PathBuf::from(&input)
+                        }
+                    } else {
+                        let path = std::path::PathBuf::from(&input);
+                        if path.is_absolute() {
+                            path
+                        } else {
+                            state.active_panel().path.join(path)
+                        }
+                    };
+
+                    if expanded.is_dir() {
+                        let panel = state.active_panel_mut();
+                        panel.history.push(panel.path.clone());
+                        panel.path = expanded.clone();
+                        panel.cursor = 0;
+                        panel.scroll_offset = 0;
+                        refresh_active(state);
+                        if !state.directory_hotlist.iter().any(|p| p == &expanded) {
+                            state.directory_hotlist.push(expanded);
+                        }
+                    } else {
+                        state.status_message = Some(format!("Directory not found: {input}"));
+                    }
+                }
+                InputAction::FindFile => {
+                    let dir = state.active_panel().path.clone();
+                    let outcome = ops::search::FileSearch::search_files_with_diagnostics(
+                        &dir, &input, true, false,
+                    );
+                    let result_count = outcome.matches.len();
+                    let error_count = outcome.errors.len();
+                    let truncated = outcome.truncated;
+                    if let Some(first) = outcome.matches.first() {
+                        if let Some(parent) = first.path.parent() {
+                            state.active_panel_mut().path = parent.to_path_buf();
+                            refresh_active(state);
+                            if let Some(pos) = state
+                                .active_panel()
+                                .entries
+                                .iter()
+                                .position(|e| e.path == first.path)
+                            {
+                                state.active_panel_mut().cursor = pos;
+                                state.active_panel_mut().ensure_cursor_visible(
+                                    panel_visible_height(terminal_height),
+                                );
+                            }
+                        }
+                        let mut message =
+                            format!("Found {result_count} match(es) for '{input}'");
+                        if error_count > 0 {
+                            message.push_str(&format!(", {error_count} error(s)"));
+                        }
+                        if truncated {
+                            message.push_str(", truncated");
+                        }
+                        state.status_message = Some(message);
+                    } else {
+                        let mut message = format!("No matches for '{input}'");
+                        if error_count > 0 {
+                            message.push_str(&format!(", {error_count} error(s)"));
+                        }
+                        if truncated {
+                            message.push_str(", truncated");
+                        }
+                        state.status_message = Some(message);
+                    }
+                }
+                _ => {}
+            }
+            state.mode = AppMode::Normal;
+            state.dialog_input.clear();
+            state.dialog_cursor_pos = 0;
+            refresh_active(state);
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+        }
+        KeyCode::Esc => {
+            state.mode = if *action == InputAction::ViewerSearch {
+                AppMode::Viewing
+            } else {
+                AppMode::Normal
+            };
+            state.dialog_input.clear();
+            state.dialog_cursor_pos = 0;
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+        }
+        KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
+            state.dialog_cursor_pos -= 1;
+            let byte_pos = state
+                .dialog_input
+                .char_indices()
+                .nth(state.dialog_cursor_pos)
+                .map(|(i, _)| i)
+                .unwrap_or(state.dialog_input.len());
+            let next_byte = state.dialog_input[byte_pos..]
+                .chars()
+                .next()
+                .map(|c| byte_pos + c.len_utf8())
+                .unwrap_or(state.dialog_input.len());
+            state.dialog_input.drain(byte_pos..next_byte);
+        }
+        KeyCode::Delete => {
+            let byte_pos = state
+                .dialog_input
+                .char_indices()
+                .nth(state.dialog_cursor_pos)
+                .map(|(i, _)| i);
+            if let Some(pos) = byte_pos {
+                let next_char_end = state.dialog_input[pos..]
+                    .chars()
+                    .next()
+                    .map(|c| pos + c.len_utf8())
+                    .unwrap_or(state.dialog_input.len());
+                state.dialog_input.drain(pos..next_char_end);
+            }
+        }
+        KeyCode::Char(c) => {
+            let byte_pos = state
+                .dialog_input
+                .char_indices()
+                .nth(state.dialog_cursor_pos)
+                .map(|(i, _)| i)
+                .unwrap_or(state.dialog_input.len());
+            state.dialog_input.insert(byte_pos, c);
+            state.dialog_cursor_pos += 1;
+        }
+        KeyCode::Left if state.dialog_cursor_pos > 0 => {
+            state.dialog_cursor_pos -= 1;
+        }
+        KeyCode::Right if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
+            state.dialog_cursor_pos += 1;
+        }
+        KeyCode::Home => {
+            state.dialog_cursor_pos = 0;
+        }
+        KeyCode::End => {
+            state.dialog_cursor_pos = state.dialog_input.chars().count();
+        }
+        _ => {}
+    }
+    false
+}
+
+/// Handle error dialog (dismiss on Enter/Esc)
+fn handle_error_dialog(state: &mut AppState, key: KeyCode) {
+    if matches!(key, KeyCode::Enter | KeyCode::Esc) {
+        dismiss_dialog_and_restore(state);
+    }
+}
+
+/// Handle progress dialog (cancel on Esc)
+fn handle_progress_dialog(
+    state: &mut AppState,
+    running_job: &Option<RunningJob>,
+    key: KeyCode,
+) {
+    if key == KeyCode::Esc {
+        if let Some(job) = running_job.as_ref() {
+            job.cancel.store(true, Ordering::Relaxed);
+            state.status_message = Some("Cancel requested".to_string());
+        }
+    }
+}
+
+/// Handle properties dialog (dismiss on Enter/Esc)
+fn handle_properties_dialog(state: &mut AppState, key: KeyCode) {
+    if matches!(key, KeyCode::Enter | KeyCode::Esc) {
+        dismiss_dialog_and_restore(state);
+    }
+}
+
+/// Handle copymove dialog (fallback - dismiss on Esc)
+fn handle_copymove_dialog(state: &mut AppState, key: KeyCode) {
+    if key == KeyCode::Esc {
+        dismiss_dialog_and_restore(state);
+    }
+}
+
 fn handle_dialog(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -1329,6 +1638,62 @@ fn handle_dialog(
     key: KeyCode,
     terminal_height: u16,
 ) {
+    // Handle Help dialog specially due to mutable scroll_offset
+    if let AppMode::Dialog(app::types::DialogKind::Help { message, scroll_offset }) =
+        &mut state.mode
+    {
+        let total_lines = message.lines().count();
+        let max_lines = terminal_height.saturating_sub(6) as usize;
+        let should_exit = match key {
+            KeyCode::Up | KeyCode::Char('k') => {
+                *scroll_offset = scroll_offset.saturating_sub(1);
+                false
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if total_lines > max_lines {
+                    *scroll_offset = (*scroll_offset + 1).min(total_lines - max_lines);
+                }
+                false
+            }
+            KeyCode::PageUp => {
+                *scroll_offset = scroll_offset.saturating_sub(max_lines);
+                false
+            }
+            KeyCode::PageDown => {
+                if total_lines > max_lines {
+                    *scroll_offset = (*scroll_offset + max_lines).min(total_lines - max_lines);
+                }
+                false
+            }
+            KeyCode::Home => {
+                *scroll_offset = 0;
+                false
+            }
+            KeyCode::End => {
+                if total_lines > max_lines {
+                    *scroll_offset = total_lines - max_lines;
+                }
+                false
+            }
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => true,
+            _ => true, // Any other key exits
+        };
+        if should_exit {
+            state.mode = AppMode::Normal;
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+        }
+        return;
+    }
+
+    // Extract action early to avoid borrow issues
+    let input_action = if let AppMode::Dialog(app::types::DialogKind::Input { ref action, .. }) = state.mode {
+        Some(action.clone())
+    } else {
+        None
+    };
+
     let dk = if let AppMode::Dialog(ref dk) = state.mode {
         dk
     } else {
@@ -1336,291 +1701,31 @@ fn handle_dialog(
     };
 
     match dk {
-        app::types::DialogKind::Confirm(_) => match key {
-            KeyCode::Char('y' | 'Y') => {
-                if state.pending_action.is_some() {
-                    start_confirmed_action(state, running_job);
-                    state.dialog_selection = 0;
-                    let start_failed = state.status_message.is_some();
-                    if start_failed {
-                        state.mode = AppMode::Normal;
-                        refresh_both(state);
-                        if let Some(panel) = state.menu_restore_panel.take() {
-                            set_active_panel(state, panel);
-                        }
-                    }
-                } else {
-                    dismiss_dialog(state);
-                    refresh_both(state);
-                }
-            }
-            KeyCode::Char('n' | 'N') => {
-                dismiss_dialog(state);
-            }
-            KeyCode::Enter => {
-                if state.dialog_selection == 1 {
-                    dismiss_dialog(state);
-                } else if state.pending_action.is_some() {
-                    start_confirmed_action(state, running_job);
-                    state.dialog_selection = 0;
-                    let start_failed = state.status_message.is_some();
-                    if start_failed {
-                        state.mode = AppMode::Normal;
-                        refresh_both(state);
-                        if let Some(panel) = state.menu_restore_panel.take() {
-                            set_active_panel(state, panel);
-                        }
-                    }
-                } else {
-                    dismiss_dialog(state);
-                }
-            }
-            KeyCode::Esc => {
-                dismiss_dialog(state);
-            }
-            KeyCode::Left | KeyCode::Right => {
-                state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
-            }
-            _ => {}
-        },
-        app::types::DialogKind::Input { action, .. } => match key {
-            KeyCode::Enter => {
-                let input = state.dialog_input.clone();
-                match action {
-                    InputAction::ViewerSearch => {
-                        if let Some(vs) = viewer_state.as_mut() {
-                            vs.search(&input, terminal_height.saturating_sub(3) as usize);
-                        }
-                        state.mode = AppMode::Viewing;
-                        state.dialog_input.clear();
-                        state.dialog_cursor_pos = 0;
-                        return;
-                    }
-                    InputAction::CreateDirectory if !input.trim().is_empty() => {
-                        let dir = state.active_panel().path.clone();
-                        if let Err(err) = ops::file_ops::create_directory(&dir.join(&input)) {
-                            state.status_message = Some(format!("Create directory failed: {err}"));
-                        } else {
-                            refresh_active(state);
-                        }
-                    }
-                    InputAction::Rename if !input.is_empty() => {
-                        if let Some(entry) = state.active_panel().current_entry()
-                            && let Err(err) = ops::file_ops::rename_entry(&entry.path, &input)
-                        {
-                            state.status_message = Some(format!("Rename failed: {err}"));
-                        }
-                    }
-                    InputAction::Chmod if !input.is_empty() => {
-                        if let Some(mode) = parse_octal_mode(&input) {
-                            if let Some(entry) = state.active_panel().current_entry()
-                                && let Err(err) = ops::file_ops::chmod(&entry.path, mode)
-                            {
-                                state.status_message = Some(format!("Chmod failed: {err}"));
-                            }
-                        } else {
-                            state.status_message = Some(format!("Invalid octal mode '{input}'"));
-                        }
-                    }
-                    InputAction::Filter => {
-                        let panel = state.active_panel_mut();
-                        panel.filter = if input.trim().is_empty() {
-                            None
-                        } else {
-                            Some(input)
-                        };
-                    }
-                    InputAction::QuickCd => {
-                        let expanded = if let Some(stripped) = input.strip_prefix('~') {
-                            if let Some(home) = std::env::var_os("HOME") {
-                                std::path::PathBuf::from(home)
-                                    .join(stripped.trim_start_matches('/'))
-                            } else {
-                                std::path::PathBuf::from(&input)
-                            }
-                        } else {
-                            let path = std::path::PathBuf::from(&input);
-                            if path.is_absolute() {
-                                path
-                            } else {
-                                state.active_panel().path.join(path)
-                            }
-                        };
-
-                        if expanded.is_dir() {
-                            let panel = state.active_panel_mut();
-                            // Push current path to history before changing
-                            panel.history.push(panel.path.clone());
-                            panel.path = expanded.clone();
-                            panel.cursor = 0;
-                            panel.scroll_offset = 0;
-                            refresh_active(state);
-                            if !state.directory_hotlist.iter().any(|p| p == &expanded) {
-                                state.directory_hotlist.push(expanded);
-                            }
-                        } else {
-                            state.status_message = Some(format!("Directory not found: {input}"));
-                        }
-                    }
-                    InputAction::FindFile => {
-                        let dir = state.active_panel().path.clone();
-                        let outcome = ops::search::FileSearch::search_files_with_diagnostics(
-                            &dir, &input, true, false,
-                        );
-                        let result_count = outcome.matches.len();
-                        let error_count = outcome.errors.len();
-                        let truncated = outcome.truncated;
-                        if let Some(first) = outcome.matches.first() {
-                            if let Some(parent) = first.path.parent() {
-                                state.active_panel_mut().path = parent.to_path_buf();
-                                refresh_active(state);
-                                if let Some(pos) = state
-                                    .active_panel()
-                                    .entries
-                                    .iter()
-                                    .position(|e| e.path == first.path)
-                                {
-                                    state.active_panel_mut().cursor = pos;
-                                    state.active_panel_mut().ensure_cursor_visible(
-                                        panel_visible_height(terminal_height),
-                                    );
-                                }
-                            }
-                            let mut message =
-                                format!("Found {result_count} match(es) for '{input}'");
-                            if error_count > 0 {
-                                message.push_str(&format!(", {error_count} error(s)"));
-                            }
-                            if truncated {
-                                message.push_str(", truncated");
-                            }
-                            state.status_message = Some(message);
-                        } else {
-                            let mut message = format!("No matches for '{input}'");
-                            if error_count > 0 {
-                                message.push_str(&format!(", {error_count} error(s)"));
-                            }
-                            if truncated {
-                                message.push_str(", truncated");
-                            }
-                            state.status_message = Some(message);
-                        }
-                    }
-                    _ => {}
-                }
-                state.mode = AppMode::Normal;
-                state.dialog_input.clear();
-                state.dialog_cursor_pos = 0;
-                refresh_active(state);
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
-            }
-            KeyCode::Esc => {
-                state.mode = if *action == InputAction::ViewerSearch {
-                    AppMode::Viewing
-                } else {
-                    AppMode::Normal
-                };
-                state.dialog_input.clear();
-                state.dialog_cursor_pos = 0;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
-            }
-            KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
-                state.dialog_cursor_pos -= 1;
-                let byte_pos = state
-                    .dialog_input
-                    .char_indices()
-                    .nth(state.dialog_cursor_pos)
-                    .map(|(i, _)| i)
-                    .unwrap_or(state.dialog_input.len());
-                let next_byte = state.dialog_input[byte_pos..]
-                    .chars()
-                    .next()
-                    .map(|c| byte_pos + c.len_utf8())
-                    .unwrap_or(state.dialog_input.len());
-                state.dialog_input.drain(byte_pos..next_byte);
-            }
-            KeyCode::Delete => {
-                let byte_pos = state
-                    .dialog_input
-                    .char_indices()
-                    .nth(state.dialog_cursor_pos)
-                    .map(|(i, _)| i);
-                if let Some(pos) = byte_pos {
-                    let next_char_end = state.dialog_input[pos..]
-                        .chars()
-                        .next()
-                        .map(|c| pos + c.len_utf8())
-                        .unwrap_or(state.dialog_input.len());
-                    state.dialog_input.drain(pos..next_char_end);
-                }
-            }
-            KeyCode::Char(c) => {
-                let byte_pos = state
-                    .dialog_input
-                    .char_indices()
-                    .nth(state.dialog_cursor_pos)
-                    .map(|(i, _)| i)
-                    .unwrap_or(state.dialog_input.len());
-                state.dialog_input.insert(byte_pos, c);
-                state.dialog_cursor_pos += 1;
-            }
-            KeyCode::Left if state.dialog_cursor_pos > 0 => {
-                state.dialog_cursor_pos -= 1;
-            }
-            KeyCode::Right if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
-                state.dialog_cursor_pos += 1;
-            }
-            KeyCode::Home => {
-                state.dialog_cursor_pos = 0;
-            }
-            KeyCode::End => {
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-            }
-            _ => {}
-        },
-        app::types::DialogKind::Error(_) => {
-            if matches!(key, KeyCode::Enter | KeyCode::Esc) {
-                state.mode = AppMode::Normal;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
+        app::types::DialogKind::Confirm(_) => {
+            handle_confirm_dialog(state, running_job, key);
+        }
+        app::types::DialogKind::Input { .. } => {
+            if let Some(action) = input_action {
+                if handle_input_dialog(state, viewer_state, &action, key, terminal_height) {
+                    return;
                 }
             }
         }
-        app::types::DialogKind::Help(_) => {
-            // Help dialog exits on any key
-            state.mode = AppMode::Normal;
-            if let Some(panel) = state.menu_restore_panel.take() {
-                set_active_panel(state, panel);
-            }
+        app::types::DialogKind::Error(_) => {
+            handle_error_dialog(state, key);
         }
         app::types::DialogKind::Progress(_, _) => {
-            if key == KeyCode::Esc {
-                if let Some(job) = running_job.as_ref() {
-                    job.cancel.store(true, Ordering::Relaxed);
-                    state.status_message = Some("Cancel requested".to_string());
-                }
-            }
+            handle_progress_dialog(state, running_job, key);
         }
         app::types::DialogKind::Properties { .. } => {
-            // Properties dialog exits on Enter or Esc
-            if matches!(key, KeyCode::Enter | KeyCode::Esc) {
-                state.mode = AppMode::Normal;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
-            }
+            handle_properties_dialog(state, key);
         }
-        _ => {
-            if key == KeyCode::Esc {
-                state.mode = AppMode::Normal;
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
-            }
+        app::types::DialogKind::CopyMove { .. } => {
+            handle_copymove_dialog(state, key);
+        }
+        app::types::DialogKind::Help { .. } => {
+            // Already handled above, this should not be reached
+            dismiss_dialog_and_restore(state);
         }
     }
 }

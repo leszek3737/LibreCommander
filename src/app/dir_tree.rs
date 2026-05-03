@@ -147,8 +147,14 @@ fn sort_entries(entries: &mut [TreeEntry]) {
 /// If expanding: reads children and inserts them after the entry.
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
-pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, _root: &Path, show_hidden: bool) {
-    let _diagnostics = toggle_expand_with_diagnostics(entries, index, _root, show_hidden);
+pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, show_hidden: bool) {
+    let diagnostics = toggle_expand_with_diagnostics(entries, index, root, show_hidden);
+    if !diagnostics.is_empty() {
+        eprintln!("Tree expand errors: {}", diagnostics.len());
+        for diag in diagnostics {
+            eprintln!("  {}: {}", diag.path.display(), diag.message);
+        }
+    }
 }
 
 pub fn toggle_expand_with_diagnostics(
@@ -186,11 +192,12 @@ pub fn toggle_expand_with_diagnostics(
             &mut diagnostics,
         );
 
-        if diagnostics.is_empty() {
-            let insert_pos = index + 1;
-            entries.splice(insert_pos..insert_pos, children);
-            entries[index].expanded = true;
-        }
+        // Even if there are errors (diagnostics not empty), mark as expanded
+        // and insert whatever children were found (possibly empty)
+        // This allows the UI to show the directory expanded with error indicators
+        let insert_pos = index + 1;
+        entries.splice(insert_pos..insert_pos, children);
+        entries[index].expanded = true;
         diagnostics
     }
 }
@@ -402,7 +409,7 @@ mod tests {
         let diagnostics = toggle_expand_with_diagnostics(&mut entries, 0, dir.path(), false);
 
         assert_eq!(entries.len(), 1);
-        assert!(!entries[0].expanded);
+        assert!(entries[0].expanded);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path, missing);
         assert!(

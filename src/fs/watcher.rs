@@ -74,7 +74,7 @@ impl Watcher {
     }
 
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path = path.canonicalize().map_err(|_| io::Error::other(format!("cannot canonicalize {}", path.display())))?;
 
         if self.watched_dirs.contains(&path) {
             return Ok(());
@@ -103,7 +103,7 @@ impl Watcher {
     }
 
     pub fn unwatch(&mut self, path: &Path) -> io::Result<()> {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path = path.canonicalize().map_err(|_| io::Error::other(format!("cannot canonicalize {}", path.display())))?;
 
         let result = match self.watchers.get(&path) {
             Some(WhichWatcher::Primary) => self.primary.unwatch(&path).map_err(notify_to_io),
@@ -126,11 +126,11 @@ impl Watcher {
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
+        self.paused.store(true, Ordering::Relaxed);
     }
 
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Release);
+        self.paused.store(false, Ordering::Relaxed);
     }
 }
 
@@ -140,7 +140,7 @@ fn make_handler(
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
-        if paused.load(Ordering::Acquire) {
+        if paused.load(Ordering::Relaxed) {
             return;
         }
 
@@ -156,7 +156,7 @@ fn make_handler(
                 WatchEvent::Renamed { from, to } => {
                     // For renames, debounce both paths independently
                     let now = Instant::now();
-                    let mut debounce = debounce_state.lock().unwrap();
+                    let mut debounce = debounce_state.lock().unwrap_or_else(|e| e.into_inner());
                     let from_allowed = debounce
                         .get(from)
                         .is_none_or(|last| now.duration_since(*last) >= Duration::from_millis(300));
@@ -175,7 +175,7 @@ fn make_handler(
 
             if let Some(path) = path {
                 let now = Instant::now();
-                let mut debounce = debounce_state.lock().unwrap();
+                let mut debounce = debounce_state.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(last) = debounce.get(&path) {
                     if now.duration_since(*last) < Duration::from_millis(300) {
                         continue;

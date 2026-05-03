@@ -11,9 +11,9 @@ use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode
 pub struct PersistedPanel {
     #[serde(default)]
     pub path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_with_fallback")]
+    #[serde(default, deserialize_with = "deserialize_listing_mode_with_fallback")]
     pub listing_mode: ListingMode,
-    #[serde(default, deserialize_with = "deserialize_with_fallback")]
+    #[serde(default, deserialize_with = "deserialize_sort_mode_with_fallback")]
     pub sort_mode: SortMode,
     #[serde(default)]
     pub filter: String,
@@ -21,14 +21,29 @@ pub struct PersistedPanel {
     pub show_hidden: bool,
 }
 
-fn deserialize_with_fallback<'de, T, D>(d: D) -> Result<T, D::Error>
+fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D::Error>
 where
-    T: serde::Deserialize<'de> + Default,
     D: serde::Deserializer<'de>,
 {
-    match T::deserialize(d) {
+    match ListingMode::deserialize(d) {
         Ok(v) => Ok(v),
-        Err(_) => Ok(T::default()),
+        Err(e) => {
+            eprintln!("warning: config field 'listing_mode' invalid, using default: {}", e);
+            Ok(ListingMode::default())
+        }
+    }
+}
+
+fn deserialize_sort_mode_with_fallback<'de, D>(d: D) -> Result<SortMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match SortMode::deserialize(d) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            eprintln!("warning: config field 'sort_mode' invalid, using default: {}", e);
+            Ok(SortMode::default())
+        }
     }
 }
 

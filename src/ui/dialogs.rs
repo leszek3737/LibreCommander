@@ -31,6 +31,7 @@ pub enum DialogKind {
     Help {
         title: String,
         message: String,
+        scroll_offset: usize,
     },
     Progress {
         title: String,
@@ -83,8 +84,12 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
         DialogKind::Error { title, message } => {
             render_error_dialog(f, dialog_area, title, message);
         }
-        DialogKind::Help { title, message } => {
-            render_help_dialog(f, dialog_area, title, message);
+        DialogKind::Help {
+            title,
+            message,
+            scroll_offset,
+        } => {
+            render_help_dialog(f, dialog_area, title, message, *scroll_offset);
         }
         DialogKind::Progress {
             title,
@@ -322,7 +327,13 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
     f.render_widget(ok_btn, chunks[1]);
 }
 
-pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str) {
+pub fn render_help_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: &str,
+    scroll_offset: usize,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title.to_string())
@@ -337,9 +348,15 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
         .split(inner);
 
     let max_lines = chunks[0].height as usize;
-    let visible_message = message
-        .lines()
+    let all_lines: Vec<&str> = message.lines().collect();
+    let total_lines = all_lines.len();
+
+    let clamped_offset = scroll_offset.min(total_lines.saturating_sub(1));
+    let visible_message = all_lines
+        .iter()
+        .skip(clamped_offset)
         .take(max_lines)
+        .cloned()
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -349,7 +366,36 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
         .style(Theme::info());
     f.render_widget(message_paragraph, chunks[0]);
 
-    let ok_btn = Paragraph::new("[ Press any key ]")
+    // Show scrollbar indicator if content exceeds visible area
+    if total_lines > max_lines {
+        let scrollbar_height = max_lines.min(total_lines);
+        let scrollbar_pos = if total_lines > 0 {
+            clamped_offset * scrollbar_height / total_lines
+        } else {
+            0
+        };
+        let scrollbar_x = inner.x + inner.width.saturating_sub(1);
+        let scrollbar_y = inner.y;
+        for i in 0..scrollbar_height {
+            let y = scrollbar_y + i as u16;
+            let symbol = if i == scrollbar_pos {
+                "█"
+            } else if i >= scrollbar_pos
+                && i < scrollbar_pos + (max_lines * max_lines / total_lines.max(1))
+            {
+                "█"
+            } else {
+                "░"
+            };
+            let cell = ratatui::text::Span::styled(
+                symbol,
+                Style::default().fg(Theme::SCROLLBAR_ACTIVE),
+            );
+            f.render_widget(ratatui::widgets::Paragraph::new(cell), Rect::new(scrollbar_x, y, 1, 1));
+        }
+    }
+
+    let ok_btn = Paragraph::new("[ Press any key to exit, Arrows/PgUp/PgDn to scroll ]")
         .style(Theme::highlight_bold())
         .alignment(Alignment::Center);
     f.render_widget(ok_btn, chunks[1]);

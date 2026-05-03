@@ -343,13 +343,19 @@ impl FileSearch {
         if needle_lower.is_empty() {
             return true;
         }
-        let haystack_lower: Vec<char> = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
-        if haystack_lower.len() < needle_lower.len() {
-            return false;
+        let needle_len = needle_lower.len();
+        let haystack_chars = haystack.chars().flat_map(|c| c.to_lowercase());
+        let mut window: Vec<char> = Vec::with_capacity(needle_len);
+        for c in haystack_chars {
+            if window.len() == needle_len {
+                window.remove(0);
+            }
+            window.push(c);
+            if window.len() == needle_len && window == needle_lower {
+                return true;
+            }
         }
-        haystack_lower
-            .windows(needle_lower.len())
-            .any(|w| w == needle_lower)
+        false
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {

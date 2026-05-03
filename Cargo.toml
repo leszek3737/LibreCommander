@@ -1,6 +1,6 @@
 [package]
 name = "lc"
-version = "0.0.9"
+version = "0.0.10"
 edition = "2024"
 rust-version = "1.85"
 description = "A fast Rust terminal file manager inspired by Midnight Commander"

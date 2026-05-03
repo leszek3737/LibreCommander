@@ -107,7 +107,9 @@ pub fn poll_running_job(
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
         {
-            let _ = handle.join();
+            if let Err(panic_payload) = handle.join() {
+                eprintln!("warning: worker thread panicked: {:?}", panic_payload);
+            }
         }
         finish_running_job(state, action_label, report, refresh_both);
         dirty = true;

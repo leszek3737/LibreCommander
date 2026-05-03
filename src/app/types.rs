@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -194,7 +194,10 @@ pub enum DialogKind {
         action: InputAction,
     },
     Error(String),
-    Help(String),          // Help message, exits on any key
+    Help {
+        message: String,
+        scroll_offset: usize,
+    },
     Progress(String, f32), // (message, progress 0.0-1.0)
     CopyMove {
         source: Vec<PathBuf>,
@@ -602,14 +605,9 @@ impl PanelState {
             return;
         }
 
-        let selected_by_path: HashMap<&PathBuf, bool> = self
-            .entries
-            .iter()
-            .map(|entry| (&entry.path, entry.selected))
-            .collect();
         for entry in &mut self.unfiltered_entries {
-            if let Some(selected) = selected_by_path.get(&entry.path) {
-                entry.selected = *selected;
+            if let Some(filtered_entry) = self.entries.iter().find(|e| e.path == entry.path) {
+                entry.selected = filtered_entry.selected;
             }
         }
     }

@@ -25,7 +25,15 @@ pub fn sync_watcher_paths(
 
     let desired: HashSet<PathBuf> = [&left, &right]
         .into_iter()
-        .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+        .filter_map(|path| {
+            match path.canonicalize() {
+                Ok(canonical) => Some(canonical),
+                Err(_) => {
+                    // Skip paths that cannot be canonicalized (e.g., deleted, inaccessible)
+                    None
+                }
+            }
+        })
         .collect();
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 
@@ -103,12 +111,14 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
         return true;
     }
 
-    let parent = parent
-        .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf());
-    let panel_path = panel_path
-        .canonicalize()
-        .unwrap_or_else(|_| panel_path.to_path_buf());
+    let Ok(parent) = parent.canonicalize() else {
+        // Skip if parent cannot be canonicalized (deleted/inaccessible)
+        return false;
+    };
+    let Ok(panel_path) = panel_path.canonicalize() else {
+        // Skip if panel_path cannot be canonicalized (deleted/inaccessible)
+        return false;
+    };
     parent == panel_path
 }
 

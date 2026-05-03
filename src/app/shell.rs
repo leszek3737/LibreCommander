@@ -34,7 +34,16 @@ fn leave_tui_stdout() -> io::Result<()> {
         DisableMouseCapture,
         Show
     );
-    raw_result.and(screen_result)
+    match (raw_result, screen_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Err(raw_err), Err(screen_err)) => {
+            Err(io::Error::new(
+                raw_err.kind(),
+                format!("{raw_err}; {screen_err}"),
+            ))
+        }
+    }
 }
 
 fn suspend_terminal_stdout() -> io::Result<()> {

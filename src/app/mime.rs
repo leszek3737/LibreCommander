@@ -20,7 +20,7 @@ pub fn detect_mime(path: &Path) -> Option<String> {
         Ok(file) => file,
         Err(_) => return fallback(),
     };
-    let mut buf = [0; 8192];
+    let mut buf = vec![0u8; 8192];
     let len = match file.read(&mut buf) {
         Ok(len) => len,
         Err(_) => return fallback(),
@@ -40,6 +40,7 @@ pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<String> {
         })
 }
 
+#[must_use]
 pub fn mime_to_category(mime: &str) -> FileCategory {
     if mime == "inode/directory" {
         return FileCategory::Dir;
@@ -116,6 +117,7 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     FileCategory::Other
 }
 
+#[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
     extension_mime(name)
         .map(mime_to_category)
@@ -124,6 +126,7 @@ pub fn category_from_ext(name: &str) -> FileCategory {
 
 /// Extension → MIME mapping. `category_from_ext` derives categories from this table
 /// so MIME fallback and extension categories stay aligned.
+#[must_use]
 pub fn extension_mime(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_lowercase();
 
