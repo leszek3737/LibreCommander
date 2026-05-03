@@ -34,7 +34,14 @@ fn leave_tui_stdout() -> io::Result<()> {
         DisableMouseCapture,
         Show
     );
-    raw_result.and(screen_result)
+    match (raw_result, screen_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Err(raw_err), Err(screen_err)) => Err(io::Error::new(
+            raw_err.kind(),
+            format!("{raw_err}; {screen_err}"),
+        )),
+    }
 }
 
 fn suspend_terminal_stdout() -> io::Result<()> {
@@ -65,6 +72,7 @@ pub fn run_shell_command(
         restore_ok: bool,
     }
 
+    #[allow(clippy::print_stderr)]
     impl Drop for ShellRestoreGuard {
         fn drop(&mut self) {
             if !self.restore_ok {
@@ -88,6 +96,8 @@ pub fn run_shell_command(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status();
+    // Intentional stdout: TUI is suspended, user must see the prompt.
+    #[allow(clippy::print_stdout)]
     match status {
         Ok(s) if s.success() => println!("\n[Command succeeded. Press Enter to return]"),
         Ok(s) => println!("\n[Command exited with status: {s}. Press Enter to return]"),
@@ -106,6 +116,7 @@ pub fn run_shell_command(
 }
 
 /// Toggle external panel view (Ctrl+O) - hide panels to see terminal output.
+#[allow(clippy::print_stdout)]
 pub fn toggle_external_view<B: Backend>(
     state: &mut AppState,
     _terminal: &mut ratatui::Terminal<B>,

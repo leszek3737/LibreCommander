@@ -10,8 +10,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
-use crate::app::file_type;
-use crate::app::types::{FileEntry, PanelState, format_permissions, format_size};
+use crate::app::types::{
+    FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
+};
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {
@@ -22,39 +23,20 @@ pub fn get_file_color(entry: &FileEntry) -> Style {
 
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
 pub fn get_file_icon(entry: &FileEntry) -> &'static str {
-    if entry.is_dir {
-        return "📁 ";
+    match entry.category() {
+        FileCategory::Dir => "📁 ",
+        FileCategory::Symlink => "🔗 ",
+        FileCategory::Hidden => "👁 ",
+        FileCategory::Executable => "⚡ ",
+        FileCategory::Code => "💻 ",
+        FileCategory::Config => "⚙ ",
+        FileCategory::Archive => "📦 ",
+        FileCategory::Image => "🖼 ",
+        FileCategory::Video => "🎬 ",
+        FileCategory::Audio => "🎵 ",
+        FileCategory::Document => "📄 ",
+        FileCategory::Other => "📄 ",
     }
-
-    if file_type::is_document(&entry.name) {
-        return "📄 ";
-    }
-
-    if file_type::is_archive(&entry.name) {
-        return "📦 ";
-    }
-
-    if file_type::is_image(&entry.name) {
-        return "🖼 ";
-    }
-
-    if file_type::is_audio(&entry.name) {
-        return "🎵 ";
-    }
-
-    if file_type::is_video(&entry.name) {
-        return "🎬 ";
-    }
-
-    if file_type::is_config(&entry.name) {
-        return "⚙ ";
-    }
-
-    if file_type::is_source_code(&entry.name) {
-        return "💻 ";
-    }
-
-    "📄 "
 }
 
 /// Format modification time
@@ -115,12 +97,12 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         ])
         .split(inner_area);
 
-    // Create list items
-    let mut list_items = Vec::new();
-
     // Compute visible entries
     let start_idx = panel.scroll_offset;
     let end_idx = std::cmp::min(panel.entries.len(), start_idx + inner_area.height as usize);
+
+    // Create list items
+    let mut list_items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
 
     // Iterate over entries directly (entries list already contains ".." from the reader)
     for entry in panel
@@ -130,11 +112,11 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         .take(end_idx - start_idx)
     {
         let string_line = match panel.listing_mode {
-            super::super::app::types::ListingMode::Long => {
+            ListingMode::Long => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
                 format_entry_line(entry, width)
             }
-            super::super::app::types::ListingMode::Brief => {
+            ListingMode::Brief => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
                 format_brief_entry_line(entry, width)
             }
@@ -310,10 +292,11 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
 
     let mut scrollbar = String::with_capacity(height * 4);
     for i in 0..height {
+        let is_last = i == height - 1;
         if i == thumb_pos && total_entries > height {
-            scrollbar.push_str("█\n");
+            scrollbar.push_str(if is_last { "█" } else { "█\n" });
         } else {
-            scrollbar.push_str("│\n");
+            scrollbar.push_str(if is_last { "│" } else { "│\n" });
         }
     }
 

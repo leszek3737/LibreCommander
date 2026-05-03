@@ -667,6 +667,7 @@ pub fn build_help_message() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

@@ -194,7 +194,10 @@ pub enum DialogKind {
         action: InputAction,
     },
     Error(String),
-    Help(String),          // Help message, exits on any key
+    Help {
+        message: String,
+        scroll_offset: usize,
+    },
     Progress(String, f32), // (message, progress 0.0-1.0)
     CopyMove {
         source: Vec<PathBuf>,
@@ -235,9 +238,9 @@ pub enum CompareMode {
     /// Match by name only (original behaviour).
     #[default]
     Quick,
-    /// Match by name + size (directories: name only).
+    /// Match files by name + size; directories match by name only.
     Size,
-    /// Match by name + size + mtime (directories: name only).
+    /// Match files by name + size + mtime; directories match by name only.
     Thorough,
 }
 
@@ -602,13 +605,14 @@ impl PanelState {
             return;
         }
 
-        let selected_by_path: HashMap<&PathBuf, bool> = self
+        let selection: HashMap<_, _> = self
             .entries
             .iter()
-            .map(|entry| (&entry.path, entry.selected))
+            .map(|entry| (entry.path.as_path(), entry.selected))
             .collect();
+
         for entry in &mut self.unfiltered_entries {
-            if let Some(selected) = selected_by_path.get(&entry.path) {
+            if let Some(selected) = selection.get(entry.path.as_path()) {
                 entry.selected = *selected;
             }
         }
@@ -767,6 +771,7 @@ impl Default for AppState {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};

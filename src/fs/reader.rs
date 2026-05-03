@@ -280,6 +280,7 @@ pub fn is_executable(mode: u32) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::app::types::FileEntry as CanonicalFileEntry;

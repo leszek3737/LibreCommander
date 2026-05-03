@@ -38,6 +38,7 @@ pub struct ViewerState {
     max_line_width: usize,
     pub detected_mime: Option<String>,
     pub file_size: usize,
+    pub has_invalid_utf8: bool,
 }
 
 impl ViewerState {
@@ -60,20 +61,22 @@ impl ViewerState {
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
 
-        let content = if raw_bytes.is_empty() {
-            vec!["[Empty file]".to_string()]
+        let (content, has_invalid_utf8) = if raw_bytes.is_empty() {
+            (vec!["[Empty file]".to_string()], false)
         } else if open_as_text {
+            let has_invalid = std::str::from_utf8(&raw_bytes).is_err();
             let content_str = String::from_utf8_lossy(&raw_bytes);
             let mut content: Vec<String> = content_str.lines().map(String::from).collect();
             if raw_bytes.last() == Some(&b'\n') {
                 content.push(String::new());
             }
-            content
+            (content, has_invalid)
         } else {
             let mime_label = mime.as_deref().unwrap_or("unknown MIME");
-            vec![format!(
+            let msg = vec![format!(
                 "Binary file ({mime_label}, {file_size} bytes). Opened in Hex mode."
-            )]
+            )];
+            (msg, false)
         };
         let line_count = content.len();
         let max_line_width = content
@@ -106,6 +109,7 @@ impl ViewerState {
             max_line_width,
             detected_mime: mime,
             file_size,
+            has_invalid_utf8,
         })
     }
 
@@ -527,11 +531,21 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let mode_label = if state.is_hex_mode() { "Hex" } else { "Text" };
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
     let size_label = format_size(state.file_size as u64);
+    let utf8_warning = if state.has_invalid_utf8 {
+        " \u{26a0} INVALID UTF-8"
+    } else {
+        ""
+    };
     let status_text = format!(
-        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}",
+        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}{utf8_warning}",
         state.line_count,
     );
-    let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
+    let status_style = if state.has_invalid_utf8 {
+        Theme::status_bar().fg(Theme::WARNING)
+    } else {
+        Theme::status_bar()
+    };
+    let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
 
@@ -570,12 +584,14 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
 
     let mut lines: Vec<Line> = Vec::new();
 
+    let mut hex_line_buffer = String::with_capacity(128);
     for line_idx in start_line..end_line {
         let offset = line_idx * bytes_per_line;
         let slice_len = (bytes.len() - offset).min(bytes_per_line);
         let slice = &bytes[offset..offset + slice_len];
-        let hex_line = format_hex_line(offset, slice);
-        lines.push(Line::from(Span::raw(hex_line)));
+        hex_line_buffer.clear();
+        format_hex_line_to_buffer(offset, slice, &mut hex_line_buffer);
+        lines.push(Line::from(Span::raw(std::mem::take(&mut hex_line_buffer))));
     }
 
     let paragraph =
@@ -596,40 +612,61 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     };
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
     let size_label = format_size(state.file_size as u64);
-    let status_text =
-        format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}",);
-    let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
+    let utf8_warning = if state.has_invalid_utf8 {
+        " \u{26a0} INVALID UTF-8"
+    } else {
+        ""
+    };
+    let status_text = format!(
+        " Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}{utf8_warning}",
+    );
+    let status_style = if state.has_invalid_utf8 {
+        Theme::status_bar().fg(Theme::WARNING)
+    } else {
+        Theme::status_bar()
+    };
+    let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
 
 pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
+    let mut buf = String::with_capacity(128);
+    format_hex_line_to_buffer(offset, bytes, &mut buf);
+    buf
+}
+
+const HEX_BYTES_PER_LINE: usize = 16;
+const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
+
+fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
     use std::fmt::Write;
-    let mut hex_part = String::with_capacity(49);
+    let _ = write!(buf, "{offset:08x}: ");
+
+    let hex_start = buf.len();
     for (i, b) in bytes.iter().enumerate() {
         if i == 8 {
-            hex_part.push(' ');
+            buf.push(' ');
         }
-        let _ = write!(hex_part, "{b:02x} ");
+        let _ = write!(buf, "{b:02x} ");
     }
 
-    let padding_needed = 49 - hex_part.len();
-    let _ = write!(hex_part, "{:width$}", "", width = padding_needed);
+    let padding_needed = HEX_PART_WIDTH.saturating_sub(buf.len() - hex_start);
+    let _ = write!(buf, "{:width$}", "", width = padding_needed);
 
-    let ascii_part: String = bytes
-        .iter()
-        .map(|&b| {
-            if (32..=126).contains(&b) {
-                b as char
-            } else {
-                '.'
-            }
-        })
-        .collect();
-
-    format!("{offset:08x}: {hex_part} |{ascii_part}|")
+    buf.push_str(" |");
+    for &b in bytes {
+        let c = if (32..=126).contains(&b) {
+            b as char
+        } else {
+            '.'
+        };
+        buf.push(c);
+    }
+    buf.push('|');
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
@@ -1028,6 +1065,37 @@ mod tests {
         assert!(line.starts_with("00001000:"));
         assert!(line.contains("48 65 6c 6c 6f 20 57 6f  72 6c 64 00"));
         assert!(line.contains("|Hello World.|"));
+    }
+
+    #[test]
+    fn test_open_valid_replacement_character_is_not_invalid_utf8() {
+        let file = create_test_file("valid replacement: \u{FFFD}");
+
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(!state.has_invalid_utf8);
+        assert!(state.content[0].contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_open_invalid_utf8_sets_warning() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"valid\xffinvalid").unwrap();
+
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(state.has_invalid_utf8);
+        assert!(state.content[0].contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_format_hex_line_accepts_more_than_sixteen_bytes() {
+        let bytes = [b'A'; 17];
+
+        let line = format_hex_line(0, &bytes);
+
+        assert!(line.starts_with("00000000:"));
+        assert!(line.ends_with("|AAAAAAAAAAAAAAAAA|"));
     }
 
     #[test]

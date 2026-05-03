@@ -1,3 +1,4 @@
+use crate::debug_log;
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
 use std::collections::{HashMap, HashSet};
@@ -44,7 +45,7 @@ impl Watcher {
             ),
             Config::default(),
         )
-        .map_err(notify_to_io)?;
+        .map_err(|e| notify_to_io(&e))?;
 
         Ok(Self {
             primary,
@@ -67,14 +68,21 @@ impl Watcher {
                 ),
                 Config::default(),
             )
-            .map_err(notify_to_io)?;
+            .map_err(|e| notify_to_io(&e))?;
             self.fallback = Some(fallback);
         }
+        // Safe: guaranteed Some by is_none() check above or prior call
+        #[allow(clippy::unwrap_used)]
         Ok(self.fallback.as_mut().unwrap())
     }
 
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path = path.canonicalize().map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("cannot canonicalize {}: {e}", path.display()),
+            )
+        })?;
 
         if self.watched_dirs.contains(&path) {
             return Ok(());
@@ -103,16 +111,30 @@ impl Watcher {
     }
 
     pub fn unwatch(&mut self, path: &Path) -> io::Result<()> {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                self.remove_watched_dir_state(path);
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("cannot canonicalize {}: {err}", path.display()),
+                ));
+            }
+        };
 
         let result = match self.watchers.get(&path) {
-            Some(WhichWatcher::Primary) => self.primary.unwatch(&path).map_err(notify_to_io),
+            Some(WhichWatcher::Primary) => {
+                self.primary.unwatch(&path).map_err(|e| notify_to_io(&e))
+            }
             Some(WhichWatcher::Fallback) => self
                 .fallback
                 .as_mut()
                 .ok_or_else(|| io::Error::other("fallback watcher not initialized"))?
                 .unwatch(&path)
-                .map_err(notify_to_io),
+                .map_err(|e| notify_to_io(&e)),
             None => Ok(()),
         };
 
@@ -121,26 +143,42 @@ impl Watcher {
         result
     }
 
+    fn remove_watched_dir_state(&mut self, path: &Path) {
+        let removed = self
+            .watched_dirs
+            .iter()
+            .find(|watched| {
+                watched.as_path() == path || path_points_to_missing_watch(path, watched)
+            })
+            .cloned();
+
+        if let Some(path) = removed {
+            self.watched_dirs.remove(&path);
+            self.watchers.remove(&path);
+        }
+    }
+
     pub fn watched_dirs(&self) -> Vec<PathBuf> {
         self.watched_dirs.iter().cloned().collect()
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
+        self.paused.store(true, Ordering::Relaxed);
     }
 
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Release);
+        self.paused.store(false, Ordering::Relaxed);
     }
 }
 
+#[allow(clippy::print_stderr)]
 fn make_handler(
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
-        if paused.load(Ordering::Acquire) {
+        if paused.load(Ordering::Relaxed) {
             return;
         }
 
@@ -156,7 +194,10 @@ fn make_handler(
                 WatchEvent::Renamed { from, to } => {
                     // For renames, debounce both paths independently
                     let now = Instant::now();
-                    let mut debounce = debounce_state.lock().unwrap();
+                    let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
+                        debug_log!("watcher mutex poisoned (rename debounce), recovering: {e}");
+                        e.into_inner()
+                    });
                     let from_allowed = debounce
                         .get(from)
                         .is_none_or(|last| now.duration_since(*last) >= Duration::from_millis(300));
@@ -175,7 +216,10 @@ fn make_handler(
 
             if let Some(path) = path {
                 let now = Instant::now();
-                let mut debounce = debounce_state.lock().unwrap();
+                let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
+                    debug_log!("watcher mutex poisoned (debounce), recovering: {e}");
+                    e.into_inner()
+                });
                 if let Some(last) = debounce.get(&path) {
                     if now.duration_since(*last) < Duration::from_millis(300) {
                         continue;
@@ -221,11 +265,39 @@ fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<Wa
     paths.into_iter().map(map).collect()
 }
 
-fn notify_to_io(err: notify::Error) -> io::Error {
+fn notify_to_io(err: &notify::Error) -> io::Error {
     io::Error::other(err.to_string())
 }
 
+fn path_points_to_missing_watch(path: &Path, watched: &Path) -> bool {
+    if path.is_relative()
+        && let Ok(current_dir) = std::env::current_dir()
+        && current_dir.join(path) == watched
+    {
+        return true;
+    }
+
+    std::fs::read_link(path).is_ok_and(|target| {
+        let target = if target.is_absolute() {
+            normalize_missing_target(&target)
+        } else if let Some(parent) = path.parent() {
+            normalize_missing_target(&parent.join(target))
+        } else {
+            target
+        };
+        target == watched
+    })
+}
+
+fn normalize_missing_target(path: &Path) -> PathBuf {
+    path.parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .and_then(|parent| path.file_name().map(|name| parent.join(name)))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
@@ -238,10 +310,47 @@ mod tests {
         let watched_path = tempdir.path().canonicalize().expect("canonicalize tempdir");
 
         watcher.watch(tempdir.path()).expect("watch tempdir");
-        assert_eq!(watcher.watched_dirs(), vec![watched_path.clone()]);
+        assert_eq!(watcher.watched_dirs(), vec![watched_path]);
 
         watcher.unwatch(tempdir.path()).expect("unwatch tempdir");
         assert!(watcher.watched_dirs().is_empty());
+    }
+
+    #[test]
+    fn watcher_unwatch_cleans_state_when_directory_vanished() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let watched_path = tempdir.path().to_path_buf();
+        let canonical = watched_path.canonicalize().expect("canonicalize tempdir");
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut watcher = Watcher::new(event_tx).expect("create watcher");
+
+        watcher.watch(&watched_path).expect("watch tempdir");
+        std::fs::remove_dir_all(&watched_path).expect("remove watched dir");
+
+        watcher.unwatch(&canonical).expect("unwatch vanished dir");
+
+        assert!(watcher.watched_dirs().is_empty());
+        assert!(watcher.watchers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watcher_unwatch_cleans_state_when_symlink_target_vanished() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let target = tempdir.path().join("target");
+        let link = tempdir.path().join("link");
+        std::fs::create_dir(&target).expect("create target dir");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut watcher = Watcher::new(event_tx).expect("create watcher");
+        watcher.watch(&link).expect("watch symlinked dir");
+        std::fs::remove_dir_all(&target).expect("remove target dir");
+
+        watcher.unwatch(&link).expect("unwatch vanished target");
+
+        assert!(watcher.watched_dirs().is_empty());
+        assert!(watcher.watchers.is_empty());
     }
 
     #[test]

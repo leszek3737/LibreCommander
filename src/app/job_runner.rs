@@ -1,3 +1,4 @@
+use crate::debug_log;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -104,13 +105,36 @@ pub fn poll_running_job(
     }
 
     if let Some((action_label, report)) = finished {
+        // Happy path: worker sent Finished — join to clean up thread
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
         {
-            let _ = handle.join();
+            if let Err(panic_payload) = handle.join() {
+                debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
+            }
         }
-        finish_running_job(state, action_label, report, refresh_both);
+        finish_running_job(state, action_label, &report, refresh_both);
         dirty = true;
+    } else if let Some(job) = running_job.as_mut() {
+        // No Finished received — check if worker died (panicked before sending)
+        if let Some(handle) = job.handle.as_ref() {
+            if handle.is_finished() {
+                if let Some(handle) = job.handle.take() {
+                    if let Err(panic_payload) = handle.join() {
+                        debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
+                        let _ = running_job.take();
+                        state.mode = AppMode::Normal;
+                        if let Some(panel) = state.menu_restore_panel.take() {
+                            state.active_panel = panel;
+                        }
+                        state.status_message =
+                            Some("Operation failed: worker thread panicked".to_string());
+                        refresh_both(state);
+                        dirty = true;
+                    }
+                }
+            }
+        }
     }
 
     dirty
@@ -160,7 +184,7 @@ fn format_duration_short(duration: Duration) -> String {
 fn finish_running_job(
     state: &mut AppState,
     _action_label: &'static str,
-    report: ops::batch::BatchReport,
+    report: &ops::batch::BatchReport,
     refresh_both: fn(&mut AppState),
 ) {
     state.status_message = Some(report.format_summary());

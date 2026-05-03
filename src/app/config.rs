@@ -11,9 +11,9 @@ use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode
 pub struct PersistedPanel {
     #[serde(default)]
     pub path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_with_fallback")]
+    #[serde(default, deserialize_with = "deserialize_listing_mode_with_fallback")]
     pub listing_mode: ListingMode,
-    #[serde(default, deserialize_with = "deserialize_with_fallback")]
+    #[serde(default, deserialize_with = "deserialize_sort_mode_with_fallback")]
     pub sort_mode: SortMode,
     #[serde(default)]
     pub filter: String,
@@ -21,15 +21,22 @@ pub struct PersistedPanel {
     pub show_hidden: bool,
 }
 
-fn deserialize_with_fallback<'de, T, D>(d: D) -> Result<T, D::Error>
+// Silently falls back to default on invalid config values.
+// This runs during deserialization — in a TUI app eprintln! would corrupt
+// the alternate screen buffer. No `log`/`tracing` crate in this project,
+// so silent fallback is the safest option.
+fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D::Error>
 where
-    T: serde::Deserialize<'de> + Default,
     D: serde::Deserializer<'de>,
 {
-    match T::deserialize(d) {
-        Ok(v) => Ok(v),
-        Err(_) => Ok(T::default()),
-    }
+    ListingMode::deserialize(d).or_else(|_| Ok(ListingMode::default()))
+}
+
+fn deserialize_sort_mode_with_fallback<'de, D>(d: D) -> Result<SortMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    SortMode::deserialize(d).or_else(|_| Ok(SortMode::default()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

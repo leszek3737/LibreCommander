@@ -96,6 +96,9 @@ const CONFIG_SUFFIXES: &[&str] = &[
 
 #[inline]
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
+    if suffix.is_empty() {
+        return false;
+    }
     s.get(s.len().saturating_sub(suffix.len())..)
         .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }

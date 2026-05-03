@@ -32,6 +32,40 @@ pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
+/// Inline char buffer that lives on the stack for sizes <= N,
+/// falling back to heap allocation for larger sizes.
+struct SmallCharBuf<const N: usize> {
+    inline: [char; N],
+    heap: Option<Vec<char>>,
+}
+
+impl<const N: usize> SmallCharBuf<N> {
+    fn new(len: usize) -> Self {
+        let inline = ['\0'; N];
+        let heap = if len > N { Some(vec!['\0'; len]) } else { None };
+        Self { inline, heap }
+    }
+}
+
+impl<const N: usize> std::ops::Index<usize> for SmallCharBuf<N> {
+    type Output = char;
+    fn index(&self, index: usize) -> &char {
+        match &self.heap {
+            Some(v) => &v[index],
+            None => &self.inline[index],
+        }
+    }
+}
+
+impl<const N: usize> std::ops::IndexMut<usize> for SmallCharBuf<N> {
+    fn index_mut(&mut self, index: usize) -> &mut char {
+        match &mut self.heap {
+            Some(v) => &mut v[index],
+            None => &mut self.inline[index],
+        }
+    }
+}
+
 pub struct FileSearch;
 
 impl FileSearch {
@@ -198,6 +232,47 @@ impl FileSearch {
             return;
         }
 
+        // Allocate pattern_lower once per recursive subtree, not per file.
+        let pattern_lower: Vec<char> = if !case_sensitive {
+            pattern.chars().flat_map(|c| c.to_lowercase()).collect()
+        } else {
+            Vec::new()
+        };
+
+        Self::search_content_recursive_inner(
+            path,
+            pattern,
+            case_sensitive,
+            &pattern_lower,
+            recursive,
+            depth,
+            outcome,
+            item_count,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_content_recursive_inner(
+        path: &Path,
+        pattern: &str,
+        case_sensitive: bool,
+        pattern_lower: &[char],
+        recursive: bool,
+        depth: usize,
+        outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+        item_count: &mut usize,
+    ) {
+        if !path.is_dir() {
+            return;
+        }
+        if depth >= MAX_SEARCH_DEPTH
+            || *item_count >= MAX_SEARCH_ITEMS
+            || outcome.matches.len() >= MAX_CONTENT_RESULTS
+        {
+            outcome.truncated = true;
+            return;
+        }
+
         let entries = match std::fs::read_dir(path) {
             Ok(entries) => entries,
             Err(err) => {
@@ -238,11 +313,12 @@ impl FileSearch {
 
             if file_type.is_dir() && !file_type.is_symlink() {
                 if recursive {
-                    Self::search_content_recursive(
+                    Self::search_content_recursive_inner(
                         &entry_path,
                         pattern,
-                        recursive,
                         case_sensitive,
+                        pattern_lower,
+                        recursive,
                         depth + 1,
                         outcome,
                         item_count,
@@ -264,6 +340,7 @@ impl FileSearch {
                         &entry_path,
                         pattern,
                         case_sensitive,
+                        pattern_lower,
                         target_meta.len(),
                         outcome,
                     );
@@ -276,6 +353,7 @@ impl FileSearch {
         path: &Path,
         pattern: &str,
         case_sensitive: bool,
+        pattern_lower: &[char],
         file_len: u64,
         outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
     ) {
@@ -298,7 +376,6 @@ impl FileSearch {
         };
 
         let reader = BufReader::new(file);
-        let pattern_lower: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
 
         for (line_no, line) in reader.split(b'\n').enumerate() {
             if outcome.matches.len() >= MAX_CONTENT_RESULTS {
@@ -328,7 +405,7 @@ impl FileSearch {
             let match_found = if case_sensitive {
                 line_text.contains(pattern)
             } else {
-                Self::contains_case_insensitive(&line_text, &pattern_lower)
+                Self::contains_case_insensitive(&line_text, pattern_lower)
             };
 
             if match_found {
@@ -339,17 +416,38 @@ impl FileSearch {
         }
     }
 
+    /// Case-insensitive substring search over Unicode lowercase chars.
+    /// The circular buffer stays on the stack for needles up to 64 chars.
     fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
         if needle_lower.is_empty() {
             return true;
         }
-        let haystack_lower: Vec<char> = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
-        if haystack_lower.len() < needle_lower.len() {
-            return false;
+        let needle_len = needle_lower.len();
+        let mut buf = SmallCharBuf::<64>::new(needle_len);
+        let mut filled = 0usize;
+        let mut head = 0usize;
+
+        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+            buf[head] = c;
+            head = (head + 1) % needle_len;
+            if filled < needle_len {
+                filled += 1;
+            }
+            if filled == needle_len {
+                let mut all_match = true;
+                for (i, &nc) in needle_lower.iter().enumerate() {
+                    let idx = (head + i) % needle_len;
+                    if buf[idx] != nc {
+                        all_match = false;
+                        break;
+                    }
+                }
+                if all_match {
+                    return true;
+                }
+            }
         }
-        haystack_lower
-            .windows(needle_lower.len())
-            .any(|w| w == needle_lower)
+        false
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {
@@ -357,19 +455,25 @@ impl FileSearch {
             return if case_sensitive {
                 name.contains(pattern)
             } else {
-                let pattern_lower: Vec<char> =
-                    pattern.chars().flat_map(|c| c.to_lowercase()).collect();
-                Self::contains_case_insensitive(name, &pattern_lower)
+                Self::contains_case_insensitive_str(name, pattern)
             };
         }
 
+        // Wildcard path: Vec<char> required for DP indexing, but pre-allocate.
         let (name_chars, pattern_chars): (Vec<char>, Vec<char>) = if case_sensitive {
-            (name.chars().collect(), pattern.chars().collect())
+            let nc = name.chars().collect::<Vec<char>>();
+            let pc = pattern.chars().collect::<Vec<char>>();
+            (nc, pc)
         } else {
-            (
-                name.chars().flat_map(|c| c.to_lowercase()).collect(),
-                pattern.chars().flat_map(|c| c.to_lowercase()).collect(),
-            )
+            let nc = name
+                .chars()
+                .flat_map(|c| c.to_lowercase())
+                .collect::<Vec<char>>();
+            let pc = pattern
+                .chars()
+                .flat_map(|c| c.to_lowercase())
+                .collect::<Vec<char>>();
+            (nc, pc)
         };
         let n = name_chars.len();
         let m = pattern_chars.len();
@@ -408,9 +512,25 @@ impl FileSearch {
 
         dp_prev[m]
     }
+
+    /// Fast ASCII path, Unicode fallback with full lowercase expansion.
+    fn contains_case_insensitive_str(haystack: &str, needle: &str) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        if haystack.is_ascii() && needle.is_ascii() {
+            return haystack
+                .as_bytes()
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()));
+        }
+        let needle_lower: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
+        Self::contains_case_insensitive(haystack, &needle_lower)
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fs::{self, File};
@@ -467,6 +587,29 @@ mod tests {
     }
 
     #[test]
+    fn test_file_search_matches_pattern_case_insensitive_ascii_substring() {
+        assert!(FileSearch::matches_pattern(
+            "archive-file.txt",
+            "FILE",
+            false
+        ));
+        assert!(!FileSearch::matches_pattern(
+            "archive-file.txt",
+            "FILE",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_case_insensitive_unicode_substring() {
+        assert!(FileSearch::matches_pattern(
+            "istanbul-İSTANBUL.txt",
+            "i\u{307}stanbul",
+            false
+        ));
+    }
+
+    #[test]
     fn test_file_search_search_files() {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(0);
@@ -493,13 +636,11 @@ mod tests {
         }
 
         let results = FileSearch::search_files(dir_path, "*.txt", true, false);
-        eprintln!("Recursive search results: {:?}", results);
         assert_eq!(results.len(), 2, "Expected 2 results, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
         assert!(results.iter().any(|e| e.name == "test3.txt"));
 
         let results = FileSearch::search_files(dir_path, "*.txt", false, false);
-        eprintln!("Non-recursive search results: {:?}", results);
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
 

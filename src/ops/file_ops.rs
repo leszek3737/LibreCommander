@@ -5,10 +5,14 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 const MAX_RECURSION_DEPTH: usize = 256;
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "macos")]
 const CRITICAL_DIRS: &[&str] = &[
     "/",
     "/Applications",
@@ -19,6 +23,7 @@ const CRITICAL_DIRS: &[&str] = &[
     "/etc",
     "/lib",
     "/lib64",
+    "/nix",
     "/private",
     "/proc",
     "/sbin",
@@ -26,6 +31,14 @@ const CRITICAL_DIRS: &[&str] = &[
     "/usr",
     "/var",
 ];
+
+#[cfg(not(target_os = "macos"))]
+const CRITICAL_DIRS: &[&str] = &[
+    "/", "/System", "/bin", "/boot", "/dev", "/etc", "/flatpak", "/gnu", "/lib", "/lib64", "/nix",
+    "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
+];
+
+#[cfg(target_os = "macos")]
 const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/Applications",
     "/System",
@@ -35,11 +48,18 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/etc",
     "/lib",
     "/lib64",
+    "/nix",
     "/proc",
     "/sbin",
     "/sys",
     "/usr",
     "/var",
+];
+
+#[cfg(not(target_os = "macos"))]
+const CRITICAL_DIR_PREFIXES: &[&str] = &[
+    "/System", "/bin", "/boot", "/dev", "/etc", "/flatpak", "/gnu", "/lib", "/lib64", "/nix",
+    "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
 ];
 
 pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
@@ -69,7 +89,7 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
     ensure_destination_absent(dest)?;
-    let temp_dest = temp_dir_path_for(dest);
+    let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, 0);
     match result {
         Ok(bytes) => {
@@ -96,7 +116,7 @@ pub fn copy_dir_recursive_with_progress(
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
     ensure_destination_absent(dest)?;
-    let temp_dest = temp_dir_path_for(dest);
+    let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_with_progress_inner(
         src,
         &temp_dest,
@@ -151,10 +171,8 @@ fn copy_dir_recursive_inner(
             "cannot copy directory into its descendant",
         ));
     }
-    ensure_destination_absent(dest)?;
-    if depth == 0 {
-        fs::create_dir_all(dest)?;
-    } else {
+    if depth > 0 {
+        ensure_destination_absent(dest)?;
         fs::create_dir(dest)?;
     }
     let src_perms = fs::metadata(src)?.permissions();
@@ -171,9 +189,7 @@ fn copy_dir_recursive_inner(
                 copy_dir_recursive_inner(&entry_path, &dest_path, src_root, dest_root, depth + 1)?;
             total_bytes = total_bytes.saturating_add(copied);
         } else if file_type.is_symlink() {
-            let target = fs::read_link(&entry_path)?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dest_path)?;
+            copy_symlink(&entry_path, &dest_path)?;
         } else {
             total_bytes = total_bytes.saturating_add(copy_file(&entry_path, &dest_path)?);
         }
@@ -212,10 +228,8 @@ fn copy_dir_recursive_with_progress_inner(
             "cannot copy directory into its descendant",
         ));
     }
-    ensure_destination_absent(dest)?;
-    if depth == 0 {
-        fs::create_dir_all(dest)?;
-    } else {
+    if depth > 0 {
+        ensure_destination_absent(dest)?;
         fs::create_dir(dest)?;
     }
     let src_perms = fs::metadata(src)?.permissions();
@@ -284,7 +298,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
     }
     ensure_destination_absent(dest)?;
 
-    if src.is_dir() && path_contains(src, dest) {
+    if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
@@ -298,26 +312,32 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
+                        "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                        src.display(),
+                        dest.display(),
+                        del_err
                     )));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
-                if !path_contains(src, dest)
-                    && let Err(del_err) = delete_dir_recursive(src)
-                {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                if !path_contains(src, dest)? {
+                    if let Err(del_err) = delete_dir_recursive(src) {
+                        return Err(io::Error::other(format!(
+                            "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
+                            src.display(),
+                            dest.display(),
+                            del_err
+                        )));
+                    }
                 }
             } else {
                 copy_file(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
+                        "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                        src.display(),
+                        dest.display(),
+                        del_err
                     )));
                 }
             }
@@ -347,7 +367,7 @@ pub fn move_entry_with_progress(
     }
     ensure_destination_absent(dest)?;
 
-    if src.is_dir() && path_contains(src, dest) {
+    if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
@@ -362,24 +382,30 @@ pub fn move_entry_with_progress(
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
+                        "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                        src.display(),
+                        dest.display(),
+                        del_err
                     )));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
                 if let Err(del_err) = delete_dir_recursive(src) {
                     return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
+                        "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
+                        src.display(),
+                        dest.display(),
+                        del_err
                     )));
                 }
             } else {
                 copy_file_with_progress(src, dest, progress_tx, cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
+                        "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                        src.display(),
+                        dest.display(),
+                        del_err
                     )));
                 }
             }
@@ -567,25 +593,12 @@ fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     Ok(total)
 }
 
-fn path_contains(parent: &Path, child: &Path) -> bool {
-    if let (Ok(canonical_parent), Ok(canonical_child)) = (
-        canonicalize_existing_path(parent),
-        canonicalize_with_nearest_existing_parent(child),
-    ) {
-        return path_contains_canonical(&canonical_parent, &canonical_child);
-    }
-
-    let parent_components = parent.components().peekable();
-    let mut child_components = child.components().peekable();
-
-    for parent_component in parent_components {
-        match child_components.next() {
-            Some(child_component) if components_equal(parent_component, child_component) => {}
-            _ => return false,
-        }
-    }
-
-    child_components.peek().is_some()
+fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
+    let canonical_parent = canonicalize_existing_path(parent)
+        .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize parent: {e}")))?;
+    let canonical_child = canonicalize_with_nearest_existing_parent(child)
+        .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize child: {e}")))?;
+    Ok(path_contains_canonical(&canonical_parent, &canonical_child))
 }
 
 fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
@@ -599,14 +612,30 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     }
 }
 
-fn temp_dir_path_for(dest: &Path) -> PathBuf {
+fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     let mut name = dest
         .file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| "copy".into());
-    let tid = std::thread::current().id();
-    name.push(format!(".lc-dir-copy-{}-{:?}.tmp", std::process::id(), tid));
+    name.push(format!(".lc-dir-copy-{}-{}.tmp", std::process::id(), seq));
     dest.with_file_name(name)
+}
+
+fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
+    for _ in 0..128 {
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp = temp_dir_path_for(dest, seq);
+        match fs::create_dir(&temp) {
+            Ok(()) => return Ok(temp),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve temporary copy directory",
+    ))
 }
 
 fn publish_temp_dir(temp_dest: &Path, dest: &Path) -> io::Result<()> {
@@ -715,11 +744,8 @@ fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
     Ok(base)
 }
 
-fn components_equal(left: Component<'_>, right: Component<'_>) -> bool {
-    left == right
-}
-
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     #[cfg(unix)]
@@ -851,6 +877,31 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_dir_recursive_reserves_unique_temp_when_collision_exists() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"content").unwrap();
+
+        let dest = tmp.join("dest_dir");
+        let seq = TEMP_DIR_COUNTER.load(Ordering::SeqCst);
+        let collision = temp_dir_path_for(&dest, seq);
+        fs::create_dir(&collision).unwrap();
+        fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
+
+        let bytes = copy_dir_recursive(&src, &dest).unwrap();
+
+        assert!(bytes > 0);
+        assert!(dest.join("file.txt").exists());
+        assert_eq!(
+            fs::read_to_string(collision.join("sentinel.txt")).unwrap(),
+            "keep"
+        );
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn test_copy_dir_recursive_with_progress_cancel_before_start_leaves_no_dest() {
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
@@ -871,6 +922,34 @@ mod tests {
                 .to_string_lossy()
                 .contains(".lc-dir-copy-")
         }));
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_with_progress_cancel_keeps_existing_temp_collision() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"content").unwrap();
+        let dest = tmp.join("dest_dir");
+
+        let seq = TEMP_DIR_COUNTER.load(Ordering::SeqCst);
+        let collision = temp_dir_path_for(&dest, seq);
+        fs::create_dir(&collision).unwrap();
+        fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(true);
+
+        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists());
+        assert_eq!(
+            fs::read_to_string(collision.join("sentinel.txt")).unwrap(),
+            "keep"
+        );
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -1300,7 +1379,7 @@ mod tests {
         fs::write(&real_file, b"data").unwrap();
         let missing = tmp.join("nonexistent_xyz.txt");
 
-        let paths = vec![missing.clone(), real_file.clone()];
+        let paths = vec![missing, real_file.clone()];
         let errors = batch_delete(&paths);
         // One error for missing file, real file still deleted
         assert_eq!(errors.len(), 1);

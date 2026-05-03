@@ -1,3 +1,4 @@
+use crate::debug_log;
 use std::path::{Path, PathBuf};
 
 use crate::ops::sorting::cmp_ignore_case;
@@ -147,8 +148,15 @@ fn sort_entries(entries: &mut [TreeEntry]) {
 /// If expanding: reads children and inserts them after the entry.
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
-pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, _root: &Path, show_hidden: bool) {
-    let _diagnostics = toggle_expand_with_diagnostics(entries, index, _root, show_hidden);
+pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, show_hidden: bool) {
+    // Diagnostics logged to debug file; for programmatic access use toggle_expand_with_diagnostics.
+    let diagnostics = toggle_expand_with_diagnostics(entries, index, root, show_hidden);
+    if !diagnostics.is_empty() {
+        debug_log!("Tree expand errors: {}", diagnostics.len());
+        for diag in &diagnostics {
+            debug_log!("  {}: {}", diag.path.display(), diag.message);
+        }
+    }
 }
 
 pub fn toggle_expand_with_diagnostics(
@@ -186,16 +194,18 @@ pub fn toggle_expand_with_diagnostics(
             &mut diagnostics,
         );
 
-        if diagnostics.is_empty() {
-            let insert_pos = index + 1;
-            entries.splice(insert_pos..insert_pos, children);
-            entries[index].expanded = true;
-        }
+        let root_read_failed = diagnostics
+            .iter()
+            .any(|diag| diag.path == path && diag.message.starts_with("Failed to read directory:"));
+        let insert_pos = index + 1;
+        entries.splice(insert_pos..insert_pos, children);
+        entries[index].expanded = !root_read_failed;
         diagnostics
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fs;
@@ -388,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_expand_reports_read_errors_and_keeps_collapsed() {
+    fn toggle_expand_reports_read_errors_and_stays_collapsed() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
         let mut entries = vec![TreeEntry {
