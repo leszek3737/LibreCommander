@@ -1,4 +1,5 @@
 use crate::ops::chunk_copy;
+use crate::ops::helpers::path_contains_canonical;
 
 use std::fs;
 use std::io;
@@ -534,10 +535,6 @@ fn path_contains(parent: &Path, child: &Path) -> bool {
     }
 
     child_components.peek().is_some()
-}
-
-fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
-    child != parent && child.starts_with(parent)
 }
 
 fn ensure_destination_absent(dest: &Path) -> io::Result<()> {

@@ -19,7 +19,7 @@ const SOURCE_CODE_SUFFIXES: &[&str] = &[
     ".fs", ".fsx", ".vb", ".php", ".rb", ".lua", ".pl", ".pm", ".r", ".jl", ".scala", ".sc",
     ".clj", ".cljs", ".ex", ".exs", ".erl", ".hrl", ".hs", ".lhs", ".ml", ".mli", ".nim", ".zig",
     ".v", ".sv", ".dart", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".sql", ".html",
-    ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+    ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".wasm",
 ];
 
 const DOCUMENT_SUFFIXES: &[&str] = &[
@@ -48,6 +48,7 @@ const DOCUMENT_SUFFIXES: &[&str] = &[
     ".chm",
     ".csv",
     ".tsv",
+    ".log",
 ];
 
 const AUDIO_SUFFIXES: &[&str] = &[

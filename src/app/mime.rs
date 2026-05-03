@@ -44,11 +44,12 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     if mime == "inode/directory" {
         return FileCategory::Dir;
     }
-    if is_document_mime(mime) {
-        return FileCategory::Document;
-    }
     if mime.starts_with("image/") {
-        return FileCategory::Image;
+        return if mime == "image/vnd.djvu" {
+            FileCategory::Document
+        } else {
+            FileCategory::Image
+        };
     }
     if mime.starts_with("audio/") {
         return FileCategory::Audio;
@@ -56,34 +57,67 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     if mime.starts_with("video/") {
         return FileCategory::Video;
     }
-    if is_config_mime(mime) {
-        return FileCategory::Config;
-    }
-    if mime == "text/plain" {
-        return FileCategory::Document;
-    }
     if mime.starts_with("text/") {
-        return FileCategory::Code;
+        return match mime {
+            "text/plain" | "text/markdown" | "text/csv" | "text/tab-separated-values" => {
+                FileCategory::Document
+            }
+            "text/xml" | "text/yaml" => FileCategory::Config,
+            _ => FileCategory::Code,
+        };
     }
-    if is_archive_mime(mime) {
-        return FileCategory::Archive;
+    if mime.starts_with("application/") {
+        return match mime {
+            "application/json" | "application/toml" | "application/yaml" | "application/x-yaml"
+            | "application/xml" => FileCategory::Config,
+            "application/pdf"
+            | "application/msword"
+            | "application/rtf"
+            | "application/epub+zip"
+            | "application/x-mobipocket-ebook"
+            | "application/vnd.amazon.ebook"
+            | "application/vnd.ms-htmlhelp"
+            | "application/x-tex" => FileCategory::Document,
+            m if m.starts_with("application/vnd.oasis.opendocument.") => FileCategory::Document,
+            m if m.starts_with("application/vnd.openxmlformats-officedocument.") => {
+                FileCategory::Document
+            }
+            "application/javascript"
+            | "application/typescript"
+            | "application/ecmascript"
+            | "application/sql"
+            | "application/wasm"
+            | "application/x-httpd-php"
+            | "application/x-sh" => FileCategory::Code,
+            "application/zip"
+            | "application/x-tar"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/x-bzip2"
+            | "application/x-xz"
+            | "application/x-7z-compressed"
+            | "application/vnd.rar"
+            | "application/x-rar-compressed"
+            | "application/zstd"
+            | "application/x-lzma"
+            | "application/vnd.ms-cab-compressed"
+            | "application/x-iso9660-image"
+            | "application/x-apple-diskimage"
+            | "application/x-debian-package"
+            | "application/x-rpm"
+            | "application/vnd.android.package-archive"
+            | "application/x-unix-archive"
+            | "application/x-cpio"
+            | "application/java-archive"
+            | "application/vnd.rn-realmedia" => FileCategory::Archive,
+            _ => FileCategory::Other,
+        };
     }
-    if is_code_mime(mime) {
-        return FileCategory::Code;
-    }
-
     FileCategory::Other
 }
 
 pub fn category_from_ext(name: &str) -> FileCategory {
-    let name_lower = name.to_ascii_lowercase();
-    let ext = name_lower.rsplit_once('.').map(|(_, ext)| ext);
-
-    if matches!(ext, Some("ini" | "conf" | "cfg")) {
-        return FileCategory::Config;
-    }
-
-    extension_mime(name).map_or(FileCategory::Other, mime_to_category)
+    crate::app::file_type::category(name, false, false, false, false)
 }
 
 pub fn extension_mime(name: &str) -> Option<&'static str> {
@@ -250,105 +284,6 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
     }
 }
 
-fn is_config_mime(mime: &str) -> bool {
-    matches!(
-        mime,
-        "application/json"
-            | "application/toml"
-            | "application/yaml"
-            | "application/x-yaml"
-            | "text/yaml"
-            | "application/xml"
-            | "text/xml"
-    )
-}
-
-fn is_archive_mime(mime: &str) -> bool {
-    matches!(
-        mime,
-        "application/zip"
-            | "application/x-tar"
-            | "application/gzip"
-            | "application/x-gzip"
-            | "application/x-bzip2"
-            | "application/x-xz"
-            | "application/x-7z-compressed"
-            | "application/vnd.rar"
-            | "application/x-rar-compressed"
-            | "application/zstd"
-            | "application/x-lzma"
-            | "application/vnd.ms-cab-compressed"
-            | "application/x-iso9660-image"
-            | "application/x-apple-diskimage"
-            | "application/x-debian-package"
-            | "application/x-rpm"
-            | "application/vnd.android.package-archive"
-            | "application/x-unix-archive"
-            | "application/x-cpio"
-            | "application/java-archive"
-            | "application/vnd.rn-realmedia"
-    )
-}
-
-fn is_document_mime(mime: &str) -> bool {
-    mime == "application/pdf"
-        || mime == "application/msword"
-        || mime == "application/rtf"
-        || mime == "text/markdown"
-        || mime == "text/csv"
-        || mime == "text/tab-separated-values"
-        || mime == "application/epub+zip"
-        || mime == "image/vnd.djvu"
-        || mime == "application/x-mobipocket-ebook"
-        || mime == "application/vnd.amazon.ebook"
-        || mime == "application/vnd.ms-htmlhelp"
-        || mime == "application/x-tex"
-        || mime == "text/x-rst"
-        || mime.starts_with("application/vnd.oasis.opendocument.")
-        || mime.starts_with("application/vnd.openxmlformats-officedocument.")
-        || mime.starts_with("application/vnd.ms-")
-}
-
-fn is_code_mime(mime: &str) -> bool {
-    matches!(
-        mime,
-        "application/javascript"
-            | "application/typescript"
-            | "application/ecmascript"
-            | "application/sql"
-            | "application/wasm"
-            | "application/x-httpd-php"
-            | "application/x-sh"
-            | "text/x-rust"
-            | "text/x-python"
-            | "text/x-c"
-            | "text/x-c-header"
-            | "text/x-c++"
-            | "text/x-go"
-            | "text/x-java-source"
-            | "text/x-kotlin"
-            | "text/x-ruby"
-            | "text/x-swift"
-            | "text/x-csharp"
-            | "text/x-lua"
-            | "text/x-perl"
-            | "text/x-r"
-            | "text/x-scala"
-            | "text/x-clojure"
-            | "text/x-elixir"
-            | "text/x-erlang"
-            | "text/x-haskell"
-            | "text/x-ocaml"
-            | "text/x-nim"
-            | "text/x-zig"
-            | "text/x-dart"
-            | "text/x-scss"
-            | "text/x-vue"
-            | "text/x-svelte"
-            | "text/x-jsx"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,36 +437,5 @@ mod tests {
             Some("image/vnd.adobe.photoshop")
         );
         assert_eq!(extension_mime("test.xcf"), Some("image/x-xcf"));
-    }
-
-    #[test]
-    fn is_archive_mime_covers_new_types() {
-        assert!(is_archive_mime("application/x-debian-package"));
-        assert!(is_archive_mime("application/x-rpm"));
-        assert!(is_archive_mime("application/java-archive"));
-        assert!(is_archive_mime("application/x-iso9660-image"));
-        assert!(is_archive_mime("application/x-apple-diskimage"));
-        assert!(is_archive_mime("application/vnd.android.package-archive"));
-    }
-
-    #[test]
-    fn is_document_mime_covers_new_types() {
-        assert!(is_document_mime("text/csv"));
-        assert!(is_document_mime("text/tab-separated-values"));
-        assert!(is_document_mime("application/epub+zip"));
-        assert!(is_document_mime("image/vnd.djvu"));
-    }
-
-    #[test]
-    fn is_code_mime_covers_new_types() {
-        assert!(is_code_mime("text/x-swift"));
-        assert!(is_code_mime("text/x-csharp"));
-        assert!(is_code_mime("text/x-lua"));
-        assert!(is_code_mime("text/x-haskell"));
-        assert!(is_code_mime("text/x-ocaml"));
-        assert!(is_code_mime("text/x-nim"));
-        assert!(is_code_mime("text/x-zig"));
-        assert!(is_code_mime("text/x-vue"));
-        assert!(is_code_mime("text/x-svelte"));
     }
 }
