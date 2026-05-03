@@ -37,12 +37,10 @@ fn leave_tui_stdout() -> io::Result<()> {
     match (raw_result, screen_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-        (Err(raw_err), Err(screen_err)) => {
-            Err(io::Error::new(
-                raw_err.kind(),
-                format!("{raw_err}; {screen_err}"),
-            ))
-        }
+        (Err(raw_err), Err(screen_err)) => Err(io::Error::new(
+            raw_err.kind(),
+            format!("{raw_err}; {screen_err}"),
+        )),
     }
 }
 

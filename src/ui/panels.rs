@@ -10,7 +10,9 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::Theme;
 
-use crate::app::types::{FileEntry, FileCategory, ListingMode, PanelState, format_permissions, format_size};
+use crate::app::types::{
+    FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
+};
 
 /// Get color/style for a file entry based on its type
 pub fn get_file_color(entry: &FileEntry) -> Style {

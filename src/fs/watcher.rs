@@ -1,6 +1,6 @@
+use crate::debug_log;
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
-use crate::debug_log;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -78,7 +78,10 @@ impl Watcher {
 
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
         let path = path.canonicalize().map_err(|e| {
-            io::Error::new(e.kind(), format!("cannot canonicalize {}: {e}", path.display()))
+            io::Error::new(
+                e.kind(),
+                format!("cannot canonicalize {}: {e}", path.display()),
+            )
         })?;
 
         if self.watched_dirs.contains(&path) {
@@ -109,11 +112,16 @@ impl Watcher {
 
     pub fn unwatch(&mut self, path: &Path) -> io::Result<()> {
         let path = path.canonicalize().map_err(|e| {
-            io::Error::new(e.kind(), format!("cannot canonicalize {}: {e}", path.display()))
+            io::Error::new(
+                e.kind(),
+                format!("cannot canonicalize {}: {e}", path.display()),
+            )
         })?;
 
         let result = match self.watchers.get(&path) {
-            Some(WhichWatcher::Primary) => self.primary.unwatch(&path).map_err(|e| notify_to_io(&e)),
+            Some(WhichWatcher::Primary) => {
+                self.primary.unwatch(&path).map_err(|e| notify_to_io(&e))
+            }
             Some(WhichWatcher::Fallback) => self
                 .fallback
                 .as_mut()

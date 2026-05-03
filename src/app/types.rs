@@ -609,14 +609,14 @@ impl PanelState {
         // then apply to unfiltered entries (N, large). This iterates M times
         // over N entries instead of N times over M entries — fewer iterations
         // when M << N. Also avoids simultaneous &self / &mut self borrows.
-        let selection: Vec<_> = self
-            .entries
-            .iter()
-            .map(|e| (&e.path, e.selected))
-            .collect();
+        let selection: Vec<_> = self.entries.iter().map(|e| (&e.path, e.selected)).collect();
 
         for (path, selected) in &selection {
-            if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| &e.path == *path) {
+            if let Some(ue) = self
+                .unfiltered_entries
+                .iter_mut()
+                .find(|e| &e.path == *path)
+            {
                 ue.selected = *selected;
             }
         }

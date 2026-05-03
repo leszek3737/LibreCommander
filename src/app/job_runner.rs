@@ -127,7 +127,8 @@ pub fn poll_running_job(
                         if let Some(panel) = state.menu_restore_panel.take() {
                             state.active_panel = panel;
                         }
-                        state.status_message = Some("Operation failed: worker thread panicked".to_string());
+                        state.status_message =
+                            Some("Operation failed: worker thread panicked".to_string());
                         refresh_both(state);
                         dirty = true;
                     }

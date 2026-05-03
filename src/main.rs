@@ -18,6 +18,8 @@ use ratatui::{
 
 use lc::{app, fs, menu, ops, ui};
 
+mod input;
+
 use app::job_runner::{RunningJob, poll_running_job, start_confirmed_action};
 use app::types::{
     ActivePanel, AppMode, AppState, CompareMode, InputAction, PanelState, PickerKind,
@@ -25,10 +27,7 @@ use app::types::{
 use app::{dir_tree, paths, shell, user_menu, watcher_sync};
 use fs::reader;
 use fs::watcher::Watcher;
-use menu::{
-    MENU_ITEMS, MENU_TITLES, MenuAction, menu_action_at, menu_dropdown_x, menu_item_count,
-    menu_title_width, menu_title_x, menu_total_count,
-};
+use menu::{menu_item_count, menu_total_count};
 use ops::sorting;
 use ui::theme::Theme;
 use ui::{DIR_TREE_OVERHEAD_ROWS, LAYOUT_OVERHEAD_ROWS, dialogs, panels, viewer};
@@ -225,14 +224,36 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 },
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
-                    handle_mouse_event(
+                    let outcomes = input::mouse::handle_mouse_event(
                         &mut state,
                         &mut viewer_state,
                         &mut running_job,
                         mouse_event,
                         size,
-                        terminal,
                     );
+                    for outcome in outcomes {
+                        match outcome {
+                            input::mouse::MouseOutcome::NormalKey(key) => {
+                                handle_normal_mode(
+                                    &mut state,
+                                    &mut viewer_state,
+                                    key,
+                                    KeyModifiers::NONE,
+                                    terminal.size()?.height,
+                                    terminal,
+                                );
+                            }
+                            input::mouse::MouseOutcome::MenuAction => {
+                                run_selected_menu_action(
+                                    &mut state,
+                                    &mut viewer_state,
+                                    terminal.size()?.height,
+                                    terminal,
+                                );
+                            }
+                            input::mouse::MouseOutcome::None => {}
+                        }
+                    }
                     dirty = true;
                 }
                 Event::Resize(_, _) => {
@@ -281,7 +302,7 @@ fn sync_watcher_job_state(
     }
 }
 
-fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
+pub(crate) fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
     match reader::read_directory(&panel.path, panel.show_hidden) {
         Ok((entries, errors)) => {
             update_panel_read_errors(panel, &errors);
@@ -393,7 +414,7 @@ fn clamp_panel_scroll(panel: &mut PanelState, visible_height: usize) {
     panel.ensure_cursor_visible(visible_height);
 }
 
-fn refresh_active(state: &mut AppState) {
+pub(crate) fn refresh_active(state: &mut AppState) {
     let visible = crossterm::terminal::size()
         .map(|(_, h)| panel_visible_height(h))
         .unwrap_or(0);
@@ -403,7 +424,7 @@ fn refresh_active(state: &mut AppState) {
     }
 }
 
-fn refresh_both(state: &mut AppState) {
+pub(crate) fn refresh_both(state: &mut AppState) {
     let visible = crossterm::terminal::size()
         .map(|(_, h)| panel_visible_height(h))
         .unwrap_or(0);
@@ -415,7 +436,7 @@ fn set_active_panel(state: &mut AppState, panel: ActivePanel) {
     state.active_panel = panel;
 }
 
-fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
+pub(crate) fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
     let original = state.active_panel;
     match state.menu_selected {
         0 => set_active_panel(state, ActivePanel::Left),
@@ -612,7 +633,10 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
             title: "Error".to_string(),
             message: msg.clone(),
         },
-        app::types::DialogKind::Help { message, scroll_offset } => dialogs::DialogKind::Help {
+        app::types::DialogKind::Help {
+            message,
+            scroll_offset,
+        } => dialogs::DialogKind::Help {
             title: "Help".to_string(),
             message: message.clone(),
             scroll_offset: *scroll_offset,
@@ -792,7 +816,7 @@ fn directory_tree_visible_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(DIR_TREE_OVERHEAD_ROWS) as usize
 }
 
-fn set_tree_diagnostic_status(
+pub(crate) fn set_tree_diagnostic_status(
     status_message: &mut Option<String>,
     diagnostics: &[dir_tree::TreeDiagnostic],
 ) {
@@ -847,7 +871,7 @@ fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     }
 }
 
-fn handle_normal_mode<B: ratatui::backend::Backend>(
+pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     key: KeyCode,
@@ -953,7 +977,11 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 && is_dir
             {
                 let prev_dir_name = if is_dotdot {
-                    state.active_panel().path.file_name().map(|n| n.to_string_lossy().into_owned())
+                    state
+                        .active_panel()
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
                 } else {
                     None
                 };
@@ -964,7 +992,12 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 p.scroll_offset = 0;
                 refresh_active(state);
                 if let Some(ref name) = prev_dir_name {
-                    if let Some(idx) = state.active_panel().entries.iter().position(|e| &e.name == name) {
+                    if let Some(idx) = state
+                        .active_panel()
+                        .entries
+                        .iter()
+                        .position(|e| &e.name == name)
+                    {
                         let p = state.active_panel_mut();
                         p.cursor = idx;
                         p.ensure_cursor_visible(visible);
@@ -1131,7 +1164,11 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
-            let prev_dir_name = state.active_panel().path.file_name().map(|n| n.to_string_lossy().into_owned());
+            let prev_dir_name = state
+                .active_panel()
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned());
             let panel = state.active_panel_mut();
             if let Some(prev_path) = panel.history.pop()
                 && prev_path.is_dir()
@@ -1141,7 +1178,12 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 panel.scroll_offset = 0;
                 refresh_active(state);
                 if let Some(ref name) = prev_dir_name {
-                    if let Some(idx) = state.active_panel().entries.iter().position(|e| &e.name == name) {
+                    if let Some(idx) = state
+                        .active_panel()
+                        .entries
+                        .iter()
+                        .position(|e| &e.name == name)
+                    {
                         let p = state.active_panel_mut();
                         p.cursor = idx;
                         p.ensure_cursor_visible(visible);
@@ -1334,12 +1376,18 @@ fn dismiss_dialog_and_restore(state: &mut AppState) {
     }
 }
 
+pub(crate) fn dismiss_dialog(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    state.pending_action = None;
+    state.status_message = None;
+    state.dialog_selection = 0;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+}
+
 /// Handle confirm dialog (yes/no with action)
-fn handle_confirm_dialog(
-    state: &mut AppState,
-    running_job: &mut Option<RunningJob>,
-    key: KeyCode,
-) {
+fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
     match key {
         KeyCode::Char('y' | 'Y') => {
             if state.pending_action.is_some() {
@@ -1447,8 +1495,7 @@ fn handle_input_dialog(
                 InputAction::QuickCd => {
                     let expanded = if let Some(stripped) = input.strip_prefix('~') {
                         if let Some(home) = std::env::var_os("HOME") {
-                            std::path::PathBuf::from(home)
-                                .join(stripped.trim_start_matches('/'))
+                            std::path::PathBuf::from(home).join(stripped.trim_start_matches('/'))
                         } else {
                             std::path::PathBuf::from(&input)
                         }
@@ -1494,13 +1541,12 @@ fn handle_input_dialog(
                                 .position(|e| e.path == first.path)
                             {
                                 state.active_panel_mut().cursor = pos;
-                                state.active_panel_mut().ensure_cursor_visible(
-                                    panel_visible_height(terminal_height),
-                                );
+                                state
+                                    .active_panel_mut()
+                                    .ensure_cursor_visible(panel_visible_height(terminal_height));
                             }
                         }
-                        let mut message =
-                            format!("Found {result_count} match(es) for '{input}'");
+                        let mut message = format!("Found {result_count} match(es) for '{input}'");
                         if error_count > 0 {
                             message.push_str(&format!(", {error_count} error(s)"));
                         }
@@ -1606,11 +1652,7 @@ fn handle_error_dialog(state: &mut AppState, key: KeyCode) {
 }
 
 /// Handle progress dialog (cancel on Esc)
-fn handle_progress_dialog(
-    state: &mut AppState,
-    running_job: &Option<RunningJob>,
-    key: KeyCode,
-) {
+fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>, key: KeyCode) {
     if key == KeyCode::Esc {
         if let Some(job) = running_job.as_ref() {
             job.cancel.store(true, Ordering::Relaxed);
@@ -1641,8 +1683,10 @@ fn handle_dialog(
     terminal_height: u16,
 ) {
     // Handle Help dialog specially due to mutable scroll_offset
-    if let AppMode::Dialog(app::types::DialogKind::Help { message, scroll_offset }) =
-        &mut state.mode
+    if let AppMode::Dialog(app::types::DialogKind::Help {
+        message,
+        scroll_offset,
+    }) = &mut state.mode
     {
         let total_lines = message.lines().count();
         let max_lines = terminal_height.saturating_sub(6) as usize;
@@ -1690,11 +1734,12 @@ fn handle_dialog(
     }
 
     // Extract action early to avoid borrow issues
-    let input_action = if let AppMode::Dialog(app::types::DialogKind::Input { ref action, .. }) = state.mode {
-        Some(*action)
-    } else {
-        None
-    };
+    let input_action =
+        if let AppMode::Dialog(app::types::DialogKind::Input { ref action, .. }) = state.mode {
+            Some(*action)
+        } else {
+            None
+        };
 
     let dk = if let AppMode::Dialog(ref dk) = state.mode {
         dk
@@ -1708,8 +1753,7 @@ fn handle_dialog(
         }
         app::types::DialogKind::Input { .. } => {
             if let Some(action) = input_action {
-                if handle_input_dialog(state, viewer_state, &action, key, terminal_height) {
-                }
+                if handle_input_dialog(state, viewer_state, &action, key, terminal_height) {}
             }
         }
         app::types::DialogKind::Error(_) => {
@@ -1879,370 +1923,6 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
     }
 }
 
-fn handle_mouse_event(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    running_job: &mut Option<RunningJob>,
-    mouse_event: crossterm::event::MouseEvent,
-    terminal_size: ratatui::layout::Size,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) {
-    use crossterm::event::{MouseButton, MouseEventKind};
-
-    let col = mouse_event.column;
-    let row = mouse_event.row;
-    let height = terminal_size.height;
-    let width = terminal_size.width;
-
-    if matches!(
-        mouse_event.kind,
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-    ) {
-        handle_mouse_scroll(state, mouse_event.kind, col, row, width, height);
-        return;
-    }
-
-    let MouseEventKind::Down(button) = mouse_event.kind else {
-        return;
-    };
-    if button != MouseButton::Left {
-        return;
-    }
-
-    if handle_mouse_dialog(state, running_job, col, row, width, height) {
-        return;
-    }
-    if handle_mouse_menu_bar(state, viewer_state, col, row, width, height, terminal) {
-        return;
-    }
-    if handle_mouse_menu_dropdown(state, viewer_state, col, row, width, height, terminal) {
-        return;
-    }
-    if handle_mouse_function_bar(state, viewer_state, col, row, width, height, terminal) {
-        return;
-    }
-    handle_mouse_panels(state, viewer_state, col, row, width, height);
-}
-
-fn handle_mouse_scroll(
-    state: &mut AppState,
-    kind: crossterm::event::MouseEventKind,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-) {
-    use crossterm::event::MouseEventKind;
-
-    if !matches!(state.mode, AppMode::Normal) {
-        return;
-    }
-    let panel_start_row = 1u16;
-    let panel_end_row = height.saturating_sub(4);
-    if row < panel_start_row || row > panel_end_row {
-        return;
-    }
-    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
-    let visible_rows = panel_height.saturating_sub(2) as usize;
-    let mid_col = width / 2;
-    if col < mid_col {
-        state.active_panel = ActivePanel::Left;
-    } else {
-        state.active_panel = ActivePanel::Right;
-    }
-    let panel = state.active_panel_mut();
-    let len = panel.entries.len();
-    match kind {
-        MouseEventKind::ScrollUp => {
-            panel.cursor = panel.cursor.saturating_sub(3);
-            panel.ensure_cursor_visible(visible_rows);
-        }
-        MouseEventKind::ScrollDown => {
-            if panel.cursor + 3 < len {
-                panel.cursor += 3;
-            } else {
-                panel.cursor = len.saturating_sub(1);
-            }
-            panel.ensure_cursor_visible(visible_rows);
-        }
-        _ => {}
-    }
-}
-
-fn dismiss_dialog(state: &mut AppState) {
-    state.mode = AppMode::Normal;
-    state.pending_action = None;
-    state.status_message = None;
-    state.dialog_selection = 0;
-    if let Some(panel) = state.menu_restore_panel.take() {
-        set_active_panel(state, panel);
-    }
-}
-
-fn handle_mouse_dialog(
-    state: &mut AppState,
-    running_job: &mut Option<RunningJob>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-) -> bool {
-    if matches!(
-        state.mode,
-        AppMode::Dialog(app::types::DialogKind::Progress(_, _))
-    ) {
-        return true;
-    }
-
-    if let AppMode::Dialog(app::types::DialogKind::Input { .. }) = state.mode {
-        let dialog_width = ((width as u32 * 50) / 100).max(30).min(width as u32) as u16;
-        let dialog_height = ((height as u32 * 40) / 100).max(5).min(height as u32) as u16;
-        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
-        let dialog_top = (height.saturating_sub(dialog_height)) / 2;
-        let inside_dialog = col >= dialog_left
-            && col < dialog_left.saturating_add(dialog_width)
-            && row >= dialog_top
-            && row < dialog_top.saturating_add(dialog_height);
-
-        return inside_dialog;
-    }
-
-    if let AppMode::Dialog(app::types::DialogKind::Confirm(_)) = state.mode {
-        let dialog_height = height * 40 / 100;
-        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        let btn_row = dialog_y + dialog_height.saturating_sub(2);
-
-        if row == btn_row {
-            let dialog_width = width / 2;
-            let dialog_left = (width.saturating_sub(dialog_width)) / 2;
-            let btn_center = dialog_left + dialog_width / 2;
-            let new_sel = if col < btn_center { 0 } else { 1 };
-            if state.dialog_selection == new_sel {
-                if new_sel == 0 {
-                    if state.pending_action.is_some() {
-                        start_confirmed_action(state, running_job);
-                        state.dialog_selection = 0;
-                        if state.status_message.is_some() {
-                            dismiss_dialog(state);
-                            refresh_both(state);
-                            return true;
-                        }
-                        return true;
-                    }
-                    dismiss_dialog(state);
-                    refresh_both(state);
-                } else {
-                    dismiss_dialog(state);
-                }
-            } else {
-                state.dialog_selection = new_sel;
-            }
-        }
-        return true;
-    }
-
-    if let AppMode::Dialog(_) = state.mode {
-        dismiss_dialog(state);
-        return true;
-    }
-
-    false
-}
-
-fn handle_mouse_menu_bar(
-    state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
-    col: u16,
-    row: u16,
-    _width: u16,
-    _height: u16,
-    _terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> bool {
-    if row != 0 || !matches!(state.mode, AppMode::Normal) {
-        return false;
-    }
-    for (i, title) in MENU_TITLES.iter().enumerate() {
-        let x_offset = menu_title_x(_width, i);
-        let title_width = menu_title_width(title);
-        if col >= x_offset && col < x_offset + title_width {
-            state.menu_selected = i;
-            state.menu_item_selected = 0;
-            state.mode = AppMode::Menu;
-            return true;
-        }
-    }
-    true
-}
-
-fn handle_mouse_menu_dropdown(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> bool {
-    if !matches!(state.mode, AppMode::Menu) || row < 1 {
-        return false;
-    }
-    let items = MENU_ITEMS[state.menu_selected];
-    let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
-    let menu_bar_area = Rect::new(0, 0, width, 1);
-    let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
-
-    let inner_x = dropdown_x + 1;
-    let inner_y = 2u16;
-    let inner_width = dropdown_width.saturating_sub(2);
-
-    if col >= inner_x && col < inner_x + inner_width && row >= inner_y {
-        let item_idx = (row - inner_y) as usize;
-        if item_idx < items.len() {
-            state.menu_item_selected = item_idx;
-            let previous_discriminant = std::mem::discriminant(&state.mode);
-            if let Some(action_key) = execute_menu_action(state) {
-                state.mode = AppMode::Normal;
-                handle_normal_mode(
-                    state,
-                    viewer_state,
-                    action_key,
-                    KeyModifiers::NONE,
-                    height,
-                    terminal,
-                );
-            } else if std::mem::discriminant(&state.mode) == previous_discriminant {
-                state.mode = AppMode::Normal;
-            }
-        }
-    }
-    true
-}
-
-fn handle_mouse_function_bar(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> bool {
-    if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal) {
-        return false;
-    }
-    let btn_idx = (col * 10 / width).min(9);
-    let fkey = match btn_idx {
-        0 => KeyCode::F(1),
-        1 => KeyCode::F(2),
-        2 => KeyCode::F(3),
-        3 => KeyCode::F(4),
-        4 => KeyCode::F(5),
-        5 => KeyCode::F(6),
-        6 => KeyCode::F(7),
-        7 => KeyCode::F(8),
-        8 => KeyCode::F(9),
-        _ => KeyCode::F(10),
-    };
-    handle_normal_mode(
-        state,
-        viewer_state,
-        fkey,
-        KeyModifiers::NONE,
-        height,
-        terminal,
-    );
-    true
-}
-
-fn handle_mouse_panels(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-) {
-    use std::time::Duration;
-
-    if !matches!(state.mode, AppMode::Normal) {
-        return;
-    }
-
-    let panel_start_row = 1u16;
-    let panel_end_row = height.saturating_sub(4);
-
-    if row < panel_start_row || row > panel_end_row {
-        return;
-    }
-
-    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
-    let mid_col = width / 2;
-    let clicked_left = col < mid_col;
-
-    if clicked_left {
-        state.active_panel = ActivePanel::Left;
-    } else {
-        state.active_panel = ActivePanel::Right;
-    }
-
-    let panel = if clicked_left {
-        &state.left_panel
-    } else {
-        &state.right_panel
-    };
-
-    let list_start_row = panel_start_row + 1;
-    let relative_row = row.saturating_sub(list_start_row);
-    let clicked_index = panel.scroll_offset + relative_row as usize;
-
-    if clicked_index >= panel.entries.len() {
-        return;
-    }
-
-    let now = std::time::Instant::now();
-    let is_double_click = if let Some(last_time) = state.last_click_time {
-        if let Some(last_pos) = state.last_click_position {
-            last_pos.0 == col
-                && last_pos.1 == row
-                && now.duration_since(last_time) < Duration::from_millis(300)
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    if is_double_click {
-        state.last_click_time = None;
-        state.last_click_position = None;
-
-        let entry = &panel.entries[clicked_index];
-        let is_dir = entry.is_dir;
-        let path = entry.path.clone();
-        if is_dir {
-            let panel_mut = state.active_panel_mut();
-            panel_mut.history.push(panel_mut.path.clone());
-            panel_mut.path = path;
-            panel_mut.cursor = 0;
-            panel_mut.scroll_offset = 0;
-            refresh_panel(panel_mut, panel_height as usize);
-        } else {
-            if let Ok(vs) = viewer::ViewerState::open(&path) {
-                *viewer_state = Some(vs);
-                state.prev_mode = Some(state.mode.clone());
-                state.mode = AppMode::Viewing;
-            }
-        }
-    } else {
-        state.last_click_time = Some(now);
-        state.last_click_position = Some((col, row));
-
-        let panel_mut = state.active_panel_mut();
-        panel_mut.cursor = clicked_index;
-        panel_mut.ensure_cursor_visible(panel_height as usize);
-    }
-}
-
 fn apply_search_filter(panel: &mut PanelState) {
     panel.sync_unfiltered_selection();
     panel.entries = filtered_sorted_entries(
@@ -2296,6 +1976,28 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
     }
 }
 
+fn run_selected_menu_action<B: ratatui::backend::Backend>(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    terminal_height: u16,
+    terminal: &mut ratatui::Terminal<B>,
+) {
+    let previous_discriminant = std::mem::discriminant(&state.mode);
+    if let Some(action_key) = execute_menu_action(state) {
+        state.mode = AppMode::Normal;
+        handle_normal_mode(
+            state,
+            viewer_state,
+            action_key,
+            KeyModifiers::NONE,
+            terminal_height,
+            terminal,
+        );
+    } else if std::mem::discriminant(&state.mode) == previous_discriminant {
+        state.mode = AppMode::Normal;
+    }
+}
+
 fn handle_menu_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -2336,261 +2038,14 @@ fn handle_menu_mode<B: ratatui::backend::Backend>(
             state.menu_item_selected = (state.menu_item_selected + 1) % max_items;
         }
         KeyCode::Enter => {
-            let previous_discriminant = std::mem::discriminant(&state.mode);
-            if let Some(action_key) = execute_menu_action(state) {
-                state.mode = AppMode::Normal;
-                handle_normal_mode(
-                    state,
-                    viewer_state,
-                    action_key,
-                    KeyModifiers::NONE,
-                    terminal_height,
-                    terminal,
-                );
-            } else if std::mem::discriminant(&state.mode) == previous_discriminant {
-                state.mode = AppMode::Normal;
-            }
+            run_selected_menu_action(state, viewer_state, terminal_height, terminal);
         }
         _ => {}
     }
 }
 
-fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
-    match menu_action_at(state.menu_selected, state.menu_item_selected) {
-        Some(MenuAction::ToggleListingMode) => {
-            with_menu_panel(state, |state| {
-                let panel = state.active_panel_mut();
-                panel.listing_mode = match panel.listing_mode {
-                    app::types::ListingMode::Long => app::types::ListingMode::Brief,
-                    app::types::ListingMode::Brief => app::types::ListingMode::Long,
-                };
-            });
-            None
-        }
-        Some(MenuAction::CycleSortOrder) => {
-            with_menu_panel(state, |state| {
-                let p = state.active_panel_mut();
-                p.sort_mode = sorting::cycle_sort_mode(p.sort_mode);
-                refresh_active(state);
-            });
-            None
-        }
-        Some(MenuAction::OpenFilter) => {
-            with_menu_panel(state, |state| {
-                state.dialog_input = state.active_panel().filter.clone().unwrap_or_default();
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
-                    prompt: "Filter:".to_string(),
-                    default_text: state.dialog_input.clone(),
-                    action: InputAction::Filter,
-                });
-            });
-            None
-        }
-        Some(MenuAction::RefreshPanel) => {
-            with_menu_panel(state, refresh_active);
-            None
-        }
-        Some(MenuAction::OpenUserMenu) => {
-            let panel_dir = state.active_panel().path.clone();
-            let current_file = state
-                .active_panel()
-                .current_entry()
-                .map(|e| e.name.clone())
-                .unwrap_or_default();
-            match user_menu::load_menu_with_warnings(&panel_dir, &current_file) {
-                Ok(loaded) if loaded.entries.is_empty() => {
-                    let message = if loaded.warnings.is_empty() {
-                        "No matching menu entries found.".to_string()
-                    } else {
-                        format!(
-                            "No matching menu entries found.\n{}",
-                            loaded
-                                .warnings
-                                .iter()
-                                .map(|warning| format!(
-                                    "Line {}: {}",
-                                    warning.line, warning.message
-                                ))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        )
-                    };
-                    state.mode = AppMode::Dialog(app::types::DialogKind::Error(message));
-                }
-                Ok(loaded) => {
-                    if let Some(warning) = loaded.warnings.first() {
-                        state.status_message = Some(format!(
-                            "User menu warning: Line {}: {}",
-                            warning.line, warning.message
-                        ));
-                    }
-                    state.user_menu_entries = loaded.entries;
-                    state.picker_selected = 0;
-                    state.mode = AppMode::ListPicker(PickerKind::UserMenu);
-                }
-                Err(msg) => {
-                    state.mode = AppMode::Dialog(app::types::DialogKind::Error(msg));
-                }
-            }
-            None
-        }
-        Some(MenuAction::ViewFile) => Some(KeyCode::F(3)),
-        Some(MenuAction::EditFile) => Some(KeyCode::F(4)),
-        Some(MenuAction::Copy) => Some(KeyCode::F(5)),
-        Some(MenuAction::Move) => Some(KeyCode::F(6)),
-        Some(MenuAction::MakeDirectory) => Some(KeyCode::F(7)),
-        Some(MenuAction::Delete) => Some(KeyCode::F(8)),
-        Some(MenuAction::Rename) => {
-            let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
-            if let Some(name) = entry_name
-                && name != ".."
-            {
-                state.dialog_input = name.clone();
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
-                    prompt: "Rename to:".to_string(),
-                    default_text: name,
-                    action: InputAction::Rename,
-                });
-            }
-            None
-        }
-        Some(MenuAction::Chmod) => {
-            let entry_info = state
-                .active_panel()
-                .current_entry()
-                .map(|e| (e.name.clone(), e.permissions));
-            if let Some((name, permissions)) = entry_info
-                && name != ".."
-            {
-                state.dialog_input = format!("{:o}", permissions & 0o7777);
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
-                    prompt: "Chmod (octal):".to_string(),
-                    default_text: state.dialog_input.clone(),
-                    action: InputAction::Chmod,
-                });
-            }
-            None
-        }
-        Some(MenuAction::Quit) => {
-            state.should_quit = true;
-            None
-        }
-        Some(MenuAction::DirectoryTree) => {
-            let path = state.active_panel().path.clone();
-            let show_hidden = state.active_panel().show_hidden;
-            let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
-            state.tree_root = path;
-            state.tree_entries = tree.entries;
-            state.tree_selected = 0;
-            state.tree_scroll = 0;
-            state.mode = AppMode::DirectoryTree;
-            set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
-            None
-        }
-        Some(MenuAction::FindFile) => {
-            state.dialog_input.clear();
-            state.dialog_cursor_pos = 0;
-            state.mode = AppMode::Dialog(app::types::DialogKind::Input {
-                prompt: "Find file:".to_string(),
-                default_text: String::new(),
-                action: InputAction::FindFile,
-            });
-            None
-        }
-        Some(MenuAction::SwapPanels) => {
-            std::mem::swap(&mut state.left_panel, &mut state.right_panel);
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
-            None
-        }
-        Some(MenuAction::SwitchPanels) => {
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
-            None
-        }
-        Some(MenuAction::CompareDirs) => {
-            state.picker_selected = 0;
-            state.mode = AppMode::ListPicker(PickerKind::CompareMode);
-            None
-        }
-        Some(MenuAction::History) => {
-            state.picker_selected = 0;
-            state.mode = AppMode::ListPicker(PickerKind::History);
-            None
-        }
-        Some(MenuAction::DirectoryHotlist) => {
-            state.picker_selected = 0;
-            state.mode = AppMode::ListPicker(PickerKind::Hotlist);
-            None
-        }
-        Some(MenuAction::SaveCurrentPathToHotlist) => {
-            if !state
-                .directory_hotlist
-                .iter()
-                .any(|p| p == &state.active_panel().path)
-            {
-                state
-                    .directory_hotlist
-                    .push(state.active_panel().path.clone());
-            }
-            state.status_message =
-                Some("Configuration saved current path into hotlist".to_string());
-            None
-        }
-        Some(MenuAction::ToggleLayoutMode) => {
-            let panel = state.active_panel_mut();
-            panel.listing_mode = match panel.listing_mode {
-                app::types::ListingMode::Long => app::types::ListingMode::Brief,
-                app::types::ListingMode::Brief => app::types::ListingMode::Long,
-            };
-            state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
-            None
-        }
-        Some(MenuAction::TogglePanelHidden) => {
-            let panel = state.active_panel_mut();
-            panel.show_hidden = !panel.show_hidden;
-            refresh_active(state);
-            state.status_message = Some(format!(
-                "Panel options: hidden={}",
-                state.active_panel().show_hidden
-            ));
-            None
-        }
-        Some(MenuAction::ResetPanelFilter) => {
-            let panel = state.active_panel_mut();
-            panel.filter = None;
-            refresh_active(state);
-            state.status_message = Some("Appearance reset active panel filter".to_string());
-            None
-        }
-        Some(MenuAction::ToggleHiddenFiles) => {
-            let p = state.active_panel_mut();
-            p.show_hidden = !p.show_hidden;
-            p.cursor = 0;
-            p.scroll_offset = 0;
-            refresh_active(state);
-            None
-        }
-        Some(MenuAction::SaveSetup) => {
-            match app::config::save_setup(state) {
-                Ok(path) => {
-                    state.status_message = Some(format!("Setup saved to {}", path.display()));
-                }
-                Err(err) => {
-                    state.status_message = Some(format!("Save setup failed: {err}"));
-                }
-            }
-            None
-        }
-        None => None,
-    }
+pub(crate) fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
+    input::menu_actions::execute_menu_action(state)
 }
 
 fn compare_directories(state: &mut AppState, mode: CompareMode) {
@@ -3119,54 +2574,6 @@ mod tests {
         let state = AppState::new();
         let paths = selected_or_current_paths(&state);
         assert!(paths.is_empty());
-    }
-
-    #[test]
-    fn mouse_input_dialog_outside_preserves_text() {
-        let mut state = AppState {
-            mode: AppMode::Dialog(app::types::DialogKind::Input {
-                prompt: "Name:".to_string(),
-                default_text: "".to_string(),
-                action: InputAction::CreateDirectory,
-            }),
-            dialog_input: "draft".to_string(),
-            dialog_cursor_pos: 5,
-            ..Default::default()
-        };
-
-        let mut running_job = None;
-        let handled = handle_mouse_dialog(&mut state, &mut running_job, 0, 0, 100, 40);
-
-        assert!(!handled);
-        assert!(matches!(
-            state.mode,
-            AppMode::Dialog(app::types::DialogKind::Input { .. })
-        ));
-        assert_eq!(state.dialog_input, "draft");
-        assert_eq!(state.dialog_cursor_pos, 5);
-    }
-
-    #[test]
-    fn mouse_input_dialog_inside_consumes_click() {
-        let mut state = AppState {
-            mode: AppMode::Dialog(app::types::DialogKind::Input {
-                prompt: "Name:".to_string(),
-                default_text: "".to_string(),
-                action: InputAction::CreateDirectory,
-            }),
-            dialog_input: "draft".to_string(),
-            ..Default::default()
-        };
-
-        let mut running_job = None;
-        let handled = handle_mouse_dialog(&mut state, &mut running_job, 50, 20, 100, 40);
-
-        assert!(handled);
-        assert!(matches!(
-            state.mode,
-            AppMode::Dialog(app::types::DialogKind::Input { .. })
-        ));
-        assert_eq!(state.dialog_input, "draft");
     }
 
     #[test]

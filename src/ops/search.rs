@@ -42,11 +42,7 @@ struct SmallCharBuf<const N: usize> {
 impl<const N: usize> SmallCharBuf<N> {
     fn new(len: usize) -> Self {
         let inline = ['\0'; N];
-        let heap = if len > N {
-            Some(vec!['\0'; len])
-        } else {
-            None
-        };
+        let heap = if len > N { Some(vec!['\0'; len]) } else { None };
         Self { inline, heap }
     }
 }
@@ -470,8 +466,14 @@ impl FileSearch {
             let pc = pattern.chars().collect::<Vec<char>>();
             (nc, pc)
         } else {
-            let nc = name.chars().flat_map(|c| c.to_lowercase()).collect::<Vec<char>>();
-            let pc = pattern.chars().flat_map(|c| c.to_lowercase()).collect::<Vec<char>>();
+            let nc = name
+                .chars()
+                .flat_map(|c| c.to_lowercase())
+                .collect::<Vec<char>>();
+            let pc = pattern
+                .chars()
+                .flat_map(|c| c.to_lowercase())
+                .collect::<Vec<char>>();
             (nc, pc)
         };
         let n = name_chars.len();

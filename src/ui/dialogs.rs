@@ -380,14 +380,15 @@ pub fn render_help_dialog(
         let scrollbar_y = inner.y;
         for i in 0..scrollbar_height {
             let y = scrollbar_y + i as u16;
-            let in_thumb = i == scrollbar_pos
-                || (i >= scrollbar_pos && i < scrollbar_pos + thumb_height);
+            let in_thumb =
+                i == scrollbar_pos || (i >= scrollbar_pos && i < scrollbar_pos + thumb_height);
             let symbol = if in_thumb { "█" } else { "░" };
-            let cell = ratatui::text::Span::styled(
-                symbol,
-                Style::default().fg(Theme::SCROLLBAR_ACTIVE),
+            let cell =
+                ratatui::text::Span::styled(symbol, Style::default().fg(Theme::SCROLLBAR_ACTIVE));
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(cell),
+                Rect::new(scrollbar_x, y, 1, 1),
             );
-            f.render_widget(ratatui::widgets::Paragraph::new(cell), Rect::new(scrollbar_x, y, 1, 1));
         }
     }
 

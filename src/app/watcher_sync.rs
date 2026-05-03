@@ -25,9 +25,7 @@ pub fn sync_watcher_paths(
 
     let desired: HashSet<PathBuf> = [&left, &right]
         .into_iter()
-        .filter_map(|path| {
-            path.canonicalize().ok()
-        })
+        .filter_map(|path| path.canonicalize().ok())
         .collect();
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 

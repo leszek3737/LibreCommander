@@ -617,8 +617,9 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     } else {
         ""
     };
-    let status_text =
-        format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}{utf8_warning}",);
+    let status_text = format!(
+        " Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}{utf8_warning}",
+    );
     let status_style = if state.has_invalid_utf8 {
         Theme::status_bar().fg(Theme::WARNING)
     } else {
