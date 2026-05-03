@@ -1025,6 +1025,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     }
                     (Ok(_), Ok(_)) => {}
                 }
+                let _ = terminal.clear();
                 refresh_active(state);
             }
         }
