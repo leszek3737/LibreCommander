@@ -362,5 +362,6 @@ MIT License
 
 Libre Commander is inspired by:
 - [Midnight Commander](https://midnight-commander.org/) - The original dual-panel file manager
+- [Yazi](https://github.com/sxyazi/yazi) - Some code components were adapted from this project by [Sxyazi](https://github.com/sxyazi) (MIT License)
 - [Rust](https://www.rust-lang.org/) - The programming language
 - [Ratatui](https://ratatui.rs/) - Terminal UI library
