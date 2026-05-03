@@ -320,7 +320,7 @@ where
     let mut canceled = false;
     let total = sources.len();
     let sizes = helpers::path_sizes(sources);
-    let bytes_total = helpers::sum_sizes(&sizes);
+    let mut bytes_total = helpers::sum_sizes(&sizes);
     let mut bytes_done = 0_u64;
     let start_time = Instant::now();
 
@@ -384,12 +384,12 @@ where
 
         let mut file_bytes_so_far = 0_u64;
         let result = action(src, &target, &mut |byte_delta: u64| {
-            file_bytes_so_far = file_bytes_so_far
-                .saturating_add(byte_delta)
-                .min(current_total);
-            let current_bytes_done = bytes_done
-                .saturating_add(file_bytes_so_far)
-                .min(bytes_total);
+            file_bytes_so_far = file_bytes_so_far.saturating_add(byte_delta);
+            if current_total > 0 {
+                file_bytes_so_far = file_bytes_so_far.min(current_total);
+            }
+            let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
+            bytes_total = bytes_total.max(current_bytes_done);
             report_progress(
                 progress,
                 ProgressSnapshot {
@@ -399,7 +399,7 @@ where
                     bytes_done: current_bytes_done,
                     bytes_total,
                     current_file_bytes: file_bytes_so_far,
-                    current_file_total: current_total,
+                    current_file_total: current_total.max(file_bytes_so_far),
                     start_time,
                 },
             );
@@ -412,7 +412,8 @@ where
             errors.push(format!("{}: {}", src.display(), e));
         } else {
             success_count += 1;
-            bytes_done = bytes_done.saturating_add(current_total);
+            bytes_done = bytes_done.saturating_add(current_total.max(file_bytes_so_far));
+            bytes_total = bytes_total.max(bytes_done);
         }
 
         report_progress(
@@ -438,7 +439,7 @@ where
         errors,
         success_count,
         canceled,
-        action_label: "",
+        action_label: "Unknown",
     }
 }
 
@@ -528,7 +529,7 @@ fn batch_delete(
         errors,
         success_count,
         canceled,
-        action_label: "",
+        action_label: "Unknown",
     }
 }
 
@@ -885,13 +886,13 @@ mod tests {
     }
 
     #[test]
-    fn format_summary_empty_label() {
+    fn format_summary_unknown_default_label() {
         let report = BatchReport {
             errors: vec!["e: x".into()],
             success_count: 0,
             canceled: false,
-            action_label: "",
+            action_label: "Unknown",
         };
-        assert_eq!(report.format_summary(), " failed: e: x");
+        assert_eq!(report.format_summary(), "Unknown failed: e: x");
     }
 }

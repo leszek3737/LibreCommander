@@ -368,9 +368,7 @@ pub fn move_entry_with_progress(
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
-                if !path_contains(src, dest)
-                    && let Err(del_err) = delete_dir_recursive(src)
-                {
+                if let Err(del_err) = delete_dir_recursive(src) {
                     return Err(io::Error::other(format!(
                         "copied {:?} to {:?} but failed to remove source: {}",
                         src, dest, del_err

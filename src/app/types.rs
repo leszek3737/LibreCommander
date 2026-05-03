@@ -417,9 +417,6 @@ impl FileEntry {
         if self.is_dir {
             return FileCategory::Dir;
         }
-        if self.is_symlink {
-            return FileCategory::Symlink;
-        }
         if self.is_hidden {
             return FileCategory::Hidden;
         }

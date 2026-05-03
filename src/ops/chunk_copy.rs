@@ -1,6 +1,6 @@
 use filetime::FileTime;
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,7 +80,16 @@ fn copy_to_temp(
 }
 
 fn publish_temp(temp_dest: &Path, dest: &Path) -> io::Result<()> {
-    fs::hard_link(temp_dest, dest)?;
+    match fs::hard_link(temp_dest, dest) {
+        Ok(()) => return fs::remove_file(temp_dest),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
+        Err(_) => {}
+    }
+
+    let mut src = File::open(temp_dest)?;
+    let mut dest_file = OpenOptions::new().write(true).create_new(true).open(dest)?;
+    io::copy(&mut src, &mut dest_file)?;
+    dest_file.sync_all()?;
     fs::remove_file(temp_dest)
 }
 

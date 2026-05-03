@@ -133,23 +133,29 @@ pub fn toggle_external_view<B: Backend>(
 
     // Wait for Ctrl+O or any key.
     enable_raw_mode()?;
-    loop {
-        if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
-            && let Event::Key(key) = event::read()?
-        {
-            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                break;
-            }
-            // Also allow Enter to return.
-            if key.code == KeyCode::Enter {
-                break;
-            }
-            // Esc to return.
-            if key.code == KeyCode::Esc {
-                break;
+    let wait_result = (|| -> io::Result<()> {
+        loop {
+            if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
+                && let Event::Key(key) = event::read()?
+            {
+                if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    break;
+                }
+                // Also allow Enter to return.
+                if key.code == KeyCode::Enter {
+                    break;
+                }
+                // Esc to return.
+                if key.code == KeyCode::Esc {
+                    break;
+                }
             }
         }
-    }
+        Ok(())
+    })();
+    let raw_result = disable_raw_mode();
+    wait_result?;
+    raw_result?;
 
     resume_terminal_stdout()?;
     restore_guard.restore_ok = true;

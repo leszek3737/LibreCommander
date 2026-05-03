@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::app::types::PendingAction;
-use crate::ops::file_ops;
-
 pub fn action_label(action: &PendingAction) -> &'static str {
     match action {
         PendingAction::Copy { .. } => "Copy",
@@ -18,7 +16,7 @@ pub(crate) fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
 pub(crate) fn path_size(path: &Path) -> u64 {
     match path.symlink_metadata() {
         Ok(meta) if meta.file_type().is_symlink() => 0,
-        Ok(meta) if meta.is_dir() => file_ops::calculate_dir_size(path).unwrap_or(0),
+        Ok(meta) if meta.is_dir() => 0,
         Ok(meta) => meta.len(),
         Err(_) => 0,
     }

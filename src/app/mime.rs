@@ -62,7 +62,7 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             "text/plain" | "text/markdown" | "text/csv" | "text/tab-separated-values" => {
                 FileCategory::Document
             }
-            "text/xml" | "text/yaml" => FileCategory::Config,
+            "text/xml" | "text/yaml" | "text/config" => FileCategory::Config,
             _ => FileCategory::Code,
         };
     }
@@ -117,11 +117,13 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
 }
 
 pub fn category_from_ext(name: &str) -> FileCategory {
-    crate::app::file_type::category(name, false, false, false, false)
+    extension_mime(name)
+        .map(mime_to_category)
+        .unwrap_or(FileCategory::Other)
 }
 
-/// Single source of truth for extension → MIME mapping.
-/// For boolean category checks (is_archive, is_image, etc.) see `file_type.rs`.
+/// Extension → MIME mapping. `category_from_ext` derives categories from this table
+/// so MIME fallback and extension categories stay aligned.
 pub fn extension_mime(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_lowercase();
 
@@ -240,7 +242,7 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "toml" => Some("application/toml"),
         "yaml" | "yml" => Some("application/yaml"),
         "xml" => Some("application/xml"),
-        "ini" | "conf" | "cfg" => Some("text/plain"),
+        "ini" | "conf" | "cfg" => Some("text/config"),
         "plist" => Some("application/x-plist"),
         "lock" => Some("application/json"),
 

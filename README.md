@@ -5,8 +5,8 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 ## Features
 
 - **Dual-panel interface** - Navigate and manage files in two panels side-by-side
-- **Fast file operations** - Copy, move, delete, rename, chmod files and directories
-- **Recursive copy/move** - Handles directories with symlink preservation and cross-device fallback
+- **Async file operations** - Copy, move, delete, rename, chmod files and directories with background progress and cancellation
+- **Safe recursive copy/move/delete** - Handles directories with symlink preservation, no-clobber copy, cross-device fallback, partial-copy cleanup, and cancellation safeguards
 - **Advanced search** - Incremental panel filter, recursive file search (glob patterns), content search (grep-like)
 - **File viewer** - Built-in text viewer with search, hex dump, line numbers, and word wrap
 - **Directory tree** - Interactive expandable directory tree view
@@ -15,7 +15,7 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 - **Directory history** - Navigate back with Alt+Backspace
 - **User menu** - Extensible menu system via `.mc.menu` or `~/.config/lc/menu` (MC-compatible)
 - **Sorting** - 8 sort modes: by name, size, modification time, or extension (ascending/descending)
-- **File watcher** - Automatic panel refresh on external filesystem changes
+- **File watcher** - Automatic panel refresh on external filesystem changes while preserving filters, sorting, and selection
 - **Panel views** - Long (detailed) and Brief (compact) listing modes
 - **File type icons** - Emoji icons and color coding for archives, images, source code, audio, video, config files
 - **Mouse support** - Single click to select, double click to open/view, click to switch panels
@@ -271,6 +271,18 @@ D  Diff panels
 | `%%` | Literal `%` |
 
 Commands are executed via `sh -c` with the active panel's directory as working directory.
+
+## File Operations
+
+Long-running copy, move, and delete operations run as background jobs with live item and byte progress. Operations can be canceled between safe boundaries; move operations finish cleanup after a successful cross-device copy so source and destination do not diverge unexpectedly.
+
+Safety guarantees:
+
+- Existing destinations are not overwritten by chunked copies.
+- Recursive directory copies publish through a temporary sibling and clean up partial output on failure or cancellation.
+- Symlinks are copied or deleted as symlinks rather than following their targets.
+- Cross-device moves fall back to copy-then-delete only after the copy succeeds.
+- Critical system directories are protected from deletion.
 
 ## File Viewer
 
