@@ -1,5 +1,6 @@
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
+use crate::debug_log;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -164,6 +165,7 @@ fn make_handler(
                     // For renames, debounce both paths independently
                     let now = Instant::now();
                     let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
+                        debug_log!("watcher mutex poisoned (rename debounce), recovering: {e}");
                         e.into_inner()
                     });
                     let from_allowed = debounce
@@ -185,6 +187,7 @@ fn make_handler(
             if let Some(path) = path {
                 let now = Instant::now();
                 let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
+                    debug_log!("watcher mutex poisoned (debounce), recovering: {e}");
                     e.into_inner()
                 });
                 if let Some(last) = debounce.get(&path) {

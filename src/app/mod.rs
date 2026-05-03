@@ -1,4 +1,5 @@
 pub mod config;
+pub mod debug_log;
 pub mod dir_tree;
 pub mod file_type;
 pub mod job_runner;

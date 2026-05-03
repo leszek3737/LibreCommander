@@ -1,3 +1,4 @@
+use crate::debug_log;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -108,9 +109,8 @@ pub fn poll_running_job(
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
         {
-            #[allow(clippy::print_stderr)]
             if let Err(panic_payload) = handle.join() {
-                eprintln!("warning: worker thread panicked: {:?}", panic_payload);
+                debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
             }
         }
         finish_running_job(state, action_label, &report, refresh_both);
@@ -120,9 +120,8 @@ pub fn poll_running_job(
         if let Some(handle) = job.handle.as_ref() {
             if handle.is_finished() {
                 if let Some(handle) = job.handle.take() {
-                    #[allow(clippy::print_stderr)]
                     if let Err(panic_payload) = handle.join() {
-                        eprintln!("warning: worker thread panicked: {:?}", panic_payload);
+                        debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
                         let _ = running_job.take();
                         state.mode = AppMode::Normal;
                         if let Some(panel) = state.menu_restore_panel.take() {

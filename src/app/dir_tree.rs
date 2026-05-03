@@ -1,3 +1,4 @@
+use crate::debug_log;
 use std::path::{Path, PathBuf};
 
 use crate::ops::sorting::cmp_ignore_case;
@@ -147,14 +148,13 @@ fn sort_entries(entries: &mut [TreeEntry]) {
 /// If expanding: reads children and inserts them after the entry.
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
-#[allow(clippy::print_stderr)]
 pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, show_hidden: bool) {
-    // Diagnostics logged to stderr; for programmatic access use toggle_expand_with_diagnostics.
+    // Diagnostics logged to debug file; for programmatic access use toggle_expand_with_diagnostics.
     let diagnostics = toggle_expand_with_diagnostics(entries, index, root, show_hidden);
     if !diagnostics.is_empty() {
-        eprintln!("Tree expand errors: {}", diagnostics.len());
+        debug_log!("Tree expand errors: {}", diagnostics.len());
         for diag in &diagnostics {
-            eprintln!("  {}: {}", diag.path.display(), diag.message);
+            debug_log!("  {}: {}", diag.path.display(), diag.message);
         }
     }
 }
