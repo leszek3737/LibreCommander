@@ -55,7 +55,7 @@ impl BatchProgress {
 
     pub fn byte_percent(&self) -> f32 {
         if self.bytes_total == 0 {
-            self.percent()
+            self.percent() * 100.0
         } else {
             (self.bytes_done as f32 / self.bytes_total as f32 * 100.0).min(99.99)
         }
@@ -546,7 +546,25 @@ fn batch_move(
             );
             continue;
         }
-        if let Err(e) = file_ops::move_entry(src, &dest) {
+        let result = move_entry_with_progress(src, &dest, cancel.clone(), |current_file_bytes| {
+            report_progress(
+                progress,
+                ProgressSnapshot {
+                    completed: idx,
+                    total,
+                    current: Some(src),
+                    bytes_done: bytes_done.saturating_add(current_file_bytes),
+                    bytes_total,
+                    current_file_bytes,
+                    current_file_total: current_total,
+                    start_time,
+                },
+            );
+        });
+        if let Err(e) = result {
+            if e.kind() == io::ErrorKind::Interrupted && is_canceled(&cancel) {
+                canceled = true;
+            }
             errors.push(format!("{}: {}", src.display(), e));
         } else {
             success_count += 1;
@@ -565,6 +583,9 @@ fn batch_move(
                 start_time,
             },
         );
+        if canceled {
+            break;
+        }
     }
 
     BatchReport {
@@ -572,6 +593,37 @@ fn batch_move(
         success_count,
         canceled,
     }
+}
+
+fn move_entry_with_progress(
+    src: &Path,
+    dest: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+    mut on_progress: impl FnMut(u64),
+) -> io::Result<()> {
+    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+    let worker_cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let src = src.to_path_buf();
+    let dest = dest.to_path_buf();
+    let handle = thread::spawn(move || {
+        file_ops::move_entry_with_progress(&src, &dest, &progress_tx, &worker_cancel)
+    });
+
+    while !handle.is_finished() {
+        match progress_rx.recv_timeout(COPY_PROGRESS_POLL) {
+            Ok(current) => on_progress(current),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    for current in progress_rx.try_iter() {
+        on_progress(current);
+    }
+
+    handle
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("move worker panicked")))
 }
 
 fn batch_delete(
@@ -622,11 +674,17 @@ fn batch_delete(
         );
         let result = match path.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => file_ops::delete_file(path),
-            Ok(meta) if meta.is_dir() => file_ops::delete_dir_recursive(path),
+            Ok(meta) if meta.is_dir() => match cancel.as_deref() {
+                Some(cancel) => file_ops::delete_dir_recursive_cancelable(path, cancel),
+                None => file_ops::delete_dir_recursive(path),
+            },
             Ok(_) => file_ops::delete_file(path),
             Err(e) => Err(e),
         };
         if let Err(e) = result {
+            if e.kind() == io::ErrorKind::Interrupted && is_canceled(&cancel) {
+                canceled = true;
+            }
             errors.push(format!("{}: {}", path.display(), e));
         } else {
             success_count += 1;
@@ -645,6 +703,9 @@ fn batch_delete(
                 start_time,
             },
         );
+        if canceled {
+            break;
+        }
     }
 
     BatchReport {

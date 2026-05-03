@@ -42,7 +42,6 @@ impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
         const MAX_VIEW_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
-        let mime = crate::app::mime::detect_mime(path);
         let file = fs::File::open(path)?;
         let mut raw_bytes = Vec::new();
         file.take((MAX_VIEW_SIZE + 1) as u64)
@@ -54,6 +53,8 @@ impl ViewerState {
             )));
         }
 
+        let mime =
+            crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
         let content = if open_as_text {
             let content_str = String::from_utf8_lossy(&raw_bytes);
@@ -316,15 +317,23 @@ fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
     }
 
     if let Some(mime) = mime {
-        if mime.starts_with("text/") || is_text_application_mime(mime) {
-            return true;
-        }
         if is_known_binary_mime(mime) {
             return false;
         }
+        if mime.starts_with("text/") || is_text_application_mime(mime) {
+            return true;
+        }
     }
 
-    !bytes.contains(&0)
+    if bytes.contains(&0) {
+        return false;
+    }
+
+    if crate::app::file_type::is_source_code(name) || crate::app::file_type::is_config(name) {
+        return true;
+    }
+
+    true
 }
 
 fn is_text_application_mime(mime: &str) -> bool {

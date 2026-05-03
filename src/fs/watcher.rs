@@ -109,33 +109,41 @@ fn make_handler(
             return;
         };
 
-        if let Some(watch_event) = convert_event(event) {
+        for watch_event in convert_event(event) {
             let _ = event_tx.send(watch_event);
         }
     }
 }
 
-fn convert_event(event: notify::Event) -> Option<WatchEvent> {
-    let path = event.paths.first()?.clone();
-
+fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
     match event.kind {
-        EventKind::Access(_) => None,
-        EventKind::Create(_) => Some(WatchEvent::Created(path)),
-        EventKind::Remove(_) => Some(WatchEvent::Deleted(path)),
+        EventKind::Access(_) => Vec::new(),
+        EventKind::Create(_) => map_paths(event.paths, WatchEvent::Created),
+        EventKind::Remove(_) => map_paths(event.paths, WatchEvent::Deleted),
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::Both)) => {
             if event.paths.len() == 2 {
-                Some(WatchEvent::Renamed {
+                vec![WatchEvent::Renamed {
                     from: event.paths[0].clone(),
                     to: event.paths[1].clone(),
-                })
+                }]
             } else {
-                Some(WatchEvent::Modified(path))
+                map_paths(event.paths, WatchEvent::Modified)
             }
         }
-        EventKind::Modify(_) => Some(WatchEvent::Modified(path)),
-        EventKind::Any => Some(WatchEvent::Modified(path)),
-        EventKind::Other => Some(WatchEvent::Modified(path)),
+        EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
+            map_paths(event.paths, WatchEvent::Deleted)
+        }
+        EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)) => {
+            map_paths(event.paths, WatchEvent::Created)
+        }
+        EventKind::Modify(_) => map_paths(event.paths, WatchEvent::Modified),
+        EventKind::Any => map_paths(event.paths, WatchEvent::Modified),
+        EventKind::Other => map_paths(event.paths, WatchEvent::Modified),
     }
+}
+
+fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<WatchEvent> {
+    paths.into_iter().map(map).collect()
 }
 
 fn notify_to_io(err: notify::Error) -> io::Error {
@@ -168,5 +176,40 @@ mod tests {
 
         watcher.pause();
         watcher.resume();
+    }
+
+    #[test]
+    fn convert_event_emits_all_create_paths() {
+        let event = notify::Event {
+            kind: EventKind::Create(notify::event::CreateKind::Any),
+            paths: vec![PathBuf::from("a"), PathBuf::from("b")],
+            attrs: Default::default(),
+        };
+
+        let events = convert_event(event);
+
+        assert!(matches!(&events[0], WatchEvent::Created(path) if path == &PathBuf::from("a")));
+        assert!(matches!(&events[1], WatchEvent::Created(path) if path == &PathBuf::from("b")));
+    }
+
+    #[test]
+    fn convert_event_maps_split_rename_events() {
+        let from = notify::Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+            paths: vec![PathBuf::from("old")],
+            attrs: Default::default(),
+        };
+        let to = notify::Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)),
+            paths: vec![PathBuf::from("new")],
+            attrs: Default::default(),
+        };
+
+        assert!(
+            matches!(convert_event(from).as_slice(), [WatchEvent::Deleted(path)] if path == &PathBuf::from("old"))
+        );
+        assert!(
+            matches!(convert_event(to).as_slice(), [WatchEvent::Created(path)] if path == &PathBuf::from("new"))
+        );
     }
 }

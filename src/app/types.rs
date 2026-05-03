@@ -379,6 +379,12 @@ impl FileEntry {
         if self.is_executable {
             return FileCategory::Executable;
         }
+        if ft::is_source_code(&self.name) {
+            return FileCategory::Code;
+        }
+        if ft::is_config(&self.name) {
+            return FileCategory::Config;
+        }
         if ft::is_archive(&self.name) {
             return FileCategory::Archive;
         }
@@ -393,12 +399,6 @@ impl FileEntry {
         }
         if ft::is_document(&self.name) {
             return FileCategory::Document;
-        }
-        if ft::is_source_code(&self.name) {
-            return FileCategory::Code;
-        }
-        if ft::is_config(&self.name) {
-            return FileCategory::Config;
         }
         FileCategory::Other
     }

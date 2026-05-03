@@ -1,4 +1,5 @@
 use filetime::FileTime;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -18,7 +19,37 @@ pub fn copy_with_progress(
 
     let metadata = fs::metadata(src)?;
     let src_file = File::open(src)?;
-    let dest_file = File::create(dest)?;
+    let temp_dest = temp_path_for(dest);
+    let result = copy_to_temp(src_file, &temp_dest, &metadata, progress_tx, cancel);
+
+    match result {
+        Ok(total_written) => {
+            if let Err(err) = fs::rename(&temp_dest, dest) {
+                let _ = fs::remove_file(&temp_dest);
+                return Err(err);
+            }
+
+            let accessed = FileTime::from_last_access_time(&metadata);
+            let modified = FileTime::from_last_modification_time(&metadata);
+            let _ = filetime::set_file_times(dest, accessed, modified);
+
+            Ok(total_written)
+        }
+        Err(err) => {
+            let _ = fs::remove_file(&temp_dest);
+            Err(err)
+        }
+    }
+}
+
+fn copy_to_temp(
+    src_file: File,
+    temp_dest: &Path,
+    metadata: &fs::Metadata,
+    progress_tx: &std::sync::mpsc::Sender<u64>,
+    cancel: &AtomicBool,
+) -> io::Result<u64> {
+    let dest_file = File::create_new(temp_dest)?;
     let mut reader = BufReader::new(src_file);
     let mut writer = BufWriter::new(dest_file);
     let mut buffer = [0_u8; BUFFER_SIZE];
@@ -36,21 +67,24 @@ pub fn copy_with_progress(
 
         if cancel.load(Ordering::Relaxed) {
             let _ = writer.flush();
-            drop(writer);
-            let _ = fs::remove_file(dest);
             return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
         }
     }
 
     writer.flush()?;
 
-    preserve_permissions(dest, &metadata)?;
-
-    let accessed = FileTime::from_last_access_time(&metadata);
-    let modified = FileTime::from_last_modification_time(&metadata);
-    let _ = filetime::set_file_times(dest, accessed, modified);
+    preserve_permissions(temp_dest, metadata)?;
 
     Ok(total_written)
+}
+
+fn temp_path_for(dest: &Path) -> std::path::PathBuf {
+    let mut name = dest
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| OsString::from("copy"));
+    name.push(format!(".lc-copy-{}.tmp", std::process::id()));
+    dest.with_file_name(name)
 }
 
 #[cfg(unix)]
@@ -128,6 +162,23 @@ mod tests {
         let err = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect_err("cancel copy");
 
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn existing_temp_file_returns_already_exists_without_dest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.txt");
+        let dest = dir.path().join("dest.txt");
+        fs::write(&src, b"content").expect("write source file");
+        fs::write(temp_path_for(&dest), b"leftover").expect("write temp file");
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        let err = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect_err("copy fails");
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(!dest.exists());
     }
 }

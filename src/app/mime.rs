@@ -26,9 +26,18 @@ pub fn detect_mime(path: &Path) -> Option<String> {
         Err(_) => return fallback(),
     };
 
-    infer::get(&buf[..len])
+    detect_mime_from_bytes(path, &buf[..len]).or_else(fallback)
+}
+
+pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<String> {
+    infer::get(bytes)
         .map(|kind| kind.mime_type().to_string())
-        .or_else(fallback)
+        .or_else(|| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(extension_mime)
+                .map(str::to_string)
+        })
 }
 
 pub fn mime_to_category(mime: &str) -> FileCategory {
@@ -44,20 +53,20 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     if mime.starts_with("video/") {
         return FileCategory::Video;
     }
+    if is_config_mime(mime) {
+        return FileCategory::Config;
+    }
+    if is_document_mime(mime) {
+        return FileCategory::Document;
+    }
     if mime == "text/plain" {
         return FileCategory::Document;
     }
     if mime.starts_with("text/") {
         return FileCategory::Code;
     }
-    if is_config_mime(mime) {
-        return FileCategory::Config;
-    }
     if is_archive_mime(mime) {
         return FileCategory::Archive;
-    }
-    if is_document_mime(mime) {
-        return FileCategory::Document;
     }
     if is_code_mime(mime) {
         return FileCategory::Code;
@@ -202,6 +211,7 @@ fn is_document_mime(mime: &str) -> bool {
     mime == "application/pdf"
         || mime == "application/msword"
         || mime == "application/rtf"
+        || mime == "text/markdown"
         || mime.starts_with("application/vnd.oasis.opendocument.")
         || mime.starts_with("application/vnd.openxmlformats-officedocument.")
         || mime.starts_with("application/vnd.ms-")
@@ -250,6 +260,9 @@ mod tests {
         assert_eq!(mime_to_category("video/mp4"), FileCategory::Video);
         assert_eq!(mime_to_category("text/x-rust"), FileCategory::Code);
         assert_eq!(mime_to_category("text/plain"), FileCategory::Document);
+        assert_eq!(mime_to_category("text/markdown"), FileCategory::Document);
+        assert_eq!(mime_to_category("text/xml"), FileCategory::Config);
+        assert_eq!(mime_to_category("text/yaml"), FileCategory::Config);
     }
 
     #[test]

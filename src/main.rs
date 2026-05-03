@@ -159,6 +159,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
 
         if poll_running_job(&mut state, &mut running_job) {
+            sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
             dirty = true;
         }
 
@@ -1594,17 +1595,18 @@ fn handle_dialog(
                 if state.pending_action.is_some() {
                     start_confirmed_action(state, running_job);
                     state.dialog_selection = 0;
-                    if state.status_message.is_some() {
+                    let start_failed = state.status_message.is_some();
+                    if start_failed {
                         state.mode = AppMode::Normal;
                         refresh_both(state);
                         if let Some(panel) = state.menu_restore_panel.take() {
                             set_active_panel(state, panel);
                         }
-                        return;
                     }
+                } else {
+                    dismiss_dialog(state);
+                    refresh_both(state);
                 }
-                dismiss_dialog(state);
-                refresh_both(state);
             }
             KeyCode::Char('n' | 'N') => {
                 dismiss_dialog(state);
@@ -1615,16 +1617,14 @@ fn handle_dialog(
                 } else if state.pending_action.is_some() {
                     start_confirmed_action(state, running_job);
                     state.dialog_selection = 0;
-                    if state.status_message.is_some() {
+                    let start_failed = state.status_message.is_some();
+                    if start_failed {
                         state.mode = AppMode::Normal;
                         refresh_both(state);
                         if let Some(panel) = state.menu_restore_panel.take() {
                             set_active_panel(state, panel);
                         }
-                        return;
                     }
-                    dismiss_dialog(state);
-                    refresh_both(state);
                 }
             }
             KeyCode::Esc => {
@@ -2173,6 +2173,7 @@ fn handle_mouse_dialog(
                             refresh_both(state);
                             return true;
                         }
+                        return true;
                     }
                     dismiss_dialog(state);
                     refresh_both(state);

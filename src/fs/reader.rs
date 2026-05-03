@@ -11,6 +11,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::app::types::PanelState;
+use crate::ops::search::FileSearch;
 use crate::ops::sorting::sort_entries;
 
 #[cfg(test)]
@@ -191,6 +192,9 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     }
 
     if panel.unfiltered_entries.is_empty() {
+        if panel.filter.is_some() {
+            return;
+        }
         panel.unfiltered_entries = panel.entries.clone();
     }
 
@@ -222,6 +226,9 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
     }
 
     if panel.unfiltered_entries.is_empty() {
+        if panel.filter.is_some() {
+            return;
+        }
         panel.unfiltered_entries = panel.entries.clone();
     }
 
@@ -236,6 +243,10 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
 }
 
 fn rebuild_panel_entries(panel: &mut PanelState) {
+    let current_path = panel
+        .entries
+        .get(panel.cursor)
+        .map(|entry| entry.path.clone());
     panel.entries = panel
         .unfiltered_entries
         .iter()
@@ -243,7 +254,7 @@ fn rebuild_panel_entries(panel: &mut PanelState) {
             entry.name == ".."
                 || (panel.show_hidden || !entry.is_hidden)
                     && panel.filter.as_ref().is_none_or(|filter| {
-                        entry.name.to_lowercase().contains(&filter.to_lowercase())
+                        FileSearch::matches_pattern(&entry.name, filter, false)
                     })
         })
         .cloned()
@@ -255,7 +266,16 @@ fn rebuild_panel_entries(panel: &mut PanelState) {
         panel.cursor = 0;
         panel.scroll_offset = 0;
     } else {
-        panel.cursor = panel.cursor.min(panel.entries.len() - 1);
+        if let Some(current_path) = current_path
+            && let Some(pos) = panel
+                .entries
+                .iter()
+                .position(|entry| entry.path == current_path)
+        {
+            panel.cursor = pos;
+        } else {
+            panel.cursor = panel.cursor.min(panel.entries.len() - 1);
+        }
         if panel.scroll_offset > panel.cursor {
             panel.scroll_offset = panel.cursor;
         }
@@ -717,6 +737,42 @@ mod tests {
     }
 
     #[test]
+    fn test_rebuild_panel_entries_respects_wildcard_filter() {
+        let mut panel = test_panel(vec![
+            parent_entry(),
+            test_entry("main.rs", false),
+            test_entry("notes.txt", false),
+        ]);
+        panel.filter = Some("*.rs".to_string());
+        panel.unfiltered_entries = panel.entries.clone();
+
+        rebuild_panel_entries(&mut panel);
+
+        let names: Vec<&str> = panel
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "main.rs"]);
+    }
+
+    #[test]
+    fn test_upsert_with_empty_unfiltered_and_filter_preserves_visible_view() {
+        let mut panel = test_panel(vec![parent_entry(), test_entry("main.rs", false)]);
+        panel.filter = Some("*.rs".to_string());
+
+        upsert_entry(&mut panel, test_entry("notes.txt", false));
+
+        let names: Vec<&str> = panel
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["..", "main.rs"]);
+        assert!(panel.unfiltered_entries.is_empty());
+    }
+
+    #[test]
     fn test_remove_entry_preserves_parent_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("file.txt", false)]);
         panel.unfiltered_entries = panel.entries.clone();
@@ -744,5 +800,17 @@ mod tests {
         assert_eq!(names, vec!["a.txt", "z.txt"]);
         assert_eq!(panel.cursor, 1);
         assert_eq!(panel.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_rebuild_panel_entries_preserves_cursor_by_path_after_sort() {
+        let mut panel = test_panel(vec![test_entry("z.txt", false), test_entry("a.txt", false)]);
+        panel.sort_mode = SortMode::NameAsc;
+        panel.cursor = 0;
+        panel.unfiltered_entries = panel.entries.clone();
+
+        rebuild_panel_entries(&mut panel);
+
+        assert_eq!(panel.entries[panel.cursor].name, "z.txt");
     }
 }

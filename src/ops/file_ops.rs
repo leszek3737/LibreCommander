@@ -356,6 +356,15 @@ pub fn delete_file(path: &Path) -> io::Result<()> {
 }
 
 pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
+    delete_dir_recursive_with_cancel(path, None)
+}
+
+pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::Result<()> {
+    delete_dir_recursive_with_cancel(path, Some(cancel))
+}
+
+fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    check_optional_canceled(cancel)?;
     if let Ok(canonical) = path.canonicalize() {
         if canonical.parent().is_none() {
             return Err(io::Error::new(
@@ -381,7 +390,36 @@ pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
             }
         }
     }
-    fs::remove_dir_all(path)
+    delete_dir_contents(path, cancel)?;
+    check_optional_canceled(cancel)?;
+    fs::remove_dir(path)
+}
+
+fn delete_dir_contents(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        check_optional_canceled(cancel)?;
+        let entry = entry?;
+        let entry_path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            delete_dir_contents(&entry_path, cancel)?;
+            check_optional_canceled(cancel)?;
+            fs::remove_dir(&entry_path)?;
+        } else {
+            fs::remove_file(&entry_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_optional_canceled(cancel: Option<&AtomicBool>) -> io::Result<()> {
+    if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "operation canceled",
+        ));
+    }
+    Ok(())
 }
 
 pub fn create_directory(path: &Path) -> io::Result<()> {

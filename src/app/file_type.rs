@@ -57,7 +57,7 @@ const AUDIO_SUFFIXES: &[&str] = &[
 
 const VIDEO_SUFFIXES: &[&str] = &[
     ".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv", ".ogv",
-    ".3gp", ".3g2", ".ts", ".mts", ".m2ts", ".vob", ".rm", ".rmvb", ".asf",
+    ".3gp", ".3g2", ".mts", ".m2ts", ".vob", ".rm", ".rmvb", ".asf",
 ];
 
 const CONFIG_SUFFIXES: &[&str] = &[
@@ -151,6 +151,12 @@ pub fn category(
     if is_exec {
         return FileCategory::Executable;
     }
+    if is_source_code(name) {
+        return FileCategory::Code;
+    }
+    if is_config(name) {
+        return FileCategory::Config;
+    }
     if is_archive(name) {
         return FileCategory::Archive;
     }
@@ -165,12 +171,6 @@ pub fn category(
     }
     if is_document(name) {
         return FileCategory::Document;
-    }
-    if is_source_code(name) {
-        return FileCategory::Code;
-    }
-    if is_config(name) {
-        return FileCategory::Config;
     }
     FileCategory::Other
 }
@@ -267,6 +267,7 @@ mod tests {
     fn test_new_video_extensions() {
         assert!(is_video("clip.m4v"));
         assert!(is_video("movie.mpeg"));
+        assert!(!is_video("component.ts"));
     }
 
     #[test]
@@ -309,6 +310,10 @@ mod tests {
         assert_eq!(
             category("movie.webm", false, false, false, false),
             FileCategory::Video
+        );
+        assert_eq!(
+            category("component.ts", false, false, false, false),
+            FileCategory::Code
         );
         assert_eq!(
             category("song.flac", false, false, false, false),
