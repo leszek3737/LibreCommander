@@ -538,6 +538,7 @@ fn batch_delete(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::app::types::PendingAction;

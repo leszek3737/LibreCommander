@@ -114,8 +114,7 @@ impl Watcher {
         let path = match path.canonicalize() {
             Ok(path) => path,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                self.watched_dirs.remove(path);
-                self.watchers.remove(path);
+                self.remove_watched_dir_state(path);
                 return Ok(());
             }
             Err(err) => {
@@ -142,6 +141,21 @@ impl Watcher {
         self.watched_dirs.remove(&path);
         self.watchers.remove(&path);
         result
+    }
+
+    fn remove_watched_dir_state(&mut self, path: &Path) {
+        let removed = self
+            .watched_dirs
+            .iter()
+            .find(|watched| {
+                watched.as_path() == path || path_points_to_missing_watch(path, watched)
+            })
+            .cloned();
+
+        if let Some(path) = removed {
+            self.watched_dirs.remove(&path);
+            self.watchers.remove(&path);
+        }
     }
 
     pub fn watched_dirs(&self) -> Vec<PathBuf> {
@@ -255,7 +269,35 @@ fn notify_to_io(err: &notify::Error) -> io::Error {
     io::Error::other(err.to_string())
 }
 
+fn path_points_to_missing_watch(path: &Path, watched: &Path) -> bool {
+    if path.is_relative()
+        && let Ok(current_dir) = std::env::current_dir()
+        && current_dir.join(path) == watched
+    {
+        return true;
+    }
+
+    std::fs::read_link(path).is_ok_and(|target| {
+        let target = if target.is_absolute() {
+            normalize_missing_target(&target)
+        } else if let Some(parent) = path.parent() {
+            normalize_missing_target(&parent.join(target))
+        } else {
+            target
+        };
+        target == watched
+    })
+}
+
+fn normalize_missing_target(path: &Path) -> PathBuf {
+    path.parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .and_then(|parent| path.file_name().map(|name| parent.join(name)))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
@@ -268,7 +310,7 @@ mod tests {
         let watched_path = tempdir.path().canonicalize().expect("canonicalize tempdir");
 
         watcher.watch(tempdir.path()).expect("watch tempdir");
-        assert_eq!(watcher.watched_dirs(), vec![watched_path.clone()]);
+        assert_eq!(watcher.watched_dirs(), vec![watched_path]);
 
         watcher.unwatch(tempdir.path()).expect("unwatch tempdir");
         assert!(watcher.watched_dirs().is_empty());
@@ -286,6 +328,26 @@ mod tests {
         std::fs::remove_dir_all(&watched_path).expect("remove watched dir");
 
         watcher.unwatch(&canonical).expect("unwatch vanished dir");
+
+        assert!(watcher.watched_dirs().is_empty());
+        assert!(watcher.watchers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watcher_unwatch_cleans_state_when_symlink_target_vanished() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let target = tempdir.path().join("target");
+        let link = tempdir.path().join("link");
+        std::fs::create_dir(&target).expect("create target dir");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut watcher = Watcher::new(event_tx).expect("create watcher");
+        watcher.watch(&link).expect("watch symlinked dir");
+        std::fs::remove_dir_all(&target).expect("remove target dir");
+
+        watcher.unwatch(&link).expect("unwatch vanished target");
 
         assert!(watcher.watched_dirs().is_empty());
         assert!(watcher.watchers.is_empty());

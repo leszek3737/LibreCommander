@@ -64,8 +64,8 @@ impl ViewerState {
         let (content, has_invalid_utf8) = if raw_bytes.is_empty() {
             (vec!["[Empty file]".to_string()], false)
         } else if open_as_text {
+            let has_invalid = std::str::from_utf8(&raw_bytes).is_err();
             let content_str = String::from_utf8_lossy(&raw_bytes);
-            let has_invalid = content_str.contains('\u{FFFD}');
             let mut content: Vec<String> = content_str.lines().map(String::from).collect();
             if raw_bytes.last() == Some(&b'\n') {
                 content.push(String::new());
@@ -647,7 +647,7 @@ fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
         let _ = write!(buf, "{b:02x} ");
     }
 
-    let padding_needed = 49 - (buf.len() - hex_start);
+    let padding_needed = 49usize.saturating_sub(buf.len() - hex_start);
     let _ = write!(buf, "{:width$}", "", width = padding_needed);
 
     buf.push_str(" |");
@@ -663,6 +663,7 @@ fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
@@ -1061,6 +1062,37 @@ mod tests {
         assert!(line.starts_with("00001000:"));
         assert!(line.contains("48 65 6c 6c 6f 20 57 6f  72 6c 64 00"));
         assert!(line.contains("|Hello World.|"));
+    }
+
+    #[test]
+    fn test_open_valid_replacement_character_is_not_invalid_utf8() {
+        let file = create_test_file("valid replacement: \u{FFFD}");
+
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(!state.has_invalid_utf8);
+        assert!(state.content[0].contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_open_invalid_utf8_sets_warning() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"valid\xffinvalid").unwrap();
+
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(state.has_invalid_utf8);
+        assert!(state.content[0].contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_format_hex_line_accepts_more_than_sixteen_bytes() {
+        let bytes = [b'A'; 17];
+
+        let line = format_hex_line(0, &bytes);
+
+        assert!(line.starts_with("00000000:"));
+        assert!(line.ends_with("|AAAAAAAAAAAAAAAAA|"));
     }
 
     #[test]

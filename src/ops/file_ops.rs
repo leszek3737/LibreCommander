@@ -745,6 +745,7 @@ fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     #[cfg(unix)]

@@ -2073,6 +2073,7 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
 // ---- Type conversion helpers ----
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use app::types::{ActivePanel, FileEntry};

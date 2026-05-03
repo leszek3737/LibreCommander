@@ -771,6 +771,7 @@ impl Default for AppState {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};

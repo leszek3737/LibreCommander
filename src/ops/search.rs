@@ -416,8 +416,8 @@ impl FileSearch {
         }
     }
 
-    /// Zero-allocation case-insensitive substring search using a circular buffer.
-    /// The buffer lives on the stack for needles up to 64 chars (covers typical search queries).
+    /// Case-insensitive substring search over Unicode lowercase chars.
+    /// The circular buffer stays on the stack for needles up to 64 chars.
     fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
         if needle_lower.is_empty() {
             return true;
@@ -455,8 +455,7 @@ impl FileSearch {
             return if case_sensitive {
                 name.contains(pattern)
             } else {
-                // Zero-alloc: iterate lowercase chars without collecting
-                Self::contains_case_insensitive_no_alloc(name, pattern)
+                Self::contains_case_insensitive_str(name, pattern)
             };
         }
 
@@ -514,19 +513,24 @@ impl FileSearch {
         dp_prev[m]
     }
 
-    /// Zero-allocation case-insensitive substring check — no Vec needed.
-    /// Lowercases both haystack and needle on the fly via char iterators.
-    fn contains_case_insensitive_no_alloc(haystack: &str, needle: &str) -> bool {
+    /// Fast ASCII path, Unicode fallback with full lowercase expansion.
+    fn contains_case_insensitive_str(haystack: &str, needle: &str) -> bool {
         if needle.is_empty() {
             return true;
         }
-        // Pre-compute needle length in lowercase chars to size the circular buffer.
+        if haystack.is_ascii() && needle.is_ascii() {
+            return haystack
+                .as_bytes()
+                .windows(needle.len())
+                .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()));
+        }
         let needle_lower: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
         Self::contains_case_insensitive(haystack, &needle_lower)
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fs::{self, File};
@@ -580,6 +584,29 @@ mod tests {
     fn test_file_search_matches_pattern_case_insensitive() {
         assert!(FileSearch::matches_pattern("FILE.TXT", "*.txt", false));
         assert!(FileSearch::matches_pattern("file.txt", "*.TXT", false));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_case_insensitive_ascii_substring() {
+        assert!(FileSearch::matches_pattern(
+            "archive-file.txt",
+            "FILE",
+            false
+        ));
+        assert!(!FileSearch::matches_pattern(
+            "archive-file.txt",
+            "FILE",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_case_insensitive_unicode_substring() {
+        assert!(FileSearch::matches_pattern(
+            "istanbul-İSTANBUL.txt",
+            "i\u{307}stanbul",
+            false
+        ));
     }
 
     #[test]

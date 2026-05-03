@@ -25,13 +25,7 @@ pub fn sync_watcher_paths(
         return;
     }
 
-    let desired = match canonical_desired_paths(&left, &right) {
-        Ok(paths) => paths,
-        Err(err) => {
-            debug_log!("Watcher sync skipped: {err}");
-            return;
-        }
-    };
+    let (desired, all_paths_present) = canonical_desired_paths(&left, &right);
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 
     for path in current.difference(&desired) {
@@ -47,20 +41,37 @@ pub fn sync_watcher_paths(
         }
     }
 
-    *last_synced = Some((left, right));
+    if all_paths_present {
+        *last_synced = Some((left, right));
+    }
 }
 
-fn canonical_desired_paths(left: &Path, right: &Path) -> io::Result<HashSet<PathBuf>> {
+fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool) {
     let mut desired = HashSet::new();
+    let mut all_paths_present = true;
     for path in [left, right] {
-        desired.insert(path.canonicalize().map_err(|err| {
-            io::Error::new(
-                err.kind(),
-                format!("cannot canonicalize watcher path {}: {err}", path.display()),
-            )
-        })?);
+        match path.canonicalize() {
+            Ok(path) => {
+                desired.insert(path);
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                all_paths_present = false;
+                debug_log!(
+                    "Watcher sync skipped missing path {}: {err}",
+                    path.display()
+                );
+            }
+            Err(err) => {
+                debug_log!("Watcher sync skipped path {}: {err}", path.display());
+                let mut desired = HashSet::new();
+                for fallback_path in [left, right] {
+                    desired.insert(fallback_path.to_path_buf());
+                }
+                return (desired, false);
+            }
+        }
     }
-    Ok(desired)
+    (desired, all_paths_present)
 }
 
 pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
@@ -123,7 +134,10 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
         return false;
     };
 
-    if parent == panel_path {
+    let parent_raw = parent.to_path_buf();
+    let panel_path_raw = panel_path.to_path_buf();
+
+    if parent_raw == panel_path_raw {
         return true;
     }
 
@@ -131,10 +145,10 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
     let panel_canonical = panel_path.canonicalize().ok();
 
     match (parent_canonical, panel_canonical) {
-        (Some(parent), Some(panel_path)) => parent == panel_path,
-        (Some(parent), None) => parent == panel_path,
-        (None, Some(panel_path)) => parent == panel_path,
-        (None, None) => false,
+        (Some(parent), Some(panel_path)) => parent == panel_path || parent_raw == panel_path_raw,
+        (Some(parent), None) => parent == panel_path_raw || parent_raw == panel_path_raw,
+        (None, Some(panel_path)) => parent_raw == panel_path || parent_raw == panel_path_raw,
+        (None, None) => parent_raw == panel_path_raw,
     }
 }
 
@@ -228,14 +242,16 @@ fn entry_matches_panel(entry: &reader::FileEntry, filter: Option<&str>) -> bool 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::app::types::SortMode;
     use std::fs;
+    use std::sync::mpsc;
 
-    fn test_panel(path: PathBuf) -> PanelState {
-        let mut panel = PanelState::new(path.clone());
-        panel.unfiltered_entries = vec![parent_entry(&path)];
+    fn test_panel(path: &Path) -> PanelState {
+        let mut panel = PanelState::new(path.to_path_buf());
+        panel.unfiltered_entries = vec![parent_entry(path)];
         panel.entries = panel.unfiltered_entries.clone();
         panel.recalculate_selection_stats();
         panel
@@ -267,7 +283,7 @@ mod tests {
         fs::write(&beta, b"beta").unwrap();
         fs::write(&alpha, b"alpha").unwrap();
 
-        let mut panel = test_panel(dir.path().to_path_buf());
+        let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &beta));
         assert!(apply_watcher_upsert_if_matches(&mut panel, &alpha));
 
@@ -288,7 +304,7 @@ mod tests {
         fs::write(&keep, b"old").unwrap();
         fs::write(&drop, b"drop").unwrap();
 
-        let mut panel = test_panel(dir.path().to_path_buf());
+        let mut panel = test_panel(dir.path());
         panel.filter = Some("*.txt".to_string());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
         panel.entries[1].selected = true;
@@ -312,7 +328,7 @@ mod tests {
         let hidden = dir.path().join(".secret");
         fs::write(&hidden, b"secret").unwrap();
 
-        let mut panel = test_panel(dir.path().to_path_buf());
+        let mut panel = test_panel(dir.path());
         panel.show_hidden = false;
 
         assert!(!apply_watcher_upsert_if_matches(&mut panel, &hidden));
@@ -328,7 +344,7 @@ mod tests {
         fs::write(&a, b"a").unwrap();
         fs::write(&b, b"b").unwrap();
 
-        let mut panel = test_panel(dir.path().to_path_buf());
+        let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &a));
         assert!(apply_watcher_upsert_if_matches(&mut panel, &b));
         panel.cursor = 2;
@@ -353,7 +369,7 @@ mod tests {
         let file = dir.path().join("gone.txt");
         fs::write(&file, b"gone").unwrap();
 
-        let mut panel = test_panel(dir.path().to_path_buf());
+        let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
         fs::remove_file(&file).unwrap();
 
@@ -363,13 +379,42 @@ mod tests {
     }
 
     #[test]
-    fn canonical_desired_paths_reports_missing_panel_path() {
+    fn canonical_desired_paths_skips_missing_panel_path() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
 
-        let err = canonical_desired_paths(dir.path(), &missing).unwrap_err();
+        let (desired, all_paths_present) = canonical_desired_paths(dir.path(), &missing);
 
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(desired.len(), 1);
+        assert!(desired.contains(&dir.path().canonicalize().unwrap()));
+        assert!(!all_paths_present);
+    }
+
+    #[test]
+    fn sync_watcher_paths_keeps_existing_panel_when_other_panel_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut watcher = Some(Watcher::new(event_tx).expect("create watcher"));
+        let mut state = AppState::new();
+        state.left_panel.path = dir.path().to_path_buf();
+        state.right_panel.path = missing;
+        let mut last_synced = None;
+
+        sync_watcher_paths(&mut watcher, &state, &mut last_synced);
+
+        let watched = watcher.as_ref().unwrap().watched_dirs();
+        assert_eq!(watched, vec![dir.path().canonicalize().unwrap()]);
+        assert!(last_synced.is_none());
+    }
+
+    #[test]
+    fn path_parent_matches_keeps_raw_fallback_for_missing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let panel_path = dir.path().join("missing");
+        let child = panel_path.join("file.txt");
+
+        assert!(path_parent_matches(&child, &panel_path));
     }
 
     #[test]
@@ -380,7 +425,7 @@ mod tests {
         fs::write(&small, b"s").unwrap();
         fs::write(&big, b"larger").unwrap();
 
-        let mut panel = test_panel(dir.path().to_path_buf());
+        let mut panel = test_panel(dir.path());
         panel.sort_mode = SortMode::SizeDesc;
         assert!(apply_watcher_upsert_if_matches(&mut panel, &small));
         assert!(apply_watcher_upsert_if_matches(&mut panel, &big));

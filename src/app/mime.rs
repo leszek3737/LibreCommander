@@ -292,6 +292,7 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

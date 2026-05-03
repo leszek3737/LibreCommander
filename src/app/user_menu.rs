@@ -284,6 +284,7 @@ pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<Loade
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
