@@ -194,12 +194,12 @@ pub fn toggle_expand_with_diagnostics(
             &mut diagnostics,
         );
 
-        // Even if there are errors (diagnostics not empty), mark as expanded
-        // and insert whatever children were found (possibly empty)
-        // This allows the UI to show the directory expanded with error indicators
+        let root_read_failed = diagnostics
+            .iter()
+            .any(|diag| diag.path == path && diag.message.starts_with("Failed to read directory:"));
         let insert_pos = index + 1;
         entries.splice(insert_pos..insert_pos, children);
-        entries[index].expanded = true;
+        entries[index].expanded = !root_read_failed;
         diagnostics
     }
 }
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_expand_reports_read_errors_and_stays_expanded() {
+    fn toggle_expand_reports_read_errors_and_stays_collapsed() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
         let mut entries = vec![TreeEntry {
@@ -411,7 +411,7 @@ mod tests {
         let diagnostics = toggle_expand_with_diagnostics(&mut entries, 0, dir.path(), false);
 
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].expanded);
+        assert!(!entries[0].expanded);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path, missing);
         assert!(

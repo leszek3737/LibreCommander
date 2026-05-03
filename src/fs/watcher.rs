@@ -111,12 +111,20 @@ impl Watcher {
     }
 
     pub fn unwatch(&mut self, path: &Path) -> io::Result<()> {
-        let path = path.canonicalize().map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("cannot canonicalize {}: {e}", path.display()),
-            )
-        })?;
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                self.watched_dirs.remove(path);
+                self.watchers.remove(path);
+                return Ok(());
+            }
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("cannot canonicalize {}: {err}", path.display()),
+                ));
+            }
+        };
 
         let result = match self.watchers.get(&path) {
             Some(WhichWatcher::Primary) => {
@@ -264,6 +272,23 @@ mod tests {
 
         watcher.unwatch(tempdir.path()).expect("unwatch tempdir");
         assert!(watcher.watched_dirs().is_empty());
+    }
+
+    #[test]
+    fn watcher_unwatch_cleans_state_when_directory_vanished() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let watched_path = tempdir.path().to_path_buf();
+        let canonical = watched_path.canonicalize().expect("canonicalize tempdir");
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut watcher = Watcher::new(event_tx).expect("create watcher");
+
+        watcher.watch(&watched_path).expect("watch tempdir");
+        std::fs::remove_dir_all(&watched_path).expect("remove watched dir");
+
+        watcher.unwatch(&canonical).expect("unwatch vanished dir");
+
+        assert!(watcher.watched_dirs().is_empty());
+        assert!(watcher.watchers.is_empty());
     }
 
     #[test]

@@ -173,7 +173,6 @@ fn handle_mouse_dialog(
     }
 
     if let AppMode::Dialog(_) = state.mode {
-        dismiss_dialog(state);
         return vec![MouseOutcome::None];
     }
 
@@ -239,6 +238,9 @@ fn handle_mouse_function_bar(
 ) -> Vec<MouseOutcome> {
     if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal) {
         return vec![];
+    }
+    if width == 0 {
+        return vec![MouseOutcome::None];
     }
     let btn_idx = (col * 10 / width).min(9);
     let fkey = match btn_idx {
@@ -348,7 +350,7 @@ fn handle_mouse_panels(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::{ActivePanel, AppState, DialogKind, InputAction};
+    use crate::app::types::{AppState, ConfirmDetails, DialogKind, InputAction};
 
     #[test]
     fn mouse_input_dialog_outside_preserves_text() {
@@ -397,5 +399,95 @@ mod tests {
             AppMode::Dialog(DialogKind::Input { .. })
         ));
         assert_eq!(state.dialog_input, "draft");
+    }
+
+    #[test]
+    fn mouse_function_bar_zero_width_does_not_panic() {
+        let mut state = AppState::default();
+
+        let outcomes = handle_mouse_function_bar(&mut state, 0, 0, 0, 1);
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0], MouseOutcome::None));
+    }
+
+    #[test]
+    fn mouse_error_dialog_click_does_not_dismiss() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Error("error".to_string())),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(state.mode, AppMode::Dialog(DialogKind::Error(_))));
+    }
+
+    #[test]
+    fn mouse_properties_dialog_click_does_not_dismiss() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Properties {
+                name: "file.txt".to_string(),
+                size: 0,
+                mtime: std::time::SystemTime::UNIX_EPOCH,
+                permissions: 0o644,
+                owner: String::new(),
+                group: String::new(),
+                is_dir: false,
+                is_symlink: false,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::Properties { .. })
+        ));
+    }
+
+    #[test]
+    fn mouse_help_dialog_click_does_not_dismiss() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Help {
+                message: "help".to_string(),
+                scroll_offset: 0,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::Help { .. })
+        ));
+    }
+
+    #[test]
+    fn mouse_confirm_dialog_keeps_existing_behavior() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Confirm", "Run?",
+            ))),
+            dialog_selection: 1,
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 79, 23, 80, 24);
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::Confirm(_))
+        ));
     }
 }

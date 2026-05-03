@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -238,9 +238,9 @@ pub enum CompareMode {
     /// Match by name only (original behaviour).
     #[default]
     Quick,
-    /// Match by name + size (directories compared by size too).
+    /// Match files by name + size; directories match by name only.
     Size,
-    /// Match by name + size + mtime (directories compared by size + mtime too).
+    /// Match files by name + size + mtime; directories match by name only.
     Thorough,
 }
 
@@ -605,19 +605,15 @@ impl PanelState {
             return;
         }
 
-        // Collect selection state from filtered entries (M, small after filter)
-        // then apply to unfiltered entries (N, large). This iterates M times
-        // over N entries instead of N times over M entries — fewer iterations
-        // when M << N. Also avoids simultaneous &self / &mut self borrows.
-        let selection: Vec<_> = self.entries.iter().map(|e| (&e.path, e.selected)).collect();
+        let selection: HashMap<_, _> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.path.as_path(), entry.selected))
+            .collect();
 
-        for (path, selected) in &selection {
-            if let Some(ue) = self
-                .unfiltered_entries
-                .iter_mut()
-                .find(|e| &e.path == *path)
-            {
-                ue.selected = *selected;
+        for entry in &mut self.unfiltered_entries {
+            if let Some(selected) = selection.get(entry.path.as_path()) {
+                entry.selected = *selected;
             }
         }
     }

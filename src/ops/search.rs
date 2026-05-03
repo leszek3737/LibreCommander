@@ -609,13 +609,11 @@ mod tests {
         }
 
         let results = FileSearch::search_files(dir_path, "*.txt", true, false);
-        eprintln!("Recursive search results: {:?}", results);
         assert_eq!(results.len(), 2, "Expected 2 results, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
         assert!(results.iter().any(|e| e.name == "test3.txt"));
 
         let results = FileSearch::search_files(dir_path, "*.txt", false, false);
-        eprintln!("Non-recursive search results: {:?}", results);
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
 

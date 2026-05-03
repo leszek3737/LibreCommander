@@ -89,7 +89,7 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
     ensure_destination_absent(dest)?;
-    let temp_dest = temp_dir_path_for(dest);
+    let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, 0);
     match result {
         Ok(bytes) => {
@@ -116,7 +116,7 @@ pub fn copy_dir_recursive_with_progress(
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
     ensure_destination_absent(dest)?;
-    let temp_dest = temp_dir_path_for(dest);
+    let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_with_progress_inner(
         src,
         &temp_dest,
@@ -171,10 +171,8 @@ fn copy_dir_recursive_inner(
             "cannot copy directory into its descendant",
         ));
     }
-    ensure_destination_absent(dest)?;
-    if depth == 0 {
-        fs::create_dir_all(dest)?;
-    } else {
+    if depth > 0 {
+        ensure_destination_absent(dest)?;
         fs::create_dir(dest)?;
     }
     let src_perms = fs::metadata(src)?.permissions();
@@ -230,10 +228,8 @@ fn copy_dir_recursive_with_progress_inner(
             "cannot copy directory into its descendant",
         ));
     }
-    ensure_destination_absent(dest)?;
-    if depth == 0 {
-        fs::create_dir_all(dest)?;
-    } else {
+    if depth > 0 {
+        ensure_destination_absent(dest)?;
         fs::create_dir(dest)?;
     }
     let src_perms = fs::metadata(src)?.permissions();
@@ -616,14 +612,30 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     }
 }
 
-fn temp_dir_path_for(dest: &Path) -> PathBuf {
+fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     let mut name = dest
         .file_name()
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| "copy".into());
-    let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
     name.push(format!(".lc-dir-copy-{}-{}.tmp", std::process::id(), seq));
     dest.with_file_name(name)
+}
+
+fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
+    for _ in 0..128 {
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp = temp_dir_path_for(dest, seq);
+        match fs::create_dir(&temp) {
+            Ok(()) => return Ok(temp),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve temporary copy directory",
+    ))
 }
 
 fn publish_temp_dir(temp_dest: &Path, dest: &Path) -> io::Result<()> {
@@ -864,6 +876,31 @@ mod tests {
     }
 
     #[test]
+    fn test_copy_dir_recursive_reserves_unique_temp_when_collision_exists() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"content").unwrap();
+
+        let dest = tmp.join("dest_dir");
+        let seq = TEMP_DIR_COUNTER.load(Ordering::SeqCst);
+        let collision = temp_dir_path_for(&dest, seq);
+        fs::create_dir(&collision).unwrap();
+        fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
+
+        let bytes = copy_dir_recursive(&src, &dest).unwrap();
+
+        assert!(bytes > 0);
+        assert!(dest.join("file.txt").exists());
+        assert_eq!(
+            fs::read_to_string(collision.join("sentinel.txt")).unwrap(),
+            "keep"
+        );
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn test_copy_dir_recursive_with_progress_cancel_before_start_leaves_no_dest() {
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
@@ -884,6 +921,34 @@ mod tests {
                 .to_string_lossy()
                 .contains(".lc-dir-copy-")
         }));
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_with_progress_cancel_keeps_existing_temp_collision() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"content").unwrap();
+        let dest = tmp.join("dest_dir");
+
+        let seq = TEMP_DIR_COUNTER.load(Ordering::SeqCst);
+        let collision = temp_dir_path_for(&dest, seq);
+        fs::create_dir(&collision).unwrap();
+        fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(true);
+
+        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists());
+        assert_eq!(
+            fs::read_to_string(collision.join("sentinel.txt")).unwrap(),
+            "keep"
+        );
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -1313,7 +1378,7 @@ mod tests {
         fs::write(&real_file, b"data").unwrap();
         let missing = tmp.join("nonexistent_xyz.txt");
 
-        let paths = vec![missing.clone(), real_file.clone()];
+        let paths = vec![missing, real_file.clone()];
         let errors = batch_delete(&paths);
         // One error for missing file, real file still deleted
         assert_eq!(errors.len(), 1);

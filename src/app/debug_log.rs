@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::{Mutex, TryLockError};
 use std::time::SystemTime;
 
 /// Simple file-based debug logger for runtime diagnostics during TUI operation.
@@ -35,7 +35,11 @@ fn ensure_log_file() -> Option<std::fs::File> {
 }
 
 pub fn log(args: std::fmt::Arguments<'_>) {
-    let mut guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = match LOG_FILE.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(err)) => err.into_inner(),
+        Err(TryLockError::WouldBlock) => return,
+    };
     if guard.is_none() {
         *guard = ensure_log_file();
     }
@@ -60,9 +64,15 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    fn reset_for_test() {
+        let mut guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+    }
+
     #[test]
     fn log_writes_to_file() {
         let path = log_path();
+        reset_for_test();
         let _ = std::fs::remove_file(&path);
 
         log(format_args!("test message"));
@@ -74,5 +84,14 @@ mod tests {
         assert!(contents.starts_with('['));
 
         let _ = std::fs::remove_file(&path);
+        reset_for_test();
+    }
+
+    #[test]
+    fn log_returns_when_mutex_contended() {
+        reset_for_test();
+        let _guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+
+        log(format_args!("dropped message"));
     }
 }

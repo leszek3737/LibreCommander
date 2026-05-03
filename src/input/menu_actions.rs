@@ -43,47 +43,7 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             None
         }
         Some(MenuAction::OpenUserMenu) => {
-            let panel_dir = state.active_panel().path.clone();
-            let current_file = state
-                .active_panel()
-                .current_entry()
-                .map(|e| e.name.clone())
-                .unwrap_or_default();
-            match user_menu::load_menu_with_warnings(&panel_dir, &current_file) {
-                Ok(loaded) if loaded.entries.is_empty() => {
-                    let message = if loaded.warnings.is_empty() {
-                        "No matching menu entries found.".to_string()
-                    } else {
-                        format!(
-                            "No matching menu entries found.\n{}",
-                            loaded
-                                .warnings
-                                .iter()
-                                .map(|warning| format!(
-                                    "Line {}: {}",
-                                    warning.line, warning.message
-                                ))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        )
-                    };
-                    state.mode = AppMode::Dialog(DialogKind::Error(message));
-                }
-                Ok(loaded) => {
-                    if let Some(warning) = loaded.warnings.first() {
-                        state.status_message = Some(format!(
-                            "User menu warning: Line {}: {}",
-                            warning.line, warning.message
-                        ));
-                    }
-                    state.user_menu_entries = loaded.entries;
-                    state.picker_selected = 0;
-                    state.mode = AppMode::ListPicker(PickerKind::UserMenu);
-                }
-                Err(msg) => {
-                    state.mode = AppMode::Dialog(DialogKind::Error(msg));
-                }
-            }
+            open_user_menu(state);
             None
         }
         Some(MenuAction::ViewFile) => Some(KeyCode::F(3)),
@@ -241,5 +201,46 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
             None
         }
         None => None,
+    }
+}
+
+pub fn open_user_menu(state: &mut AppState) {
+    let panel_dir = state.active_panel().path.clone();
+    let current_file = state
+        .active_panel()
+        .current_entry()
+        .map(|e| e.name.clone())
+        .unwrap_or_default();
+    match user_menu::load_menu_with_warnings(&panel_dir, &current_file) {
+        Ok(loaded) if loaded.entries.is_empty() => {
+            let message = if loaded.warnings.is_empty() {
+                "No matching menu entries found.".to_string()
+            } else {
+                format!(
+                    "No matching menu entries found.\n{}",
+                    loaded
+                        .warnings
+                        .iter()
+                        .map(|warning| format!("Line {}: {}", warning.line, warning.message))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            };
+            state.mode = AppMode::Dialog(DialogKind::Error(message));
+        }
+        Ok(loaded) => {
+            if let Some(warning) = loaded.warnings.first() {
+                state.status_message = Some(format!(
+                    "User menu warning: Line {}: {}",
+                    warning.line, warning.message
+                ));
+            }
+            state.user_menu_entries = loaded.entries;
+            state.picker_selected = 0;
+            state.mode = AppMode::ListPicker(PickerKind::UserMenu);
+        }
+        Err(msg) => {
+            state.mode = AppMode::Dialog(DialogKind::Error(msg));
+        }
     }
 }

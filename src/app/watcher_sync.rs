@@ -1,8 +1,10 @@
 use std::collections::HashSet;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 use crate::app::types::{AppState, PanelState};
+use crate::debug_log;
 use crate::fs::reader;
 use crate::fs::watcher::{WatchEvent, Watcher};
 use crate::ops::{search, sorting};
@@ -23,20 +25,42 @@ pub fn sync_watcher_paths(
         return;
     }
 
-    let desired: HashSet<PathBuf> = [&left, &right]
-        .into_iter()
-        .filter_map(|path| path.canonicalize().ok())
-        .collect();
+    let desired = match canonical_desired_paths(&left, &right) {
+        Ok(paths) => paths,
+        Err(err) => {
+            debug_log!("Watcher sync skipped: {err}");
+            return;
+        }
+    };
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 
     for path in current.difference(&desired) {
-        let _ = watcher.unwatch(path);
+        if let Err(err) = watcher.unwatch(path) {
+            debug_log!("Watcher unwatch failed for {}: {err}", path.display());
+            return;
+        }
     }
     for path in desired.difference(&current) {
-        let _ = watcher.watch(path);
+        if let Err(err) = watcher.watch(path) {
+            debug_log!("Watcher watch failed for {}: {err}", path.display());
+            return;
+        }
     }
 
     *last_synced = Some((left, right));
+}
+
+fn canonical_desired_paths(left: &Path, right: &Path) -> io::Result<HashSet<PathBuf>> {
+    let mut desired = HashSet::new();
+    for path in [left, right] {
+        desired.insert(path.canonicalize().map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!("cannot canonicalize watcher path {}: {err}", path.display()),
+            )
+        })?);
+    }
+    Ok(desired)
 }
 
 pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
@@ -103,15 +127,15 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
         return true;
     }
 
-    let Ok(parent) = parent.canonicalize() else {
-        // Skip if parent cannot be canonicalized (deleted/inaccessible)
-        return false;
-    };
-    let Ok(panel_path) = panel_path.canonicalize() else {
-        // Skip if panel_path cannot be canonicalized (deleted/inaccessible)
-        return false;
-    };
-    parent == panel_path
+    let parent_canonical = parent.canonicalize().ok();
+    let panel_canonical = panel_path.canonicalize().ok();
+
+    match (parent_canonical, panel_canonical) {
+        (Some(parent), Some(panel_path)) => parent == panel_path,
+        (Some(parent), None) => parent == panel_path,
+        (None, Some(panel_path)) => parent == panel_path,
+        (None, None) => false,
+    }
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
@@ -321,6 +345,31 @@ mod tests {
         assert_eq!(panel.cursor, 1);
         assert_eq!(panel.scroll_offset, 1);
         assert_eq!(panel.total_size, 1);
+    }
+
+    #[test]
+    fn watcher_remove_handles_deleted_child_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gone.txt");
+        fs::write(&file, b"gone").unwrap();
+
+        let mut panel = test_panel(dir.path().to_path_buf());
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
+        fs::remove_file(&file).unwrap();
+
+        assert!(apply_watcher_remove_if_matches(&mut panel, &file));
+        assert_eq!(panel.entries.len(), 1);
+        assert_eq!(panel.unfiltered_entries.len(), 1);
+    }
+
+    #[test]
+    fn canonical_desired_paths_reports_missing_panel_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+
+        let err = canonical_desired_paths(dir.path(), &missing).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

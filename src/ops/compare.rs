@@ -13,6 +13,9 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
     if left.is_dir != right.is_dir {
         return false;
     }
+    if left.is_dir {
+        return true;
+    }
     match mode {
         CompareMode::Quick => true,
         CompareMode::Size => left.size == right.size,
@@ -289,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn dirs_compare_by_size_in_size_mode() {
+    fn dirs_ignore_filesystem_size_in_size_mode() {
         let left = vec![FileEntry {
             name: "src".into(),
             path: PathBuf::from("/tmp/src"),
@@ -323,9 +326,9 @@ mod tests {
 
         let report = compare_entries(&left, &right, CompareMode::Size);
 
-        assert_eq!(report.differing, 1);
-        assert!(report.left_marks.contains("src"));
-        assert!(report.right_marks.contains("src"));
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
     }
 
     #[test]
@@ -369,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn dirs_compare_by_size_and_mtime_in_thorough_mode() {
+    fn dirs_ignore_filesystem_size_and_mtime_in_thorough_mode() {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let left = vec![FileEntry {
             name: "lib".into(),
@@ -386,14 +389,13 @@ mod tests {
             is_hidden: false,
             mime_type: None,
         }];
-        // Same size, different mtime
         let right = vec![FileEntry {
             name: "lib".into(),
             path: PathBuf::from("/tmp/lib"),
             is_dir: true,
             is_symlink: false,
             is_executable: false,
-            size: 4096,
+            size: 8192,
             modified: t + std::time::Duration::from_secs(60),
             permissions: 0o755,
             owner: String::new(),
@@ -405,9 +407,9 @@ mod tests {
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
 
-        assert_eq!(report.differing, 1);
-        assert!(report.left_marks.contains("lib"));
-        assert!(report.right_marks.contains("lib"));
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
     }
 
     #[test]

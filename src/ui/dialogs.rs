@@ -122,6 +122,17 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     }
 }
 
+pub fn help_visible_height(area: Rect) -> usize {
+    let dialog_area = centered_rect(50, 40, area);
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(dialog_area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+    chunks[0].height as usize
+}
+
 fn truncate_path(path: &str, max_width: usize) -> String {
     if path.chars().count() <= max_width {
         path.to_string()
@@ -351,7 +362,7 @@ pub fn render_help_dialog(
     let all_lines: Vec<&str> = message.lines().collect();
     let total_lines = all_lines.len();
 
-    let clamped_offset = scroll_offset.min(total_lines.saturating_sub(1));
+    let clamped_offset = scroll_offset.min(total_lines.saturating_sub(max_lines));
     let visible_message = all_lines
         .iter()
         .skip(clamped_offset)
@@ -360,14 +371,26 @@ pub fn render_help_dialog(
         .collect::<Vec<_>>()
         .join("\n");
 
+    let has_scrollbar = total_lines > max_lines && chunks[0].width > 1;
+    let message_area = if has_scrollbar {
+        Rect::new(
+            chunks[0].x,
+            chunks[0].y,
+            chunks[0].width.saturating_sub(1),
+            chunks[0].height,
+        )
+    } else {
+        chunks[0]
+    };
+
     let message_paragraph = Paragraph::new(visible_message)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Left)
         .style(Theme::info());
-    f.render_widget(message_paragraph, chunks[0]);
+    f.render_widget(message_paragraph, message_area);
 
     // Show scrollbar indicator if content exceeds visible area
-    if total_lines > max_lines {
+    if has_scrollbar {
         let scrollbar_height = max_lines.min(total_lines);
         #[allow(clippy::manual_checked_ops)]
         let scrollbar_pos = if total_lines > 0 {
@@ -376,8 +399,8 @@ pub fn render_help_dialog(
             0
         };
         let thumb_height = (max_lines * max_lines / total_lines.max(1)).max(1);
-        let scrollbar_x = inner.x + inner.width.saturating_sub(1);
-        let scrollbar_y = inner.y;
+        let scrollbar_x = chunks[0].x + chunks[0].width.saturating_sub(1);
+        let scrollbar_y = chunks[0].y;
         for i in 0..scrollbar_height {
             let y = scrollbar_y + i as u16;
             let in_thumb =
@@ -586,6 +609,54 @@ mod tests {
         assert_eq!(rect.height, 20);
         assert_eq!(rect.x, 30);
         assert_eq!(rect.y, 15);
+    }
+
+    #[test]
+    fn help_visible_height_matches_render_layout() {
+        let area = Rect::new(0, 0, 80, 24);
+        let visible = help_visible_height(area);
+        let dialog_area = centered_rect(50, 40, area);
+        let inner = Block::default().borders(Borders::ALL).inner(dialog_area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(1)])
+            .split(inner);
+
+        assert_eq!(visible, chunks[0].height as usize);
+    }
+
+    #[test]
+    fn help_scrollbar_does_not_overwrite_text_area() {
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let message = (0..20)
+            .map(|i| format!("line-{i:02}-abcdef"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        terminal
+            .draw(|f| {
+                let area = centered_rect(50, 40, f.area());
+                render_help_dialog(f, area, "Help", &message, 0);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let area = centered_rect(50, 40, Rect::new(0, 0, 40, 12));
+        let inner = Block::default().borders(Borders::ALL).inner(area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(1)])
+            .split(inner);
+        let text_last_x = chunks[0].x + chunks[0].width - 2;
+        let scrollbar_x = chunks[0].x + chunks[0].width - 1;
+
+        assert_ne!(buffer[(text_last_x, chunks[0].y)].symbol(), "█");
+        assert_ne!(buffer[(text_last_x, chunks[0].y)].symbol(), "░");
+        assert!(matches!(
+            buffer[(scrollbar_x, chunks[0].y)].symbol(),
+            "█" | "░"
+        ));
     }
 
     #[test]

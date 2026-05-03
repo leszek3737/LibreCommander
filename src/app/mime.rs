@@ -20,7 +20,7 @@ pub fn detect_mime(path: &Path) -> Option<String> {
         Ok(file) => file,
         Err(_) => return fallback(),
     };
-    let mut buf = vec![0u8; 8192];
+    let mut buf = [0u8; 8192];
     let len = match file.read(&mut buf) {
         Ok(len) => len,
         Err(_) => return fallback(),

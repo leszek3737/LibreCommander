@@ -171,13 +171,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     }
                     AppMode::Viewing => {
                         let sz = terminal.size()?;
-                        handle_viewer_mode(
-                            &mut state,
-                            &mut viewer_state,
-                            key.code,
-                            sz.height,
-                            sz.width,
-                        );
+                        handle_viewer_mode(&mut state, &mut viewer_state, key.code, sz, sz.width);
                         dirty = true;
                     }
                     AppMode::CommandLine => {
@@ -190,7 +184,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             &mut viewer_state,
                             &mut running_job,
                             key.code,
-                            terminal.size()?.height,
+                            terminal.size()?,
                         );
                         dirty = true;
                     }
@@ -889,8 +883,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
             });
         }
         KeyCode::F(2) => {
-            state.mode = AppMode::ListPicker(app::types::PickerKind::UserMenu);
-            state.picker_selected = 0;
+            input::menu_actions::open_user_menu(state);
         }
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
             // Extend selection upward, or shrink it when moving back over a selected range.
@@ -1251,11 +1244,11 @@ fn handle_viewer_mode(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     key: KeyCode,
-    terminal_height: u16,
+    terminal_size: Size,
     terminal_width: u16,
 ) {
     if let Some(vs) = viewer_state.as_mut() {
-        let page_height = terminal_height.saturating_sub(3) as usize;
+        let page_height = terminal_size.height.saturating_sub(3) as usize;
         let content_width = terminal_width.saturating_sub(2) as usize;
         match key {
             KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
@@ -1680,7 +1673,7 @@ fn handle_dialog(
     viewer_state: &mut Option<viewer::ViewerState>,
     running_job: &mut Option<RunningJob>,
     key: KeyCode,
-    terminal_height: u16,
+    terminal_size: Size,
 ) {
     // Handle Help dialog specially due to mutable scroll_offset
     if let AppMode::Dialog(app::types::DialogKind::Help {
@@ -1689,7 +1682,12 @@ fn handle_dialog(
     }) = &mut state.mode
     {
         let total_lines = message.lines().count();
-        let max_lines = terminal_height.saturating_sub(6) as usize;
+        let max_lines = dialogs::help_visible_height(Rect::new(
+            0,
+            0,
+            terminal_size.width,
+            terminal_size.height,
+        ));
         let should_exit = match key {
             KeyCode::Up | KeyCode::Char('k') => {
                 *scroll_offset = scroll_offset.saturating_sub(1);
@@ -1753,7 +1751,8 @@ fn handle_dialog(
         }
         app::types::DialogKind::Input { .. } => {
             if let Some(action) = input_action {
-                if handle_input_dialog(state, viewer_state, &action, key, terminal_height) {}
+                let _ =
+                    handle_input_dialog(state, viewer_state, &action, key, terminal_size.height);
             }
         }
         app::types::DialogKind::Error(_) => {
@@ -2114,7 +2113,13 @@ mod tests {
             ..Default::default()
         };
 
-        handle_dialog(&mut state, &mut None, &mut None, KeyCode::Enter, 24);
+        handle_dialog(
+            &mut state,
+            &mut None,
+            &mut None,
+            KeyCode::Enter,
+            Size::new(80, 24),
+        );
 
         assert_eq!(state.mode, AppMode::Normal);
     }
@@ -2781,7 +2786,7 @@ mod tests {
 
         let tmp_dir = std::env::temp_dir();
         let state = AppState {
-            directory_hotlist: vec![tmp_dir.clone(), PathBuf::from("/usr")],
+            directory_hotlist: vec![tmp_dir, PathBuf::from("/usr")],
             ..Default::default()
         };
 
@@ -2867,7 +2872,7 @@ mod tests {
             menu_item_selected: 0,
             ..Default::default()
         };
-        state.left_panel.path = tmp.clone();
+        state.left_panel.path = tmp;
 
         handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
@@ -2907,6 +2912,59 @@ mod tests {
         assert_eq!(state.user_menu_entries.len(), 2);
         assert_eq!(state.user_menu_entries[0].hotkey, 'A');
         assert_eq!(state.user_menu_entries[1].hotkey, 'B');
+    }
+
+    #[test]
+    fn f2_loads_user_menu_file_with_entries() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let menu_path = tmp.path().join(".mc.menu");
+        let mut f = std::fs::File::create(&menu_path).unwrap();
+        write!(
+            f,
+            "A  Archive\n\ttar czf a.tgz\n\nB  Build\n\tcargo build\n"
+        )
+        .unwrap();
+
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.path = tmp.path().to_path_buf();
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::F(2),
+            KeyModifiers::NONE,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.mode, AppMode::ListPicker(PickerKind::UserMenu));
+        assert_eq!(state.user_menu_entries.len(), 2);
+        assert_eq!(state.picker_selected, 0);
+    }
+
+    #[test]
+    fn f2_no_user_menu_file_shows_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.path = tmp.path().to_path_buf();
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::F(2),
+            KeyModifiers::NONE,
+            24,
+            &mut terminal,
+        );
+
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(app::types::DialogKind::Error(_))
+        ));
     }
 
     #[test]
