@@ -16,13 +16,19 @@ pub enum WatchEvent {
     Renamed { from: PathBuf, to: PathBuf },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhichWatcher {
+    Primary,
+    Fallback,
+}
+
 pub struct Watcher {
     primary: RecommendedWatcher,
-    fallback: PollWatcher,
+    fallback: Option<PollWatcher>,
     watched_dirs: HashSet<PathBuf>,
+    watchers: HashMap<PathBuf, WhichWatcher>,
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
-    #[allow(dead_code)] // used in make_handler closure
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 }
 
@@ -39,24 +45,32 @@ impl Watcher {
             Config::default(),
         )
         .map_err(notify_to_io)?;
-        let fallback = PollWatcher::new(
-            make_handler(
-                event_tx.clone(),
-                Arc::clone(&paused),
-                Arc::clone(&debounce_state),
-            ),
-            Config::default(),
-        )
-        .map_err(notify_to_io)?;
 
         Ok(Self {
             primary,
-            fallback,
+            fallback: None,
             watched_dirs: HashSet::new(),
+            watchers: HashMap::new(),
             event_tx,
             paused,
             debounce_state,
         })
+    }
+
+    fn create_fallback(&mut self) -> io::Result<&mut PollWatcher> {
+        if self.fallback.is_none() {
+            let fallback = PollWatcher::new(
+                make_handler(
+                    self.event_tx.clone(),
+                    Arc::clone(&self.paused),
+                    Arc::clone(&self.debounce_state),
+                ),
+                Config::default(),
+            )
+            .map_err(notify_to_io)?;
+            self.fallback = Some(fallback);
+        }
+        Ok(self.fallback.as_mut().unwrap())
     }
 
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
@@ -68,29 +82,43 @@ impl Watcher {
 
         match self.primary.watch(&path, RecursiveMode::NonRecursive) {
             Ok(()) => {
-                self.watched_dirs.insert(path);
+                self.watched_dirs.insert(path.clone());
+                self.watchers.insert(path, WhichWatcher::Primary);
                 Ok(())
             }
-            Err(primary_err) => match self.fallback.watch(&path, RecursiveMode::NonRecursive) {
-                Ok(()) => {
-                    self.watched_dirs.insert(path);
-                    Ok(())
+            Err(primary_err) => {
+                let fallback = self.create_fallback()?;
+                match fallback.watch(&path, RecursiveMode::NonRecursive) {
+                    Ok(()) => {
+                        self.watched_dirs.insert(path.clone());
+                        self.watchers.insert(path, WhichWatcher::Fallback);
+                        Ok(())
+                    }
+                    Err(fallback_err) => Err(io::Error::other(format!(
+                        "primary watcher failed: {primary_err}; fallback watcher failed: {fallback_err}"
+                    ))),
                 }
-                Err(fallback_err) => Err(io::Error::other(format!(
-                    "primary watcher failed: {primary_err}; fallback watcher failed: {fallback_err}"
-                ))),
-            },
+            }
         }
     }
 
     pub fn unwatch(&mut self, path: &Path) -> io::Result<()> {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-        let primary_result = self.primary.unwatch(&path).map_err(notify_to_io);
-        let fallback_result = self.fallback.unwatch(&path).map_err(notify_to_io);
-        self.watched_dirs.remove(&path);
+        let result = match self.watchers.get(&path) {
+            Some(WhichWatcher::Primary) => self.primary.unwatch(&path).map_err(notify_to_io),
+            Some(WhichWatcher::Fallback) => self
+                .fallback
+                .as_mut()
+                .ok_or_else(|| io::Error::other("fallback watcher not initialized"))?
+                .unwatch(&path)
+                .map_err(notify_to_io),
+            None => Ok(()),
+        };
 
-        primary_result.or(fallback_result).or(Ok(()))
+        self.watched_dirs.remove(&path);
+        self.watchers.remove(&path);
+        result
     }
 
     pub fn watched_dirs(&self) -> Vec<PathBuf> {
@@ -103,10 +131,6 @@ impl Watcher {
 
     pub fn resume(&self) {
         self.paused.store(false, Ordering::Release);
-    }
-
-    pub fn sender(&self) -> &Sender<WatchEvent> {
-        &self.event_tx
     }
 }
 
@@ -262,5 +286,13 @@ mod tests {
         assert!(
             matches!(convert_event(to).as_slice(), [WatchEvent::Created(path)] if path == &PathBuf::from("new"))
         );
+    }
+
+    #[test]
+    fn watcher_created_with_primary_only_no_fallback() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let watcher = Watcher::new(event_tx).expect("create watcher");
+        assert!(watcher.fallback.is_none());
+        assert!(watcher.watchers.is_empty());
     }
 }

@@ -117,6 +117,16 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
     }
 }
 
+fn truncate_path(path: &str, max_width: usize) -> String {
+    if path.len() <= max_width {
+        path.to_string()
+    } else if max_width > 3 {
+        format!("...{}", &path[path.len() - max_width + 3..])
+    } else {
+        path[..max_width].to_string()
+    }
+}
+
 pub fn render_confirm_dialog(
     f: &mut Frame,
     area: Rect,
@@ -134,8 +144,9 @@ pub fn render_confirm_dialog(
     f.render_widget(block, area);
 
     let has_files = !files.is_empty();
+    let max_rows = inner.height.saturating_sub(5).max(3);
     let file_rows = if has_files {
-        (files.len() as u16 + 1).min(6)
+        (files.len() as u16 + 1).min(max_rows)
     } else {
         0
     };
@@ -160,11 +171,13 @@ pub fn render_confirm_dialog(
         let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
         if files.len() <= show_count {
             for name in files {
-                lines.push(Line::from(format!("  {name}")).style(Theme::warning()));
+                let display = truncate_path(name, inner.width as usize - 2);
+                lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
             }
         } else {
             for name in files.iter().take(show_count.saturating_sub(1)) {
-                lines.push(Line::from(format!("  {name}")).style(Theme::warning()));
+                let display = truncate_path(name, inner.width as usize - 2);
+                lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
             }
             let remaining = files.len() - show_count + 1;
             lines.push(Line::from(format!("  ... +{remaining} more")));

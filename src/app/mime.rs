@@ -120,6 +120,8 @@ pub fn category_from_ext(name: &str) -> FileCategory {
     crate::app::file_type::category(name, false, false, false, false)
 }
 
+/// Single source of truth for extension → MIME mapping.
+/// For boolean category checks (is_archive, is_image, etc.) see `file_type.rs`.
 pub fn extension_mime(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_lowercase();
 

@@ -3,6 +3,7 @@
 /// Each binding records the app mode, key combo, semantic action, and
 /// human-readable description. The `find_duplicate_keys()` helper
 /// validates that no key appears twice within the same mode.
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyBinding {
@@ -634,15 +635,13 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
 /// Returns `(mode, key)` pairs for any key that appears more than once
 /// within the same mode. Empty vec means no duplicates.
 pub fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
-    let mut seen: Vec<(&str, &str)> = Vec::new();
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
     let mut duplicates = Vec::new();
 
     for binding in KEYBINDINGS {
         let pair = (binding.mode, binding.key);
-        if seen.contains(&pair) {
+        if !seen.insert(pair) {
             duplicates.push(pair);
-        } else {
-            seen.push(pair);
         }
     }
 
@@ -662,7 +661,7 @@ pub fn build_help_message() -> String {
             msg.push_str(":\n");
             current_mode = b.mode;
         }
-        msg.push_str(&format!("  {:16} {}\n", b.key, b.description));
+        msg.push_str(&format!("  {:<16} {}\n", b.key, b.description));
     }
     msg
 }
@@ -736,6 +735,14 @@ mod tests {
         ];
         for mode in &modes {
             assert!(msg.contains(mode), "Help message missing mode '{}'", mode);
+        }
+    }
+
+    #[test]
+    fn build_help_message_lines_are_not_empty() {
+        let msg = build_help_message();
+        for line in msg.lines() {
+            assert!(!line.trim().is_empty() || line.is_empty());
         }
     }
 }

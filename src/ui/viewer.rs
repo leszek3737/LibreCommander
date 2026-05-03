@@ -319,6 +319,7 @@ fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
+
     if crate::app::file_type::is_source_code(name) || crate::app::file_type::is_config(name) {
         return true;
     }
@@ -327,13 +328,16 @@ fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
         if is_known_binary_mime(mime) {
             return false;
         }
-        if mime.starts_with("text/") || is_text_application_mime(mime) {
-            return true;
-        }
     }
 
     if bytes.contains(&0) {
         return false;
+    }
+
+    if let Some(mime) = mime {
+        if mime.starts_with("text/") || is_text_application_mime(mime) {
+            return true;
+        }
     }
 
     true
@@ -837,6 +841,14 @@ mod tests {
 
         assert!(state.is_hex_mode());
         assert_eq!(state.raw_bytes, b"abc\0def");
+    }
+
+    #[test]
+    fn test_source_code_ext_opens_as_text_even_with_nul_bytes() {
+        let mut file = NamedTempFile::with_suffix(".rs").unwrap();
+        file.write_all(b"fn main() {}\0\0\0\0binary").unwrap();
+        let state = ViewerState::open(file.path()).unwrap();
+        assert!(!state.is_hex_mode());
     }
 
     #[test]

@@ -200,7 +200,7 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     }
 
     if panel.unfiltered_entries.is_empty() {
-        panel.unfiltered_entries = panel.entries.clone();
+        return;
     }
 
     if let Some(existing) = panel
@@ -231,7 +231,7 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
     }
 
     if panel.unfiltered_entries.is_empty() {
-        panel.unfiltered_entries = panel.entries.clone();
+        return;
     }
 
     panel
@@ -645,6 +645,7 @@ mod tests {
     #[test]
     fn test_upsert_entry_adds_new_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("b.txt", false)]);
+        panel.unfiltered_entries = panel.entries.clone();
         upsert_entry(&mut panel, test_entry("a.txt", false));
 
         let names: Vec<&str> = panel
@@ -664,6 +665,7 @@ mod tests {
     #[test]
     fn test_upsert_entry_updates_existing_and_preserves_selection() {
         let mut panel = test_panel(vec![test_entry("file.txt", true)]);
+        panel.unfiltered_entries = panel.entries.clone();
         let mut updated = test_entry("file.txt", false);
         updated.size = 99;
 
@@ -714,7 +716,7 @@ mod tests {
             panel
                 .unfiltered_entries
                 .iter()
-                .any(|entry| entry.name == ".hidden")
+                .all(|entry| entry.name != ".hidden")
         );
     }
 
@@ -759,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_with_empty_unfiltered_and_filter_preserves_visible_view() {
+    fn test_upsert_with_empty_unfiltered_skips_insert() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("main.rs", false)]);
         panel.filter = Some("*.rs".to_string());
 
@@ -775,7 +777,7 @@ mod tests {
             panel
                 .unfiltered_entries
                 .iter()
-                .any(|entry| entry.name == "notes.txt")
+                .all(|entry| entry.name != "notes.txt")
         );
     }
 

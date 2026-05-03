@@ -128,6 +128,7 @@ pub struct PanelState {
     pub last_error: Option<String>,
     pub history: Vec<PathBuf>,
     pub unfiltered_entries: Vec<FileEntry>,
+    pub unfiltered_dirty: bool,
 }
 
 // ============================================================================
@@ -395,8 +396,24 @@ pub enum PendingAction {
 // ============================================================================
 
 impl FileEntry {
+    /// Returns the primary `FileCategory` based on a priority hierarchy.
+    ///
+    /// Priority (highest to lowest):
+    /// 1. `Symlink` — always a symlink (regardless of target type)
+    /// 2. `Dir` — always a directory
+    /// 3. `Hidden` — dot-prefixed files (e.g. `.bashrc`, `.archive.zip`)
+    /// 4. `Executable` — files with execute permission
+    /// 5. `Code` → `Config` → `Archive` → `Image` → `Video` → `Audio` → `Document`
+    /// 6. `Other` — fallback
+    ///
+    /// A hidden executable (`.script.sh`) is categorized as `Hidden`, not `Executable`.
+    /// A hidden archive (`.backup.zip`) is `Hidden`, not `Archive`.
+    /// A symlink to a directory is `Symlink`, not `Dir`.
     pub fn category(&self) -> FileCategory {
         use crate::app::file_type as ft;
+        if self.is_symlink {
+            return FileCategory::Symlink;
+        }
         if self.is_dir {
             return FileCategory::Dir;
         }
@@ -528,6 +545,7 @@ impl PanelState {
             last_error: None,
             history: Vec::new(),
             unfiltered_entries: Vec::new(),
+            unfiltered_dirty: true,
         }
     }
 
@@ -1457,6 +1475,126 @@ mod tests {
         assert_eq!(panel.total_size, 600);
         assert_eq!(panel.selected_count, 1);
         assert_eq!(panel.selected_size, 300);
+    }
+
+    #[test]
+    fn test_hidden_executable_is_hidden() {
+        let entry = FileEntry {
+            name: ".script.sh".to_string(),
+            path: PathBuf::from(".script.sh"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: true,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o755,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Hidden);
+    }
+
+    #[test]
+    fn test_hidden_archive_is_hidden() {
+        let entry = FileEntry {
+            name: ".backup.zip".to_string(),
+            path: PathBuf::from(".backup.zip"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: false,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o644,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Hidden);
+    }
+
+    #[test]
+    fn test_symlink_overrides_dir() {
+        let entry = FileEntry {
+            name: "link_to_dir".to_string(),
+            path: PathBuf::from("link_to_dir"),
+            is_dir: true,
+            is_symlink: true,
+            is_executable: false,
+            size: 0,
+            modified: UNIX_EPOCH,
+            permissions: 0o777,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Symlink);
+    }
+
+    #[test]
+    fn test_symlink_overrides_hidden() {
+        let entry = FileEntry {
+            name: ".hidden_link".to_string(),
+            path: PathBuf::from(".hidden_link"),
+            is_dir: false,
+            is_symlink: true,
+            is_executable: false,
+            size: 0,
+            modified: UNIX_EPOCH,
+            permissions: 0o777,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Symlink);
+    }
+
+    #[test]
+    fn test_executable_archive_is_executable() {
+        let entry = FileEntry {
+            name: "installer.exe".to_string(),
+            path: PathBuf::from("installer.exe"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: true,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o755,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Executable);
+    }
+
+    #[test]
+    fn test_hidden_apk_is_hidden() {
+        let entry = FileEntry {
+            name: ".app.apk".to_string(),
+            path: PathBuf::from(".app.apk"),
+            is_dir: false,
+            is_symlink: false,
+            is_executable: false,
+            size: 100,
+            modified: UNIX_EPOCH,
+            permissions: 0o644,
+            owner: "testuser".to_string(),
+            group: "testgroup".to_string(),
+            selected: false,
+            is_hidden: true,
+            mime_type: None,
+        };
+        assert_eq!(entry.category(), FileCategory::Hidden);
     }
 
     #[test]

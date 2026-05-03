@@ -94,41 +94,50 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".dockerignore",
 ];
 
+#[inline]
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
     s.get(s.len().saturating_sub(suffix.len())..)
         .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }
 
+#[inline]
 fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
     suffixes
         .iter()
         .any(|suffix| ends_with_ignore_ascii_case(name, suffix))
 }
 
+#[inline]
 pub fn is_archive(name: &str) -> bool {
     has_any_suffix(name, ARCHIVE_SUFFIXES)
 }
 
+#[inline]
 pub fn is_image(name: &str) -> bool {
     has_any_suffix(name, IMAGE_SUFFIXES)
 }
 
+#[inline]
 pub fn is_source_code(name: &str) -> bool {
     has_any_suffix(name, SOURCE_CODE_SUFFIXES)
 }
 
+#[inline]
 pub fn is_document(name: &str) -> bool {
     has_any_suffix(name, DOCUMENT_SUFFIXES)
 }
 
+#[inline]
 pub fn is_audio(name: &str) -> bool {
     has_any_suffix(name, AUDIO_SUFFIXES)
 }
 
+#[inline]
 pub fn is_video(name: &str) -> bool {
     has_any_suffix(name, VIDEO_SUFFIXES)
 }
 
+#[inline]
 pub fn is_config(name: &str) -> bool {
     has_any_suffix(name, CONFIG_SUFFIXES)
 }
@@ -140,11 +149,11 @@ pub fn category(
     is_link: bool,
     is_hidden: bool,
 ) -> FileCategory {
-    if is_dir {
-        return FileCategory::Dir;
-    }
     if is_link {
         return FileCategory::Symlink;
+    }
+    if is_dir {
+        return FileCategory::Dir;
     }
     if is_hidden {
         return FileCategory::Hidden;
@@ -336,5 +345,75 @@ mod tests {
             category("file.unknown", false, false, false, false),
             FileCategory::Other
         );
+    }
+
+    #[test]
+    fn test_hidden_executable_is_hidden() {
+        assert_eq!(
+            category(".script.sh", false, true, false, true),
+            FileCategory::Hidden
+        );
+    }
+
+    #[test]
+    fn test_hidden_archive_is_hidden() {
+        assert_eq!(
+            category(".backup.zip", false, false, false, true),
+            FileCategory::Hidden
+        );
+    }
+
+    #[test]
+    fn test_hidden_image_is_hidden() {
+        assert_eq!(
+            category(".photo.jpg", false, false, false, true),
+            FileCategory::Hidden
+        );
+    }
+
+    #[test]
+    fn test_symlink_overrides_everything() {
+        assert_eq!(
+            category("link", true, false, true, false),
+            FileCategory::Symlink
+        );
+        assert_eq!(
+            category(".hidden_link", false, false, true, true),
+            FileCategory::Symlink
+        );
+        assert_eq!(
+            category("exec_link", false, true, true, false),
+            FileCategory::Symlink
+        );
+    }
+
+    #[test]
+    fn test_executable_archive_is_executable() {
+        assert_eq!(
+            category("installer.exe", false, true, false, false),
+            FileCategory::Executable
+        );
+    }
+
+    #[test]
+    fn test_case_insensitive_matching() {
+        assert!(is_archive("FILE.ZIP"));
+        assert!(is_image("PHOTO.JPG"));
+        assert!(is_source_code("MAIN.RS"));
+        assert!(is_config("SETTINGS.JSON"));
+    }
+
+    #[test]
+    fn test_empty_name_no_crash() {
+        assert!(!is_archive(""));
+        assert!(!is_image(""));
+        assert!(!is_source_code(""));
+    }
+
+    #[test]
+    fn test_short_name_no_crash() {
+        assert!(!is_archive("."));
+        assert!(!is_image(".z"));
+        assert!(!is_source_code("a"));
     }
 }

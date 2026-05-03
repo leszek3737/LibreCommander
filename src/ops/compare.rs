@@ -309,6 +309,7 @@ mod tests {
             last_error: None,
             history: vec![],
             unfiltered_entries: vec![],
+            unfiltered_dirty: true,
         };
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
@@ -326,6 +327,7 @@ mod tests {
             last_error: None,
             history: vec![],
             unfiltered_entries: vec![],
+            unfiltered_dirty: true,
         };
 
         let report = CompareReport {

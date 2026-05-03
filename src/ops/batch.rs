@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,10 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::types::PendingAction;
-use crate::ops::{chunk_copy, file_ops};
-
-const COPY_PROGRESS_POLL: Duration = Duration::from_millis(20);
-const MAX_BATCH_COPY_RECURSION_DEPTH: usize = 256;
+use crate::ops::{file_ops, helpers};
 
 pub struct BatchReport {
     pub errors: Vec<String>,
@@ -29,7 +25,6 @@ impl BatchReport {
             other => other,
         };
         let error_count = self.errors.len();
-        let total_attempted = self.success_count + error_count;
 
         if self.canceled {
             if self.success_count == 0 {
@@ -44,7 +39,7 @@ impl BatchReport {
                 format!("{verb} {} files", self.success_count)
             }
         } else if self.success_count == 0 {
-            if total_attempted == 1 {
+            if error_count == 1 {
                 format!("{verb} failed: {}", self.errors[0])
             } else {
                 format!("{verb} failed: {error_count} error(s)")
@@ -208,191 +203,12 @@ fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressS
     });
 }
 
-fn path_size(path: &Path) -> u64 {
-    match path.symlink_metadata() {
-        Ok(meta) if meta.file_type().is_symlink() => 0,
-        Ok(meta) if meta.is_dir() => file_ops::calculate_dir_size(path).unwrap_or(0),
-        Ok(meta) => meta.len(),
-        Err(_) => 0,
-    }
-}
-
-fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    paths.iter().map(|path| path_size(path)).collect()
-}
-
-fn sum_sizes(sizes: &[u64]) -> u64 {
-    sizes
-        .iter()
-        .fold(0, |total, size| total.saturating_add(*size))
-}
-
-fn next_path(paths: &[PathBuf], idx: usize) -> Option<&Path> {
-    paths.get(idx).map(PathBuf::as_path)
-}
-
-fn copy_file_with_progress(
-    src: &Path,
-    dest: &Path,
-    cancel: Option<Arc<AtomicBool>>,
-    mut on_progress: impl FnMut(u64),
-) -> io::Result<u64> {
-    ensure_destination_absent(dest)?;
-
-    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
-    let worker_cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-    let src = src.to_path_buf();
-    let dest = dest.to_path_buf();
-    let handle = thread::spawn(move || {
-        chunk_copy::copy_with_progress(&src, &dest, &progress_tx, &worker_cancel)
-    });
-
-    while !handle.is_finished() {
-        match progress_rx.recv_timeout(COPY_PROGRESS_POLL) {
-            Ok(current) => on_progress(current),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    for current in progress_rx.try_iter() {
-        on_progress(current);
-    }
-
-    handle
-        .join()
-        .unwrap_or_else(|_| Err(io::Error::other("copy worker panicked")))
-}
-
-fn copy_dir_recursive_with_progress(
-    src: &Path,
-    dest: &Path,
-    cancel: Option<Arc<AtomicBool>>,
-    mut on_progress: impl FnMut(u64),
-) -> io::Result<u64> {
-    let src_root = src.canonicalize()?;
-    let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
-    if src_root == dest_root || path_contains_canonical(&src_root, &dest_root) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot copy directory into itself",
-        ));
-    }
-
-    copy_dir_recursive_with_progress_inner(src, dest, &cancel, &mut on_progress, 0)
-}
-
-fn copy_dir_recursive_with_progress_inner(
-    src: &Path,
-    dest: &Path,
-    cancel: &Option<Arc<AtomicBool>>,
-    on_progress: &mut dyn FnMut(u64),
-    depth: usize,
-) -> io::Result<u64> {
-    if depth > MAX_BATCH_COPY_RECURSION_DEPTH {
-        return Err(io::Error::other(format!(
-            "directory too deeply nested (>{MAX_BATCH_COPY_RECURSION_DEPTH} levels): {}",
-            src.display()
-        )));
-    }
-    if is_canceled(cancel) {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
-    }
-
-    ensure_destination_absent(dest)?;
-    if depth == 0 {
-        fs::create_dir_all(dest)?;
-    } else {
-        fs::create_dir(dest)?;
-    }
-    let src_perms = fs::metadata(src)?.permissions();
-    let mut total_bytes = 0_u64;
-
-    for entry in fs::read_dir(src)? {
-        if is_canceled(cancel) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
-        }
-
-        let entry = entry?;
-        let entry_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-        let file_type = entry.file_type()?;
-
-        if file_type.is_dir() {
-            let before = total_bytes;
-            let mut nested_progress = |current| on_progress(before.saturating_add(current));
-            let copied = copy_dir_recursive_with_progress_inner(
-                &entry_path,
-                &dest_path,
-                cancel,
-                &mut nested_progress,
-                depth + 1,
-            )?;
-            total_bytes = total_bytes.saturating_add(copied);
-            on_progress(total_bytes);
-        } else if file_type.is_symlink() {
-            file_ops::copy_symlink(&entry_path, &dest_path)?;
-        } else {
-            let before = total_bytes;
-            let copied =
-                copy_file_with_progress(&entry_path, &dest_path, cancel.clone(), |current| {
-                    on_progress(before.saturating_add(current))
-                })?;
-            total_bytes = total_bytes.saturating_add(copied);
-            on_progress(total_bytes);
-        }
-    }
-
-    fs::set_permissions(dest, src_perms)?;
-    Ok(total_bytes)
-}
-
-fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(dest) {
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "destination already exists",
-        )),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
-fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Result<PathBuf> {
-    let mut missing = Vec::new();
-    let mut current = path;
-
-    loop {
-        match current.canonicalize() {
-            Ok(mut canonical) => {
-                for component in missing.iter().rev() {
-                    canonical.push(component);
-                }
-                return Ok(canonical);
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                let name = current.file_name().ok_or(err)?;
-                missing.push(name.to_os_string());
-                current = current.parent().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "no existing parent found")
-                })?;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
-    child != parent && child.starts_with(parent)
-}
-
 fn execute_batch_generic<F>(
     sources: &[PathBuf],
     dest_dir: &Path,
     mut action: F,
     progress: &mut impl FnMut(BatchProgress),
     cancel: Option<Arc<AtomicBool>>,
-    _operation_name: &str,
 ) -> BatchReport
 where
     F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
@@ -402,8 +218,8 @@ where
     let mut success_count: usize = 0;
     let mut canceled = false;
     let total = sources.len();
-    let sizes = path_sizes(sources);
-    let bytes_total = sum_sizes(&sizes);
+    let sizes = helpers::path_sizes(sources);
+    let bytes_total = helpers::sum_sizes(&sizes);
     let mut bytes_done = 0_u64;
     let start_time = Instant::now();
 
@@ -412,7 +228,7 @@ where
         ProgressSnapshot {
             completed: 0,
             total,
-            current: next_path(sources, 0),
+            current: helpers::next_path(sources, 0),
             bytes_done,
             bytes_total,
             current_file_bytes: 0,
@@ -454,7 +270,7 @@ where
                 ProgressSnapshot {
                     completed: idx + 1,
                     total,
-                    current: next_path(sources, idx + 1),
+                    current: helpers::next_path(sources, idx + 1),
                     bytes_done,
                     bytes_total,
                     current_file_bytes: 0,
@@ -496,7 +312,7 @@ where
             ProgressSnapshot {
                 completed: idx + 1,
                 total,
-                current: next_path(sources, idx + 1),
+                current: helpers::next_path(sources, idx + 1),
                 bytes_done,
                 bytes_total,
                 current_file_bytes: 0,
@@ -533,16 +349,45 @@ fn batch_copy(
                 file_ops::copy_symlink(src, dest).map(|_| ())
             }
             Ok(meta) if meta.is_dir() => {
-                copy_dir_recursive_with_progress(src, dest, operation_cancel.clone(), on_progress)
+                let cancel_token = operation_cancel
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+                let (tx, rx) = mpsc::channel::<u64>();
+                let src = src.to_path_buf();
+                let dest = dest.to_path_buf();
+                let handle = thread::spawn(move || {
+                    file_ops::copy_dir_recursive_with_progress(&src, &dest, &tx, &cancel_token)
+                });
+                let result = handle.join();
+                for bytes in rx.try_iter() {
+                    on_progress(bytes);
+                }
+                result
+                    .unwrap_or_else(|_| Err(io::Error::other("copy worker panicked")))
                     .map(|_| ())
             }
-            Ok(_) => copy_file_with_progress(src, dest, operation_cancel.clone(), on_progress)
-                .map(|_| ()),
+            Ok(_) => {
+                let cancel_token = operation_cancel
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+                let (tx, rx) = mpsc::channel::<u64>();
+                let src = src.to_path_buf();
+                let dest = dest.to_path_buf();
+                let handle = thread::spawn(move || {
+                    file_ops::copy_file_with_progress(&src, &dest, &tx, &cancel_token)
+                });
+                let result = handle.join();
+                for bytes in rx.try_iter() {
+                    on_progress(bytes);
+                }
+                result
+                    .unwrap_or_else(|_| Err(io::Error::other("copy worker panicked")))
+                    .map(|_| ())
+            }
             Err(e) => Err(e),
         },
         progress,
         cancel,
-        "copy",
     )
 }
 
@@ -561,7 +406,6 @@ fn batch_move(
         },
         progress,
         cancel,
-        "move",
     )
 }
 
@@ -579,21 +423,11 @@ fn move_entry_with_progress(
         file_ops::move_entry_with_progress(&src, &dest, &progress_tx, &worker_cancel)
     });
 
-    while !handle.is_finished() {
-        match progress_rx.recv_timeout(COPY_PROGRESS_POLL) {
-            Ok(current) => on_progress(current),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
+    let result = handle.join();
     for current in progress_rx.try_iter() {
         on_progress(current);
     }
-
-    handle
-        .join()
-        .unwrap_or_else(|_| Err(io::Error::other("move worker panicked")))
+    result.unwrap_or_else(|_| Err(io::Error::other("move worker panicked")))
 }
 
 fn batch_delete(
@@ -605,8 +439,8 @@ fn batch_delete(
     let mut success_count: usize = 0;
     let mut canceled = false;
     let total = paths.len();
-    let sizes = path_sizes(paths);
-    let bytes_total = sum_sizes(&sizes);
+    let sizes = helpers::path_sizes(paths);
+    let bytes_total = helpers::sum_sizes(&sizes);
     let mut bytes_done = 0_u64;
     let start_time = Instant::now();
 
@@ -615,7 +449,7 @@ fn batch_delete(
         ProgressSnapshot {
             completed: 0,
             total,
-            current: next_path(paths, 0),
+            current: helpers::next_path(paths, 0),
             bytes_done,
             bytes_total,
             current_file_bytes: 0,
@@ -665,7 +499,7 @@ fn batch_delete(
             ProgressSnapshot {
                 completed: idx + 1,
                 total,
-                current: next_path(paths, idx + 1),
+                current: helpers::next_path(paths, idx + 1),
                 bytes_done,
                 bytes_total,
                 current_file_bytes: 0,
@@ -990,5 +824,27 @@ mod tests {
             action_label: "Move",
         };
         assert_eq!(report.format_summary(), "Moved canceled");
+    }
+
+    #[test]
+    fn format_summary_unknown_label_passes_through() {
+        let report = BatchReport {
+            errors: vec![],
+            success_count: 2,
+            canceled: false,
+            action_label: "Foobar",
+        };
+        assert_eq!(report.format_summary(), "Foobar 2 files");
+    }
+
+    #[test]
+    fn format_summary_empty_label() {
+        let report = BatchReport {
+            errors: vec!["e: x".into()],
+            success_count: 0,
+            canceled: false,
+            action_label: "",
+        };
+        assert_eq!(report.format_summary(), " failed: e: x");
     }
 }

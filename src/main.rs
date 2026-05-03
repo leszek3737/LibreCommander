@@ -144,16 +144,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let (watch_tx, watch_rx) = mpsc::channel();
     let mut watcher = fs::watcher::Watcher::new(watch_tx).ok();
     let mut watcher_paused = false;
+    let mut last_synced_paths: Option<(PathBuf, PathBuf)> = None;
 
     refresh_panel(&mut state.left_panel, 0);
     refresh_panel(&mut state.right_panel, 0);
-    sync_watcher_paths(&mut watcher, &state);
+    sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
 
     let mut dirty = true;
 
     loop {
         sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-        sync_watcher_paths(&mut watcher, &state);
+        sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
         if poll_watcher_events(&mut state, &watch_rx) {
             dirty = true;
         }
@@ -297,12 +298,23 @@ fn sync_watcher_job_state(
     }
 }
 
-fn sync_watcher_paths(watcher: &mut Option<Watcher>, state: &AppState) {
+fn sync_watcher_paths(
+    watcher: &mut Option<Watcher>,
+    state: &AppState,
+    last_synced: &mut Option<(PathBuf, PathBuf)>,
+) {
     let Some(watcher) = watcher.as_mut() else {
         return;
     };
 
-    let desired: HashSet<PathBuf> = [&state.left_panel.path, &state.right_panel.path]
+    let left = state.left_panel.path.clone();
+    let right = state.right_panel.path.clone();
+
+    if last_synced.as_ref() == Some(&(left.clone(), right.clone())) {
+        return;
+    }
+
+    let desired: HashSet<PathBuf> = [&left, &right]
         .into_iter()
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
         .collect();
@@ -314,6 +326,8 @@ fn sync_watcher_paths(watcher: &mut Option<Watcher>, state: &AppState) {
     for path in desired.difference(&current) {
         let _ = watcher.watch(path);
     }
+
+    *last_synced = Some((left, right));
 }
 
 fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {

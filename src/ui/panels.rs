@@ -20,38 +20,31 @@ pub fn get_file_color(entry: &FileEntry) -> Style {
     Theme::panel_item(color, entry.is_dir || entry.is_executable)
 }
 
-/// Check if file is an archive
-pub fn is_archive(name: &str) -> bool {
+fn is_archive(name: &str) -> bool {
     file_type::is_archive(name)
 }
 
-/// Check if file is an image
-pub fn is_image(name: &str) -> bool {
+fn is_image(name: &str) -> bool {
     file_type::is_image(name)
 }
 
-/// Check if file is source code
-pub fn is_source_code(name: &str) -> bool {
+fn is_source_code(name: &str) -> bool {
     file_type::is_source_code(name)
 }
 
-/// Check if file is a document
-pub fn is_document(name: &str) -> bool {
+fn is_document(name: &str) -> bool {
     file_type::is_document(name)
 }
 
-/// Check if file is audio
-pub fn is_audio(name: &str) -> bool {
+fn is_audio(name: &str) -> bool {
     file_type::is_audio(name)
 }
 
-/// Check if file is video
-pub fn is_video(name: &str) -> bool {
+fn is_video(name: &str) -> bool {
     file_type::is_video(name)
 }
 
-/// Check if file is a config/data file
-pub fn is_config(name: &str) -> bool {
+fn is_config(name: &str) -> bool {
     file_type::is_config(name)
 }
 
@@ -385,7 +378,7 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
 
     if panel.selected_count > 0 {
         parts.push(format!(
-            "Sel:{} [{}]",
+            "Sel: {} [{}]",
             panel.selected_count,
             format_size(panel.selected_size)
         ));
@@ -857,7 +850,7 @@ mod tests {
         panel.selected_count = 1;
         panel.selected_size = 1024;
         let (summary, _) = panel_status_summary(&panel);
-        assert!(summary.contains("Sel:1"));
+        assert!(summary.contains("Sel: 1"));
         assert!(summary.contains("1.0 KB"));
     }
 
