@@ -944,16 +944,28 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let entry_info = state
                 .active_panel()
                 .current_entry()
-                .map(|e| (e.is_dir, e.path.clone()));
-            if let Some((is_dir, path)) = entry_info
+                .map(|e| (e.is_dir, e.path.clone(), e.name == ".."));
+            if let Some((is_dir, path, is_dotdot)) = entry_info
                 && is_dir
             {
+                let prev_dir_name = if is_dotdot {
+                    state.active_panel().path.file_name().map(|n| n.to_string_lossy().into_owned())
+                } else {
+                    None
+                };
                 let p = state.active_panel_mut();
                 p.history.push(p.path.clone());
                 p.path = path;
                 p.cursor = 0;
                 p.scroll_offset = 0;
                 refresh_active(state);
+                if let Some(ref name) = prev_dir_name {
+                    if let Some(idx) = state.active_panel().entries.iter().position(|e| &e.name == name) {
+                        let p = state.active_panel_mut();
+                        p.cursor = idx;
+                        p.ensure_cursor_visible(visible);
+                    }
+                }
             }
         }
         KeyCode::Tab => {
@@ -1115,6 +1127,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             }
         }
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
+            let prev_dir_name = state.active_panel().path.file_name().map(|n| n.to_string_lossy().into_owned());
             let panel = state.active_panel_mut();
             if let Some(prev_path) = panel.history.pop()
                 && prev_path.is_dir()
@@ -1123,6 +1136,13 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                 panel.cursor = 0;
                 panel.scroll_offset = 0;
                 refresh_active(state);
+                if let Some(ref name) = prev_dir_name {
+                    if let Some(idx) = state.active_panel().entries.iter().position(|e| &e.name == name) {
+                        let p = state.active_panel_mut();
+                        p.cursor = idx;
+                        p.ensure_cursor_visible(visible);
+                    }
+                }
                 state.status_message = Some(format!("cd to {}", prev_path.display()));
             }
         }
