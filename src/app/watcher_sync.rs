@@ -145,10 +145,10 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
     let panel_canonical = panel_path.canonicalize().ok();
 
     match (parent_canonical, panel_canonical) {
-        (Some(parent), Some(panel_path)) => parent == panel_path || parent_raw == panel_path_raw,
-        (Some(parent), None) => parent == panel_path_raw || parent_raw == panel_path_raw,
-        (None, Some(panel_path)) => parent_raw == panel_path || parent_raw == panel_path_raw,
-        (None, None) => parent_raw == panel_path_raw,
+        (Some(parent), Some(panel_path)) => parent == panel_path,
+        (Some(parent), None) => parent == panel_path_raw,
+        (None, Some(panel_path)) => parent_raw == panel_path,
+        (None, None) => false,
     }
 }
 

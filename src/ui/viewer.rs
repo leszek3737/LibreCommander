@@ -635,6 +635,9 @@ pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
     buf
 }
 
+const HEX_BYTES_PER_LINE: usize = 16;
+const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
+
 fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
     use std::fmt::Write;
     let _ = write!(buf, "{offset:08x}: ");
@@ -647,7 +650,7 @@ fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
         let _ = write!(buf, "{b:02x} ");
     }
 
-    let padding_needed = 49usize.saturating_sub(buf.len() - hex_start);
+    let padding_needed = HEX_PART_WIDTH.saturating_sub(buf.len() - hex_start);
     let _ = write!(buf, "{:width$}", "", width = padding_needed);
 
     buf.push_str(" |");
