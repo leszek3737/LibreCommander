@@ -17,6 +17,45 @@ pub struct BatchReport {
     pub errors: Vec<String>,
     pub success_count: usize,
     pub canceled: bool,
+    pub action_label: &'static str,
+}
+
+impl BatchReport {
+    pub fn format_summary(&self) -> String {
+        let verb = match self.action_label {
+            "Copy" => "Copied",
+            "Move" => "Moved",
+            "Delete" => "Deleted",
+            other => other,
+        };
+        let error_count = self.errors.len();
+        let total_attempted = self.success_count + error_count;
+
+        if self.canceled {
+            if self.success_count == 0 {
+                format!("{verb} canceled")
+            } else {
+                format!("{verb} canceled after {} file(s)", self.success_count)
+            }
+        } else if error_count == 0 {
+            if self.success_count == 1 {
+                format!("{verb} 1 file")
+            } else {
+                format!("{verb} {} files", self.success_count)
+            }
+        } else if self.success_count == 0 {
+            if total_attempted == 1 {
+                format!("{verb} failed: {}", self.errors[0])
+            } else {
+                format!("{verb} failed: {error_count} error(s)")
+            }
+        } else {
+            format!(
+                "{verb} {} file(s), {error_count} error(s)",
+                self.success_count
+            )
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,26 +140,39 @@ impl BatchProgress {
 }
 
 pub fn execute_batch(action: PendingAction) -> BatchReport {
-    execute_batch_with_progress(action, |_| {}, None)
+    let label = action_label(&action);
+    execute_batch_with_progress(action, |_| {}, None, label)
 }
 
 pub fn execute_batch_with_progress(
     action: PendingAction,
     progress: impl FnMut(BatchProgress),
     cancel: Option<Arc<AtomicBool>>,
+    action_label: &'static str,
 ) -> BatchReport {
-    execute_batch_with_byte_progress(action, progress, cancel)
+    execute_batch_with_byte_progress(action, progress, cancel, action_label)
 }
 
 pub fn execute_batch_with_byte_progress(
     action: PendingAction,
     mut progress: impl FnMut(BatchProgress),
     cancel: Option<Arc<AtomicBool>>,
+    action_label: &'static str,
 ) -> BatchReport {
-    match action {
+    let mut report = match action {
         PendingAction::Copy { sources, dest } => batch_copy(&sources, &dest, &mut progress, cancel),
         PendingAction::Move { sources, dest } => batch_move(&sources, &dest, &mut progress, cancel),
         PendingAction::Delete { paths } => batch_delete(&paths, &mut progress, cancel),
+    };
+    report.action_label = action_label;
+    report
+}
+
+fn action_label(action: &PendingAction) -> &'static str {
+    match action {
+        PendingAction::Copy { .. } => "Copy",
+        PendingAction::Move { .. } => "Move",
+        PendingAction::Delete { .. } => "Delete",
     }
 }
 
@@ -472,6 +524,7 @@ fn batch_copy(
         errors,
         success_count,
         canceled,
+        action_label: "",
     }
 }
 
@@ -592,6 +645,7 @@ fn batch_move(
         errors,
         success_count,
         canceled,
+        action_label: "",
     }
 }
 
@@ -712,6 +766,7 @@ fn batch_delete(
         errors,
         success_count,
         canceled,
+        action_label: "",
     }
 }
 
@@ -838,7 +893,8 @@ mod tests {
         };
         let mut updates = Vec::new();
 
-        let report = execute_batch_with_progress(action, |progress| updates.push(progress), None);
+        let report =
+            execute_batch_with_progress(action, |progress| updates.push(progress), None, "Delete");
 
         assert_eq!(report.success_count, 2);
         assert!(!report.canceled);
@@ -871,6 +927,7 @@ mod tests {
                 }
             },
             Some(cancel),
+            "Copy",
         );
 
         assert_eq!(report.success_count, 1);
@@ -891,8 +948,12 @@ mod tests {
         };
         let mut updates = Vec::new();
 
-        let report =
-            execute_batch_with_byte_progress(action, |progress| updates.push(progress), None);
+        let report = execute_batch_with_byte_progress(
+            action,
+            |progress| updates.push(progress),
+            None,
+            "Copy",
+        );
 
         assert_eq!(report.success_count, 2);
         assert!(report.errors.is_empty());
@@ -920,8 +981,12 @@ mod tests {
         };
         let mut updates = Vec::new();
 
-        let report =
-            execute_batch_with_byte_progress(action, |progress| updates.push(progress), None);
+        let report = execute_batch_with_byte_progress(
+            action,
+            |progress| updates.push(progress),
+            None,
+            "Delete",
+        );
 
         assert_eq!(report.success_count, 2);
         assert!(report.errors.is_empty());
@@ -929,5 +994,85 @@ mod tests {
         assert_eq!(updates.first().map(|p| p.bytes_total), Some(7));
         assert_eq!(updates.last().map(|p| p.bytes_done), Some(7));
         assert_eq!(updates.last().map(BatchProgress::byte_percent), Some(99.99));
+    }
+
+    #[test]
+    fn format_summary_copy_success() {
+        let report = BatchReport {
+            errors: vec![],
+            success_count: 3,
+            canceled: false,
+            action_label: "Copy",
+        };
+        assert_eq!(report.format_summary(), "Copied 3 files");
+    }
+
+    #[test]
+    fn format_summary_delete_single() {
+        let report = BatchReport {
+            errors: vec![],
+            success_count: 1,
+            canceled: false,
+            action_label: "Delete",
+        };
+        assert_eq!(report.format_summary(), "Deleted 1 file");
+    }
+
+    #[test]
+    fn format_summary_move_partial_error() {
+        let report = BatchReport {
+            errors: vec!["foo: permission denied".into()],
+            success_count: 2,
+            canceled: false,
+            action_label: "Move",
+        };
+        assert_eq!(report.format_summary(), "Moved 2 file(s), 1 error(s)");
+    }
+
+    #[test]
+    fn format_summary_all_errors() {
+        let report = BatchReport {
+            errors: vec!["a: not found".into(), "b: not found".into()],
+            success_count: 0,
+            canceled: false,
+            action_label: "Delete",
+        };
+        assert_eq!(report.format_summary(), "Deleted failed: 2 error(s)");
+    }
+
+    #[test]
+    fn format_summary_single_error() {
+        let report = BatchReport {
+            errors: vec!["file.txt: not found".into()],
+            success_count: 0,
+            canceled: false,
+            action_label: "Copy",
+        };
+        assert_eq!(
+            report.format_summary(),
+            "Copied failed: file.txt: not found"
+        );
+    }
+
+    #[test]
+    fn format_summary_canceled_with_progress() {
+        let report = BatchReport {
+            errors: vec![],
+            success_count: 5,
+            canceled: true,
+            action_label: "Copy",
+        };
+        assert_eq!(report.format_summary(), "Copied canceled after 5 file(s)");
+    }
+
+    #[test]
+    fn format_summary_canceled_no_progress() {
+        let report = BatchReport {
+            errors: vec![],
+            success_count: 0,
+            canceled: true,
+            action_label: "Move",
+        };
+        assert_eq!(report.format_summary(), "Moved canceled");
     }
 }

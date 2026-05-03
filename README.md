@@ -15,10 +15,11 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 - **Directory history** - Navigate back with Alt+Backspace
 - **User menu** - Extensible menu system via `.mc.menu` or `~/.config/lc/menu` (MC-compatible)
 - **Sorting** - 8 sort modes: by name, size, modification time, or extension (ascending/descending)
+- **File watcher** - Automatic panel refresh on external filesystem changes
 - **Panel views** - Long (detailed) and Brief (compact) listing modes
 - **File type icons** - Emoji icons and color coding for archives, images, source code, audio, video, config files
 - **Mouse support** - Single click to select, double click to open/view, click to switch panels
-- **Keyboard-driven** - 70+ keyboard shortcuts for power users
+- **Keyboard-driven** - 45+ keyboard shortcuts for power users
 - **Configurable** - Customizable settings stored in `~/.config/lc/config.toml`
 - **System protection** - Refuses to delete critical system directories (`/`, `/etc`, `/usr`, etc.)
 
@@ -56,13 +57,15 @@ cargo install --path .
 |-------|---------|
 | `ratatui` 0.30 | Terminal UI framework |
 | `crossterm` 0.29 | Cross-platform terminal I/O |
-| `tokio` 1.51 | Async runtime |
 | `serde` 1.0 | Config serialization |
 | `toml` 0.9 | Config file parsing |
 | `chrono` 0.4 | Date/time formatting |
 | `regex` 1.0 | User menu condition matching |
 | `unicode-width` 0.2 | Unicode character width for alignment |
 | `users` 0.11 | File owner/group lookup |
+| `notify` 8 | Filesystem watcher for auto-refresh |
+| `infer` 0.19 | MIME type detection |
+| `filetime` 0.2 | File modification time handling |
 
 Dev dependency: `tempfile` 3 (for tests).
 
@@ -85,7 +88,6 @@ Dev dependency: `tempfile` 3 (for tests).
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
 | `Enter` | Open directory / Execute file |
-| `Backspace` | Go to parent directory |
 | `Alt+Backspace` | Go to previous directory (history) |
 | `Home` | Go to first entry |
 | `End` | Go to last entry |
@@ -100,7 +102,7 @@ Dev dependency: `tempfile` 3 (for tests).
 | `F3` | View file |
 | `F4` | Edit file (opens in `$EDITOR`) |
 | `F5` | Copy file(s) |
-| `F6` | Move/Rename file(s) |
+| `F6` | Move file(s) |
 | `F7` | Create directory |
 | `F8` | Delete file(s) |
 | `Alt+Enter` | Show file properties |
@@ -348,8 +350,8 @@ Run these checks before submitting changes:
 
 ```bash
 cargo fmt --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
 File operations include safety guards: system directories are protected from deletion, symlinks are handled correctly during copy/move/delete, and terminal state is always restored (even on panic).

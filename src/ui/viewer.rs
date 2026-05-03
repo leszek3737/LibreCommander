@@ -36,6 +36,8 @@ pub struct ViewerState {
     pub view_mode: ViewMode,
     raw_bytes: Vec<u8>,
     max_line_width: usize,
+    pub detected_mime: Option<String>,
+    pub file_size: usize,
 }
 
 impl ViewerState {
@@ -53,10 +55,14 @@ impl ViewerState {
             )));
         }
 
+        let file_size = raw_bytes.len();
         let mime =
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
-        let content = if open_as_text {
+
+        let content = if raw_bytes.is_empty() {
+            vec!["[Empty file]".to_string()]
+        } else if open_as_text {
             let content_str = String::from_utf8_lossy(&raw_bytes);
             let mut content: Vec<String> = content_str.lines().map(String::from).collect();
             if raw_bytes.last() == Some(&b'\n') {
@@ -66,8 +72,7 @@ impl ViewerState {
         } else {
             let mime_label = mime.as_deref().unwrap_or("unknown MIME");
             vec![format!(
-                "Binary file ({mime_label}, {} bytes). Opened in Hex mode.",
-                raw_bytes.len()
+                "Binary file ({mime_label}, {file_size} bytes). Opened in Hex mode."
             )]
         };
         let line_count = content.len();
@@ -99,6 +104,8 @@ impl ViewerState {
             },
             raw_bytes,
             max_line_width,
+            detected_mime: mime,
+            file_size,
         })
     }
 
@@ -517,16 +524,12 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     } else {
         state.scroll_offset + 1
     };
+    let mode_label = if state.is_hex_mode() { "Hex" } else { "Text" };
+    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
+    let size_label = format_size(state.file_size);
     let status_text = format!(
-        " Line: {}/{}  {}  {}",
-        current_line,
+        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}",
         state.line_count,
-        state
-            .file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy(),
-        if state.wrap_lines { "Wrap" } else { "No Wrap" }
     );
     let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
@@ -591,18 +594,27 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     } else {
         state.scroll_offset + 1
     };
-    let status_text = format!(
-        " Offset: {}/{}  {}  Hex",
-        current_line,
-        total_lines,
-        state
-            .file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy(),
-    );
+    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
+    let size_label = format_size(state.file_size);
+    let status_text =
+        format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}",);
     let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
     f.render_widget(status_paragraph, status_area);
+}
+
+fn format_size(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = 1024 * KB;
+    const GB: usize = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1} GiB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MiB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KiB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
@@ -778,12 +790,14 @@ mod tests {
     }
 
     #[test]
-    fn test_open_empty_file_has_zero_lines() {
+    fn test_open_empty_file_has_placeholder() {
         let file = create_test_file("");
         let state = ViewerState::open(file.path()).unwrap();
 
-        assert_eq!(state.content.len(), 0);
-        assert_eq!(state.line_count, 0);
+        assert_eq!(state.content.len(), 1);
+        assert_eq!(state.content[0], "[Empty file]");
+        assert_eq!(state.line_count, 1);
+        assert_eq!(state.file_size, 0);
         assert_eq!(state.scroll_offset, 0);
     }
 
@@ -1104,6 +1118,16 @@ mod tests {
     }
 
     #[test]
+    fn test_format_size() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1024), "1.0 KiB");
+        assert_eq!(format_size(1536), "1.5 KiB");
+        assert_eq!(format_size(1048576), "1.0 MiB");
+        assert_eq!(format_size(1073741824), "1.0 GiB");
+    }
+
+    #[test]
     fn test_paragraph_horizontal_scroll_clamps_to_u16() {
         assert_eq!(paragraph_horizontal_scroll(usize::MAX), u16::MAX);
     }
@@ -1114,11 +1138,13 @@ mod tests {
         let mut state = ViewerState::open(file.path()).unwrap();
         state.wrap_lines = false;
 
-        let buffer = render_viewer_buffer(&state, 20, 5);
+        let buffer = render_viewer_buffer(&state, 60, 5);
 
         assert!(buffer_line(&buffer, 1).contains("line 1"));
         assert!(buffer_line(&buffer, 2).contains("line 2"));
-        assert!(buffer_line(&buffer, 3).contains("Line: 1/3"));
-        assert!(!buffer_line(&buffer, 3).contains("line 3"));
+        let status = buffer_line(&buffer, 3);
+        assert!(status.contains("Line: 1/3"));
+        assert!(status.contains("Text"));
+        assert!(!status.contains("line 3"));
     }
 }

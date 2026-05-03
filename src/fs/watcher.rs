@@ -84,11 +84,11 @@ impl Watcher {
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
+        self.paused.store(true, Ordering::SeqCst);
     }
 
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
+        self.paused.store(false, Ordering::SeqCst);
     }
 
     pub fn sender(&self) -> &Sender<WatchEvent> {
@@ -101,7 +101,7 @@ fn make_handler(
     paused: Arc<AtomicBool>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
-        if paused.load(Ordering::Relaxed) {
+        if paused.load(Ordering::SeqCst) {
             return;
         }
 

@@ -16,6 +16,7 @@ pub enum DialogKind {
         title: String,
         message: String,
         selection: usize,
+        files: Option<Vec<String>>,
     },
     Input {
         title: String,
@@ -60,8 +61,16 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
             title,
             message,
             selection,
+            files,
         } => {
-            render_confirm_dialog(f, dialog_area, title, message, *selection);
+            render_confirm_dialog(
+                f,
+                dialog_area,
+                title,
+                message,
+                *selection,
+                files.as_deref().unwrap_or_default(),
+            );
         }
         DialogKind::Input {
             title,
@@ -114,6 +123,7 @@ pub fn render_confirm_dialog(
     title: &str,
     message: &str,
     selection: usize,
+    files: &[String],
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -123,15 +133,45 @@ pub fn render_confirm_dialog(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let has_files = !files.is_empty();
+    let file_rows = if has_files {
+        (files.len() as u16 + 1).min(6)
+    } else {
+        0
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Length(file_rows),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
-    let message_paragraph = Paragraph::new(message.to_string())
+    let msg_paragraph = Paragraph::new(message.to_string())
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
-    f.render_widget(message_paragraph, chunks[0]);
+    f.render_widget(msg_paragraph, chunks[0]);
+
+    if has_files {
+        let max_visible = chunks[1].height as usize;
+        let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
+        let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
+        if files.len() <= show_count {
+            for name in files {
+                lines.push(Line::from(format!("  {name}")).style(Theme::warning()));
+            }
+        } else {
+            for name in files.iter().take(show_count.saturating_sub(1)) {
+                lines.push(Line::from(format!("  {name}")).style(Theme::warning()));
+            }
+            let remaining = files.len() - show_count + 1;
+            lines.push(Line::from(format!("  ... +{remaining} more")));
+        }
+        let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
+        f.render_widget(file_paragraph, chunks[1]);
+    }
 
     let yes_style = if selection == 0 {
         Theme::highlight_bold()
@@ -149,7 +189,7 @@ pub fn render_confirm_dialog(
         ratatui::text::Span::styled("[ No ]", no_style),
     ]);
     let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
-    f.render_widget(btn_paragraph, chunks[1]);
+    f.render_widget(btn_paragraph, chunks[2]);
 }
 
 pub fn render_input_dialog(
@@ -284,7 +324,7 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
 
     let message_paragraph = Paragraph::new(message.to_string())
         .wrap(Wrap { trim: true })
-        .alignment(Alignment::Center)
+        .alignment(Alignment::Left)
         .style(Theme::info());
     f.render_widget(message_paragraph, chunks[0]);
 

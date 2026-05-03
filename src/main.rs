@@ -159,7 +159,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
 
         if poll_running_job(&mut state, &mut running_job) {
-            sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
+            let resumed =
+                sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
+            if resumed {
+                refresh_both(&mut state);
+            }
             dirty = true;
         }
 
@@ -260,17 +264,25 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 }
 
-fn sync_watcher_job_state(watcher: &Option<Watcher>, job_running: bool, watcher_paused: &mut bool) {
+fn sync_watcher_job_state(
+    watcher: &Option<Watcher>,
+    job_running: bool,
+    watcher_paused: &mut bool,
+) -> bool {
     let Some(watcher) = watcher.as_ref() else {
-        return;
+        return false;
     };
 
     if job_running && !*watcher_paused {
         watcher.pause();
         *watcher_paused = true;
+        false
     } else if !job_running && *watcher_paused {
         watcher.resume();
         *watcher_paused = false;
+        true
+    } else {
+        false
     }
 }
 
@@ -389,20 +401,23 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
 }
 
 fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
-    panel.unfiltered_entries.clear();
     match reader::read_directory(&panel.path, panel.show_hidden) {
         Ok((entries, errors)) => {
             update_panel_read_errors(panel, &errors);
             let current_name = current_panel_entry_name(panel);
             let saved = selected_panel_paths(panel);
-            panel.entries =
-                filtered_sorted_entries(&entries, panel.filter.as_deref(), panel.sort_mode);
+            let new_unfiltered = entries;
+            let new_filtered =
+                filtered_sorted_entries(&new_unfiltered, panel.filter.as_deref(), panel.sort_mode);
+            panel.unfiltered_entries = new_unfiltered;
+            panel.entries = new_filtered;
             restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();
             restore_panel_cursor(panel, current_name.as_deref());
             clamp_panel_scroll(panel, visible_height);
         }
         Err(e) => {
+            panel.unfiltered_entries.clear();
             panel.entries.clear();
             panel.cursor = 0;
             panel.scroll_offset = 0;
@@ -617,10 +632,14 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     // Dialog overlay
     if let AppMode::Dialog(ref dialog_kind) = state.mode {
         let ui_dialog = match dialog_kind {
-            app::types::DialogKind::Confirm(msg) => dialogs::DialogKind::Confirm {
-                title: "Confirm".to_string(),
-                message: msg.clone(),
+            app::types::DialogKind::Confirm(cd) => dialogs::DialogKind::Confirm {
+                title: cd.title.clone(),
+                message: cd.message.clone(),
                 selection: state.dialog_selection,
+                files: cd
+                    .files
+                    .as_ref()
+                    .map(|fps| fps.iter().map(|p| p.display().to_string()).collect()),
             },
             app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
                 title: "Input".to_string(),
@@ -661,6 +680,7 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
                     title: format!("{action} Confirm"),
                     message: msg,
                     selection: state.dialog_selection,
+                    files: Some(source.iter().map(|p| p.display().to_string()).collect()),
                 }
             }
             app::types::DialogKind::Properties {
@@ -1085,7 +1105,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::F(10) => state.should_quit = true,
         KeyCode::F(1) => {
             state.mode = AppMode::Dialog(app::types::DialogKind::Help(
-                "F1=Help F2=Menu F3=View F4=Edit F5=Copy F6=Move F7=Mkdir F8=Delete F9=Menu F10=Quit | Tab=Switch Ctrl+U=Swap Alt+1-9=Hotlist Alt+Back=Back".to_string(),
+                app::keymap::build_help_message(),
             ));
         }
         KeyCode::F(2) => {
@@ -1271,6 +1291,14 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let paths = selected_or_current_paths(state);
             if !paths.is_empty() {
                 let dest_dir = state.inactive_panel().path.clone();
+                let file_names: Vec<PathBuf> = paths
+                    .iter()
+                    .map(|p| {
+                        p.file_name()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| p.clone())
+                    })
+                    .collect();
                 let msg = if paths.len() == 1 {
                     let name = paths[0]
                         .file_name()
@@ -1280,7 +1308,9 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     format!("Copy {} entries to '{}'?", paths.len(), dest_dir.display())
                 };
                 state.dialog_selection = 0;
-                state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
+                    app::types::ConfirmDetails::with_files("Copy Confirm", &msg, file_names),
+                ));
                 state.pending_action = Some(app::types::PendingAction::Copy {
                     sources: paths,
                     dest: dest_dir,
@@ -1291,6 +1321,14 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             let paths = selected_or_current_paths(state);
             if !paths.is_empty() {
                 let dest_dir = state.inactive_panel().path.clone();
+                let file_names: Vec<PathBuf> = paths
+                    .iter()
+                    .map(|p| {
+                        p.file_name()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| p.clone())
+                    })
+                    .collect();
                 let msg = if paths.len() == 1 {
                     let name = paths[0]
                         .file_name()
@@ -1300,7 +1338,9 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     format!("Move {} entries to '{}'?", paths.len(), dest_dir.display())
                 };
                 state.dialog_selection = 0;
-                state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
+                    app::types::ConfirmDetails::with_files("Move Confirm", &msg, file_names),
+                ));
                 state.pending_action = Some(app::types::PendingAction::Move {
                     sources: paths,
                     dest: dest_dir,
@@ -1319,6 +1359,14 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::F(8) => {
             let paths = selected_or_current_paths(state);
             if !paths.is_empty() {
+                let file_names: Vec<PathBuf> = paths
+                    .iter()
+                    .map(|p| {
+                        p.file_name()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| p.clone())
+                    })
+                    .collect();
                 let msg = if paths.len() == 1 {
                     let name = paths[0]
                         .file_name()
@@ -1328,7 +1376,9 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
                     format!("Delete {} entries?", paths.len())
                 };
                 state.dialog_selection = 0;
-                state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(msg));
+                state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
+                    app::types::ConfirmDetails::with_files("Delete Confirm", &msg, file_names),
+                ));
                 state.pending_action = Some(app::types::PendingAction::Delete { paths });
             }
         }
@@ -2465,6 +2515,7 @@ fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Running
     let (sender, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_worker = Arc::clone(&cancel);
+    let label_for_worker = action_label;
     let handle = thread::spawn(move || {
         let progress_sender = sender.clone();
         let report = ops::batch::execute_batch_with_byte_progress(
@@ -2473,6 +2524,7 @@ fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Running
                 let _ = progress_sender.send(JobMessage::Progress(progress));
             },
             Some(cancel_for_worker),
+            label_for_worker,
         );
         let _ = sender.send(JobMessage::Finished {
             action_label,
@@ -2574,26 +2626,10 @@ fn format_duration_short(duration: Duration) -> String {
 
 fn finish_running_job(
     state: &mut AppState,
-    action_label: &'static str,
+    _action_label: &'static str,
     report: ops::batch::BatchReport,
 ) {
-    if report.canceled {
-        state.status_message = Some(format!(
-            "{action_label} canceled after {} item(s)",
-            report.success_count
-        ));
-    } else if !report.errors.is_empty() {
-        state.status_message = Some(format!(
-            "{} errors: {}",
-            action_label,
-            report.errors.join("; ")
-        ));
-    } else {
-        state.status_message = Some(format!(
-            "{action_label} finished: {} item(s)",
-            report.success_count
-        ));
-    }
+    state.status_message = Some(report.format_summary());
     state.mode = AppMode::Normal;
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
@@ -2627,7 +2663,11 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
         }
         KeyCode::Enter => {
             state.mode = AppMode::Normal;
-            state.active_panel_mut().unfiltered_entries.clear();
+            state.search_query.clear();
+            let panel = state.active_panel_mut();
+            panel.filter = None;
+            panel.unfiltered_entries.clear();
+            refresh_active(state);
         }
         KeyCode::Backspace => {
             state.search_query.pop();
@@ -2960,10 +3000,15 @@ fn compare_directories(state: &mut AppState, mode: CompareMode) {
     };
     state.status_message = None;
     state.dialog_selection = 0;
-    state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(format!(
-        "Compare dirs ({mode_name}):\nUnique in left:  {}\nUnique in right: {}\nDiffering:       {}",
-        report.unique_left, report.unique_right, report.differing
-    )));
+    state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
+        app::types::ConfirmDetails::simple(
+            "Compare Results",
+            &format!(
+                "Compare dirs ({mode_name}):\nUnique in left:  {}\nUnique in right: {}\nDiffering:       {}",
+                report.unique_left, report.unique_right, report.differing
+            ),
+        ),
+    ));
 }
 
 // ---- Type conversion helpers ----
@@ -3044,14 +3089,14 @@ mod tests {
         handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 
         assert_eq!(state.dialog_input, "old.txt");
-        assert_eq!(
+        assert!(matches!(
             state.mode,
             AppMode::Dialog(app::types::DialogKind::Input {
-                prompt: "Rename to:".to_string(),
-                default_text: "old.txt".to_string(),
-                action: InputAction::Rename,
+                prompt: _,
+                default_text: _,
+                action: app::types::InputAction::Rename,
             })
-        );
+        ));
     }
 
     #[test]
@@ -3124,8 +3169,10 @@ mod tests {
         assert_eq!(
             state.mode,
             AppMode::Dialog(app::types::DialogKind::Confirm(
-                "Compare dirs (Quick):\nUnique in left:  1\nUnique in right: 1\nDiffering:       0"
-                    .to_string()
+                app::types::ConfirmDetails::simple(
+                    "Compare Results",
+                    "Compare dirs (Quick):\nUnique in left:  1\nUnique in right: 1\nDiffering:       0"
+                )
             ))
         );
     }
@@ -3868,8 +3915,10 @@ mod tests {
         assert_eq!(
             state.mode,
             AppMode::Dialog(app::types::DialogKind::Confirm(
-                "Compare dirs (Quick):\nUnique in left:  1\nUnique in right: 0\nDiffering:       0"
-                    .to_string()
+                app::types::ConfirmDetails::simple(
+                    "Compare Results",
+                    "Compare dirs (Quick):\nUnique in left:  1\nUnique in right: 0\nDiffering:       0"
+                )
             ))
         );
     }
@@ -3907,8 +3956,10 @@ mod tests {
         assert_eq!(
             state.mode,
             AppMode::Dialog(app::types::DialogKind::Confirm(
-                "Compare dirs (Thorough):\nUnique in left:  1\nUnique in right: 0\nDiffering:       0"
-                    .to_string()
+                app::types::ConfirmDetails::simple(
+                    "Compare Results",
+                    "Compare dirs (Thorough):\nUnique in left:  1\nUnique in right: 0\nDiffering:       0"
+                )
             ))
         );
     }

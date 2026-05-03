@@ -367,21 +367,41 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     f.render_widget(paragraph, area);
 }
 
+/// Compute compact panel status summary string.
+/// Format: "  5/100  5%  Sel: 3 [1.2 MB]"
+/// Returns (summary_string, summary_display_width).
+pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
+    let total = panel.entries.len();
+    if total == 0 {
+        return (String::new(), 0);
+    }
+
+    let pos = (panel.cursor + 1).min(total);
+    let pct = pos * 100 / total;
+
+    let mut parts = Vec::new();
+    parts.push(format!("{}/{}", pos, total));
+    parts.push(format!("{}%", pct));
+
+    if panel.selected_count > 0 {
+        parts.push(format!(
+            "Sel:{} [{}]",
+            panel.selected_count,
+            format_size(panel.selected_size)
+        ));
+    }
+
+    let summary = format!(" {} ", parts.join(" "));
+    let width = UnicodeWidthStr::width(summary.as_str());
+    (summary, width)
+}
+
 /// Render status bar showing current file info
 pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let available = area.width as usize;
 
-    let mut selected_info = String::new();
-    if panel.selected_count > 0 {
-        selected_info = format!(
-            "  Selected: {} files ({})",
-            panel.selected_count,
-            format_size(panel.selected_size)
-        );
-    }
-
-    let selected_width = UnicodeWidthStr::width(selected_info.as_str());
-    let remaining = available.saturating_sub(selected_width);
+    let (right_info, right_width) = panel_status_summary(panel);
+    let remaining = available.saturating_sub(right_width);
 
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
@@ -435,7 +455,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
         String::new()
     };
 
-    let full_text = format!("{info_line}{selected_info}");
+    let full_text = format!("{info_line}{right_info}");
 
     let paragraph = Paragraph::new(full_text)
         .style(Style::default().fg(Color::LightCyan))
@@ -788,5 +808,66 @@ mod tests {
         // Verify basic construction works
         assert_eq!(panel.path, PathBuf::from("/test"));
         assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_panel_status_summary_empty_panel() {
+        let panel = PanelState::new(PathBuf::from("/test"));
+        let (summary, width) = panel_status_summary(&panel);
+        assert_eq!(summary, "");
+        assert_eq!(width, 0);
+    }
+
+    #[test]
+    fn test_panel_status_summary_first_item() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, false, false),
+            create_test_entry("b.txt", false, false, false),
+            create_test_entry("c.txt", false, false, false),
+        ];
+        panel.cursor = 0;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(summary.contains("1/3"));
+        assert!(summary.contains("33%"));
+    }
+
+    #[test]
+    fn test_panel_status_summary_last_item() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, false, false),
+            create_test_entry("b.txt", false, false, false),
+            create_test_entry("c.txt", false, false, false),
+        ];
+        panel.cursor = 2;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(summary.contains("3/3"));
+        assert!(summary.contains("100%"));
+    }
+
+    #[test]
+    fn test_panel_status_summary_with_selection() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, false, false),
+            create_test_entry("b.txt", false, false, false),
+        ];
+        panel.cursor = 0;
+        panel.selected_count = 1;
+        panel.selected_size = 1024;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(summary.contains("Sel:1"));
+        assert!(summary.contains("1.0 KB"));
+    }
+
+    #[test]
+    fn test_panel_status_summary_no_selection_when_zero() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![create_test_entry("a.txt", false, false, false)];
+        panel.cursor = 0;
+        panel.selected_count = 0;
+        let (summary, _) = panel_status_summary(&panel);
+        assert!(!summary.contains("Sel:"));
     }
 }
