@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
 use std::time::SystemTime;
@@ -20,65 +20,37 @@ pub fn get_file_color(entry: &FileEntry) -> Style {
     Theme::panel_item(color, entry.is_dir || entry.is_executable)
 }
 
-fn is_archive(name: &str) -> bool {
-    file_type::is_archive(name)
-}
-
-fn is_image(name: &str) -> bool {
-    file_type::is_image(name)
-}
-
-fn is_source_code(name: &str) -> bool {
-    file_type::is_source_code(name)
-}
-
-fn is_document(name: &str) -> bool {
-    file_type::is_document(name)
-}
-
-fn is_audio(name: &str) -> bool {
-    file_type::is_audio(name)
-}
-
-fn is_video(name: &str) -> bool {
-    file_type::is_video(name)
-}
-
-fn is_config(name: &str) -> bool {
-    file_type::is_config(name)
-}
-
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
 pub fn get_file_icon(entry: &FileEntry) -> &'static str {
     if entry.is_dir {
         return "📁 ";
     }
 
-    if is_document(&entry.name) {
+    if file_type::is_document(&entry.name) {
         return "📄 ";
     }
 
-    if is_archive(&entry.name) {
+    if file_type::is_archive(&entry.name) {
         return "📦 ";
     }
 
-    if is_image(&entry.name) {
+    if file_type::is_image(&entry.name) {
         return "🖼 ";
     }
 
-    if is_audio(&entry.name) {
+    if file_type::is_audio(&entry.name) {
         return "🎵 ";
     }
 
-    if is_video(&entry.name) {
+    if file_type::is_video(&entry.name) {
         return "🎬 ";
     }
 
-    if is_config(&entry.name) {
+    if file_type::is_config(&entry.name) {
         return "⚙ ";
     }
 
-    if is_source_code(&entry.name) {
+    if file_type::is_source_code(&entry.name) {
         return "💻 ";
     }
 
@@ -170,7 +142,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
 
         // Get base style from file type
         let line_style = if entry.selected {
-            get_file_color(entry).fg(Color::LightYellow)
+            get_file_color(entry).fg(Theme::SELECTED_FILE_FG)
         } else {
             get_file_color(entry)
         };
@@ -326,21 +298,19 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let total_entries = panel.entries.len();
-    let visible_height = area.height as usize;
     let scroll_offset = panel.scroll_offset;
 
     let height = area.height as usize;
-    let scrollbar_height = height;
     let max_scroll = total_entries.saturating_sub(height);
-    let thumb_pos = if max_scroll > 0 && scrollbar_height > 1 {
-        scroll_offset * (scrollbar_height - 1) / max_scroll
+    let thumb_pos = if max_scroll > 0 && height > 1 {
+        scroll_offset * (height - 1) / max_scroll
     } else {
         0
     };
 
     let mut scrollbar = String::with_capacity(height * 4);
     for i in 0..height {
-        if i == thumb_pos && total_entries > visible_height {
+        if i == thumb_pos && total_entries > height {
             scrollbar.push_str("█\n");
         } else {
             scrollbar.push_str("│\n");
@@ -348,9 +318,9 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let style = if is_active {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(Theme::SCROLLBAR_ACTIVE)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Theme::SCROLLBAR_INACTIVE)
     };
 
     let paragraph = Paragraph::new(scrollbar)
@@ -451,7 +421,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let full_text = format!("{info_line}{right_info}");
 
     let paragraph = Paragraph::new(full_text)
-        .style(Style::default().fg(Color::LightCyan))
+        .style(Style::default().fg(Theme::STATUS_BAR_FG))
         .block(Block::default().borders(Borders::TOP));
 
     f.render_widget(paragraph, area);
@@ -480,7 +450,9 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
         .split(area);
 
     for (i, (key, label)) in keys.iter().enumerate() {
-        let label_style = Style::default().fg(Color::LightBlue).bg(Color::DarkGray);
+        let label_style = Style::default()
+            .fg(Theme::FUNCTION_BAR_FG)
+            .bg(Theme::FUNCTION_BAR_BG);
 
         let text = format!(" {key} {label} ");
         let paragraph = Paragraph::new(Span::styled(text, label_style))
@@ -493,11 +465,16 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 /// Render menu bar at top
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let menu_text = "   Left   File   Command   Options   Right   ";
-    let x = area.x + area.width.saturating_sub(menu_text.len() as u16) / 2;
-    let centered_area = Rect::new(x, area.y, menu_text.len() as u16, area.height);
+    let text_width = UnicodeWidthStr::width(menu_text) as u16;
+    let x = area.x + area.width.saturating_sub(text_width) / 2;
+    let centered_area = Rect::new(x, area.y, text_width, area.height);
 
     let paragraph = Paragraph::new(menu_text)
-        .style(Style::default().fg(Color::LightBlue).bg(Color::DarkGray))
+        .style(
+            Style::default()
+                .fg(Theme::MENU_BAR_FG)
+                .bg(Theme::MENU_BAR_BG),
+        )
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, centered_area);
@@ -506,6 +483,8 @@ pub fn render_menu_bar(f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::file_type::*;
+    use ratatui::style::Color;
     use std::path::PathBuf;
 
     fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {

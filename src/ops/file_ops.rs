@@ -549,6 +549,25 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
+    let src_meta = std::fs::metadata(src)?;
+    let dest_meta = match std::fs::metadata(dest) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    use std::os::unix::fs::MetadataExt;
+    if src_meta.dev() == dest_meta.dev() && src_meta.ino() == dest_meta.ino() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "source and destination are the same file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
 fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,

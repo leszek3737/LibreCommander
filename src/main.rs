@@ -1,10 +1,8 @@
 use std::collections::HashSet;
 use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
-use std::thread::{self, JoinHandle};
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::{
@@ -20,39 +18,22 @@ use ratatui::{
 
 use lc::{app, fs, menu, ops, ui};
 
+use app::job_runner::{RunningJob, poll_running_job, start_confirmed_action};
 use app::types::{
     ActivePanel, AppMode, AppState, CompareMode, InputAction, PanelState, PickerKind,
 };
-use app::{dir_tree, paths, user_menu};
+use app::{dir_tree, paths, shell, user_menu, watcher_sync};
 use fs::reader;
-use fs::watcher::{WatchEvent, Watcher};
+use fs::watcher::Watcher;
 use menu::{
     MENU_ITEMS, MENU_TITLES, MenuAction, menu_action_at, menu_dropdown_x, menu_item_count,
     menu_title_width, menu_title_x, menu_total_count,
 };
 use ops::sorting;
 use ui::theme::Theme;
-use ui::{dialogs, panels, viewer};
+use ui::{DIR_TREE_OVERHEAD_ROWS, LAYOUT_OVERHEAD_ROWS, dialogs, panels, viewer};
 
 const EVENT_POLL_TIMEOUT_MS: u64 = 100;
-const MAX_HISTORY: usize = 100;
-const LAYOUT_OVERHEAD_ROWS: u16 = 6;
-const DIR_TREE_OVERHEAD_ROWS: u16 = 3;
-
-enum JobMessage {
-    Progress(ops::batch::BatchProgress),
-    Finished {
-        action_label: &'static str,
-        report: ops::batch::BatchReport,
-    },
-}
-
-struct RunningJob {
-    receiver: Receiver<JobMessage>,
-    cancel: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
@@ -148,18 +129,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
     refresh_panel(&mut state.left_panel, 0);
     refresh_panel(&mut state.right_panel, 0);
-    sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
+    watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
 
     let mut dirty = true;
 
     loop {
         sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-        sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
-        if poll_watcher_events(&mut state, &watch_rx) {
+        watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
+        if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
             dirty = true;
         }
 
-        if poll_running_job(&mut state, &mut running_job) {
+        if poll_running_job(&mut state, &mut running_job, refresh_both) {
             let resumed =
                 sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
             if resumed {
@@ -296,133 +277,6 @@ fn sync_watcher_job_state(
     } else {
         false
     }
-}
-
-fn sync_watcher_paths(
-    watcher: &mut Option<Watcher>,
-    state: &AppState,
-    last_synced: &mut Option<(PathBuf, PathBuf)>,
-) {
-    let Some(watcher) = watcher.as_mut() else {
-        return;
-    };
-
-    let left = state.left_panel.path.clone();
-    let right = state.right_panel.path.clone();
-
-    if last_synced.as_ref() == Some(&(left.clone(), right.clone())) {
-        return;
-    }
-
-    let desired: HashSet<PathBuf> = [&left, &right]
-        .into_iter()
-        .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
-        .collect();
-    let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
-
-    for path in current.difference(&desired) {
-        let _ = watcher.unwatch(path);
-    }
-    for path in desired.difference(&current) {
-        let _ = watcher.watch(path);
-    }
-
-    *last_synced = Some((left, right));
-}
-
-fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
-    let mut dirty = false;
-
-    while let Ok(event) = receiver.try_recv() {
-        match event {
-            WatchEvent::Created(path) | WatchEvent::Modified(path) => {
-                dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &path);
-                dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &path);
-            }
-            WatchEvent::Deleted(path) => {
-                dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &path);
-                dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &path);
-            }
-            WatchEvent::Renamed { from, to } => {
-                dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &from);
-                dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &from);
-                dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &to);
-                dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &to);
-            }
-        }
-    }
-
-    dirty
-}
-
-fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, &panel.path) {
-        return false;
-    }
-
-    let Some(path) = panel_event_path(panel, path) else {
-        return false;
-    };
-    apply_watcher_upsert(panel, &path)
-}
-
-fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, &panel.path) {
-        return false;
-    }
-
-    let Some(path) = panel_event_path(panel, path) else {
-        return false;
-    };
-    apply_watcher_remove(panel, &path)
-}
-
-fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
-    path.file_name().map(|name| panel.path.join(name))
-}
-
-fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
-    if path.file_name().is_none() {
-        return false;
-    }
-
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-
-    if parent == panel_path {
-        return true;
-    }
-
-    let parent = parent
-        .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf());
-    let panel_path = panel_path
-        .canonicalize()
-        .unwrap_or_else(|_| panel_path.to_path_buf());
-    parent == panel_path
-}
-
-fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
-    let Ok(entry) = reader::get_single_entry(path) else {
-        return false;
-    };
-
-    reader::upsert_entry(panel, entry);
-    true
-}
-
-fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
-    let existed = panel
-        .unfiltered_entries
-        .iter()
-        .chain(panel.entries.iter())
-        .any(|entry| entry.path == path);
-    if existed {
-        reader::remove_entry(panel, path);
-    }
-
-    existed
 }
 
 fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
@@ -590,7 +444,13 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
 
     // If directory tree mode, render fullscreen tree overlay
     if state.mode == AppMode::DirectoryTree {
-        render_directory_tree(f, state);
+        ui::dir_tree::render_directory_tree(
+            f,
+            &state.tree_root,
+            &state.tree_entries,
+            state.tree_selected,
+            state.tree_scroll,
+        );
         return;
     }
 
@@ -656,103 +516,13 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
 
     // Dialog overlay
     if let AppMode::Dialog(ref dialog_kind) = state.mode {
-        let ui_dialog = match dialog_kind {
-            app::types::DialogKind::Confirm(cd) => dialogs::DialogKind::Confirm {
-                title: cd.title.clone(),
-                message: cd.message.clone(),
-                selection: state.dialog_selection,
-                files: cd
-                    .files
-                    .as_ref()
-                    .map(|fps| fps.iter().map(|p| p.display().to_string()).collect()),
-            },
-            app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
-                title: "Input".to_string(),
-                prompt: prompt.clone(),
-                value: state.dialog_input.clone(),
-                cursor_pos: state.dialog_cursor_pos,
-            },
-            app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
-                title: "Error".to_string(),
-                message: msg.clone(),
-            },
-            app::types::DialogKind::Help(msg) => dialogs::DialogKind::Help {
-                title: "Help".to_string(),
-                message: msg.clone(),
-            },
-            app::types::DialogKind::Progress(msg, pct) => dialogs::DialogKind::Progress {
-                title: "Progress".to_string(),
-                message: msg.clone(),
-                percent: *pct * 100.0,
-            },
-            app::types::DialogKind::CopyMove {
-                source,
-                dest,
-                is_move,
-            } => {
-                let action = if *is_move { "Move" } else { "Copy" };
-                let msg = format!(
-                    "{} {} item(s)\nfrom: {}\n  to: {}",
-                    action,
-                    source.len(),
-                    source
-                        .first()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    dest.display(),
-                );
-                dialogs::DialogKind::Confirm {
-                    title: format!("{action} Confirm"),
-                    message: msg,
-                    selection: state.dialog_selection,
-                    files: Some(source.iter().map(|p| p.display().to_string()).collect()),
-                }
-            }
-            app::types::DialogKind::Properties {
-                name,
-                size,
-                mtime,
-                permissions,
-                owner,
-                group,
-                is_dir,
-                is_symlink,
-            } => {
-                let file_type = if *is_symlink {
-                    "Symlink"
-                } else if *is_dir {
-                    "Directory"
-                } else {
-                    "File"
-                };
-                use chrono::TimeZone;
-                let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                    chrono::Local
-                        .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-                        .single()
-                        .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string()
-                } else {
-                    "Unknown".to_string()
-                };
-                dialogs::DialogKind::Properties {
-                    name: name.clone(),
-                    size: app::types::FileEntry::format_size(*size),
-                    mtime: mtime_str,
-                    permissions: app::types::FileEntry::display_permissions_raw(*permissions),
-                    owner: owner.clone(),
-                    group: group.clone(),
-                    file_type: file_type.to_string(),
-                }
-            }
-        };
+        let ui_dialog = to_ui_dialog(dialog_kind, state);
         dialogs::render_dialog(f, &ui_dialog);
     }
 
     // Menu overlay
     if state.mode == AppMode::Menu {
-        render_menu_dropdown(
+        ui::menu::render_menu_dropdown(
             f,
             main_layout[0],
             state.menu_selected,
@@ -819,141 +589,98 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     }
 }
 
-fn render_menu_dropdown(
-    f: &mut Frame,
-    menu_bar_area: Rect,
-    selected_menu: usize,
-    selected_item: usize,
-) {
-    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-
-    // Highlight selected menu title in menu bar
-    for (i, title) in MENU_TITLES.iter().enumerate() {
-        let title_width = menu_title_width(title);
-        let style = if i == selected_menu {
-            Theme::highlight_bold()
-        } else {
-            Theme::menu_bar()
-        };
-        let label = format!(" {title} ");
-        let p = Paragraph::new(label).style(style);
-        let area = Rect::new(
-            menu_bar_area.x + menu_title_x(menu_bar_area.width, i),
-            menu_bar_area.y,
-            title_width,
-            1,
-        );
-        f.render_widget(p, area);
-    }
-
-    // Draw dropdown
-    let items = MENU_ITEMS[selected_menu];
-    let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
-    let dropdown_height = items.len() as u16 + 2; // +2 for border
-
-    // Calculate dropdown x position
-    let dropdown_y = menu_bar_area.y + 1;
-    let dropdown_x = menu_dropdown_x(menu_bar_area, selected_menu, dropdown_width);
-    let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);
-
-    // Fill dropdown area with blue background
-    f.render_widget(Clear, dropdown_area);
-    let bg_block = ratatui::widgets::Block::default().style(Theme::panel_bg());
-    f.render_widget(bg_block, dropdown_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Theme::panel_fg())
-        .style(Theme::panel_bg());
-    let inner = block.inner(dropdown_area);
-    f.render_widget(block, dropdown_area);
-
-    for (i, item) in items.iter().enumerate() {
-        if i >= inner.height as usize {
-            break;
+fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialogs::DialogKind {
+    match dialog_kind {
+        app::types::DialogKind::Confirm(cd) => dialogs::DialogKind::Confirm {
+            title: cd.title.clone(),
+            message: cd.message.clone(),
+            selection: state.dialog_selection,
+            files: cd
+                .files
+                .as_ref()
+                .map(|fps| fps.iter().map(|p| p.display().to_string()).collect()),
+        },
+        app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
+            title: "Input".to_string(),
+            prompt: prompt.clone(),
+            value: state.dialog_input.clone(),
+            cursor_pos: state.dialog_cursor_pos,
+        },
+        app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
+            title: "Error".to_string(),
+            message: msg.clone(),
+        },
+        app::types::DialogKind::Help(msg) => dialogs::DialogKind::Help {
+            title: "Help".to_string(),
+            message: msg.clone(),
+        },
+        app::types::DialogKind::Progress(msg, pct) => dialogs::DialogKind::Progress {
+            title: "Progress".to_string(),
+            message: msg.clone(),
+            percent: *pct * 100.0,
+        },
+        app::types::DialogKind::CopyMove {
+            source,
+            dest,
+            is_move,
+        } => {
+            let action = if *is_move { "Move" } else { "Copy" };
+            let msg = format!(
+                "{} {} item(s)\nfrom: {}\n  to: {}",
+                action,
+                source.len(),
+                source
+                    .first()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                dest.display(),
+            );
+            dialogs::DialogKind::Confirm {
+                title: format!("{action} Confirm"),
+                message: msg,
+                selection: state.dialog_selection,
+                files: Some(source.iter().map(|p| p.display().to_string()).collect()),
+            }
         }
-        let style = if i == selected_item {
-            Theme::highlight()
-        } else {
-            Theme::panel()
-        };
-        let item_area = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
-        let p = Paragraph::new(format!(" {item} ")).style(style);
-        f.render_widget(p, item_area);
-    }
-}
-
-fn render_directory_tree(f: &mut Frame, state: &AppState) {
-    use ratatui::widgets::{Block, Borders, Paragraph};
-
-    let area = f.area();
-
-    // Fill with blue background instead of clearing
-    let bg_block = Block::default().style(Theme::panel_bg());
-    f.render_widget(bg_block, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Directory Tree: {} ", state.tree_root.display()))
-        .title_style(Theme::title());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    if inner.height == 0 || state.tree_entries.is_empty() {
-        return;
-    }
-
-    let visible_height = inner.height.saturating_sub(1) as usize;
-    let scroll = state.tree_scroll;
-    let entries = &state.tree_entries;
-
-    // Clamp scroll so selected is visible
-    let selected = state.tree_selected;
-    let effective_scroll = if selected < scroll {
-        selected
-    } else if selected >= scroll + visible_height {
-        selected.saturating_sub(visible_height) + 1
-    } else {
-        scroll
-    };
-
-    let start = effective_scroll;
-    let end = (start + visible_height).min(entries.len());
-
-    for (offset, entry) in entries[start..end].iter().enumerate() {
-        let row = start + offset;
-        let y = inner.y + offset as u16;
-        if y >= inner.y + inner.height {
-            break;
+        app::types::DialogKind::Properties {
+            name,
+            size,
+            mtime,
+            permissions,
+            owner,
+            group,
+            is_dir,
+            is_symlink,
+        } => {
+            let file_type = if *is_symlink {
+                "Symlink"
+            } else if *is_dir {
+                "Directory"
+            } else {
+                "File"
+            };
+            use chrono::TimeZone;
+            let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                chrono::Local
+                    .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
+                    .single()
+                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            } else {
+                "Unknown".to_string()
+            };
+            dialogs::DialogKind::Properties {
+                name: name.clone(),
+                size: app::types::FileEntry::format_size(*size),
+                mtime: mtime_str,
+                permissions: app::types::FileEntry::display_permissions_raw(*permissions),
+                owner: owner.clone(),
+                group: group.clone(),
+                file_type: file_type.to_string(),
+            }
         }
-
-        let indent = "  ".repeat(entry.depth);
-        let prefix = if entry.is_dir {
-            if entry.expanded { "- " } else { "+ " }
-        } else {
-            "  "
-        };
-
-        let line_style = if row == selected {
-            Theme::highlight()
-        } else if entry.is_dir {
-            Theme::panel_file(Theme::DIRECTORY)
-        } else {
-            Theme::panel_file(Theme::REGULAR_FILE)
-        };
-
-        let text = format!("{}{}{}", indent, prefix, entry.name);
-        let para = Paragraph::new(text).style(line_style);
-        let row_area = Rect::new(inner.x, y, inner.width, 1);
-        f.render_widget(para, row_area);
     }
-
-    // Bottom bar (inside border, above bottom border line)
-    let bottom_y = inner.y + inner.height.saturating_sub(1);
-    let bottom_area = Rect::new(inner.x, bottom_y, inner.width, 1);
-    let help_text = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
-    let help_para = Paragraph::new(help_text).style(Theme::warning());
-    f.render_widget(help_para, bottom_area);
 }
 
 fn handle_directory_tree(
@@ -1429,7 +1156,7 @@ fn handle_normal_mode<B: ratatui::backend::Backend>(
             refresh_active(state);
         }
         KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Err(e) = toggle_external_view(state, terminal) {
+            if let Err(e) = shell::toggle_external_view(state, terminal, refresh_both) {
                 state.status_message = Some(format!("External view error: {e}"));
             }
         }
@@ -1510,7 +1237,7 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
             state.command_line.clear();
             state.history_index = None;
             if !cmd.is_empty() {
-                run_shell_command(state, &cmd);
+                shell::run_shell_command(state, &cmd, refresh_active);
             }
         }
         KeyCode::Backspace => {
@@ -1548,62 +1275,6 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
     }
 }
 
-fn run_shell_command(state: &mut AppState, cmd: &str) {
-    if cmd.trim().is_empty() {
-        return;
-    }
-
-    if state.command_history.back().is_none_or(|last| last != cmd) {
-        state.command_history.push_back(cmd.to_string());
-        if state.command_history.len() > MAX_HISTORY {
-            state.command_history.pop_front();
-        }
-    }
-
-    struct ShellRestoreGuard {
-        restore_ok: bool,
-    }
-
-    impl Drop for ShellRestoreGuard {
-        fn drop(&mut self) {
-            if !self.restore_ok {
-                if let Err(err) = resume_terminal_stdout() {
-                    eprintln!("Terminal restore failed after shell command: {err}");
-                }
-            }
-        }
-    }
-
-    let mut restore_guard = ShellRestoreGuard { restore_ok: false };
-    if suspend_terminal_stdout().is_err() {
-        state.status_message = Some("Terminal suspend failed".into());
-        return;
-    }
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(&state.active_panel().path)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status();
-    match status {
-        Ok(s) if s.success() => println!("\n[Command succeeded. Press Enter to return]"),
-        Ok(s) => println!("\n[Command exited with status: {s}. Press Enter to return]"),
-        Err(e) => println!("\n[Command failed: {e}. Press Enter to return]"),
-    }
-    let mut buf = String::new();
-    // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for
-    let _ = io::stdin().read_line(&mut buf);
-    match resume_terminal_stdout() {
-        Ok(()) => restore_guard.restore_ok = true,
-        Err(e) => {
-            state.status_message = Some(format!("Terminal restore failed: {e}"));
-        }
-    }
-    refresh_active(state);
-}
-
 fn parse_octal_mode(input: &str) -> Option<u32> {
     let mode = u32::from_str_radix(input.trim(), 8).ok()?;
     if mode <= 0o7777 { Some(mode) } else { None }
@@ -1637,13 +1308,13 @@ fn handle_dialog(
     key: KeyCode,
     terminal_height: u16,
 ) {
-    let dialog_kind = if let AppMode::Dialog(ref dk) = state.mode {
-        dk.clone()
+    let dk = if let AppMode::Dialog(ref dk) = state.mode {
+        dk
     } else {
         return;
     };
 
-    match dialog_kind {
+    match dk {
         app::types::DialogKind::Confirm(_) => match key {
             KeyCode::Char('y' | 'Y') => {
                 if state.pending_action.is_some() {
@@ -1823,7 +1494,7 @@ fn handle_dialog(
                 }
             }
             KeyCode::Esc => {
-                state.mode = if action == InputAction::ViewerSearch {
+                state.mode = if *action == InputAction::ViewerSearch {
                     AppMode::Viewing
                 } else {
                     AppMode::Normal
@@ -2070,7 +1741,7 @@ fn handle_list_picker(state: &mut AppState, key: KeyCode) {
                             tagged: &tagged,
                         };
                         let cmd = user_menu::apply_substitutions(&entry.command, &ctx);
-                        run_shell_command(state, &cmd);
+                        shell::run_shell_command(state, &cmd, refresh_active);
                     }
                 }
                 _ => {}
@@ -2441,204 +2112,6 @@ fn handle_mouse_panels(
         panel_mut.cursor = clicked_index;
         panel_mut.ensure_cursor_visible(panel_height as usize);
     }
-}
-
-/// Toggle external panel view (Ctrl+O) - hide panels to see terminal output
-fn toggle_external_view<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    _terminal: &mut ratatui::Terminal<B>,
-) -> io::Result<()> {
-    suspend_terminal_stdout()?;
-
-    struct ExternalViewRestoreGuard {
-        restore_ok: bool,
-    }
-
-    impl Drop for ExternalViewRestoreGuard {
-        fn drop(&mut self) {
-            if !self.restore_ok {
-                let _ = resume_terminal_stdout();
-            }
-        }
-    }
-
-    let mut restore_guard = ExternalViewRestoreGuard { restore_ok: false };
-
-    // Show message to user
-    println!("External view active. Press Ctrl+O to return to Libre Commander.");
-    println!("Press Enter to continue...");
-
-    // Wait for Ctrl+O or any key
-    enable_raw_mode()?;
-    loop {
-        if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
-            && let Event::Key(key) = event::read()?
-        {
-            if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                break;
-            }
-            // Also allow Enter to return
-            if key.code == KeyCode::Enter {
-                break;
-            }
-            // Esc to return
-            if key.code == KeyCode::Esc {
-                break;
-            }
-        }
-    }
-
-    resume_terminal_stdout()?;
-    restore_guard.restore_ok = true;
-
-    // Refresh display
-    refresh_both(state);
-
-    Ok(())
-}
-
-fn action_label(action: &app::types::PendingAction) -> &'static str {
-    match action {
-        app::types::PendingAction::Copy { .. } => "Copy",
-        app::types::PendingAction::Move { .. } => "Move",
-        app::types::PendingAction::Delete { .. } => "Delete",
-    }
-}
-
-fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<RunningJob>) {
-    let action = match state.pending_action.take() {
-        Some(a) => a,
-        None => return,
-    };
-    if running_job.is_some() {
-        state.status_message = Some("Another job is already running".to_string());
-        return;
-    }
-
-    let action_label = action_label(&action);
-    let (sender, receiver) = mpsc::channel();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_for_worker = Arc::clone(&cancel);
-    let label_for_worker = action_label;
-    let handle = thread::spawn(move || {
-        let progress_sender = sender.clone();
-        let report = ops::batch::execute_batch_with_byte_progress(
-            action,
-            move |progress| {
-                let _ = progress_sender.send(JobMessage::Progress(progress));
-            },
-            Some(cancel_for_worker),
-            label_for_worker,
-        );
-        let _ = sender.send(JobMessage::Finished {
-            action_label,
-            report,
-        });
-    });
-
-    state.active_panel_mut().clear_selection();
-    state.status_message = None;
-    state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
-        format!("{action_label} starting..."),
-        0.0,
-    ));
-    *running_job = Some(RunningJob {
-        receiver,
-        cancel,
-        handle: Some(handle),
-    });
-}
-
-fn poll_running_job(state: &mut AppState, running_job: &mut Option<RunningJob>) -> bool {
-    let Some(job) = running_job.as_mut() else {
-        return false;
-    };
-    let mut dirty = false;
-    let mut finished = None;
-
-    while let Ok(message) = job.receiver.try_recv() {
-        dirty = true;
-        match message {
-            JobMessage::Progress(progress) => {
-                let message =
-                    format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-                state.mode = AppMode::Dialog(app::types::DialogKind::Progress(
-                    message,
-                    progress.byte_percent() / 100.0,
-                ));
-            }
-            JobMessage::Finished {
-                action_label,
-                report,
-            } => finished = Some((action_label, report)),
-        }
-    }
-
-    if let Some((action_label, report)) = finished {
-        if let Some(mut job) = running_job.take()
-            && let Some(handle) = job.handle.take()
-        {
-            let _ = handle.join();
-        }
-        finish_running_job(state, action_label, report);
-        dirty = true;
-    }
-
-    dirty
-}
-
-fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool) -> String {
-    let current = progress
-        .current
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "done".to_string());
-
-    let mut message = format!("{} of {}: {current}", progress.completed, progress.total);
-    if progress.bytes_total > 0 {
-        message.push_str(&format!(
-            " | {} / {} | {}/s",
-            ops::batch::BatchProgress::format_bytes(progress.bytes_done),
-            ops::batch::BatchProgress::format_bytes(progress.bytes_total),
-            ops::batch::BatchProgress::format_bytes(progress.speed() as u64),
-        ));
-        if let Some(eta) = progress.eta() {
-            message.push_str(&format!(" | ETA {}", format_duration_short(eta)));
-        }
-    }
-
-    if canceling {
-        format!("Canceling: {message}")
-    } else {
-        message
-    }
-}
-
-fn format_duration_short(duration: Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-
-    if hours > 0 {
-        format!("{hours:02}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes:02}:{seconds:02}")
-    }
-}
-
-fn finish_running_job(
-    state: &mut AppState,
-    _action_label: &'static str,
-    report: ops::batch::BatchReport,
-) {
-    state.status_message = Some(report.format_summary());
-    state.mode = AppMode::Normal;
-    if let Some(panel) = state.menu_restore_panel.take() {
-        set_active_panel(state, panel);
-    }
-    refresh_both(state);
 }
 
 fn apply_search_filter(panel: &mut PanelState) {
@@ -3108,30 +2581,6 @@ mod tests {
         assert_eq!(parse_octal_mode("755"), Some(0o755));
         assert_eq!(parse_octal_mode("0644"), Some(0o644));
         assert_eq!(parse_octal_mode("bad"), None);
-    }
-
-    #[test]
-    fn format_duration_short_uses_clock_format() {
-        assert_eq!(format_duration_short(Duration::from_secs(15)), "00:15");
-        assert_eq!(format_duration_short(Duration::from_secs(75)), "01:15");
-        assert_eq!(
-            format_duration_short(Duration::from_secs(3_665)),
-            "01:01:05"
-        );
-    }
-
-    #[test]
-    fn format_progress_message_uses_item_fallback_without_bytes() {
-        let progress = ops::batch::BatchProgress::new(3, 10, Some(PathBuf::from("file.txt")));
-
-        assert_eq!(
-            format_progress_message(&progress, false),
-            "3 of 10: file.txt"
-        );
-        assert_eq!(
-            format_progress_message(&progress, true),
-            "Canceling: 3 of 10: file.txt"
-        );
     }
 
     #[test]
@@ -3617,7 +3066,7 @@ mod tests {
                 .is_none_or(|l| l.as_str() != cmd.as_str())
             {
                 state.command_history.push_back(cmd);
-                if state.command_history.len() > MAX_HISTORY {
+                if state.command_history.len() > shell::MAX_HISTORY {
                     state.command_history.pop_front();
                 }
             }

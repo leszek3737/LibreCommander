@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 
+use crate::app::types::PendingAction;
 use crate::ops::file_ops;
+
+pub fn action_label(action: &PendingAction) -> &'static str {
+    match action {
+        PendingAction::Copy { .. } => "Copy",
+        PendingAction::Move { .. } => "Move",
+        PendingAction::Delete { .. } => "Delete",
+    }
+}
 
 pub(crate) fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
     child != parent && child.starts_with(parent)

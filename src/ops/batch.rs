@@ -3,7 +3,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::types::PendingAction;
@@ -121,23 +120,12 @@ impl BatchProgress {
     }
 
     pub fn format_bytes(bytes: u64) -> String {
-        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-        let mut val = bytes as f64;
-        let mut idx = 0;
-        while val >= 1024.0 && idx < UNITS.len() - 1 {
-            val /= 1024.0;
-            idx += 1;
-        }
-        if idx == 0 {
-            format!("{} {}", bytes, UNITS[idx])
-        } else {
-            format!("{:.1} {}", val, UNITS[idx])
-        }
+        crate::app::types::format_size(bytes)
     }
 }
 
 pub fn execute_batch(action: PendingAction) -> BatchReport {
-    let label = action_label(&action);
+    let label = helpers::action_label(&action);
     execute_batch_with_progress(action, |_| {}, None, label)
 }
 
@@ -163,14 +151,6 @@ pub fn execute_batch_with_byte_progress(
     };
     report.action_label = action_label;
     report
-}
-
-fn action_label(action: &PendingAction) -> &'static str {
-    match action {
-        PendingAction::Copy { .. } => "Copy",
-        PendingAction::Move { .. } => "Move",
-        PendingAction::Delete { .. } => "Delete",
-    }
 }
 
 fn is_canceled(cancel: &Option<Arc<AtomicBool>>) -> bool {
@@ -201,6 +181,121 @@ fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressS
         current_file_total: snapshot.current_file_total,
         start_time: Some(snapshot.start_time),
     });
+}
+
+fn copy_entry(
+    src: &Path,
+    dest: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+    on_progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    match src.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => file_ops::copy_symlink(src, dest).map(|_| ()),
+        Ok(meta) if meta.is_dir() => {
+            let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+            let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+            let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
+            let src = src.to_path_buf();
+            let dest = dest.to_path_buf();
+            rayon::scope(|s| {
+                s.spawn(|_| {
+                    let r = file_ops::copy_dir_recursive_with_progress(
+                        &src,
+                        &dest,
+                        &progress_tx,
+                        &cancel_token,
+                    );
+                    result_tx.send(r).ok();
+                });
+            });
+            for bytes in progress_rx.try_iter() {
+                on_progress(bytes);
+            }
+            result_rx
+                .recv()
+                .unwrap_or_else(|_| Err(io::Error::other("copy worker failed")))
+                .map(|_| ())
+        }
+        Ok(_) => {
+            let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+            let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+            let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
+            let src = src.to_path_buf();
+            let dest = dest.to_path_buf();
+            rayon::scope(|s| {
+                s.spawn(|_| {
+                    let r =
+                        file_ops::copy_file_with_progress(&src, &dest, &progress_tx, &cancel_token);
+                    result_tx.send(r).ok();
+                });
+            });
+            for bytes in progress_rx.try_iter() {
+                on_progress(bytes);
+            }
+            result_rx
+                .recv()
+                .unwrap_or_else(|_| Err(io::Error::other("copy worker failed")))
+                .map(|_| ())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn move_entry(
+    src: &Path,
+    dest: &Path,
+    cancel: Option<Arc<AtomicBool>>,
+    on_progress: &mut dyn FnMut(u64),
+) -> io::Result<()> {
+    let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+    let (result_tx, result_rx) = mpsc::channel::<io::Result<()>>();
+    let src = src.to_path_buf();
+    let dest = dest.to_path_buf();
+    rayon::scope(|s| {
+        s.spawn(|_| {
+            let r = file_ops::move_entry_with_progress(&src, &dest, &progress_tx, &cancel_token);
+            result_tx.send(r).ok();
+        });
+    });
+    for bytes in progress_rx.try_iter() {
+        on_progress(bytes);
+    }
+    result_rx
+        .recv()
+        .unwrap_or_else(|_| Err(io::Error::other("move worker failed")))
+}
+
+fn batch_copy(
+    paths: &[PathBuf],
+    dest_dir: &Path,
+    progress: &mut impl FnMut(BatchProgress),
+    cancel: Option<Arc<AtomicBool>>,
+) -> BatchReport {
+    let operation_cancel = cancel.clone();
+    execute_batch_generic(
+        paths,
+        dest_dir,
+        |src, dest, on_progress| copy_entry(src, dest, operation_cancel.clone(), on_progress),
+        progress,
+        cancel,
+    )
+}
+
+fn batch_move(
+    paths: &[PathBuf],
+    dest_dir: &Path,
+    progress: &mut impl FnMut(BatchProgress),
+    cancel: Option<Arc<AtomicBool>>,
+) -> BatchReport {
+    let operation_cancel = cancel.clone();
+    execute_batch_generic(
+        paths,
+        dest_dir,
+        |src, dest, on_progress| move_entry(src, dest, operation_cancel.clone(), on_progress),
+        progress,
+        cancel,
+    )
 }
 
 fn execute_batch_generic<F>(
@@ -281,16 +376,18 @@ where
             continue;
         }
 
+        let mut file_bytes_so_far = 0_u64;
         let result = action(src, &target, &mut |current_file_bytes: u64| {
+            file_bytes_so_far += current_file_bytes;
             report_progress(
                 progress,
                 ProgressSnapshot {
                     completed: idx,
                     total,
                     current: Some(src),
-                    bytes_done: bytes_done.saturating_add(current_file_bytes),
+                    bytes_done: bytes_done.saturating_add(file_bytes_so_far),
                     bytes_total,
-                    current_file_bytes,
+                    current_file_bytes: file_bytes_so_far,
                     current_file_total: current_total,
                     start_time,
                 },
@@ -332,102 +429,6 @@ where
         canceled,
         action_label: "",
     }
-}
-
-fn batch_copy(
-    paths: &[PathBuf],
-    dest_dir: &Path,
-    progress: &mut impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
-) -> BatchReport {
-    let operation_cancel = cancel.clone();
-    execute_batch_generic(
-        paths,
-        dest_dir,
-        |src, dest, on_progress| match src.symlink_metadata() {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                file_ops::copy_symlink(src, dest).map(|_| ())
-            }
-            Ok(meta) if meta.is_dir() => {
-                let cancel_token = operation_cancel
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-                let (tx, rx) = mpsc::channel::<u64>();
-                let src = src.to_path_buf();
-                let dest = dest.to_path_buf();
-                let handle = thread::spawn(move || {
-                    file_ops::copy_dir_recursive_with_progress(&src, &dest, &tx, &cancel_token)
-                });
-                let result = handle.join();
-                for bytes in rx.try_iter() {
-                    on_progress(bytes);
-                }
-                result
-                    .unwrap_or_else(|_| Err(io::Error::other("copy worker panicked")))
-                    .map(|_| ())
-            }
-            Ok(_) => {
-                let cancel_token = operation_cancel
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-                let (tx, rx) = mpsc::channel::<u64>();
-                let src = src.to_path_buf();
-                let dest = dest.to_path_buf();
-                let handle = thread::spawn(move || {
-                    file_ops::copy_file_with_progress(&src, &dest, &tx, &cancel_token)
-                });
-                let result = handle.join();
-                for bytes in rx.try_iter() {
-                    on_progress(bytes);
-                }
-                result
-                    .unwrap_or_else(|_| Err(io::Error::other("copy worker panicked")))
-                    .map(|_| ())
-            }
-            Err(e) => Err(e),
-        },
-        progress,
-        cancel,
-    )
-}
-
-fn batch_move(
-    paths: &[PathBuf],
-    dest_dir: &Path,
-    progress: &mut impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
-) -> BatchReport {
-    let operation_cancel = cancel.clone();
-    execute_batch_generic(
-        paths,
-        dest_dir,
-        |src, dest, on_progress| {
-            move_entry_with_progress(src, dest, operation_cancel.clone(), on_progress)
-        },
-        progress,
-        cancel,
-    )
-}
-
-fn move_entry_with_progress(
-    src: &Path,
-    dest: &Path,
-    cancel: Option<Arc<AtomicBool>>,
-    mut on_progress: impl FnMut(u64),
-) -> io::Result<()> {
-    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
-    let worker_cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-    let src = src.to_path_buf();
-    let dest = dest.to_path_buf();
-    let handle = thread::spawn(move || {
-        file_ops::move_entry_with_progress(&src, &dest, &progress_tx, &worker_cancel)
-    });
-
-    let result = handle.join();
-    for current in progress_rx.try_iter() {
-        on_progress(current);
-    }
-    result.unwrap_or_else(|_| Err(io::Error::other("move worker panicked")))
 }
 
 fn batch_delete(

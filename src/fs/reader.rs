@@ -6,13 +6,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::SystemTime;
 
 use crate::app::types::PanelState;
-use crate::ops::search::FileSearch;
-use crate::ops::sorting::sort_entries;
 
 const CACHE_MAX_SIZE: usize = 1024;
 
@@ -31,6 +28,65 @@ thread_local! {
         uid_to_name: HashMap::new(),
         gid_to_name: HashMap::new(),
     });
+}
+
+#[cfg(unix)]
+fn uid_gid(meta: &std::fs::Metadata) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.uid(), meta.gid())
+}
+
+#[cfg(not(unix))]
+fn uid_gid(_meta: &std::fs::Metadata) -> (u32, u32) {
+    (0, 0)
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    meta.mode()
+}
+
+#[cfg(not(unix))]
+fn file_mode(_meta: &std::fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
+    UID_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.uid_to_name.len() >= CACHE_MAX_SIZE {
+            cache.uid_to_name.clear();
+        }
+        if cache.gid_to_name.len() >= CACHE_MAX_SIZE {
+            cache.gid_to_name.clear();
+        }
+        let owner = cache
+            .uid_to_name
+            .entry(uid)
+            .or_insert_with(|| {
+                users::get_user_by_uid(uid)
+                    .map(|u| u.name().to_string_lossy().to_string())
+                    .unwrap_or_else(|| uid.to_string())
+            })
+            .clone();
+        let group = cache
+            .gid_to_name
+            .entry(gid)
+            .or_insert_with(|| {
+                users::get_group_by_gid(gid)
+                    .map(|g| g.name().to_string_lossy().to_string())
+                    .unwrap_or_else(|| gid.to_string())
+            })
+            .clone();
+        (owner, group)
+    })
+}
+
+#[cfg(not(unix))]
+fn lookup_owner_group(_uid: u32, _gid: u32) -> (String, String) {
+    (String::new(), String::new())
 }
 
 pub fn read_directory(
@@ -119,16 +175,14 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         if let Some(ref target_metadata) = target_meta {
             let size = target_metadata.len();
             let modified = target_metadata.modified()?;
-            let mode = target_metadata.mode();
-            let uid = target_metadata.uid();
-            let gid = target_metadata.gid();
+            let mode = file_mode(target_metadata);
+            let (uid, gid) = uid_gid(target_metadata);
             (size, modified, mode, is_executable(mode), uid, gid)
         } else {
             let size = metadata.len();
             let modified = metadata.modified()?;
-            let mode = metadata.mode();
-            let uid = metadata.uid();
-            let gid = metadata.gid();
+            let mode = file_mode(&metadata);
+            let (uid, gid) = uid_gid(&metadata);
             let is_exec = if is_symlink && target_meta.is_none() {
                 false
             } else {
@@ -142,36 +196,7 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
             (size, modified, display_mode, is_exec, uid, gid)
         };
 
-    let (owner, group) = {
-        UID_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.uid_to_name.len() >= CACHE_MAX_SIZE {
-                cache.uid_to_name.clear();
-            }
-            if cache.gid_to_name.len() >= CACHE_MAX_SIZE {
-                cache.gid_to_name.clear();
-            }
-            let owner = cache
-                .uid_to_name
-                .entry(uid)
-                .or_insert_with(|| {
-                    users::get_user_by_uid(uid)
-                        .map(|u| u.name().to_string_lossy().to_string())
-                        .unwrap_or_else(|| uid.to_string())
-                })
-                .clone();
-            let group = cache
-                .gid_to_name
-                .entry(gid)
-                .or_insert_with(|| {
-                    users::get_group_by_gid(gid)
-                        .map(|g| g.name().to_string_lossy().to_string())
-                        .unwrap_or_else(|| gid.to_string())
-                })
-                .clone();
-            (owner, group)
-        })
-    };
+    let (owner, group) = lookup_owner_group(uid, gid);
 
     Ok(FileEntry {
         name: file_name.clone(),
@@ -206,7 +231,6 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     if let Some(existing) = panel
         .unfiltered_entries
         .iter()
-        .chain(panel.entries.iter())
         .find(|existing| existing.path == entry.path)
     {
         entry.selected = existing.selected;
@@ -221,8 +245,6 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     } else {
         panel.unfiltered_entries.push(entry);
     }
-
-    rebuild_panel_entries(panel);
 }
 
 pub fn remove_entry(panel: &mut PanelState, path: &Path) {
@@ -237,53 +259,6 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
     panel
         .unfiltered_entries
         .retain(|entry| entry.name == ".." || entry.path != path);
-    panel
-        .entries
-        .retain(|entry| entry.name == ".." || entry.path != path);
-
-    rebuild_panel_entries(panel);
-}
-
-fn rebuild_panel_entries(panel: &mut PanelState) {
-    let current_path = panel
-        .entries
-        .get(panel.cursor)
-        .map(|entry| entry.path.clone());
-    panel.entries = panel
-        .unfiltered_entries
-        .iter()
-        .filter(|entry| {
-            entry.name == ".."
-                || (panel.show_hidden || !entry.is_hidden)
-                    && panel.filter.as_ref().is_none_or(|filter| {
-                        FileSearch::matches_pattern(&entry.name, filter, false)
-                    })
-        })
-        .cloned()
-        .collect();
-
-    sort_entries(&mut panel.entries, panel.sort_mode);
-
-    if panel.entries.is_empty() {
-        panel.cursor = 0;
-        panel.scroll_offset = 0;
-    } else {
-        if let Some(current_path) = current_path
-            && let Some(pos) = panel
-                .entries
-                .iter()
-                .position(|entry| entry.path == current_path)
-        {
-            panel.cursor = pos;
-        } else {
-            panel.cursor = panel.cursor.min(panel.entries.len() - 1);
-        }
-        if panel.scroll_offset > panel.cursor {
-            panel.scroll_offset = panel.cursor;
-        }
-    }
-
-    panel.recalculate_selection_stats();
 }
 
 pub fn format_date(time: SystemTime) -> String {
@@ -307,8 +282,9 @@ pub fn is_executable(mode: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::{FileEntry as CanonicalFileEntry, SortMode};
+    use crate::app::types::FileEntry as CanonicalFileEntry;
     use std::fs::{self, File};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::Duration;
@@ -595,6 +571,7 @@ mod tests {
         fs::remove_dir_all(&temp_dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_get_file_info_executable() {
         let temp_dir = create_temp_dir();
@@ -610,6 +587,7 @@ mod tests {
         fs::remove_dir_all(&temp_dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_read_directory_symlinks() {
         let temp_dir = create_temp_dir();
@@ -648,18 +626,13 @@ mod tests {
         panel.unfiltered_entries = panel.entries.clone();
         upsert_entry(&mut panel, test_entry("a.txt", false));
 
-        let names: Vec<&str> = panel
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["..", "a.txt", "b.txt"]);
         assert!(
             panel
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == "a.txt")
         );
+        assert_eq!(panel.unfiltered_entries.len(), 3);
     }
 
     #[test]
@@ -671,11 +644,9 @@ mod tests {
 
         upsert_entry(&mut panel, updated);
 
-        assert_eq!(panel.entries.len(), 1);
-        assert_eq!(panel.entries[0].size, 99);
-        assert!(panel.entries[0].selected);
-        assert_eq!(panel.selected_count, 1);
-        assert_eq!(panel.selected_size, 99);
+        assert_eq!(panel.unfiltered_entries.len(), 1);
+        assert_eq!(panel.unfiltered_entries[0].size, 99);
+        assert!(panel.unfiltered_entries[0].selected);
     }
 
     #[test]
@@ -690,74 +661,33 @@ mod tests {
 
         remove_entry(&mut panel, &removed.path);
 
-        assert!(!panel.entries.iter().any(|entry| entry.name == "remove.txt"));
         assert!(
             !panel
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == "remove.txt")
         );
-        assert_eq!(panel.selected_count, 0);
-    }
-
-    #[test]
-    fn test_rebuild_panel_entries_respects_hidden_filter() {
-        let mut panel = test_panel(vec![parent_entry(), test_entry("visible.txt", false)]);
-        panel.show_hidden = false;
-        upsert_entry(&mut panel, test_entry(".hidden", false));
-
-        let names: Vec<&str> = panel
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["..", "visible.txt"]);
         assert!(
             panel
                 .unfiltered_entries
                 .iter()
-                .all(|entry| entry.name != ".hidden")
+                .any(|entry| entry.name == "keep.txt")
         );
     }
 
     #[test]
-    fn test_rebuild_panel_entries_respects_text_filter_case_insensitive() {
-        let mut panel = test_panel(vec![
-            parent_entry(),
-            test_entry("Alpha.txt", false),
-            test_entry("beta.txt", false),
-        ]);
-        panel.filter = Some("ALP".to_string());
+    fn test_upsert_adds_hidden_to_unfiltered() {
+        let mut panel = test_panel(vec![parent_entry(), test_entry("visible.txt", false)]);
         panel.unfiltered_entries = panel.entries.clone();
+        panel.show_hidden = false;
+        upsert_entry(&mut panel, test_entry(".hidden", false));
 
-        rebuild_panel_entries(&mut panel);
-
-        let names: Vec<&str> = panel
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["..", "Alpha.txt"]);
-    }
-
-    #[test]
-    fn test_rebuild_panel_entries_respects_wildcard_filter() {
-        let mut panel = test_panel(vec![
-            parent_entry(),
-            test_entry("main.rs", false),
-            test_entry("notes.txt", false),
-        ]);
-        panel.filter = Some("*.rs".to_string());
-        panel.unfiltered_entries = panel.entries.clone();
-
-        rebuild_panel_entries(&mut panel);
-
-        let names: Vec<&str> = panel
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["..", "main.rs"]);
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.name == ".hidden")
+        );
     }
 
     #[test]
@@ -767,18 +697,7 @@ mod tests {
 
         upsert_entry(&mut panel, test_entry("notes.txt", false));
 
-        let names: Vec<&str> = panel
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["..", "main.rs"]);
-        assert!(
-            panel
-                .unfiltered_entries
-                .iter()
-                .all(|entry| entry.name != "notes.txt")
-        );
+        assert_eq!(panel.unfiltered_entries.len(), 0);
     }
 
     #[test]
@@ -788,38 +707,11 @@ mod tests {
 
         remove_entry(&mut panel, &PathBuf::from("/tmp"));
 
-        assert!(panel.entries.iter().any(|entry| entry.name == ".."));
-    }
-
-    #[test]
-    fn test_rebuild_panel_entries_sorts_and_clamps_cursor() {
-        let mut panel = test_panel(vec![test_entry("z.txt", false), test_entry("a.txt", false)]);
-        panel.sort_mode = SortMode::NameAsc;
-        panel.cursor = 10;
-        panel.scroll_offset = 10;
-        panel.unfiltered_entries = panel.entries.clone();
-
-        rebuild_panel_entries(&mut panel);
-
-        let names: Vec<&str> = panel
-            .entries
-            .iter()
-            .map(|entry| entry.name.as_str())
-            .collect();
-        assert_eq!(names, vec!["a.txt", "z.txt"]);
-        assert_eq!(panel.cursor, 1);
-        assert_eq!(panel.scroll_offset, 1);
-    }
-
-    #[test]
-    fn test_rebuild_panel_entries_preserves_cursor_by_path_after_sort() {
-        let mut panel = test_panel(vec![test_entry("z.txt", false), test_entry("a.txt", false)]);
-        panel.sort_mode = SortMode::NameAsc;
-        panel.cursor = 0;
-        panel.unfiltered_entries = panel.entries.clone();
-
-        rebuild_panel_entries(&mut panel);
-
-        assert_eq!(panel.entries[panel.cursor].name, "z.txt");
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.name == "..")
+        );
     }
 }

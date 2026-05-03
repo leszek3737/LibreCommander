@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::Margin,
     prelude::*,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::fs;
@@ -419,10 +419,12 @@ fn format_line_with_highlight<'a>(
 
         let style = if is_current {
             Theme::highlight()
-                .fg(Color::Yellow)
+                .fg(Theme::SEARCH_MATCH_CURRENT_FG)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Black).bg(Color::LightGreen)
+            Style::default()
+                .fg(Theme::SEARCH_MATCH_FG)
+                .bg(Theme::SEARCH_MATCH_BG)
         };
 
         spans.push(Span::styled(match_text, style));
@@ -437,11 +439,9 @@ fn format_line_with_highlight<'a>(
 }
 
 pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
-    let bg_block = Block::default().style(Theme::panel());
-    f.render_widget(bg_block, area);
-
     let block = Block::default()
         .borders(Borders::ALL)
+        .style(Theme::panel())
         .title(state.file_path.display().to_string())
         .title_style(Theme::title());
     f.render_widget(block, area);

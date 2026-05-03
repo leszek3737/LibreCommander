@@ -29,6 +29,16 @@ impl Theme {
     pub const WARNING: Color = Color::Yellow;
     pub const INFO: Color = Color::Cyan;
 
+    // UI element colors
+    pub const SELECTED_FILE_FG: Color = Color::LightYellow;
+    pub const SCROLLBAR_ACTIVE: Color = Color::Yellow;
+    pub const SCROLLBAR_INACTIVE: Color = Color::DarkGray;
+    pub const FUNCTION_BAR_FG: Color = Color::LightBlue;
+    pub const FUNCTION_BAR_BG: Color = Color::DarkGray;
+    pub const SEARCH_MATCH_FG: Color = Color::Black;
+    pub const SEARCH_MATCH_BG: Color = Color::LightGreen;
+    pub const SEARCH_MATCH_CURRENT_FG: Color = Color::Yellow;
+
     // File type colors
     pub const DIRECTORY: Color = Color::White;
     pub const EXECUTABLE: Color = Color::Green;
