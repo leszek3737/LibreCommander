@@ -1350,6 +1350,8 @@ fn handle_dialog(
                             set_active_panel(state, panel);
                         }
                     }
+                } else {
+                    dismiss_dialog(state);
                 }
             }
             KeyCode::Esc => {
@@ -2142,7 +2144,6 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
             state.mode = AppMode::Normal;
             state.search_query.clear();
             let panel = state.active_panel_mut();
-            panel.filter = None;
             panel.unfiltered_entries.clear();
             refresh_active(state);
         }
@@ -2518,6 +2519,61 @@ mod tests {
             is_hidden: false,
             mime_type: None,
         }
+    }
+
+    #[test]
+    fn confirm_enter_without_pending_action_dismisses_dialog() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Confirm(
+                app::types::ConfirmDetails::simple("Info", "Nothing to run"),
+            )),
+            dialog_selection: 0,
+            pending_action: None,
+            ..Default::default()
+        };
+
+        handle_dialog(&mut state, &mut None, &mut None, KeyCode::Enter, 24);
+
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn search_enter_keeps_current_filter() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("alpha.txt"), b"alpha").unwrap();
+        std::fs::write(temp_dir.path().join("beta.txt"), b"beta").unwrap();
+        let mut state = AppState {
+            mode: AppMode::Search,
+            search_query: "alpha".to_string(),
+            ..Default::default()
+        };
+        state.left_panel.path = temp_dir.path().to_path_buf();
+        state.left_panel.entries = vec![make_test_entry("alpha.txt", 1, false)];
+        state.left_panel.unfiltered_entries = vec![
+            make_test_entry("alpha.txt", 1, false),
+            make_test_entry("beta.txt", 2, false),
+        ];
+        state.left_panel.filter = Some("alpha".to_string());
+
+        handle_search_mode(&mut state, KeyCode::Enter, 24);
+
+        assert_eq!(state.mode, AppMode::Normal);
+        assert_eq!(state.search_query, "");
+        assert_eq!(state.left_panel.filter.as_deref(), Some("alpha"));
+        assert!(
+            state
+                .left_panel
+                .entries
+                .iter()
+                .any(|entry| entry.name == "alpha.txt")
+        );
+        assert!(
+            state
+                .left_panel
+                .entries
+                .iter()
+                .all(|entry| entry.name == ".." || entry.name.contains("alpha"))
+        );
     }
 
     #[test]

@@ -118,12 +118,13 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
 }
 
 fn truncate_path(path: &str, max_width: usize) -> String {
-    if path.len() <= max_width {
+    if path.chars().count() <= max_width {
         path.to_string()
     } else if max_width > 3 {
-        format!("...{}", &path[path.len() - max_width + 3..])
+        let suffix: String = path.chars().rev().take(max_width - 3).collect();
+        format!("...{}", suffix.chars().rev().collect::<String>())
     } else {
-        path[..max_width].to_string()
+        path.chars().take(max_width).collect()
     }
 }
 
@@ -335,7 +336,14 @@ pub fn render_help_dialog(f: &mut Frame, area: Rect, title: &str, message: &str)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(inner);
 
-    let message_paragraph = Paragraph::new(message.to_string())
+    let max_lines = chunks[0].height as usize;
+    let visible_message = message
+        .lines()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let message_paragraph = Paragraph::new(visible_message)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Left)
         .style(Theme::info());
@@ -535,6 +543,21 @@ mod tests {
         assert_eq!(rect.height, 20);
         assert_eq!(rect.x, 30);
         assert_eq!(rect.y, 15);
+    }
+
+    #[test]
+    fn truncate_path_keeps_short_utf8_path() {
+        assert_eq!(truncate_path("zażółć", 6), "zażółć");
+    }
+
+    #[test]
+    fn truncate_path_truncates_utf8_suffix_safely() {
+        assert_eq!(truncate_path("/tmp/zażółć/plik", 9), "...ć/plik");
+    }
+
+    #[test]
+    fn truncate_path_truncates_tiny_utf8_width_safely() {
+        assert_eq!(truncate_path("żółć", 3), "żół");
     }
 
     #[test]

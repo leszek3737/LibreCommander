@@ -24,7 +24,7 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
-            if let Err(err) = fs::rename(&temp_dest, dest) {
+            if let Err(err) = publish_temp(&temp_dest, dest) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
             }
@@ -62,8 +62,9 @@ fn copy_to_temp(
         }
 
         writer.write_all(&buffer[..bytes_read])?;
-        total_written += bytes_read as u64;
-        let _ = progress_tx.send(total_written);
+        let bytes_written = bytes_read as u64;
+        total_written += bytes_written;
+        let _ = progress_tx.send(bytes_written);
 
         if cancel.load(Ordering::Relaxed) {
             let _ = writer.flush();
@@ -76,6 +77,11 @@ fn copy_to_temp(
     preserve_permissions(temp_dest, metadata)?;
 
     Ok(total_written)
+}
+
+fn publish_temp(temp_dest: &Path, dest: &Path) -> io::Result<()> {
+    fs::hard_link(temp_dest, dest)?;
+    fs::remove_file(temp_dest)
 }
 
 fn temp_path_for(dest: &Path) -> std::path::PathBuf {
@@ -146,8 +152,27 @@ mod tests {
         assert_eq!(fs::read(&dest).expect("read dest file"), content);
         assert_eq!(
             progress_rx.try_iter().collect::<Vec<_>>(),
-            vec![BUFFER_SIZE as u64, copied]
+            vec![BUFFER_SIZE as u64, 17]
         );
+    }
+
+    #[test]
+    fn existing_dest_returns_already_exists_without_overwrite() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.txt");
+        let dest = dir.path().join("dest.txt");
+        fs::write(&src, b"new content").expect("write source file");
+        fs::write(&dest, b"old content").expect("write dest file");
+
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        let err = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect_err("copy fails");
+
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&dest).expect("read dest file"), b"old content");
+        assert_eq!(progress_rx.try_iter().collect::<Vec<_>>(), vec![11]);
+        assert!(!temp_path_for(&dest).exists());
     }
 
     #[test]

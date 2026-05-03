@@ -68,7 +68,22 @@ pub fn copy_file_with_progress(
 pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
-    copy_dir_recursive_inner(src, dest, &src_root, &dest_root, 0)
+    ensure_destination_absent(dest)?;
+    let temp_dest = temp_dir_path_for(dest);
+    let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, 0);
+    match result {
+        Ok(bytes) => {
+            if let Err(err) = publish_temp_dir(&temp_dest, dest) {
+                let _ = fs::remove_dir_all(&temp_dest);
+                return Err(err);
+            }
+            Ok(bytes)
+        }
+        Err(err) => {
+            let _ = fs::remove_dir_all(&temp_dest);
+            Err(err)
+        }
+    }
 }
 
 pub fn copy_dir_recursive_with_progress(
@@ -80,7 +95,34 @@ pub fn copy_dir_recursive_with_progress(
     check_canceled(cancel)?;
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
-    copy_dir_recursive_with_progress_inner(src, dest, &src_root, &dest_root, progress_tx, cancel, 0)
+    ensure_destination_absent(dest)?;
+    let temp_dest = temp_dir_path_for(dest);
+    let result = copy_dir_recursive_with_progress_inner(
+        src,
+        &temp_dest,
+        &src_root,
+        &dest_root,
+        progress_tx,
+        cancel,
+        0,
+    );
+    match result {
+        Ok(bytes) => {
+            if let Err(err) = check_canceled(cancel) {
+                let _ = fs::remove_dir_all(&temp_dest);
+                return Err(err);
+            }
+            if let Err(err) = publish_temp_dir(&temp_dest, dest) {
+                let _ = fs::remove_dir_all(&temp_dest);
+                return Err(err);
+            }
+            Ok(bytes)
+        }
+        Err(err) => {
+            let _ = fs::remove_dir_all(&temp_dest);
+            Err(err)
+        }
+    }
 }
 
 fn copy_dir_recursive_inner(
@@ -318,7 +360,6 @@ pub fn move_entry_with_progress(
             let meta = src.symlink_metadata()?;
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
-                check_canceled(cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "copied {:?} to {:?} but failed to remove source: {}",
@@ -327,7 +368,6 @@ pub fn move_entry_with_progress(
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
-                check_canceled(cancel)?;
                 if !path_contains(src, dest)
                     && let Err(del_err) = delete_dir_recursive(src)
                 {
@@ -338,7 +378,6 @@ pub fn move_entry_with_progress(
                 }
             } else {
                 copy_file_with_progress(src, dest, progress_tx, cancel)?;
-                check_canceled(cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "copied {:?} to {:?} but failed to remove source: {}",
@@ -392,19 +431,32 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
             ));
         }
     }
-    delete_dir_contents(path, cancel)?;
+    delete_dir_contents(&canonical, path, cancel)?;
     check_optional_canceled(cancel)?;
     fs::remove_dir(path)
 }
 
-fn delete_dir_contents(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?;
+    if canonical != root && !path_contains_canonical(root, &canonical) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to delete path outside requested directory",
+        ));
+    }
+
     for entry in fs::read_dir(path)? {
         check_optional_canceled(cancel)?;
         let entry = entry?;
         let entry_path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            delete_dir_contents(&entry_path, cancel)?;
+        let metadata = fs::symlink_metadata(&entry_path)?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() {
+            fs::remove_file(&entry_path)?;
+        } else if file_type.is_dir() {
+            delete_dir_contents(root, &entry_path, cancel)?;
             check_optional_canceled(cancel)?;
             fs::remove_dir(&entry_path)?;
         } else {
@@ -547,6 +599,37 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
+}
+
+fn temp_dir_path_for(dest: &Path) -> PathBuf {
+    let mut name = dest
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| "copy".into());
+    let tid = std::thread::current().id();
+    name.push(format!(".lc-dir-copy-{}-{:?}.tmp", std::process::id(), tid));
+    dest.with_file_name(name)
+}
+
+fn publish_temp_dir(temp_dest: &Path, dest: &Path) -> io::Result<()> {
+    fs::create_dir(dest)?;
+    let permissions = fs::metadata(temp_dest)?.permissions();
+    let result =
+        move_dir_contents(temp_dest, dest).and_then(|_| fs::set_permissions(dest, permissions));
+    if let Err(err) = result {
+        let _ = fs::remove_dir_all(dest);
+        return Err(err);
+    }
+    fs::remove_dir(temp_dest)
+}
+
+fn move_dir_contents(src: &Path, dest: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dest.join(entry.file_name());
+        fs::rename(entry.path(), target)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -758,6 +841,38 @@ mod tests {
         assert!(bytes > 0);
         assert!(dest.join("file1.txt").exists());
         assert!(dest.join("subdir").join("file2.txt").exists());
+        assert!(!tmp.read_dir().unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".lc-dir-copy-")
+        }));
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_with_progress_cancel_before_start_leaves_no_dest() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"content").unwrap();
+        let dest = tmp.join("dest_dir");
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(true);
+
+        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists());
+        assert!(!tmp.read_dir().unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".lc-dir-copy-")
+        }));
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -964,6 +1079,27 @@ mod tests {
 
         delete_dir_recursive(&dir).unwrap();
         assert!(!dir.exists());
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_delete_dir_recursive_removes_symlink_not_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = unique_temp_dir();
+        let dir = tmp.join("delete_dir");
+        let target = tmp.join("target_dir");
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"keep").unwrap();
+        symlink(&target, dir.join("linked_dir")).unwrap();
+
+        delete_dir_recursive(&dir).unwrap();
+
+        assert!(!dir.exists());
+        assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
 
         fs::remove_dir_all(&tmp).unwrap();
     }

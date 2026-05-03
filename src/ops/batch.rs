@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::types::PendingAction;
@@ -195,47 +196,31 @@ fn copy_entry(
             let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
-            let src = src.to_path_buf();
-            let dest = dest.to_path_buf();
-            rayon::scope(|s| {
-                s.spawn(|_| {
-                    let r = file_ops::copy_dir_recursive_with_progress(
-                        &src,
-                        &dest,
+            thread::scope(|scope| {
+                scope.spawn(|| {
+                    let result = file_ops::copy_dir_recursive_with_progress(
+                        src,
+                        dest,
                         &progress_tx,
                         &cancel_token,
                     );
-                    result_tx.send(r).ok();
+                    let _ = result_tx.send(result);
                 });
-            });
-            for bytes in progress_rx.try_iter() {
-                on_progress(bytes);
-            }
-            result_rx
-                .recv()
-                .unwrap_or_else(|_| Err(io::Error::other("copy worker failed")))
-                .map(|_| ())
+                wait_for_result_with_progress(result_rx, progress_rx, on_progress).map(|_| ())
+            })
         }
         Ok(_) => {
             let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
-            let src = src.to_path_buf();
-            let dest = dest.to_path_buf();
-            rayon::scope(|s| {
-                s.spawn(|_| {
-                    let r =
-                        file_ops::copy_file_with_progress(&src, &dest, &progress_tx, &cancel_token);
-                    result_tx.send(r).ok();
+            thread::scope(|scope| {
+                scope.spawn(|| {
+                    let result =
+                        file_ops::copy_file_with_progress(src, dest, &progress_tx, &cancel_token);
+                    let _ = result_tx.send(result);
                 });
-            });
-            for bytes in progress_rx.try_iter() {
-                on_progress(bytes);
-            }
-            result_rx
-                .recv()
-                .unwrap_or_else(|_| Err(io::Error::other("copy worker failed")))
-                .map(|_| ())
+                wait_for_result_with_progress(result_rx, progress_rx, on_progress).map(|_| ())
+            })
         }
         Err(e) => Err(e),
     }
@@ -250,20 +235,41 @@ fn move_entry(
     let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let (progress_tx, progress_rx) = mpsc::channel::<u64>();
     let (result_tx, result_rx) = mpsc::channel::<io::Result<()>>();
-    let src = src.to_path_buf();
-    let dest = dest.to_path_buf();
-    rayon::scope(|s| {
-        s.spawn(|_| {
-            let r = file_ops::move_entry_with_progress(&src, &dest, &progress_tx, &cancel_token);
-            result_tx.send(r).ok();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let result = file_ops::move_entry_with_progress(src, dest, &progress_tx, &cancel_token);
+            let _ = result_tx.send(result);
         });
-    });
-    for bytes in progress_rx.try_iter() {
-        on_progress(bytes);
+        wait_for_result_with_progress(result_rx, progress_rx, on_progress)
+    })
+}
+
+fn wait_for_result_with_progress<T>(
+    result_rx: mpsc::Receiver<io::Result<T>>,
+    progress_rx: mpsc::Receiver<u64>,
+    on_progress: &mut dyn FnMut(u64),
+) -> io::Result<T> {
+    loop {
+        match result_rx.recv_timeout(Duration::from_millis(25)) {
+            Ok(result) => {
+                for bytes in progress_rx.try_iter() {
+                    on_progress(bytes);
+                }
+                return result;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                for bytes in progress_rx.try_iter() {
+                    on_progress(bytes);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                for bytes in progress_rx.try_iter() {
+                    on_progress(bytes);
+                }
+                return Err(io::Error::other("operation worker failed"));
+            }
+        }
     }
-    result_rx
-        .recv()
-        .unwrap_or_else(|_| Err(io::Error::other("move worker failed")))
 }
 
 fn batch_copy(
@@ -377,15 +383,20 @@ where
         }
 
         let mut file_bytes_so_far = 0_u64;
-        let result = action(src, &target, &mut |current_file_bytes: u64| {
-            file_bytes_so_far += current_file_bytes;
+        let result = action(src, &target, &mut |byte_delta: u64| {
+            file_bytes_so_far = file_bytes_so_far
+                .saturating_add(byte_delta)
+                .min(current_total);
+            let current_bytes_done = bytes_done
+                .saturating_add(file_bytes_so_far)
+                .min(bytes_total);
             report_progress(
                 progress,
                 ProgressSnapshot {
                     completed: idx,
                     total,
                     current: Some(src),
-                    bytes_done: bytes_done.saturating_add(file_bytes_so_far),
+                    bytes_done: current_bytes_done,
                     bytes_total,
                     current_file_bytes: file_bytes_so_far,
                     current_file_total: current_total,
@@ -720,6 +731,41 @@ mod tests {
                 && p.current_file_bytes == 7
                 && p.current_file_total == 7
         }));
+    }
+
+    #[test]
+    fn batch_copy_large_file_progress_never_exceeds_total() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let data = vec![b'x'; 128 * 1024 + 17];
+        let file = make_file(src_dir.path(), "large.bin", &data);
+        let action = PendingAction::Copy {
+            sources: vec![file],
+            dest: dest_dir.path().to_path_buf(),
+        };
+        let mut updates = Vec::new();
+
+        let report = execute_batch_with_byte_progress(
+            action,
+            |progress| updates.push(progress),
+            None,
+            "Copy",
+        );
+
+        assert_eq!(report.success_count, 1);
+        assert!(report.errors.is_empty());
+        assert!(updates.iter().all(|p| p.bytes_done <= p.bytes_total));
+        assert!(
+            updates
+                .iter()
+                .all(|p| p.current_file_bytes <= p.current_file_total)
+        );
+        assert!(
+            updates
+                .windows(2)
+                .all(|pair| pair[0].bytes_done <= pair[1].bytes_done)
+        );
+        assert_eq!(updates.last().map(BatchProgress::byte_percent), Some(100.0));
     }
 
     #[test]
