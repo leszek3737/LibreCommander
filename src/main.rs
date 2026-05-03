@@ -218,15 +218,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 },
                 Event::Mouse(mouse_event) => {
                     let size: ratatui::layout::Size = terminal.size()?;
-                    let outcomes = input::mouse::handle_mouse_event(
+                    if let Some(outcome) = input::mouse::handle_mouse_event(
                         &mut state,
                         &mut viewer_state,
                         &mut running_job,
                         mouse_event,
                         size,
-                    );
-                    for outcome in outcomes {
+                    ) {
                         match outcome {
+                            input::mouse::MouseOutcome::Consumed => {}
                             input::mouse::MouseOutcome::NormalKey(key) => {
                                 handle_normal_mode(
                                     &mut state,
@@ -245,7 +245,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                     terminal,
                                 );
                             }
-                            input::mouse::MouseOutcome::None => {}
                         }
                     }
                     dirty = true;

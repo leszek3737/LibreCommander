@@ -9,7 +9,7 @@ use crate::ui::viewer;
 use super::super::{dismiss_dialog, refresh_both, refresh_panel};
 
 pub enum MouseOutcome {
-    None,
+    Consumed,
     NormalKey(KeyCode),
     MenuAction,
 }
@@ -20,7 +20,7 @@ pub fn handle_mouse_event(
     running_job: &mut Option<RunningJob>,
     mouse_event: crossterm::event::MouseEvent,
     terminal_size: ratatui::layout::Size,
-) -> Vec<MouseOutcome> {
+) -> Option<MouseOutcome> {
     let col = mouse_event.column;
     let row = mouse_event.row;
     let height = terminal_size.height;
@@ -31,38 +31,34 @@ pub fn handle_mouse_event(
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) {
         handle_mouse_scroll(state, mouse_event.kind, col, row, width, height);
-        return vec![];
+        return None;
     }
 
     let MouseEventKind::Down(button) = mouse_event.kind else {
-        return vec![];
+        return None;
     };
     if button != MouseButton::Left {
-        return vec![];
+        return None;
     }
 
-    let outcomes = handle_mouse_dialog(state, running_job, col, row, width, height);
-    if !outcomes.is_empty() {
-        return outcomes;
+    if let Some(outcome) = handle_mouse_dialog(state, running_job, col, row, width, height) {
+        return Some(outcome);
     }
 
-    let outcomes = handle_mouse_menu_bar(state, col, row, width);
-    if !outcomes.is_empty() {
-        return outcomes;
+    if let Some(outcome) = handle_mouse_menu_bar(state, col, row, width) {
+        return Some(outcome);
     }
 
-    let outcomes = handle_mouse_menu_dropdown(state, col, row, width);
-    if !outcomes.is_empty() {
-        return outcomes;
+    if let Some(outcome) = handle_mouse_menu_dropdown(state, col, row, width) {
+        return Some(outcome);
     }
 
-    let outcomes = handle_mouse_function_bar(state, col, row, width, height);
-    if !outcomes.is_empty() {
-        return outcomes;
+    if let Some(outcome) = handle_mouse_function_bar(state, col, row, width, height) {
+        return Some(outcome);
     }
 
     handle_mouse_panels(state, viewer_state, col, row, width, height);
-    vec![]
+    None
 }
 
 fn handle_mouse_scroll(
@@ -117,9 +113,9 @@ fn handle_mouse_dialog(
     row: u16,
     width: u16,
     height: u16,
-) -> Vec<MouseOutcome> {
+) -> Option<MouseOutcome> {
     if matches!(state.mode, AppMode::Dialog(DialogKind::Progress(_, _))) {
-        return vec![MouseOutcome::None];
+        return Some(MouseOutcome::Consumed);
     }
 
     if let AppMode::Dialog(DialogKind::Input { .. }) = state.mode {
@@ -133,9 +129,9 @@ fn handle_mouse_dialog(
             && row < dialog_top.saturating_add(dialog_height);
 
         if inside_dialog {
-            return vec![MouseOutcome::None];
+            return Some(MouseOutcome::Consumed);
         }
-        return vec![];
+        return None;
     }
 
     if let AppMode::Dialog(DialogKind::Confirm(_)) = state.mode {
@@ -156,9 +152,9 @@ fn handle_mouse_dialog(
                         if state.status_message.is_some() {
                             dismiss_dialog(state);
                             refresh_both(state);
-                            return vec![MouseOutcome::None];
+                            return Some(MouseOutcome::Consumed);
                         }
-                        return vec![MouseOutcome::None];
+                        return Some(MouseOutcome::Consumed);
                     }
                     dismiss_dialog(state);
                     refresh_both(state);
@@ -169,14 +165,14 @@ fn handle_mouse_dialog(
                 state.dialog_selection = new_sel;
             }
         }
-        return vec![MouseOutcome::None];
+        return Some(MouseOutcome::Consumed);
     }
 
     if let AppMode::Dialog(_) = state.mode {
-        return vec![MouseOutcome::None];
+        return Some(MouseOutcome::Consumed);
     }
 
-    vec![]
+    None
 }
 
 fn handle_mouse_menu_bar(
@@ -184,9 +180,9 @@ fn handle_mouse_menu_bar(
     col: u16,
     row: u16,
     width: u16,
-) -> Vec<MouseOutcome> {
+) -> Option<MouseOutcome> {
     if row != 0 || !matches!(state.mode, AppMode::Normal) {
-        return vec![];
+        return None;
     }
     for (i, title) in MENU_TITLES.iter().enumerate() {
         let x_offset = menu_title_x(width, i);
@@ -195,10 +191,10 @@ fn handle_mouse_menu_bar(
             state.menu_selected = i;
             state.menu_item_selected = 0;
             state.mode = AppMode::Menu;
-            return vec![MouseOutcome::None];
+            return Some(MouseOutcome::Consumed);
         }
     }
-    vec![MouseOutcome::None]
+    Some(MouseOutcome::Consumed)
 }
 
 fn handle_mouse_menu_dropdown(
@@ -206,9 +202,9 @@ fn handle_mouse_menu_dropdown(
     col: u16,
     row: u16,
     width: u16,
-) -> Vec<MouseOutcome> {
+) -> Option<MouseOutcome> {
     if !matches!(state.mode, AppMode::Menu) || row < 1 {
-        return vec![];
+        return None;
     }
     let items = MENU_ITEMS[state.menu_selected];
     let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
@@ -223,10 +219,10 @@ fn handle_mouse_menu_dropdown(
         let item_idx = (row - inner_y) as usize;
         if item_idx < items.len() {
             state.menu_item_selected = item_idx;
-            return vec![MouseOutcome::MenuAction];
+            return Some(MouseOutcome::MenuAction);
         }
     }
-    vec![MouseOutcome::None]
+    Some(MouseOutcome::Consumed)
 }
 
 fn handle_mouse_function_bar(
@@ -235,12 +231,12 @@ fn handle_mouse_function_bar(
     row: u16,
     width: u16,
     height: u16,
-) -> Vec<MouseOutcome> {
+) -> Option<MouseOutcome> {
     if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal) {
-        return vec![];
+        return None;
     }
     if width == 0 {
-        return vec![MouseOutcome::None];
+        return Some(MouseOutcome::Consumed);
     }
     let btn_idx = (col * 10 / width).min(9);
     let fkey = match btn_idx {
@@ -255,7 +251,7 @@ fn handle_mouse_function_bar(
         8 => KeyCode::F(9),
         _ => KeyCode::F(10),
     };
-    vec![MouseOutcome::NormalKey(fkey)]
+    Some(MouseOutcome::NormalKey(fkey))
 }
 
 fn handle_mouse_panels(
@@ -368,7 +364,7 @@ mod tests {
         let mut running_job = None;
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 0, 0, 100, 40);
 
-        assert!(outcomes.is_empty());
+        assert!(outcomes.is_none());
         assert!(matches!(
             state.mode,
             AppMode::Dialog(DialogKind::Input { .. })
@@ -392,8 +388,7 @@ mod tests {
         let mut running_job = None;
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 50, 20, 100, 40);
 
-        assert_eq!(outcomes.len(), 1);
-        assert!(matches!(outcomes[0], MouseOutcome::None));
+        assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
         assert!(matches!(
             state.mode,
             AppMode::Dialog(DialogKind::Input { .. })
@@ -407,8 +402,7 @@ mod tests {
 
         let outcomes = handle_mouse_function_bar(&mut state, 0, 0, 0, 1);
 
-        assert_eq!(outcomes.len(), 1);
-        assert!(matches!(outcomes[0], MouseOutcome::None));
+        assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
     }
 
     #[test]
@@ -421,7 +415,7 @@ mod tests {
 
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
 
-        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes.is_some());
         assert!(matches!(state.mode, AppMode::Dialog(DialogKind::Error(_))));
     }
 
@@ -444,7 +438,7 @@ mod tests {
 
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
 
-        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes.is_some());
         assert!(matches!(
             state.mode,
             AppMode::Dialog(DialogKind::Properties { .. })
@@ -464,7 +458,7 @@ mod tests {
 
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
 
-        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes.is_some());
         assert!(matches!(
             state.mode,
             AppMode::Dialog(DialogKind::Help { .. })
@@ -484,7 +478,7 @@ mod tests {
 
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 79, 23, 80, 24);
 
-        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes.is_some());
         assert!(matches!(
             state.mode,
             AppMode::Dialog(DialogKind::Confirm(_))
