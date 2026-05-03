@@ -32,6 +32,44 @@ pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
+/// Inline char buffer that lives on the stack for sizes <= N,
+/// falling back to heap allocation for larger sizes.
+struct SmallCharBuf<const N: usize> {
+    inline: [char; N],
+    heap: Option<Vec<char>>,
+}
+
+impl<const N: usize> SmallCharBuf<N> {
+    fn new(len: usize) -> Self {
+        let inline = ['\0'; N];
+        let heap = if len > N {
+            Some(vec!['\0'; len])
+        } else {
+            None
+        };
+        Self { inline, heap }
+    }
+}
+
+impl<const N: usize> std::ops::Index<usize> for SmallCharBuf<N> {
+    type Output = char;
+    fn index(&self, index: usize) -> &char {
+        match &self.heap {
+            Some(v) => &v[index],
+            None => &self.inline[index],
+        }
+    }
+}
+
+impl<const N: usize> std::ops::IndexMut<usize> for SmallCharBuf<N> {
+    fn index_mut(&mut self, index: usize) -> &mut char {
+        match &mut self.heap {
+            Some(v) => &mut v[index],
+            None => &mut self.inline[index],
+        }
+    }
+}
+
 pub struct FileSearch;
 
 impl FileSearch {
@@ -198,6 +236,46 @@ impl FileSearch {
             return;
         }
 
+        // Allocate pattern_lower once per recursive subtree, not per file.
+        let pattern_lower: Vec<char> = if !case_sensitive {
+            pattern.chars().flat_map(|c| c.to_lowercase()).collect()
+        } else {
+            Vec::new()
+        };
+
+        Self::search_content_recursive_inner(
+            path,
+            pattern,
+            case_sensitive,
+            &pattern_lower,
+            recursive,
+            depth,
+            outcome,
+            item_count,
+        );
+    }
+
+    fn search_content_recursive_inner(
+        path: &Path,
+        pattern: &str,
+        case_sensitive: bool,
+        pattern_lower: &[char],
+        recursive: bool,
+        depth: usize,
+        outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+        item_count: &mut usize,
+    ) {
+        if !path.is_dir() {
+            return;
+        }
+        if depth >= MAX_SEARCH_DEPTH
+            || *item_count >= MAX_SEARCH_ITEMS
+            || outcome.matches.len() >= MAX_CONTENT_RESULTS
+        {
+            outcome.truncated = true;
+            return;
+        }
+
         let entries = match std::fs::read_dir(path) {
             Ok(entries) => entries,
             Err(err) => {
@@ -238,11 +316,12 @@ impl FileSearch {
 
             if file_type.is_dir() && !file_type.is_symlink() {
                 if recursive {
-                    Self::search_content_recursive(
+                    Self::search_content_recursive_inner(
                         &entry_path,
                         pattern,
-                        recursive,
                         case_sensitive,
+                        pattern_lower,
+                        recursive,
                         depth + 1,
                         outcome,
                         item_count,
@@ -264,6 +343,7 @@ impl FileSearch {
                         &entry_path,
                         pattern,
                         case_sensitive,
+                        pattern_lower,
                         target_meta.len(),
                         outcome,
                     );
@@ -276,6 +356,7 @@ impl FileSearch {
         path: &Path,
         pattern: &str,
         case_sensitive: bool,
+        pattern_lower: &[char],
         file_len: u64,
         outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
     ) {
@@ -298,7 +379,6 @@ impl FileSearch {
         };
 
         let reader = BufReader::new(file);
-        let pattern_lower: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
 
         for (line_no, line) in reader.split(b'\n').enumerate() {
             if outcome.matches.len() >= MAX_CONTENT_RESULTS {
@@ -328,7 +408,7 @@ impl FileSearch {
             let match_found = if case_sensitive {
                 line_text.contains(pattern)
             } else {
-                Self::contains_case_insensitive(&line_text, &pattern_lower)
+                Self::contains_case_insensitive(&line_text, pattern_lower)
             };
 
             if match_found {
@@ -339,20 +419,35 @@ impl FileSearch {
         }
     }
 
+    /// Zero-allocation case-insensitive substring search using a circular buffer.
+    /// The buffer lives on the stack for needles up to 64 chars (covers typical search queries).
     fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
         if needle_lower.is_empty() {
             return true;
         }
         let needle_len = needle_lower.len();
-        let haystack_chars = haystack.chars().flat_map(|c| c.to_lowercase());
-        let mut window: Vec<char> = Vec::with_capacity(needle_len);
-        for c in haystack_chars {
-            if window.len() == needle_len {
-                window.remove(0);
+        let mut buf = SmallCharBuf::<64>::new(needle_len);
+        let mut filled = 0usize;
+        let mut head = 0usize;
+
+        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+            buf[head] = c;
+            head = (head + 1) % needle_len;
+            if filled < needle_len {
+                filled += 1;
             }
-            window.push(c);
-            if window.len() == needle_len && window == needle_lower {
-                return true;
+            if filled == needle_len {
+                let mut all_match = true;
+                for i in 0..needle_len {
+                    let idx = (head + i) % needle_len;
+                    if buf[idx] != needle_lower[i] {
+                        all_match = false;
+                        break;
+                    }
+                }
+                if all_match {
+                    return true;
+                }
             }
         }
         false
@@ -363,19 +458,20 @@ impl FileSearch {
             return if case_sensitive {
                 name.contains(pattern)
             } else {
-                let pattern_lower: Vec<char> =
-                    pattern.chars().flat_map(|c| c.to_lowercase()).collect();
-                Self::contains_case_insensitive(name, &pattern_lower)
+                // Zero-alloc: iterate lowercase chars without collecting
+                Self::contains_case_insensitive_no_alloc(name, pattern)
             };
         }
 
+        // Wildcard path: Vec<char> required for DP indexing, but pre-allocate.
         let (name_chars, pattern_chars): (Vec<char>, Vec<char>) = if case_sensitive {
-            (name.chars().collect(), pattern.chars().collect())
+            let nc = name.chars().collect::<Vec<char>>();
+            let pc = pattern.chars().collect::<Vec<char>>();
+            (nc, pc)
         } else {
-            (
-                name.chars().flat_map(|c| c.to_lowercase()).collect(),
-                pattern.chars().flat_map(|c| c.to_lowercase()).collect(),
-            )
+            let nc = name.chars().flat_map(|c| c.to_lowercase()).collect::<Vec<char>>();
+            let pc = pattern.chars().flat_map(|c| c.to_lowercase()).collect::<Vec<char>>();
+            (nc, pc)
         };
         let n = name_chars.len();
         let m = pattern_chars.len();
@@ -413,6 +509,17 @@ impl FileSearch {
         }
 
         dp_prev[m]
+    }
+
+    /// Zero-allocation case-insensitive substring check — no Vec needed.
+    /// Lowercases both haystack and needle on the fly via char iterators.
+    fn contains_case_insensitive_no_alloc(haystack: &str, needle: &str) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        // Pre-compute needle length in lowercase chars to size the circular buffer.
+        let needle_lower: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
+        Self::contains_case_insensitive(haystack, &needle_lower)
     }
 }
 

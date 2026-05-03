@@ -120,6 +120,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     if let Err(e) = app::config::load_setup(&mut state) {
         state.status_message = Some(e);
     }
+
+    // Startup validation: warn if duplicate key bindings detected
+    let duplicates = app::keymap::find_duplicate_keys();
+    if !duplicates.is_empty() {
+        eprintln!("warning: duplicate key bindings detected:");
+        for (mode, key) in &duplicates {
+            eprintln!("  mode={mode} key={key}");
+        }
+    }
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut running_job: Option<RunningJob> = None;
     let (watch_tx, watch_rx) = mpsc::channel();

@@ -531,11 +531,21 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let mode_label = if state.is_hex_mode() { "Hex" } else { "Text" };
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
     let size_label = format_size(state.file_size as u64);
+    let utf8_warning = if state.has_invalid_utf8 {
+        " \u{26a0} INVALID UTF-8"
+    } else {
+        ""
+    };
     let status_text = format!(
-        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}",
+        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}{utf8_warning}",
         state.line_count,
     );
-    let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
+    let status_style = if state.has_invalid_utf8 {
+        Theme::status_bar().fg(Theme::WARNING)
+    } else {
+        Theme::status_bar()
+    };
+    let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
 
@@ -581,7 +591,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         let slice = &bytes[offset..offset + slice_len];
         hex_line_buffer.clear();
         format_hex_line_to_buffer(offset, slice, &mut hex_line_buffer);
-        lines.push(Line::from(Span::raw(hex_line_buffer.clone())));
+        lines.push(Line::from(Span::raw(std::mem::take(&mut hex_line_buffer))));
     }
 
     let paragraph =
@@ -602,9 +612,19 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     };
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
     let size_label = format_size(state.file_size as u64);
+    let utf8_warning = if state.has_invalid_utf8 {
+        " \u{26a0} INVALID UTF-8"
+    } else {
+        ""
+    };
     let status_text =
-        format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}",);
-    let status_paragraph = Paragraph::new(status_text).style(Theme::status_bar());
+        format!(" Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}{utf8_warning}",);
+    let status_style = if state.has_invalid_utf8 {
+        Theme::status_bar().fg(Theme::WARNING)
+    } else {
+        Theme::status_bar()
+    };
+    let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
 

@@ -21,30 +21,22 @@ pub struct PersistedPanel {
     pub show_hidden: bool,
 }
 
+// Silently falls back to default on invalid config values.
+// This runs during deserialization — in a TUI app eprintln! would corrupt
+// the alternate screen buffer. No `log`/`tracing` crate in this project,
+// so silent fallback is the safest option.
 fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    match ListingMode::deserialize(d) {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            eprintln!("warning: config field 'listing_mode' invalid, using default: {}", e);
-            Ok(ListingMode::default())
-        }
-    }
+    ListingMode::deserialize(d).or_else(|_| Ok(ListingMode::default()))
 }
 
 fn deserialize_sort_mode_with_fallback<'de, D>(d: D) -> Result<SortMode, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    match SortMode::deserialize(d) {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            eprintln!("warning: config field 'sort_mode' invalid, using default: {}", e);
-            Ok(SortMode::default())
-        }
-    }
+    SortMode::deserialize(d).or_else(|_| Ok(SortMode::default()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

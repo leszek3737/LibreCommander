@@ -344,10 +344,15 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                            src.display(),
+                            dest.display(),
+                            del_err
+                        ),
+                    ));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
@@ -356,7 +361,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
                             format!(
-                                "cross-device move: copied from '{}' to '{}' but failed to remove source directory: {}",
+                                "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
                                 src.display(),
                                 dest.display(),
                                 del_err
@@ -367,10 +372,15 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             } else {
                 copy_file(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                            src.display(),
+                            dest.display(),
+                            del_err
+                        ),
+                    ));
                 }
             }
             Ok(())
@@ -413,26 +423,41 @@ pub fn move_entry_with_progress(
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                            src.display(),
+                            dest.display(),
+                            del_err
+                        ),
+                    ));
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
                 if let Err(del_err) = delete_dir_recursive(src) {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
+                            src.display(),
+                            dest.display(),
+                            del_err
+                        ),
+                    ));
                 }
             } else {
                 copy_file_with_progress(src, dest, progress_tx, cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(format!(
-                        "copied {:?} to {:?} but failed to remove source: {}",
-                        src, dest, del_err
-                    )));
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
+                            src.display(),
+                            dest.display(),
+                            del_err
+                        ),
+                    ));
                 }
             }
             Ok(())

@@ -297,6 +297,169 @@ mod tests {
     }
 
     #[test]
+    fn dirs_compare_by_size_in_size_mode() {
+        let left = vec![FileEntry {
+            name: "src".into(),
+            path: PathBuf::from("/tmp/src"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+        let right = vec![FileEntry {
+            name: "src".into(),
+            path: PathBuf::from("/tmp/src"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 8192,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+
+        let report = compare_entries(&left, &right, CompareMode::Size);
+
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("src"));
+        assert!(report.right_marks.contains("src"));
+    }
+
+    #[test]
+    fn dirs_match_in_size_mode_when_equal() {
+        let left = vec![FileEntry {
+            name: "src".into(),
+            path: PathBuf::from("/tmp/src"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+        let right = vec![FileEntry {
+            name: "src".into(),
+            path: PathBuf::from("/tmp/src"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+
+        let report = compare_entries(&left, &right, CompareMode::Size);
+
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn dirs_compare_by_size_and_mtime_in_thorough_mode() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+        let left = vec![FileEntry {
+            name: "lib".into(),
+            path: PathBuf::from("/tmp/lib"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: t,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+        // Same size, different mtime
+        let right = vec![FileEntry {
+            name: "lib".into(),
+            path: PathBuf::from("/tmp/lib"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: t + std::time::Duration::from_secs(60),
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("lib"));
+        assert!(report.right_marks.contains("lib"));
+    }
+
+    #[test]
+    fn dirs_match_in_thorough_mode_when_identical() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+        let left = vec![FileEntry {
+            name: "lib".into(),
+            path: PathBuf::from("/tmp/lib"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: t,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+        let right = vec![FileEntry {
+            name: "lib".into(),
+            path: PathBuf::from("/tmp/lib"),
+            is_dir: true,
+            is_symlink: false,
+            is_executable: false,
+            size: 4096,
+            modified: t,
+            permissions: 0o755,
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            is_hidden: false,
+            mime_type: None,
+        }];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
     fn apply_marks_selected_flags() {
         let mut left_panel = PanelState {
             path: PathBuf::from("/tmp"),

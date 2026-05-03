@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_expand_reports_read_errors_and_keeps_collapsed() {
+    fn toggle_expand_reports_read_errors_and_stays_expanded() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
         let mut entries = vec![TreeEntry {
