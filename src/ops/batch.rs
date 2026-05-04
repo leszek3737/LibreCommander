@@ -185,6 +185,65 @@ fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressS
     });
 }
 
+struct ProgressCtx<'a> {
+    total: usize,
+    sources: &'a [PathBuf],
+    sizes: &'a [u64],
+    start_time: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct FileProgress<'a> {
+    idx: usize,
+    src: &'a Path,
+    bytes_done: u64,
+    bytes_total: u64,
+    file_bytes: u64,
+    file_total: u64,
+}
+
+fn report_transition(
+    progress: &mut impl FnMut(BatchProgress),
+    ctx: &ProgressCtx<'_>,
+    completed: usize,
+    bytes_done: u64,
+    bytes_total: u64,
+) {
+    report_progress(
+        progress,
+        ProgressSnapshot {
+            completed,
+            total: ctx.total,
+            current: helpers::next_path(ctx.sources, completed),
+            bytes_done,
+            bytes_total,
+            current_file_bytes: 0,
+            current_file_total: ctx.sizes.get(completed).copied().unwrap_or(0),
+            start_time: ctx.start_time,
+        },
+    );
+}
+
+fn report_file_active(
+    progress: &mut impl FnMut(BatchProgress),
+    ctx: &ProgressCtx<'_>,
+    file: FileProgress<'_>,
+) {
+    report_progress(
+        progress,
+        ProgressSnapshot {
+            completed: file.idx,
+            total: ctx.total,
+            current: Some(file.src),
+            bytes_done: file.bytes_done,
+            bytes_total: file.bytes_total,
+            current_file_bytes: file.file_bytes,
+            current_file_total: file.file_total,
+            start_time: ctx.start_time,
+        },
+    );
+}
+
 fn copy_entry(
     src: &Path,
     dest: &Path,
@@ -326,20 +385,14 @@ where
     let mut bytes_total = helpers::sum_sizes(&sizes);
     let mut bytes_done = 0_u64;
     let start_time = Instant::now();
+    let ctx = ProgressCtx {
+        total,
+        sources,
+        sizes: &sizes,
+        start_time,
+    };
 
-    report_progress(
-        progress,
-        ProgressSnapshot {
-            completed: 0,
-            total,
-            current: helpers::next_path(sources, 0),
-            bytes_done,
-            bytes_total,
-            current_file_bytes: 0,
-            current_file_total: sizes.first().copied().unwrap_or(0),
-            start_time,
-        },
-    );
+    report_transition(progress, &ctx, 0, bytes_done, bytes_total);
 
     for (idx, src) in sources.iter().enumerate() {
         if is_canceled(&cancel) {
@@ -347,17 +400,16 @@ where
             break;
         }
         let current_total = sizes[idx];
-        report_progress(
+        report_file_active(
             progress,
-            ProgressSnapshot {
-                completed: idx,
-                total,
-                current: Some(src),
+            &ctx,
+            FileProgress {
+                idx,
+                src,
                 bytes_done,
                 bytes_total,
-                current_file_bytes: 0,
-                current_file_total: current_total,
-                start_time,
+                file_bytes: 0,
+                file_total: current_total,
             },
         );
 
@@ -369,19 +421,7 @@ where
                 src.display(),
                 target.display()
             ));
-            report_progress(
-                progress,
-                ProgressSnapshot {
-                    completed: idx + 1,
-                    total,
-                    current: helpers::next_path(sources, idx + 1),
-                    bytes_done,
-                    bytes_total,
-                    current_file_bytes: 0,
-                    current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
-                    start_time,
-                },
-            );
+            report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
             continue;
         }
 
@@ -393,17 +433,16 @@ where
             }
             let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
             bytes_total = bytes_total.max(current_bytes_done);
-            report_progress(
+            report_file_active(
                 progress,
-                ProgressSnapshot {
-                    completed: idx,
-                    total,
-                    current: Some(src),
+                &ctx,
+                FileProgress {
+                    idx,
+                    src,
                     bytes_done: current_bytes_done,
                     bytes_total,
-                    current_file_bytes: file_bytes_so_far,
-                    current_file_total: current_total.max(file_bytes_so_far),
-                    start_time,
+                    file_bytes: file_bytes_so_far,
+                    file_total: current_total.max(file_bytes_so_far),
                 },
             );
         });
@@ -419,19 +458,7 @@ where
             bytes_total = bytes_total.max(bytes_done);
         }
 
-        report_progress(
-            progress,
-            ProgressSnapshot {
-                completed: idx + 1,
-                total,
-                current: helpers::next_path(sources, idx + 1),
-                bytes_done,
-                bytes_total,
-                current_file_bytes: 0,
-                current_file_total: sizes.get(idx + 1).copied().unwrap_or(0),
-                start_time,
-            },
-        );
+        report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
 
         if canceled {
             break;
