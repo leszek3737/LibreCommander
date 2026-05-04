@@ -97,6 +97,8 @@ pub enum SortMode {
     SizeDesc,
     ModTimeAsc,
     ModTimeDesc,
+    NaturalNameAsc,
+    NaturalNameDesc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
