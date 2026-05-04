@@ -89,6 +89,10 @@ fn lookup_owner_group(_uid: u32, _gid: u32) -> (String, String) {
     (String::new(), String::new())
 }
 
+fn created_or_modified(metadata: &std::fs::Metadata, modified: SystemTime) -> SystemTime {
+    metadata.created().unwrap_or(modified)
+}
+
 pub fn read_directory(
     path: &Path,
     show_hidden: bool,
@@ -106,6 +110,7 @@ pub fn read_directory(
             is_executable: true,
             size: 0,
             modified: SystemTime::now(),
+            created: SystemTime::now(),
             permissions: 0o755,
             owner: String::new(),
             group: String::new(),
@@ -171,16 +176,18 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         metadata.is_dir()
     };
 
-    let (size, modified, permissions, is_exec, uid, gid) =
+    let (size, modified, created, permissions, is_exec, uid, gid) =
         if let Some(ref target_metadata) = target_meta {
             let size = target_metadata.len();
             let modified = target_metadata.modified()?;
+            let created = created_or_modified(target_metadata, modified);
             let mode = file_mode(target_metadata);
             let (uid, gid) = uid_gid(target_metadata);
-            (size, modified, mode, is_executable(mode), uid, gid)
+            (size, modified, created, mode, is_executable(mode), uid, gid)
         } else {
             let size = metadata.len();
             let modified = metadata.modified()?;
+            let created = created_or_modified(&metadata, modified);
             let mode = file_mode(&metadata);
             let (uid, gid) = uid_gid(&metadata);
             let is_exec = if is_symlink && target_meta.is_none() {
@@ -193,7 +200,7 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
             } else {
                 mode
             };
-            (size, modified, display_mode, is_exec, uid, gid)
+            (size, modified, created, display_mode, is_exec, uid, gid)
         };
 
     let (owner, group) = lookup_owner_group(uid, gid);
@@ -206,6 +213,7 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         is_executable: is_exec,
         size,
         modified,
+        created,
         permissions,
         owner,
         group,
@@ -317,6 +325,7 @@ mod tests {
             is_executable: false,
             size: 10,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -335,6 +344,7 @@ mod tests {
             is_executable: true,
             size: 0,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o755,
             owner: String::new(),
             group: String::new(),
@@ -361,6 +371,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -381,6 +392,7 @@ mod tests {
             is_executable: false,
             size: 500,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -401,6 +413,7 @@ mod tests {
             is_executable: false,
             size: 1536,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -422,6 +435,7 @@ mod tests {
             is_executable: false,
             size: 1024 * 1024,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -443,6 +457,7 @@ mod tests {
             is_executable: false,
             size: 1024 * 1024 * 1024,
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -464,6 +479,7 @@ mod tests {
             is_executable: false,
             size: 1024u64.pow(4),
             modified: SystemTime::now(),
+            created: SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),

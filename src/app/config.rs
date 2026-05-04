@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::app::paths;
-use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode};
+use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode, SortOptions};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PersistedPanel {
@@ -25,6 +25,10 @@ pub struct PersistedPanel {
 // This runs during deserialization — in a TUI app eprintln! would corrupt
 // the alternate screen buffer. No `log`/`tracing` crate in this project,
 // so silent fallback is the safest option.
+fn default_true() -> bool {
+    true
+}
+
 fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -45,6 +49,10 @@ pub struct PersistedSetup {
     pub version: u32,
     #[serde(default)]
     pub active_panel: String,
+    #[serde(default = "default_true")]
+    pub dir_first: bool,
+    #[serde(default)]
+    pub sort_sensitive: bool,
     #[serde(default)]
     pub left: PersistedPanel,
     #[serde(default)]
@@ -56,6 +64,8 @@ pub struct PersistedSetup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub active_panel: ActivePanel,
+    pub dir_first: bool,
+    pub sort_sensitive: bool,
     pub left: PersistedPanel,
     pub right: PersistedPanel,
     pub hotlist: Vec<PathBuf>,
@@ -65,6 +75,8 @@ impl Settings {
     pub fn from_state(state: &AppState) -> Self {
         Self {
             active_panel: state.active_panel,
+            dir_first: state.left_panel.sort_options.dir_first,
+            sort_sensitive: state.left_panel.sort_options.sort_sensitive,
             left: panel_to_persisted(&state.left_panel),
             right: panel_to_persisted(&state.right_panel),
             hotlist: state.directory_hotlist.clone(),
@@ -75,6 +87,12 @@ impl Settings {
         apply_panel(&mut state.left_panel, &self.left);
         apply_panel(&mut state.right_panel, &self.right);
         state.active_panel = self.active_panel;
+        let sort_opts = SortOptions {
+            dir_first: self.dir_first,
+            sort_sensitive: self.sort_sensitive,
+        };
+        state.left_panel.sort_options = sort_opts;
+        state.right_panel.sort_options = sort_opts;
         if !self.hotlist.is_empty() {
             state.directory_hotlist = self.hotlist.clone();
         }
@@ -90,6 +108,8 @@ impl From<&Settings> for PersistedSetup {
                 ActivePanel::Right => "right",
             }
             .to_string(),
+            dir_first: settings.dir_first,
+            sort_sensitive: settings.sort_sensitive,
             left: settings.left.clone(),
             right: settings.right.clone(),
             hotlist: settings
@@ -108,6 +128,8 @@ impl From<PersistedSetup> for Settings {
                 "right" => ActivePanel::Right,
                 _ => ActivePanel::Left,
             },
+            dir_first: setup.dir_first,
+            sort_sensitive: setup.sort_sensitive,
             left: setup.left,
             right: setup.right,
             hotlist: setup.hotlist.into_iter().map(PathBuf::from).collect(),
@@ -214,6 +236,11 @@ mod tests {
         let settings = Settings::from_state(&state);
 
         assert_eq!(settings.active_panel, ActivePanel::Right);
+        assert_eq!(settings.dir_first, state.left_panel.sort_options.dir_first);
+        assert_eq!(
+            settings.sort_sensitive,
+            state.left_panel.sort_options.sort_sensitive
+        );
         assert_eq!(settings.left.path, Some(tmp_dir.display().to_string()));
         assert_eq!(settings.left.listing_mode, ListingMode::Brief);
         assert_eq!(settings.left.sort_mode, SortMode::SizeDesc);
@@ -228,6 +255,8 @@ mod tests {
         let mut state = AppState::default();
         let settings = Settings {
             active_panel: ActivePanel::Right,
+            dir_first: true,
+            sort_sensitive: false,
             left: PersistedPanel {
                 path: Some(tmp_dir.display().to_string()),
                 listing_mode: ListingMode::Brief,
@@ -242,6 +271,10 @@ mod tests {
         settings.apply_to_state(&mut state);
 
         assert_eq!(state.active_panel, ActivePanel::Right);
+        assert!(state.left_panel.sort_options.dir_first);
+        assert!(!state.left_panel.sort_options.sort_sensitive);
+        assert!(state.right_panel.sort_options.dir_first);
+        assert!(!state.right_panel.sort_options.sort_sensitive);
         assert_eq!(
             state.left_panel.path,
             tmp_dir.canonicalize().unwrap_or(tmp_dir)
@@ -258,6 +291,8 @@ mod tests {
         let setup = PersistedSetup {
             version: 1,
             active_panel: "right".to_string(),
+            dir_first: true,
+            sort_sensitive: false,
             left: PersistedPanel {
                 path: Some("/tmp".to_string()),
                 listing_mode: ListingMode::Brief,
@@ -273,11 +308,15 @@ mod tests {
         let persisted = PersistedSetup::from(&settings);
 
         assert_eq!(settings.active_panel, ActivePanel::Right);
+        assert!(settings.dir_first);
+        assert!(!settings.sort_sensitive);
         assert_eq!(
             settings.hotlist,
             vec![PathBuf::from("/tmp"), PathBuf::from("/usr")]
         );
         assert_eq!(persisted.active_panel, setup.active_panel);
+        assert_eq!(persisted.dir_first, setup.dir_first);
+        assert_eq!(persisted.sort_sensitive, setup.sort_sensitive);
         assert_eq!(persisted.left, setup.left);
         assert_eq!(persisted.right, setup.right);
         assert_eq!(persisted.hotlist, setup.hotlist);

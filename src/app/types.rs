@@ -73,6 +73,7 @@ pub struct FileEntry {
     pub is_executable: bool,
     pub size: u64,
     pub modified: SystemTime,
+    pub created: SystemTime,
     pub permissions: u32,
     pub owner: String,
     pub group: String,
@@ -82,7 +83,33 @@ pub struct FileEntry {
 }
 
 // ============================================================================
-// 2. SortMode enum definition
+// 2a. SortOptions struct definition
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SortOptions {
+    #[serde(default = "default_true")]
+    pub dir_first: bool,
+    #[serde(default)]
+    pub sort_sensitive: bool,
+}
+
+impl Default for SortOptions {
+    fn default() -> Self {
+        Self {
+            dir_first: true,
+            sort_sensitive: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ============================================================================
+// 2b. SortMode enum definition
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -99,6 +126,8 @@ pub enum SortMode {
     ModTimeDesc,
     NaturalNameAsc,
     NaturalNameDesc,
+    BtimeAsc,
+    BtimeDesc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -120,6 +149,7 @@ pub struct PanelState {
     pub cursor: usize,
     pub scroll_offset: usize,
     pub sort_mode: SortMode,
+    pub sort_options: SortOptions,
     pub listing_mode: ListingMode,
     pub show_hidden: bool,
     pub filter: Option<String>,
@@ -537,6 +567,7 @@ impl PanelState {
             cursor: 0,
             scroll_offset: 0,
             sort_mode: SortMode::default(),
+            sort_options: SortOptions::default(),
             listing_mode: ListingMode::default(),
             show_hidden: true,
             filter: None,
@@ -794,6 +825,7 @@ mod tests {
             is_executable: permissions & 1 != 0,
             size,
             modified: UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+            created: UNIX_EPOCH + Duration::from_secs(1_000_000_000),
             permissions,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),
@@ -1491,6 +1523,7 @@ mod tests {
             is_executable: true,
             size: 100,
             modified: UNIX_EPOCH,
+            created: UNIX_EPOCH,
             permissions: 0o755,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),
@@ -1511,6 +1544,7 @@ mod tests {
             is_executable: false,
             size: 100,
             modified: UNIX_EPOCH,
+            created: UNIX_EPOCH,
             permissions: 0o644,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),
@@ -1531,6 +1565,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
+            created: UNIX_EPOCH,
             permissions: 0o777,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),
@@ -1551,6 +1586,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: UNIX_EPOCH,
+            created: UNIX_EPOCH,
             permissions: 0o777,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),
@@ -1571,6 +1607,7 @@ mod tests {
             is_executable: true,
             size: 100,
             modified: UNIX_EPOCH,
+            created: UNIX_EPOCH,
             permissions: 0o755,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),
@@ -1591,6 +1628,7 @@ mod tests {
             is_executable: false,
             size: 100,
             modified: UNIX_EPOCH,
+            created: UNIX_EPOCH,
             permissions: 0o644,
             owner: "testuser".to_string(),
             group: "testgroup".to_string(),

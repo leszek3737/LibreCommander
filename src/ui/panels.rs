@@ -479,6 +479,7 @@ mod tests {
             is_executable: is_exec,
             size: 1024,
             modified: SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),

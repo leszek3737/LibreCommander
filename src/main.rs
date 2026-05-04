@@ -295,8 +295,12 @@ pub(crate) fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             let current_name = current_panel_entry_name(panel);
             let saved = selected_panel_paths(panel);
             let new_unfiltered = entries;
-            let new_filtered =
-                filtered_sorted_entries(&new_unfiltered, panel.filter.as_deref(), panel.sort_mode);
+            let new_filtered = filtered_sorted_entries(
+                &new_unfiltered,
+                panel.filter.as_deref(),
+                panel.sort_mode,
+                panel.sort_options,
+            );
             panel.unfiltered_entries = new_unfiltered;
             panel.entries = new_filtered;
             restore_panel_selection(panel, &saved);
@@ -352,6 +356,7 @@ fn filtered_sorted_entries(
     entries: &[reader::FileEntry],
     filter: Option<&str>,
     sort_mode: app::types::SortMode,
+    sort_options: app::types::SortOptions,
 ) -> Vec<reader::FileEntry> {
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
@@ -366,7 +371,7 @@ fn filtered_sorted_entries(
         })
         .cloned()
         .collect();
-    sorting::sort_entries(&mut sort_entries, sort_mode);
+    sorting::sort_entries(&mut sort_entries, sort_mode, sort_options);
     sort_entries
 }
 
@@ -2010,6 +2015,7 @@ fn apply_search_filter(panel: &mut PanelState) {
         &panel.unfiltered_entries,
         panel.filter.as_deref(),
         panel.sort_mode,
+        panel.sort_options,
     );
     panel.cursor = 0;
     panel.scroll_offset = 0;
@@ -2176,6 +2182,7 @@ mod tests {
             is_executable: false,
             size,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: String::new(),
             group: String::new(),
@@ -2279,6 +2286,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0,
             owner: String::new(),
             group: String::new(),
@@ -2321,6 +2329,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0,
             owner: String::new(),
             group: String::new(),
@@ -2336,6 +2345,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0,
             owner: String::new(),
             group: String::new(),
@@ -2527,6 +2537,7 @@ mod tests {
                 is_executable: false,
                 size: 0,
                 modified: std::time::SystemTime::now(),
+                created: std::time::SystemTime::UNIX_EPOCH,
                 permissions: 0,
                 owner: String::new(),
                 group: String::new(),
@@ -2542,6 +2553,7 @@ mod tests {
                 is_executable: false,
                 size: 0,
                 modified: std::time::SystemTime::now(),
+                created: std::time::SystemTime::UNIX_EPOCH,
                 permissions: 0,
                 owner: String::new(),
                 group: String::new(),
@@ -2559,6 +2571,7 @@ mod tests {
                 is_executable: false,
                 size: 0,
                 modified: std::time::SystemTime::now(),
+                created: std::time::SystemTime::UNIX_EPOCH,
                 permissions: 0,
                 owner: String::new(),
                 group: String::new(),
@@ -2574,6 +2587,7 @@ mod tests {
                 is_executable: false,
                 size: 0,
                 modified: std::time::SystemTime::now(),
+                created: std::time::SystemTime::UNIX_EPOCH,
                 permissions: 0,
                 owner: String::new(),
                 group: String::new(),
@@ -2600,6 +2614,7 @@ mod tests {
             is_executable: false,
             size: 100,
             modified: UNIX_EPOCH + Duration::from_secs(0),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0o644,
             owner: "user".to_string(),
             group: "group".to_string(),
@@ -3085,6 +3100,7 @@ mod tests {
             is_executable: false,
             size: 0,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0,
             owner: String::new(),
             group: String::new(),
@@ -3123,6 +3139,7 @@ mod tests {
             is_executable: false,
             size: 42,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0,
             owner: String::new(),
             group: String::new(),

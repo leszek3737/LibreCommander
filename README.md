@@ -198,6 +198,8 @@ Configuration file location: `~/.config/lc/config.toml`
 ```toml
 version = 1
 active_panel = "left"  # "left" or "right"
+dir_first = true       # directories before files in sort
+sort_sensitive = false # case-sensitive name sorting
 
 [left]
 path = "/home/user"
@@ -218,7 +220,7 @@ hotlist = ["/home/user", "/home/user/projects"]
 
 ### Sort Modes
 
-`name_asc`, `name_desc`, `natural_name_asc`, `natural_name_desc`, `size_asc`, `size_desc`, `mod_time_asc`, `mod_time_desc`, `extension_asc`, `extension_desc`
+`name_asc`, `name_desc`, `natural_name_asc`, `natural_name_desc`, `size_asc`, `size_desc`, `mod_time_asc`, `mod_time_desc`, `btime_asc`, `btime_desc`, `extension_asc`, `extension_desc`
 
 ### Environment Variables
 

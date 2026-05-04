@@ -209,7 +209,7 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
         .filter(|entry| entry_matches_panel(entry, panel.filter.as_deref()))
         .cloned()
         .collect();
-    sorting::sort_entries(&mut panel.entries, panel.sort_mode);
+    sorting::sort_entries(&mut panel.entries, panel.sort_mode, panel.sort_options);
 
     if let Some(name) = current_name.as_deref()
         && let Some(pos) = panel.entries.iter().position(|entry| entry.name == name)
@@ -266,6 +266,7 @@ mod tests {
             is_executable: true,
             size: 0,
             modified: std::time::SystemTime::now(),
+            created: std::time::SystemTime::UNIX_EPOCH,
             permissions: 0o755,
             owner: String::new(),
             group: String::new(),
