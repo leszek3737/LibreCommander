@@ -124,8 +124,6 @@ pub fn category_from_ext(name: &str) -> FileCategory {
         .unwrap_or(FileCategory::Other)
 }
 
-/// Extension → MIME mapping. `category_from_ext` derives categories from this table
-/// so MIME fallback and extension categories stay aligned.
 #[must_use]
 pub fn extension_mime(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_lowercase();
@@ -141,6 +139,18 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
     }
 
     let ext = name.rsplit_once('.')?.1;
+    image_mime(ext)
+        .or_else(|| video_mime(ext))
+        .or_else(|| audio_mime(ext))
+        .or_else(|| archive_mime(ext))
+        .or_else(|| document_mime(ext))
+        .or_else(|| config_mime(ext))
+        .or_else(|| code_mime(ext))
+        .or_else(|| font_mime(ext))
+}
+
+#[must_use]
+fn image_mime(ext: &str) -> Option<&'static str> {
     match ext {
         "jpg" | "jpeg" => Some("image/jpeg"),
         "png" => Some("image/png"),
@@ -162,7 +172,13 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "psd" => Some("image/vnd.adobe.photoshop"),
         "xcf" => Some("image/x-xcf"),
         "ai" | "eps" => Some("application/postscript"),
+        _ => None,
+    }
+}
 
+#[must_use]
+fn video_mime(ext: &str) -> Option<&'static str> {
+    match ext {
         "mp4" => Some("video/mp4"),
         "m4v" => Some("video/x-m4v"),
         "mkv" => Some("video/x-matroska"),
@@ -179,7 +195,13 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "vob" => Some("video/mpeg"),
         "rm" | "rmvb" => Some("application/vnd.rn-realmedia"),
         "asf" => Some("video/x-ms-asf"),
+        _ => None,
+    }
+}
 
+#[must_use]
+fn audio_mime(ext: &str) -> Option<&'static str> {
+    match ext {
         "mp3" => Some("audio/mpeg"),
         "wav" => Some("audio/wav"),
         "flac" => Some("audio/flac"),
@@ -192,7 +214,13 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "mid" | "midi" => Some("audio/midi"),
         "amr" => Some("audio/amr"),
         "au" => Some("audio/basic"),
+        _ => None,
+    }
+}
 
+#[must_use]
+fn archive_mime(ext: &str) -> Option<&'static str> {
+    match ext {
         "zip" => Some("application/zip"),
         "tar" => Some("application/x-tar"),
         "gz" => Some("application/gzip"),
@@ -212,7 +240,13 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "cpio" => Some("application/x-cpio"),
         "jar" | "war" | "ear" => Some("application/java-archive"),
         "z" => Some("application/gzip"),
+        _ => None,
+    }
+}
 
+#[must_use]
+fn document_mime(ext: &str) -> Option<&'static str> {
+    match ext {
         "pdf" => Some("application/pdf"),
         "doc" => Some("application/msword"),
         "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
@@ -233,13 +267,13 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "chm" => Some("application/vnd.ms-htmlhelp"),
         "tex" => Some("application/x-tex"),
         "rst" => Some("text/x-rst"),
+        _ => None,
+    }
+}
 
-        "ttf" => Some("font/ttf"),
-        "otf" => Some("font/otf"),
-        "woff" => Some("font/woff"),
-        "woff2" => Some("font/woff2"),
-        "eot" => Some("application/vnd.ms-fontobject"),
-
+#[must_use]
+fn config_mime(ext: &str) -> Option<&'static str> {
+    match ext {
         "json" => Some("application/json"),
         "jsonc" => Some("application/json"),
         "toml" => Some("application/toml"),
@@ -248,7 +282,13 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "ini" | "conf" | "cfg" => Some("text/config"),
         "plist" => Some("application/x-plist"),
         "lock" => Some("application/json"),
+        _ => None,
+    }
+}
 
+#[must_use]
+fn code_mime(ext: &str) -> Option<&'static str> {
+    match ext {
         "txt" | "log" => Some("text/plain"),
         "md" | "markdown" => Some("text/markdown"),
         "rs" => Some("text/x-rust"),
@@ -287,6 +327,18 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         "scss" | "sass" | "less" => Some("text/x-scss"),
         "vue" => Some("text/x-vue"),
         "svelte" => Some("text/x-svelte"),
+        _ => None,
+    }
+}
+
+#[must_use]
+fn font_mime(ext: &str) -> Option<&'static str> {
+    match ext {
+        "ttf" => Some("font/ttf"),
+        "otf" => Some("font/otf"),
+        "woff" => Some("font/woff"),
+        "woff2" => Some("font/woff2"),
+        "eot" => Some("application/vnd.ms-fontobject"),
         _ => None,
     }
 }
@@ -401,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn extension_mime_returns_correct_types() {
+    fn extension_mime_image_document_config() {
         assert_eq!(extension_mime("test.heic"), Some("image/heic"));
         assert_eq!(extension_mime("test.heif"), Some("image/heif"));
         assert_eq!(extension_mime("test.icns"), Some("image/icns"));
@@ -413,6 +465,15 @@ mod tests {
         assert_eq!(extension_mime("test.epub"), Some("application/epub+zip"));
         assert_eq!(extension_mime("test.djvu"), Some("image/vnd.djvu"));
         assert_eq!(extension_mime("test.jsonc"), Some("application/json"));
+        assert_eq!(
+            extension_mime("test.psd"),
+            Some("image/vnd.adobe.photoshop")
+        );
+        assert_eq!(extension_mime("test.xcf"), Some("image/x-xcf"));
+    }
+
+    #[test]
+    fn extension_mime_archive_font_media() {
         assert_eq!(
             extension_mime("test.deb"),
             Some("application/x-debian-package")
@@ -440,10 +501,5 @@ mod tests {
         assert_eq!(extension_mime("test.wma"), Some("audio/x-ms-wma"));
         assert_eq!(extension_mime("test.aiff"), Some("audio/aiff"));
         assert_eq!(extension_mime("test.mid"), Some("audio/midi"));
-        assert_eq!(
-            extension_mime("test.psd"),
-            Some("image/vnd.adobe.photoshop")
-        );
-        assert_eq!(extension_mime("test.xcf"), Some("image/x-xcf"));
     }
 }

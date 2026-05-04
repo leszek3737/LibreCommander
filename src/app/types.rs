@@ -1102,7 +1102,7 @@ mod tests {
         let panels = PanelsState::new(current_dir.clone());
         let menu = MenuState::new(current_dir.clone());
 
-        assert_eq!(panels.left_panel.path, current_dir.clone());
+        assert_eq!(panels.left_panel.path, current_dir);
         assert_eq!(panels.right_panel.path, PathBuf::from("/tmp"));
         assert_eq!(panels.active_panel, ActivePanel::Left);
         assert_eq!(menu.directory_hotlist, vec![PathBuf::from("/tmp")]);

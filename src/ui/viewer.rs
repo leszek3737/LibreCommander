@@ -328,20 +328,20 @@ fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
         return true;
     }
 
-    if let Some(mime) = mime {
-        if is_known_binary_mime(mime) {
-            return false;
-        }
+    if let Some(mime) = mime
+        && is_known_binary_mime(mime)
+    {
+        return false;
     }
 
     if bytes.contains(&0) {
         return false;
     }
 
-    if let Some(mime) = mime {
-        if mime.starts_with("text/") || is_text_application_mime(mime) {
-            return true;
-        }
+    if let Some(mime) = mime
+        && (mime.starts_with("text/") || is_text_application_mime(mime))
+    {
+        return true;
     }
 
     true

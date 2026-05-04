@@ -1,3 +1,5 @@
+Read AGENTS.md before proceeding.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
