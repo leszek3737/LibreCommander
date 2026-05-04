@@ -320,15 +320,15 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive(src, dest)?;
-                if !path_contains(src, dest)? {
-                    if let Err(del_err) = delete_dir_recursive(src) {
-                        return Err(io::Error::other(format!(
-                            "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
-                            src.display(),
-                            dest.display(),
-                            del_err
-                        )));
-                    }
+                if !path_contains(src, dest)?
+                    && let Err(del_err) = delete_dir_recursive(src)
+                {
+                    return Err(io::Error::other(format!(
+                        "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
+                        src.display(),
+                        dest.display(),
+                        del_err
+                    )));
                 }
             } else {
                 copy_file(src, dest)?;

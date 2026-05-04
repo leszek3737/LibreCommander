@@ -108,32 +108,28 @@ pub fn poll_running_job(
         // Happy path: worker sent Finished — join to clean up thread
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
+            && let Err(panic_payload) = handle.join()
         {
-            if let Err(panic_payload) = handle.join() {
-                debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
-            }
+            debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
         }
         finish_running_job(state, action_label, &report, refresh_both);
         dirty = true;
     } else if let Some(job) = running_job.as_mut() {
         // No Finished received — check if worker died (panicked before sending)
-        if let Some(handle) = job.handle.as_ref() {
-            if handle.is_finished() {
-                if let Some(handle) = job.handle.take() {
-                    if let Err(panic_payload) = handle.join() {
-                        debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
-                        let _ = running_job.take();
-                        state.mode = AppMode::Normal;
-                        if let Some(panel) = state.menu_restore_panel.take() {
-                            state.active_panel = panel;
-                        }
-                        state.status_message =
-                            Some("Operation failed: worker thread panicked".to_string());
-                        refresh_both(state);
-                        dirty = true;
-                    }
-                }
+        let worker_finished = job.handle.as_ref().is_some_and(JoinHandle::is_finished);
+        if worker_finished
+            && let Some(handle) = job.handle.take()
+            && let Err(panic_payload) = handle.join()
+        {
+            debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
+            let _ = running_job.take();
+            state.mode = AppMode::Normal;
+            if let Some(panel) = state.menu_restore_panel.take() {
+                state.active_panel = panel;
             }
+            state.status_message = Some("Operation failed: worker thread panicked".to_string());
+            refresh_both(state);
+            dirty = true;
         }
     }
 

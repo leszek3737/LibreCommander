@@ -27,7 +27,7 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 
 ### Prerequisites
 
-- Rust 1.85+ (edition 2024 support required)
+- Rust 1.95+ (edition 2024 support required)
 - Cargo
 
 ### Building from Source

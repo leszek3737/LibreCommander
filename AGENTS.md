@@ -2,7 +2,7 @@
 
 Rust TUI file manager inspired by Midnight Commander. Single statically-linked
 binary, no runtime dependencies. Stack: **Ratatui 0.30 + crossterm 0.29**,
-edition 2024, MSRV 1.85, `unsafe_code = forbid`.
+edition 2024, MSRV 1.95, `unsafe_code = forbid`.
 
 > If you have access to **Serena** or **GitNexus** MCP tools, jump to those
 > sections — they are the preferred navigation path. Everything above them is

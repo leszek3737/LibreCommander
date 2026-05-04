@@ -75,10 +75,10 @@ pub fn run_shell_command(
     #[allow(clippy::print_stderr)]
     impl Drop for ShellRestoreGuard {
         fn drop(&mut self) {
-            if !self.restore_ok {
-                if let Err(err) = resume_terminal_stdout() {
-                    eprintln!("Terminal restore failed after shell command: {err}");
-                }
+            if !self.restore_ok
+                && let Err(err) = resume_terminal_stdout()
+            {
+                eprintln!("Terminal restore failed after shell command: {err}");
             }
         }
     }

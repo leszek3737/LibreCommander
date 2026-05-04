@@ -1125,17 +1125,16 @@ fn handle_enter_key(state: &mut AppState, visible: usize) {
         p.cursor = 0;
         p.scroll_offset = 0;
         refresh_active(state);
-        if let Some(ref name) = prev_dir_name {
-            if let Some(idx) = state
+        if let Some(ref name) = prev_dir_name
+            && let Some(idx) = state
                 .active_panel()
                 .entries
                 .iter()
                 .position(|e| &e.name == name)
-            {
-                let p = state.active_panel_mut();
-                p.cursor = idx;
-                p.ensure_cursor_visible(visible);
-            }
+        {
+            let p = state.active_panel_mut();
+            p.cursor = idx;
+            p.ensure_cursor_visible(visible);
         }
     }
 }
@@ -1212,17 +1211,16 @@ fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize) {
                 panel.cursor = 0;
                 panel.scroll_offset = 0;
                 refresh_active(state);
-                if let Some(ref name) = prev_dir_name {
-                    if let Some(idx) = state
+                if let Some(ref name) = prev_dir_name
+                    && let Some(idx) = state
                         .active_panel()
                         .entries
                         .iter()
                         .position(|e| &e.name == name)
-                    {
-                        let p = state.active_panel_mut();
-                        p.cursor = idx;
-                        p.ensure_cursor_visible(visible);
-                    }
+                {
+                    let p = state.active_panel_mut();
+                    p.cursor = idx;
+                    p.ensure_cursor_visible(visible);
                 }
                 state.status_message = Some(format!("cd to {}", prev_path.display()));
             }
@@ -1722,11 +1720,11 @@ fn handle_error_dialog(state: &mut AppState, key: KeyCode) {
 
 /// Handle progress dialog (cancel on Esc)
 fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>, key: KeyCode) {
-    if key == KeyCode::Esc {
-        if let Some(job) = running_job.as_ref() {
-            job.cancel.store(true, Ordering::Relaxed);
-            state.status_message = Some("Cancel requested".to_string());
-        }
+    if key == KeyCode::Esc
+        && let Some(job) = running_job.as_ref()
+    {
+        job.cancel.store(true, Ordering::Relaxed);
+        state.status_message = Some("Cancel requested".to_string());
     }
 }
 

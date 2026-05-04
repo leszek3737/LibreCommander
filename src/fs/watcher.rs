@@ -220,10 +220,10 @@ fn make_handler(
                     debug_log!("watcher mutex poisoned (debounce), recovering: {e}");
                     e.into_inner()
                 });
-                if let Some(last) = debounce.get(&path) {
-                    if now.duration_since(*last) < Duration::from_millis(300) {
-                        continue;
-                    }
+                if let Some(last) = debounce.get(&path)
+                    && now.duration_since(*last) < Duration::from_millis(300)
+                {
+                    continue;
                 }
                 debounce.insert(path, now);
                 drop(debounce);
