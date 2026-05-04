@@ -2250,13 +2250,14 @@ mod tests {
 
     #[test]
     fn menu_toggle_hidden_files_refreshes_active_panel() {
+        let temp_dir = tempfile::tempdir().unwrap();
         let state = AppState {
             active_panel: ActivePanel::Left,
             ..Default::default()
         };
         let mut terminal = test_terminal();
         let mut state = state;
-        state.left_panel.path = std::env::temp_dir();
+        state.left_panel.path = temp_dir.path().to_path_buf();
         state.left_panel.show_hidden = false;
         state.mode = AppMode::Menu;
         state.menu_selected = 3;
@@ -3148,5 +3149,282 @@ mod tests {
                 )
             ))
         );
+    }
+
+    #[test]
+    fn ctrl_alt_s_starts_search_mode() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
+        ];
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.mode, AppMode::Search);
+        assert_eq!(state.search_query, "");
+    }
+
+    #[test]
+    fn ctrl_alt_h_toggles_hidden() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        let temp_dir = tempfile::tempdir().unwrap();
+        state.left_panel.path = temp_dir.path().to_path_buf();
+        state.left_panel.show_hidden = false;
+        state.left_panel.cursor = 3;
+        state.left_panel.scroll_offset = 2;
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            24,
+            &mut terminal,
+        );
+
+        assert!(state.left_panel.show_hidden);
+        assert_eq!(state.left_panel.cursor, 0);
+        assert_eq!(state.left_panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn ctrl_alt_r_refreshes() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("existing.txt"), b"data").unwrap();
+        state.left_panel.path = temp_dir.path().to_path_buf();
+        state.left_panel.entries = vec![];
+        assert!(state.left_panel.entries.is_empty());
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('r'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.mode, AppMode::Normal);
+        assert!(
+            state
+                .left_panel
+                .entries
+                .iter()
+                .any(|e| e.name == "existing.txt"),
+            "refresh_active should have loaded directory entries"
+        );
+    }
+
+    #[test]
+    fn ctrl_alt_u_swaps_panels() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.path = PathBuf::from("/tmp/left");
+        state.right_panel.path = PathBuf::from("/tmp/right");
+        state.active_panel = ActivePanel::Left;
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.left_panel.path, PathBuf::from("/tmp/right"));
+        assert_eq!(state.right_panel.path, PathBuf::from("/tmp/left"));
+        assert_eq!(state.active_panel, ActivePanel::Right);
+    }
+
+    #[test]
+    fn alt_j_does_not_start_search_mode() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
+        ];
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('j'),
+            KeyModifiers::ALT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.mode, AppMode::Normal);
+        assert_eq!(state.search_query, "");
+    }
+
+    #[test]
+    fn alt_k_does_not_move_cursor() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![make_test_entry("a.txt", 10, false)];
+        state.left_panel.cursor = 0;
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('k'),
+            KeyModifiers::ALT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.left_panel.cursor, 0);
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn shift_j_falls_through_to_navigation_down() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
+        ];
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('j'),
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.left_panel.cursor, 1);
+        assert_eq!(state.left_panel.selection_anchor, None);
+    }
+
+    #[test]
+    fn shift_k_falls_through_to_navigation_up() {
+        let mut terminal = test_terminal();
+        let mut state = AppState::default();
+        state.left_panel.entries = vec![
+            make_test_entry("a.txt", 10, false),
+            make_test_entry("b.txt", 20, false),
+        ];
+        state.left_panel.cursor = 1;
+
+        handle_normal_mode(
+            &mut state,
+            &mut None,
+            KeyCode::Char('k'),
+            KeyModifiers::SHIFT,
+            24,
+            &mut terminal,
+        );
+
+        assert_eq!(state.left_panel.cursor, 0);
+        assert_eq!(state.left_panel.selection_anchor, None);
+    }
+
+    fn buffer_to_string(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn dialog_overlay_renders_error_text() {
+        let mut terminal = test_terminal();
+        let state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Error(
+                "Test Error Message".to_string(),
+            )),
+            ..Default::default()
+        };
+        let viewer_state: Option<viewer::ViewerState> = None;
+
+        terminal
+            .draw(|f| render_ui(f, &state, &viewer_state))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer_to_string(buffer);
+        assert!(rendered.contains("Test Error"));
+        assert!(rendered.contains("Message"));
+    }
+
+    #[test]
+    fn menu_dropdown_renders_over_panels() {
+        let mut terminal = test_terminal();
+        let state = AppState {
+            mode: AppMode::Menu,
+            menu_selected: 1,
+            menu_item_selected: 0,
+            ..Default::default()
+        };
+        let viewer_state: Option<viewer::ViewerState> = None;
+
+        terminal
+            .draw(|f| render_ui(f, &state, &viewer_state))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer_to_string(buffer);
+        assert!(rendered.contains("User menu"));
+        assert!(rendered.contains("View file"));
+    }
+
+    #[test]
+    fn list_picker_overlay_renders_title() {
+        let mut terminal = test_terminal();
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::History),
+            picker_selected: 0,
+            ..Default::default()
+        };
+        state.command_history.push_back("echo hello".to_string());
+        let viewer_state: Option<viewer::ViewerState> = None;
+
+        terminal
+            .draw(|f| render_ui(f, &state, &viewer_state))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer_to_string(buffer);
+        assert!(rendered.contains("Command History"));
+        assert!(rendered.contains("echo hello"));
+    }
+
+    #[test]
+    fn help_dialog_renders_help_text() {
+        let mut terminal = test_terminal();
+        let state = AppState {
+            mode: AppMode::Dialog(app::types::DialogKind::Help {
+                message: "TEST HELP CONTENT".to_string(),
+                scroll_offset: 0,
+            }),
+            ..Default::default()
+        };
+        let viewer_state: Option<viewer::ViewerState> = None;
+
+        terminal
+            .draw(|f| render_ui(f, &state, &viewer_state))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer_to_string(buffer);
+        assert!(rendered.contains("TEST HELP"));
     }
 }
