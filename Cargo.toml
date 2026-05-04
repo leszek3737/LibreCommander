@@ -10,6 +10,7 @@ repository = "https://github.com/leszek3737/lc---Libre-Commander"
 
 [dependencies]
 chrono = "0.4.44"
+dirs = "6"
 rayon = "1"
 crossterm = "0.29.0"
 filetime = "0.2"

@@ -132,7 +132,11 @@ impl From<PersistedSetup> for Settings {
             sort_sensitive: setup.sort_sensitive,
             left: setup.left,
             right: setup.right,
-            hotlist: setup.hotlist.into_iter().map(PathBuf::from).collect(),
+            hotlist: setup
+                .hotlist
+                .iter()
+                .map(|s| crate::fs::path::clean_path(&crate::fs::path::expand_path(s)))
+                .collect(),
         }
     }
 }
@@ -195,7 +199,7 @@ pub fn load_settings() -> Result<Option<Settings>, String> {
 
 fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
     if let Some(ref path_str) = persisted.path {
-        let path = PathBuf::from(path_str);
+        let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
         let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if resolved.is_dir() {
             panel.path = resolved;

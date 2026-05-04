@@ -1534,20 +1534,7 @@ fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
 }
 
 fn handle_quick_cd(state: &mut AppState, input: &str) {
-    let expanded = if let Some(stripped) = input.strip_prefix('~') {
-        if let Some(home) = std::env::var_os("HOME") {
-            std::path::PathBuf::from(home).join(stripped.trim_start_matches('/'))
-        } else {
-            std::path::PathBuf::from(input)
-        }
-    } else {
-        let path = std::path::PathBuf::from(input);
-        if path.is_absolute() {
-            path
-        } else {
-            state.active_panel().path.join(path)
-        }
-    };
+    let expanded = fs::path::resolve_user_path(&state.active_panel().path, input);
 
     if expanded.is_dir() {
         let panel = state.active_panel_mut();
@@ -1582,8 +1569,8 @@ fn handle_input_action(
             return true;
         }
         InputAction::CreateDirectory if !input.trim().is_empty() => {
-            let dir = state.active_panel().path.clone();
-            if let Err(err) = ops::file_ops::create_directory(&dir.join(&input)) {
+            let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
+            if let Err(err) = ops::file_ops::create_directory(&target) {
                 state.status_message = Some(format!("Create directory failed: {err}"));
             } else {
                 refresh_active(state);
