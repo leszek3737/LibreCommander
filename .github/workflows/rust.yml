@@ -9,11 +9,21 @@ env:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.85
+        with:
+          components: rustfmt, clippy
 
       - name: Check formatting
         run: cargo fmt --check
@@ -25,4 +35,4 @@ jobs:
         run: cargo test --locked
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --locked
