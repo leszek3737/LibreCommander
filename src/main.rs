@@ -1040,17 +1040,14 @@ fn handle_navigation_keys(
         }
         KeyCode::Up | KeyCode::Char('k') => {
             let panel = state.active_panel_mut();
-            panel.selection_anchor = None;
             panel.move_cursor_up();
         }
         KeyCode::Down | KeyCode::Char('j') => {
             let panel = state.active_panel_mut();
-            panel.selection_anchor = None;
             panel.move_cursor_down(visible);
         }
         KeyCode::Home => {
             let p = state.active_panel_mut();
-            p.selection_anchor = None;
             p.cursor = 0;
             p.scroll_offset = 0;
         }
@@ -1058,21 +1055,18 @@ fn handle_navigation_keys(
             let len = state.active_panel().entries.len();
             if len > 0 {
                 let p = state.active_panel_mut();
-                p.selection_anchor = None;
                 p.cursor = len - 1;
                 p.ensure_cursor_visible(visible);
             }
         }
         KeyCode::PageUp => {
             let p = state.active_panel_mut();
-            p.selection_anchor = None;
             p.cursor = p.cursor.saturating_sub(visible);
             p.scroll_offset = p.scroll_offset.saturating_sub(visible);
         }
         KeyCode::PageDown => {
             let len = state.active_panel().entries.len();
             let p = state.active_panel_mut();
-            p.selection_anchor = None;
             p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
             p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
         }
@@ -3197,7 +3191,6 @@ mod tests {
         );
 
         assert_eq!(state.left_panel.cursor, 1);
-        assert_eq!(state.left_panel.selection_anchor, None);
     }
 
     #[test]
@@ -3220,7 +3213,6 @@ mod tests {
         );
 
         assert_eq!(state.left_panel.cursor, 0);
-        assert_eq!(state.left_panel.selection_anchor, None);
     }
 
     fn buffer_to_string(buffer: &ratatui::buffer::Buffer) -> String {

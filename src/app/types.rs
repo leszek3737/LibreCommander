@@ -150,7 +150,6 @@ pub struct PanelState {
     pub selected_count: usize,
     pub selected_size: u64,
     pub total_size: u64,
-    pub selection_anchor: Option<usize>,
     pub last_error: Option<String>,
     pub history: Vec<PathBuf>,
     pub unfiltered_entries: Vec<FileEntry>,
@@ -706,7 +705,6 @@ impl PanelState {
             selected_count: 0,
             selected_size: 0,
             total_size: 0,
-            selection_anchor: None,
             last_error: None,
             history: Vec::new(),
             unfiltered_entries: Vec::new(),
@@ -801,7 +799,6 @@ impl PanelState {
         }
         self.selected_count = 0;
         self.selected_size = 0;
-        self.selection_anchor = None;
     }
 
     pub fn recalculate_selection_stats(&mut self) {
