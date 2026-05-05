@@ -761,6 +761,11 @@ impl PanelState {
         }
     }
 
+    pub fn toggle_selection_at(&mut self, index: usize) {
+        let selected = self.entries.get(index).is_some_and(|e| !e.selected);
+        self.set_selection_at(index, selected);
+    }
+
     fn set_unfiltered_selection(&mut self, path: &Path, selected: bool) {
         if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == *path) {
             ue.selected = selected;
