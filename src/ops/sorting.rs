@@ -39,15 +39,22 @@ pub fn get_extension(name: &str) -> &str {
     }
 }
 
-/// Compares two file entries based on the specified sort mode.
+/// Compares two file entries based on the specified sort mode and options.
 ///
 /// This function implements the core comparison logic used by the sort function.
 /// It ensures:
 /// - ".." is always treated as the top entry
-/// - Directories are sorted before files
-/// - Case-insensitive name comparisons
-pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp::Ordering {
-    // Special handling for ".." - it should always be at the top
+/// - Directories before files when `options.dir_first` is true
+/// - Case sensitivity based on `options.sort_sensitive`
+pub fn compare_entries(
+    a: &FileEntry,
+    b: &FileEntry,
+    mode: SortMode,
+    options: SortOptions,
+) -> std::cmp::Ordering {
+    let dir_first = options.dir_first;
+    let sensitive = options.sort_sensitive;
+
     if a.name == ".." && b.name == ".." {
         return Ordering::Equal;
     }
@@ -58,54 +65,66 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
         return Ordering::Greater;
     }
 
-    // Ensure directories are always sorted before files (within each sort group)
-    if a.is_dir() && !b.is_dir() {
+    if dir_first && a.is_dir() && !b.is_dir() {
         return Ordering::Less;
     }
-    if !a.is_dir() && b.is_dir() {
+    if dir_first && !a.is_dir() && b.is_dir() {
         return Ordering::Greater;
     }
 
-    // Perform comparison based on the sort mode
+    let name_cmp = |x: &FileEntry, y: &FileEntry| {
+        if sensitive {
+            x.name.cmp(&y.name)
+        } else {
+            cmp_ignore_case(&x.name, &y.name)
+        }
+    };
+
     match mode {
-        SortMode::NameAsc => cmp_ignore_case(&a.name, &b.name),
-        SortMode::NameDesc => cmp_ignore_case(&b.name, &a.name),
+        SortMode::NameAsc => name_cmp(a, b),
+        SortMode::NameDesc => name_cmp(b, a),
         SortMode::ExtensionAsc => {
-            let ord = cmp_ignore_case(get_extension(&a.name), get_extension(&b.name));
-            ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
+            let ord = if sensitive {
+                get_extension(&a.name).cmp(get_extension(&b.name))
+            } else {
+                cmp_ignore_case(get_extension(&a.name), get_extension(&b.name))
+            };
+            ord.then_with(|| name_cmp(a, b))
         }
         SortMode::ExtensionDesc => {
-            let ord = cmp_ignore_case(get_extension(&b.name), get_extension(&a.name));
-            ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
+            let ord = if sensitive {
+                get_extension(&b.name).cmp(get_extension(&a.name))
+            } else {
+                cmp_ignore_case(get_extension(&b.name), get_extension(&a.name))
+            };
+            ord.then_with(|| name_cmp(a, b))
         }
-        SortMode::SizeAsc => a
-            .len()
-            .cmp(&b.len())
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::SizeDesc => b
-            .len()
-            .cmp(&a.len())
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::ModTimeAsc => a
-            .mtime()
-            .cmp(&b.mtime())
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::ModTimeDesc => b
-            .mtime()
-            .cmp(&a.mtime())
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::NaturalNameAsc => natsort::natsort(a.name.as_bytes(), b.name.as_bytes(), true)
-            .then_with(|| a.name.cmp(&b.name)),
-        SortMode::NaturalNameDesc => natsort::natsort(b.name.as_bytes(), a.name.as_bytes(), true)
-            .then_with(|| b.name.cmp(&a.name)),
-        SortMode::BtimeAsc => a
-            .btime()
-            .cmp(&b.btime())
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::BtimeDesc => b
-            .btime()
-            .cmp(&a.btime())
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::SizeAsc => a.len().cmp(&b.len()).then_with(|| name_cmp(a, b)),
+        SortMode::SizeDesc => b.len().cmp(&a.len()).then_with(|| name_cmp(a, b)),
+        SortMode::ModTimeAsc => a.mtime().cmp(&b.mtime()).then_with(|| name_cmp(a, b)),
+        SortMode::ModTimeDesc => b.mtime().cmp(&a.mtime()).then_with(|| name_cmp(a, b)),
+        SortMode::NaturalNameAsc => {
+            natsort::natsort(a.name.as_bytes(), b.name.as_bytes(), !sensitive)
+                .then_with(|| name_cmp(a, b))
+        }
+        SortMode::NaturalNameDesc => {
+            natsort::natsort(b.name.as_bytes(), a.name.as_bytes(), !sensitive)
+                .then_with(|| name_cmp(b, a))
+        }
+        SortMode::BtimeAsc => {
+            let has_a = a.cha.btime.is_some();
+            let has_b = b.cha.btime.is_some();
+            has_b
+                .cmp(&has_a)
+                .then_with(|| a.btime().cmp(&b.btime()).then_with(|| name_cmp(a, b)))
+        }
+        SortMode::BtimeDesc => {
+            let has_a = a.cha.btime.is_some();
+            let has_b = b.cha.btime.is_some();
+            has_b
+                .cmp(&has_a)
+                .then_with(|| b.btime().cmp(&a.btime()).then_with(|| name_cmp(a, b)))
+        }
     }
 }
 
@@ -174,6 +193,7 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         SortMode::BtimeAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
+                std::cmp::Reverse(entry.cha.btime.is_some()),
                 entry.btime(),
                 name_key(entry, sensitive),
             )
@@ -181,6 +201,7 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         SortMode::BtimeDesc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
+                std::cmp::Reverse(entry.cha.btime.is_some()),
                 Reverse(entry.btime()),
                 name_key(entry, sensitive),
             )
@@ -522,11 +543,11 @@ mod tests {
         let file = create_test_entry("file.txt", false, 100, 1000);
 
         assert_eq!(
-            compare_entries(&dir, &file, SortMode::NameAsc),
+            compare_entries(&dir, &file, SortMode::NameAsc, SortOptions::default()),
             Ordering::Less
         );
         assert_eq!(
-            compare_entries(&file, &dir, SortMode::NameAsc),
+            compare_entries(&file, &dir, SortMode::NameAsc, SortOptions::default()),
             Ordering::Greater
         );
     }
@@ -538,11 +559,11 @@ mod tests {
         let file = create_test_entry("file.txt", false, 100, 1000);
 
         assert_eq!(
-            compare_entries(&ellipsis, &dir, SortMode::NameAsc),
+            compare_entries(&ellipsis, &dir, SortMode::NameAsc, SortOptions::default()),
             Ordering::Less
         );
         assert_eq!(
-            compare_entries(&ellipsis, &file, SortMode::NameAsc),
+            compare_entries(&ellipsis, &file, SortMode::NameAsc, SortOptions::default()),
             Ordering::Less
         );
     }
@@ -630,19 +651,19 @@ mod tests {
         let a10 = create_test_entry("a10", false, 100, 100);
 
         assert_eq!(
-            compare_entries(&a2, &a10, SortMode::NaturalNameAsc),
+            compare_entries(&a2, &a10, SortMode::NaturalNameAsc, SortOptions::default()),
             Ordering::Less
         );
         assert_eq!(
-            compare_entries(&a10, &a2, SortMode::NaturalNameAsc),
+            compare_entries(&a10, &a2, SortMode::NaturalNameAsc, SortOptions::default()),
             Ordering::Greater
         );
         assert_eq!(
-            compare_entries(&a2, &a10, SortMode::NaturalNameDesc),
+            compare_entries(&a2, &a10, SortMode::NaturalNameDesc, SortOptions::default()),
             Ordering::Greater
         );
         assert_eq!(
-            compare_entries(&a10, &a2, SortMode::NaturalNameDesc),
+            compare_entries(&a10, &a2, SortMode::NaturalNameDesc, SortOptions::default()),
             Ordering::Less
         );
     }

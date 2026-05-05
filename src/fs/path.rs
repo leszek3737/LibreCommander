@@ -98,7 +98,8 @@ fn expand_env_vars(input: &str) -> String {
                         if let Some(val) = env_var(&var_name) {
                             result.push_str(&val);
                         } else {
-                            result.push_str(&input[i..=end + 1]);
+                            let literal: String = chars[i..=end].iter().collect();
+                            result.push_str(&literal);
                         }
                     } else {
                         result.push_str("${}");
@@ -325,18 +326,16 @@ mod tests {
 
     #[test]
     fn env_var_unknown_stays() {
-        assert_eq!(
-            expand_path("$LC_NONEXISTENT_XYZ/path"),
-            PathBuf::from("$LC_NONEXISTENT_XYZ/path")
-        );
+        let var_name = format!("LC_TEST_UNSET_{}", std::process::id());
+        let input = format!("${var_name}/path");
+        assert_eq!(expand_path(&input), PathBuf::from(&input));
     }
 
     #[test]
     fn env_var_brace_unknown_stays() {
-        assert_eq!(
-            expand_path("${LC_NONEXISTENT_XYZ}/path"),
-            PathBuf::from("${LC_NONEXISTENT_XYZ}/path")
-        );
+        let var_name = format!("LC_TEST_UNSET_{}", std::process::id());
+        let input = format!("${{{var_name}}}/path");
+        assert_eq!(expand_path(&input), PathBuf::from(&input));
     }
 
     #[test]

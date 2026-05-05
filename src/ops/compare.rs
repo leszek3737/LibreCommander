@@ -126,23 +126,28 @@ pub fn apply_compare_to_panels(
     right_panel: &mut PanelState,
     report: &CompareReport,
 ) {
-    for entry in &mut left_panel.entries {
-        if entry.name != ".." {
-            entry.selected = report.left_marks.contains(&entry.name);
-        } else {
-            entry.selected = false;
-        }
-    }
+    apply_marks(left_panel, &report.left_marks);
     left_panel.recalculate_selection_stats();
 
-    for entry in &mut right_panel.entries {
-        if entry.name != ".." {
-            entry.selected = report.right_marks.contains(&entry.name);
-        } else {
-            entry.selected = false;
-        }
-    }
+    apply_marks(right_panel, &report.right_marks);
     right_panel.recalculate_selection_stats();
+}
+
+fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
+    for entry in &mut panel.entries {
+        entry.selected = if entry.name != ".." {
+            marks.contains(&entry.name)
+        } else {
+            false
+        };
+    }
+    for entry in &mut panel.unfiltered_entries {
+        entry.selected = if entry.name != ".." {
+            marks.contains(&entry.name)
+        } else {
+            false
+        };
+    }
 }
 
 #[cfg(test)]

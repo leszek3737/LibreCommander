@@ -13,7 +13,8 @@ bitflags::bitflags! {
         const FOLLOW = 0b0000_0001;
         const HIDDEN = 0b0000_0010;
         const SYSTEM = 0b0000_0100;
-        const DUMMY  = 0b0000_1000;
+        const DUMMY      = 0b0000_1000;
+        const DIR_TARGET = 0b0001_0000;
     }
 }
 
@@ -150,11 +151,17 @@ impl Cha {
         let mut cha = if let Some(target) = target_meta {
             let mut c = Self::new(target);
             c.kind.insert(ChaKind::FOLLOW);
+            if target.is_dir() {
+                c.kind.insert(ChaKind::DIR_TARGET);
+            }
             c
         } else {
             Self::new(link_meta)
         };
         cha.mode = ChaMode::new(0o120000 | (file_mode(link_meta) & 0o7777));
+        if target_meta.is_none() {
+            cha.mode = ChaMode::new(cha.mode.mode_u32() & !0o111);
+        }
         cha
     }
 
@@ -175,7 +182,7 @@ impl Cha {
     }
 
     pub fn is_dir(&self) -> bool {
-        self.mode.is_dir()
+        self.mode.is_dir() || (self.mode.is_link() && self.kind.contains(ChaKind::DIR_TARGET))
     }
 
     pub fn is_file(&self) -> bool {
@@ -417,7 +424,11 @@ mod tests {
         assert!(cha.is_link());
         assert!(cha.is_orphan());
         assert!(!cha.kind.contains(ChaKind::FOLLOW));
-        assert_eq!(u32::from(cha.mode.permissions()), link_meta.mode() & 0o7777);
+        assert!(!cha.is_executable());
+        assert_eq!(
+            u32::from(cha.mode.permissions()),
+            link_meta.mode() & 0o7777 & !0o111
+        );
     }
 
     #[test]
@@ -472,5 +483,54 @@ mod tests {
         assert_eq!(cha.dev(), 0);
         assert_eq!(cha.nlink(), 0);
         assert!(cha.atime().is_none());
+    }
+
+    #[test]
+    fn cha_symlink_dir_is_dir_and_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_dir = dir.path().join("target_dir");
+        std::fs::create_dir(&target_dir).unwrap();
+        let link_path = dir.path().join("link_to_dir");
+        std::os::unix::fs::symlink(&target_dir, &link_path).unwrap();
+
+        let link_meta = std::fs::symlink_metadata(&link_path).unwrap();
+        let target_meta = std::fs::metadata(&target_dir).unwrap();
+        let cha = Cha::from_link_metadata(&link_meta, Some(&target_meta));
+
+        assert!(cha.is_dir());
+        assert!(cha.is_link());
+        assert!(cha.kind.contains(ChaKind::DIR_TARGET));
+        assert!(cha.kind.contains(ChaKind::FOLLOW));
+    }
+
+    #[test]
+    fn cha_symlink_file_not_dir_but_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("target.txt");
+        std::fs::write(&file_path, b"data").unwrap();
+        let link_path = dir.path().join("link_to_file");
+        std::os::unix::fs::symlink(&file_path, &link_path).unwrap();
+
+        let link_meta = std::fs::symlink_metadata(&link_path).unwrap();
+        let target_meta = std::fs::metadata(&file_path).unwrap();
+        let cha = Cha::from_link_metadata(&link_meta, Some(&target_meta));
+
+        assert!(!cha.is_dir());
+        assert!(cha.is_link());
+        assert!(!cha.kind.contains(ChaKind::DIR_TARGET));
+    }
+
+    #[test]
+    fn cha_broken_symlink_not_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let link_path = dir.path().join("dangling");
+        std::os::unix::fs::symlink("/no/such/path", &link_path).unwrap();
+
+        let link_meta = std::fs::symlink_metadata(&link_path).unwrap();
+        let cha = Cha::from_link_metadata(&link_meta, None);
+
+        assert!(cha.is_link());
+        assert!(!cha.is_executable());
+        assert!(cha.is_orphan());
     }
 }

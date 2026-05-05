@@ -1569,11 +1569,18 @@ fn handle_input_action(
             return true;
         }
         InputAction::CreateDirectory if !input.trim().is_empty() => {
-            let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
-            if let Err(err) = ops::file_ops::create_directory(&target) {
-                state.status_message = Some(format!("Create directory failed: {err}"));
+            if std::path::Path::new(&input)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                state.status_message = Some("Invalid path: '..' not allowed".to_string());
             } else {
-                refresh_active(state);
+                let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
+                if let Err(err) = ops::file_ops::create_directory(&target) {
+                    state.status_message = Some(format!("Create directory failed: {err}"));
+                } else {
+                    refresh_active(state);
+                }
             }
         }
         InputAction::Rename if !input.is_empty() => {

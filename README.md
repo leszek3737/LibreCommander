@@ -14,7 +14,7 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 - **Directory hotlist** - Bookmark directories for quick access via Alt+1 through Alt+9
 - **Directory history** - Navigate back with Alt+Backspace
 - **User menu** - Extensible menu system via `.mc.menu` or `~/.config/lc/menu` (MC-compatible)
-- **Sorting** - 10 sort modes: by name (standard & natural), size, modification time, or extension (ascending/descending)
+- **Sorting** - 12 sort modes: by name (standard & natural), size, modification time, creation time, or extension (ascending/descending)
 - **File watcher** - Automatic panel refresh on external filesystem changes while preserving filters, sorting, and selection
 - **Panel views** - Long (detailed) and Brief (compact) listing modes
 - **File type icons** - Emoji icons and color coding for archives, images, source code, audio, video, config files
@@ -313,7 +313,7 @@ Available programmatically via `FileSearch::search_content()`. Searches file con
 
 ## Sorting
 
-Ten sort modes, cycled via menu (Left/Right > Sort order):
+Twelve sort modes, cycled via menu (Left/Right > Sort order):
 
 | Mode | Key | Order |
 |------|-----|-------|
@@ -325,10 +325,12 @@ Ten sort modes, cycled via menu (Left/Right > Sort order):
 | Size ↓ | size_desc | Largest first |
 | Time ↑ | mod_time_asc | Oldest first |
 | Time ↓ | mod_time_desc | Newest first |
+| Created ↑ | btime_asc | Oldest first |
+| Created ↓ | btime_desc | Newest first |
 | Ext ↑ | extension_asc | A-Z |
 | Ext ↓ | extension_desc | Z-A |
 
-Rules: `..` always first, directories before files, case-insensitive. Natural sort compares multi-digit runs numerically (e.g. `file9` < `file10`).
+Rules: `..` always first, directories before files, case-insensitive. These defaults are configurable via `dir_first` and `sort_sensitive` in `config.toml`. Natural sort compares multi-digit runs numerically (e.g. `file9` < `file10`).
 
 ## Directory Compare
 
@@ -353,7 +355,7 @@ cargo test
 The test suite covers:
 - File operations (copy, move, delete, rename, chmod)
 - Search (incremental, glob, content, symlink safety)
-- Sorting (all 10 modes, edge cases)
+- Sorting (all 12 modes, edge cases)
 - UI rendering (colors, icons, formatting, truncation)
 - Config persistence (roundtrip serialization)
 - User menu parsing and substitution
