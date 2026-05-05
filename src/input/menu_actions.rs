@@ -194,7 +194,7 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> Option<Opti
             let entry_info = state
                 .active_panel()
                 .current_entry()
-                .map(|e| (e.name.clone(), e.permissions));
+                .map(|e| (e.name.clone(), e.mode_bits()));
             if let Some((name, permissions)) = entry_info
                 && name != ".."
             {

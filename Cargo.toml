@@ -9,7 +9,9 @@ readme = "README.md"
 repository = "https://github.com/leszek3737/lc---Libre-Commander"
 
 [dependencies]
+bitflags = "2"
 chrono = "0.4.44"
+dirs = "6"
 rayon = "1"
 crossterm = "0.29.0"
 filetime = "0.2"

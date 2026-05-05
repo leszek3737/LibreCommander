@@ -1,11 +1,12 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
 use super::dir_tree::TreeEntry;
 use super::user_menu::MenuEntry;
+use crate::fs::cha::{Cha, ChaKind, ChaMode};
 
 // ============================================================================
 // 1b. FileSize newtype
@@ -68,21 +69,41 @@ pub fn format_size(size: u64) -> String {
 pub struct FileEntry {
     pub name: String,
     pub path: PathBuf,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub is_executable: bool,
-    pub size: u64,
-    pub modified: SystemTime,
-    pub permissions: u32,
+    pub cha: Cha,
     pub owner: String,
     pub group: String,
     pub selected: bool,
-    pub is_hidden: bool,
     pub mime_type: Option<String>,
 }
 
 // ============================================================================
-// 2. SortMode enum definition
+// 2a. SortOptions struct definition
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SortOptions {
+    #[serde(default = "default_true")]
+    pub dir_first: bool,
+    #[serde(default)]
+    pub sort_sensitive: bool,
+}
+
+impl Default for SortOptions {
+    fn default() -> Self {
+        Self {
+            dir_first: true,
+            sort_sensitive: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+// ============================================================================
+// 2b. SortMode enum definition
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -97,6 +118,10 @@ pub enum SortMode {
     SizeDesc,
     ModTimeAsc,
     ModTimeDesc,
+    NaturalNameAsc,
+    NaturalNameDesc,
+    BtimeAsc,
+    BtimeDesc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -118,6 +143,7 @@ pub struct PanelState {
     pub cursor: usize,
     pub scroll_offset: usize,
     pub sort_mode: SortMode,
+    pub sort_options: SortOptions,
     pub listing_mode: ListingMode,
     pub show_hidden: bool,
     pub filter: Option<String>,
@@ -395,10 +421,175 @@ pub enum PendingAction {
 }
 
 // ============================================================================
+// FileEntryBuilder
+// ============================================================================
+
+#[derive(Debug)]
+pub struct FileEntryBuilder {
+    name: String,
+    path: PathBuf,
+    cha: Cha,
+    owner: String,
+    group: String,
+    selected: bool,
+    mime_type: Option<String>,
+}
+
+impl FileEntryBuilder {
+    pub fn name(mut self, v: impl Into<String>) -> Self {
+        self.name = v.into();
+        self
+    }
+    pub fn path(mut self, v: impl Into<PathBuf>) -> Self {
+        self.path = v.into();
+        self
+    }
+    pub fn cha(mut self, v: Cha) -> Self {
+        self.cha = v;
+        self
+    }
+    pub fn is_dir(mut self, v: bool) -> Self {
+        let perms = self.cha.mode.permissions() as u32;
+        if v {
+            self.cha.mode = ChaMode::new(0o040000 | perms);
+        } else if self.cha.is_dir() {
+            self.cha.mode = ChaMode::new(0o100000 | perms);
+        }
+        self
+    }
+    pub fn is_symlink(mut self, v: bool) -> Self {
+        let perms = self.cha.mode.permissions() as u32;
+        if v {
+            self.cha.mode = ChaMode::new(0o120000 | perms);
+        } else if self.cha.is_link() {
+            self.cha.mode = ChaMode::new(0o100000 | perms);
+        }
+        self
+    }
+    pub fn is_executable(mut self, v: bool) -> Self {
+        self.cha = self.cha.with_executable(v);
+        self
+    }
+    pub fn size(mut self, v: u64) -> Self {
+        self.cha.len = v;
+        self
+    }
+    pub fn modified(mut self, v: SystemTime) -> Self {
+        self.cha.mtime = Some(v);
+        self
+    }
+    pub fn created(mut self, v: SystemTime) -> Self {
+        self.cha.btime = Some(v);
+        self
+    }
+    pub fn permissions(mut self, v: u32) -> Self {
+        let file_type = self.cha.mode.mode_u32() & 0o170000;
+        self.cha.mode = ChaMode::new(file_type | (v & 0o7777));
+        self
+    }
+    pub fn owner(mut self, v: impl Into<String>) -> Self {
+        self.owner = v.into();
+        self
+    }
+    pub fn group(mut self, v: impl Into<String>) -> Self {
+        self.group = v.into();
+        self
+    }
+    pub fn selected(mut self, v: bool) -> Self {
+        self.selected = v;
+        self
+    }
+    pub fn is_hidden(mut self, v: bool) -> Self {
+        self.cha = self.cha.with_hidden(v);
+        self
+    }
+    pub fn mime_type(mut self, v: Option<String>) -> Self {
+        self.mime_type = v;
+        self
+    }
+    pub fn build(self) -> FileEntry {
+        FileEntry {
+            name: self.name,
+            path: self.path,
+            cha: self.cha,
+            owner: self.owner,
+            group: self.group,
+            selected: self.selected,
+            mime_type: self.mime_type,
+        }
+    }
+}
+
+// ============================================================================
 // FileEntry implementation
 // ============================================================================
 
 impl FileEntry {
+    pub fn builder() -> FileEntryBuilder {
+        FileEntryBuilder {
+            name: String::new(),
+            path: PathBuf::new(),
+            cha: Cha {
+                kind: ChaKind::empty(),
+                mode: ChaMode::new(0o100644),
+                len: 0,
+                mtime: None,
+                btime: None,
+                ctime: None,
+                atime: None,
+                uid: 0,
+                gid: 0,
+                dev: 0,
+                nlink: 0,
+            },
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            mime_type: None,
+        }
+    }
+
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> u64 {
+        self.cha.len()
+    }
+
+    pub fn mtime(&self) -> SystemTime {
+        self.cha.mtime().unwrap_or(std::time::UNIX_EPOCH)
+    }
+
+    pub fn btime(&self) -> SystemTime {
+        self.cha.btime().unwrap_or(std::time::UNIX_EPOCH)
+    }
+
+    pub fn mode_bits(&self) -> u32 {
+        self.cha.mode.mode_u32()
+    }
+
+    pub fn uid(&self) -> u32 {
+        self.cha.uid
+    }
+
+    pub fn gid(&self) -> u32 {
+        self.cha.gid
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.cha.is_dir()
+    }
+
+    pub fn is_symlink(&self) -> bool {
+        self.cha.is_link()
+    }
+
+    pub fn is_executable(&self) -> bool {
+        self.cha.is_executable()
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.cha.is_hidden()
+    }
+
     /// Returns the primary `FileCategory` based on a priority hierarchy.
     ///
     /// Priority (highest to lowest):
@@ -414,16 +605,16 @@ impl FileEntry {
     /// A symlink to a directory is `Symlink`, not `Dir`.
     pub fn category(&self) -> FileCategory {
         use crate::app::file_type as ft;
-        if self.is_symlink {
+        if self.is_symlink() {
             return FileCategory::Symlink;
         }
-        if self.is_dir {
+        if self.is_dir() {
             return FileCategory::Dir;
         }
-        if self.is_hidden {
+        if self.is_hidden() {
             return FileCategory::Hidden;
         }
-        if self.is_executable {
+        if self.is_executable() {
             return FileCategory::Executable;
         }
         if ft::is_source_code(&self.name) {
@@ -451,7 +642,7 @@ impl FileEntry {
     }
 
     pub fn display_size(&self) -> String {
-        Self::format_size(self.size)
+        Self::format_size(self.len())
     }
 
     pub fn format_size(size: u64) -> String {
@@ -472,43 +663,18 @@ impl FileEntry {
     }
 
     pub fn display_permissions(&self) -> String {
-        Self::display_permissions_raw(self.permissions)
+        Self::display_permissions_raw(self.mode_bits())
     }
 
     pub fn display_permissions_raw(mode: u32) -> String {
-        let mut result = String::with_capacity(9);
-
-        result.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o4000 != 0 {
-            if mode & 0o100 != 0 { 's' } else { 'S' }
-        } else {
-            if mode & 0o100 != 0 { 'x' } else { '-' }
-        });
-
-        result.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o2000 != 0 {
-            if mode & 0o010 != 0 { 's' } else { 'S' }
-        } else {
-            if mode & 0o010 != 0 { 'x' } else { '-' }
-        });
-
-        result.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-        result.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-        result.push(if mode & 0o1000 != 0 {
-            if mode & 0o001 != 0 { 't' } else { 'T' }
-        } else {
-            if mode & 0o001 != 0 { 'x' } else { '-' }
-        });
-
-        result
+        use crate::fs::cha::ChaMode;
+        ChaMode::new(mode).to_string()
     }
 
     pub fn display_modified(&self) -> String {
         use std::time::UNIX_EPOCH;
 
-        if let Ok(duration) = self.modified.duration_since(UNIX_EPOCH) {
+        if let Ok(duration) = self.mtime().duration_since(UNIX_EPOCH) {
             chrono::DateTime::from_timestamp(
                 i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
                 0,
@@ -535,6 +701,7 @@ impl PanelState {
             cursor: 0,
             scroll_offset: 0,
             sort_mode: SortMode::default(),
+            sort_options: SortOptions::default(),
             listing_mode: ListingMode::default(),
             show_hidden: true,
             filter: None,
@@ -573,7 +740,7 @@ impl PanelState {
                 return;
             }
             entry.selected = !entry.selected;
-            let size = entry.size;
+            let size = entry.len();
             let selected = entry.selected;
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
@@ -587,14 +754,14 @@ impl PanelState {
                 return;
             }
             entry.selected = selected;
-            let size = entry.size;
+            let size = entry.len();
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
             self.set_unfiltered_selection(&path, selected);
         }
     }
 
-    fn set_unfiltered_selection(&mut self, path: &PathBuf, selected: bool) {
+    fn set_unfiltered_selection(&mut self, path: &Path, selected: bool) {
         if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == *path) {
             ue.selected = selected;
         }
@@ -644,10 +811,10 @@ impl PanelState {
             &self.unfiltered_entries
         };
         for entry in source {
-            self.total_size += entry.size;
+            self.total_size += entry.len();
             if entry.selected {
                 self.selected_count += 1;
-                self.selected_size += entry.size;
+                self.selected_size += entry.len();
             }
         }
     }
@@ -784,21 +951,19 @@ mod tests {
         permissions: u32,
         is_selected: bool,
     ) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(name),
-            is_dir,
-            is_symlink: false,
-            is_executable: permissions & 1 != 0,
-            size,
-            modified: UNIX_EPOCH + Duration::from_secs(1_000_000_000),
-            permissions,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: is_selected,
-            is_hidden: name.starts_with('.'),
-            mime_type: None,
-        }
+        FileEntry::builder()
+            .name(name)
+            .path(PathBuf::from(name))
+            .is_dir(is_dir)
+            .size(size)
+            .permissions(permissions)
+            .selected(is_selected)
+            .is_hidden(name.starts_with('.'))
+            .modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .created(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .owner("testuser")
+            .group("testgroup")
+            .build()
     }
 
     #[test]
@@ -1479,123 +1644,57 @@ mod tests {
         assert_eq!(panel.selected_size, 300);
     }
 
+    fn cha_entry(name: &str, mode: u32, size: u64, hidden: bool) -> FileEntry {
+        let is_link = (mode & 0o170000) == 0o120000;
+        let is_directory = (mode & 0o170000) == 0o040000;
+        FileEntry::builder()
+            .name(name)
+            .path(PathBuf::from(name))
+            .is_dir(is_directory)
+            .is_symlink(is_link)
+            .size(size)
+            .permissions(mode & 0o7777)
+            .is_hidden(hidden)
+            .modified(UNIX_EPOCH)
+            .created(UNIX_EPOCH)
+            .owner("testuser")
+            .group("testgroup")
+            .build()
+    }
+
     #[test]
     fn test_hidden_executable_is_hidden() {
-        let entry = FileEntry {
-            name: ".script.sh".to_string(),
-            path: PathBuf::from(".script.sh"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: true,
-            size: 100,
-            modified: UNIX_EPOCH,
-            permissions: 0o755,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: true,
-            mime_type: None,
-        };
+        let entry = cha_entry(".script.sh", 0o100755, 100, true);
         assert_eq!(entry.category(), FileCategory::Hidden);
     }
 
     #[test]
     fn test_hidden_archive_is_hidden() {
-        let entry = FileEntry {
-            name: ".backup.zip".to_string(),
-            path: PathBuf::from(".backup.zip"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 100,
-            modified: UNIX_EPOCH,
-            permissions: 0o644,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: true,
-            mime_type: None,
-        };
+        let entry = cha_entry(".backup.zip", 0o100644, 100, true);
         assert_eq!(entry.category(), FileCategory::Hidden);
     }
 
     #[test]
     fn test_symlink_overrides_dir() {
-        let entry = FileEntry {
-            name: "link_to_dir".to_string(),
-            path: PathBuf::from("link_to_dir"),
-            is_dir: true,
-            is_symlink: true,
-            is_executable: false,
-            size: 0,
-            modified: UNIX_EPOCH,
-            permissions: 0o777,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = cha_entry("link_to_dir", 0o120777, 0, false);
         assert_eq!(entry.category(), FileCategory::Symlink);
     }
 
     #[test]
     fn test_symlink_overrides_hidden() {
-        let entry = FileEntry {
-            name: ".hidden_link".to_string(),
-            path: PathBuf::from(".hidden_link"),
-            is_dir: false,
-            is_symlink: true,
-            is_executable: false,
-            size: 0,
-            modified: UNIX_EPOCH,
-            permissions: 0o777,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: true,
-            mime_type: None,
-        };
+        let entry = cha_entry(".hidden_link", 0o120777, 0, true);
         assert_eq!(entry.category(), FileCategory::Symlink);
     }
 
     #[test]
     fn test_executable_archive_is_executable() {
-        let entry = FileEntry {
-            name: "installer.exe".to_string(),
-            path: PathBuf::from("installer.exe"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: true,
-            size: 100,
-            modified: UNIX_EPOCH,
-            permissions: 0o755,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = cha_entry("installer.exe", 0o100755, 100, false);
         assert_eq!(entry.category(), FileCategory::Executable);
     }
 
     #[test]
     fn test_hidden_apk_is_hidden() {
-        let entry = FileEntry {
-            name: ".app.apk".to_string(),
-            path: PathBuf::from(".app.apk"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 100,
-            modified: UNIX_EPOCH,
-            permissions: 0o644,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: true,
-            mime_type: None,
-        };
+        let entry = cha_entry(".app.apk", 0o100644, 100, true);
         assert_eq!(entry.category(), FileCategory::Hidden);
     }
 

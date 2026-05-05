@@ -8,6 +8,9 @@ use std::cmp::Reverse;
 
 pub use crate::app::types::FileEntry;
 pub use crate::app::types::SortMode;
+pub use crate::app::types::SortOptions;
+
+use crate::ops::natsort;
 
 pub fn cmp_ignore_case(a: &str, b: &str) -> Ordering {
     let mut ai = a.chars().flat_map(|c| c.to_lowercase());
@@ -36,15 +39,22 @@ pub fn get_extension(name: &str) -> &str {
     }
 }
 
-/// Compares two file entries based on the specified sort mode.
+/// Compares two file entries based on the specified sort mode and options.
 ///
 /// This function implements the core comparison logic used by the sort function.
 /// It ensures:
 /// - ".." is always treated as the top entry
-/// - Directories are sorted before files
-/// - Case-insensitive name comparisons
-pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp::Ordering {
-    // Special handling for ".." - it should always be at the top
+/// - Directories before files when `options.dir_first` is true
+/// - Case sensitivity based on `options.sort_sensitive`
+pub fn compare_entries(
+    a: &FileEntry,
+    b: &FileEntry,
+    mode: SortMode,
+    options: SortOptions,
+) -> std::cmp::Ordering {
+    let dir_first = options.dir_first;
+    let sensitive = options.sort_sensitive;
+
     if a.name == ".." && b.name == ".." {
         return Ordering::Equal;
     }
@@ -55,42 +65,66 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
         return Ordering::Greater;
     }
 
-    // Ensure directories are always sorted before files (within each sort group)
-    if a.is_dir && !b.is_dir {
+    if dir_first && a.is_dir() && !b.is_dir() {
         return Ordering::Less;
     }
-    if !a.is_dir && b.is_dir {
+    if dir_first && !a.is_dir() && b.is_dir() {
         return Ordering::Greater;
     }
 
-    // Perform comparison based on the sort mode
+    let name_cmp = |x: &FileEntry, y: &FileEntry| {
+        if sensitive {
+            x.name.cmp(&y.name)
+        } else {
+            cmp_ignore_case(&x.name, &y.name)
+        }
+    };
+
     match mode {
-        SortMode::NameAsc => cmp_ignore_case(&a.name, &b.name),
-        SortMode::NameDesc => cmp_ignore_case(&b.name, &a.name),
+        SortMode::NameAsc => name_cmp(a, b),
+        SortMode::NameDesc => name_cmp(b, a),
         SortMode::ExtensionAsc => {
-            let ord = cmp_ignore_case(get_extension(&a.name), get_extension(&b.name));
-            ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
+            let ord = if sensitive {
+                get_extension(&a.name).cmp(get_extension(&b.name))
+            } else {
+                cmp_ignore_case(get_extension(&a.name), get_extension(&b.name))
+            };
+            ord.then_with(|| name_cmp(a, b))
         }
         SortMode::ExtensionDesc => {
-            let ord = cmp_ignore_case(get_extension(&b.name), get_extension(&a.name));
-            ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
+            let ord = if sensitive {
+                get_extension(&b.name).cmp(get_extension(&a.name))
+            } else {
+                cmp_ignore_case(get_extension(&b.name), get_extension(&a.name))
+            };
+            ord.then_with(|| name_cmp(a, b))
         }
-        SortMode::SizeAsc => a
-            .size
-            .cmp(&b.size)
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::SizeDesc => b
-            .size
-            .cmp(&a.size)
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::ModTimeAsc => a
-            .modified
-            .cmp(&b.modified)
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
-        SortMode::ModTimeDesc => b
-            .modified
-            .cmp(&a.modified)
-            .then_with(|| cmp_ignore_case(&a.name, &b.name)),
+        SortMode::SizeAsc => a.len().cmp(&b.len()).then_with(|| name_cmp(a, b)),
+        SortMode::SizeDesc => b.len().cmp(&a.len()).then_with(|| name_cmp(a, b)),
+        SortMode::ModTimeAsc => a.mtime().cmp(&b.mtime()).then_with(|| name_cmp(a, b)),
+        SortMode::ModTimeDesc => b.mtime().cmp(&a.mtime()).then_with(|| name_cmp(a, b)),
+        SortMode::NaturalNameAsc => {
+            natsort::natsort(a.name.as_bytes(), b.name.as_bytes(), !sensitive)
+                .then_with(|| name_cmp(a, b))
+        }
+        SortMode::NaturalNameDesc => {
+            natsort::natsort(b.name.as_bytes(), a.name.as_bytes(), !sensitive)
+                .then_with(|| name_cmp(b, a))
+        }
+        SortMode::BtimeAsc => {
+            let has_a = a.cha.btime.is_some();
+            let has_b = b.cha.btime.is_some();
+            has_b
+                .cmp(&has_a)
+                .then_with(|| a.btime().cmp(&b.btime()).then_with(|| name_cmp(a, b)))
+        }
+        SortMode::BtimeDesc => {
+            let has_a = a.cha.btime.is_some();
+            let has_b = b.cha.btime.is_some();
+            has_b
+                .cmp(&has_a)
+                .then_with(|| b.btime().cmp(&a.btime()).then_with(|| name_cmp(a, b)))
+        }
     }
 }
 
@@ -100,73 +134,135 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
 /// - ".." is always at the top
 /// - Directories are sorted before files
 /// - Case-insensitive name sorting
-pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode) {
+pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOptions) {
+    let dir_first = options.dir_first;
+    let sensitive = options.sort_sensitive;
+
     match mode {
-        SortMode::NameAsc => {
-            entries.sort_by_cached_key(|entry| (entry_group(entry), lower_name(entry)))
-        }
-        SortMode::NameDesc => {
-            entries.sort_by_cached_key(|entry| (entry_group(entry), Reverse(lower_name(entry))))
-        }
+        SortMode::NameAsc => entries.sort_by_cached_key(|entry| {
+            (entry_group(entry, dir_first), name_key(entry, sensitive))
+        }),
+        SortMode::NameDesc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry, dir_first),
+                Reverse(name_key(entry, sensitive)),
+            )
+        }),
         SortMode::ExtensionAsc => entries.sort_by_cached_key(|entry| {
             (
-                entry_group(entry),
-                lower_extension(entry),
-                lower_name(entry),
+                entry_group(entry, dir_first),
+                extension_key(entry, sensitive),
+                name_key(entry, sensitive),
             )
         }),
         SortMode::ExtensionDesc => entries.sort_by_cached_key(|entry| {
             (
-                entry_group(entry),
-                Reverse(lower_extension(entry)),
-                lower_name(entry),
+                entry_group(entry, dir_first),
+                Reverse(extension_key(entry, sensitive)),
+                name_key(entry, sensitive),
             )
         }),
-        SortMode::SizeAsc => {
-            entries.sort_by_cached_key(|entry| (entry_group(entry), entry.size, lower_name(entry)))
-        }
-        SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
-            (entry_group(entry), Reverse(entry.size), lower_name(entry))
+        SortMode::SizeAsc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry, dir_first),
+                entry.len(),
+                name_key(entry, sensitive),
+            )
         }),
-        SortMode::ModTimeAsc => entries
-            .sort_by_cached_key(|entry| (entry_group(entry), entry.modified, lower_name(entry))),
+        SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry, dir_first),
+                Reverse(entry.len()),
+                name_key(entry, sensitive),
+            )
+        }),
+        SortMode::ModTimeAsc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry, dir_first),
+                entry.mtime(),
+                name_key(entry, sensitive),
+            )
+        }),
         SortMode::ModTimeDesc => entries.sort_by_cached_key(|entry| {
             (
-                entry_group(entry),
-                Reverse(entry.modified),
-                lower_name(entry),
+                entry_group(entry, dir_first),
+                Reverse(entry.mtime()),
+                name_key(entry, sensitive),
             )
+        }),
+        SortMode::BtimeAsc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry, dir_first),
+                std::cmp::Reverse(entry.cha.btime.is_some()),
+                entry.btime(),
+                name_key(entry, sensitive),
+            )
+        }),
+        SortMode::BtimeDesc => entries.sort_by_cached_key(|entry| {
+            (
+                entry_group(entry, dir_first),
+                std::cmp::Reverse(entry.cha.btime.is_some()),
+                Reverse(entry.btime()),
+                name_key(entry, sensitive),
+            )
+        }),
+        SortMode::NaturalNameAsc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| natsort::natsort(a.name.as_bytes(), b.name.as_bytes(), !sensitive))
+                .then_with(|| a.name.cmp(&b.name))
+        }),
+        SortMode::NaturalNameDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| natsort::natsort(b.name.as_bytes(), a.name.as_bytes(), !sensitive))
+                .then_with(|| b.name.cmp(&a.name))
         }),
     }
 }
 
-fn entry_group(entry: &FileEntry) -> u8 {
-    match (entry.name.as_str(), entry.is_dir) {
-        ("..", _) => 0,
-        (_, true) => 1,
-        (_, false) => 2,
+fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
+    match (entry.name.as_str(), dir_first, entry.is_dir()) {
+        ("..", _, _) => 0,
+        (_, true, true) => 1,
+        (_, true, false) => 2,
+        (_, false, _) => 1,
     }
 }
 
-fn lower_name(entry: &FileEntry) -> String {
-    entry.name.to_lowercase()
+fn name_key(entry: &FileEntry, sensitive: bool) -> String {
+    if sensitive {
+        entry.name.clone()
+    } else {
+        entry.name.to_lowercase()
+    }
 }
 
-fn lower_extension(entry: &FileEntry) -> String {
-    get_extension(&entry.name).to_lowercase()
+fn extension_key(entry: &FileEntry, sensitive: bool) -> String {
+    if sensitive {
+        get_extension(&entry.name).to_string()
+    } else {
+        get_extension(&entry.name).to_lowercase()
+    }
 }
 
 /// Cycles through sort modes in the specified order.
 ///
-/// Order: NameAsc -> NameDesc -> SizeAsc -> SizeDesc -> ModTimeAsc -> ModTimeDesc -> ExtensionAsc -> ExtensionDesc -> NameAsc
+/// Order: NameAsc -> NameDesc -> NaturalNameAsc -> NaturalNameDesc -> SizeAsc -> SizeDesc
+///        -> ModTimeAsc -> ModTimeDesc -> BtimeAsc -> BtimeDesc
+///        -> ExtensionAsc -> ExtensionDesc -> NameAsc
 pub fn cycle_sort_mode(current: SortMode) -> SortMode {
     match current {
         SortMode::NameAsc => SortMode::NameDesc,
-        SortMode::NameDesc => SortMode::SizeAsc,
+        SortMode::NameDesc => SortMode::NaturalNameAsc,
+        SortMode::NaturalNameAsc => SortMode::NaturalNameDesc,
+        SortMode::NaturalNameDesc => SortMode::SizeAsc,
         SortMode::SizeAsc => SortMode::SizeDesc,
         SortMode::SizeDesc => SortMode::ModTimeAsc,
         SortMode::ModTimeAsc => SortMode::ModTimeDesc,
-        SortMode::ModTimeDesc => SortMode::ExtensionAsc,
+        SortMode::ModTimeDesc => SortMode::BtimeAsc,
+        SortMode::BtimeAsc => SortMode::BtimeDesc,
+        SortMode::BtimeDesc => SortMode::ExtensionAsc,
         SortMode::ExtensionAsc => SortMode::ExtensionDesc,
         SortMode::ExtensionDesc => SortMode::NameAsc,
     }
@@ -183,31 +279,30 @@ pub fn sort_mode_label(mode: SortMode) -> &'static str {
         SortMode::SizeDesc => "Size ↓",
         SortMode::ModTimeAsc => "Time ↑",
         SortMode::ModTimeDesc => "Time ↓",
+        SortMode::NaturalNameAsc => "Nat ↑",
+        SortMode::NaturalNameDesc => "Nat ↓",
+        SortMode::BtimeAsc => "Created ↑",
+        SortMode::BtimeDesc => "Created ↓",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::time::SystemTime;
 
     fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(name),
-            is_dir,
-            is_symlink: false,
-            is_executable: false,
-            size,
-            modified: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs),
-            permissions: 0o644,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }
+        let ts = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs);
+        FileEntry::builder()
+            .name(name)
+            .path(name)
+            .is_dir(is_dir)
+            .size(size)
+            .modified(ts)
+            .created(ts)
+            .owner("testuser")
+            .group("testgroup")
+            .build()
     }
 
     #[test]
@@ -242,19 +337,31 @@ mod tests {
         assert_eq!(sort_mode_label(SortMode::SizeDesc), "Size ↓");
         assert_eq!(sort_mode_label(SortMode::ModTimeAsc), "Time ↑");
         assert_eq!(sort_mode_label(SortMode::ModTimeDesc), "Time ↓");
+        assert_eq!(sort_mode_label(SortMode::NaturalNameAsc), "Nat ↑");
+        assert_eq!(sort_mode_label(SortMode::NaturalNameDesc), "Nat ↓");
     }
 
     #[test]
     fn test_cycle_sort_mode() {
         assert_eq!(cycle_sort_mode(SortMode::NameAsc), SortMode::NameDesc);
-        assert_eq!(cycle_sort_mode(SortMode::NameDesc), SortMode::SizeAsc);
+        assert_eq!(
+            cycle_sort_mode(SortMode::NameDesc),
+            SortMode::NaturalNameAsc
+        );
+        assert_eq!(
+            cycle_sort_mode(SortMode::NaturalNameAsc),
+            SortMode::NaturalNameDesc
+        );
+        assert_eq!(
+            cycle_sort_mode(SortMode::NaturalNameDesc),
+            SortMode::SizeAsc
+        );
         assert_eq!(cycle_sort_mode(SortMode::SizeAsc), SortMode::SizeDesc);
         assert_eq!(cycle_sort_mode(SortMode::SizeDesc), SortMode::ModTimeAsc);
         assert_eq!(cycle_sort_mode(SortMode::ModTimeAsc), SortMode::ModTimeDesc);
-        assert_eq!(
-            cycle_sort_mode(SortMode::ModTimeDesc),
-            SortMode::ExtensionAsc
-        );
+        assert_eq!(cycle_sort_mode(SortMode::ModTimeDesc), SortMode::BtimeAsc);
+        assert_eq!(cycle_sort_mode(SortMode::BtimeAsc), SortMode::BtimeDesc);
+        assert_eq!(cycle_sort_mode(SortMode::BtimeDesc), SortMode::ExtensionAsc);
         assert_eq!(
             cycle_sort_mode(SortMode::ExtensionAsc),
             SortMode::ExtensionDesc
@@ -271,7 +378,7 @@ mod tests {
             create_test_entry("another.txt", false, 200, 1500),
         ];
 
-        sort_entries(&mut entries, SortMode::NameAsc);
+        sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
 
         assert_eq!(entries[0].name, "..");
     }
@@ -285,13 +392,13 @@ mod tests {
             create_test_entry("another_dir", true, 0, 2500),
         ];
 
-        sort_entries(&mut entries, SortMode::NameAsc);
+        sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
 
         // Directories should come before files
-        assert!(entries[0].is_dir);
-        assert!(entries[1].is_dir);
-        assert!(!entries[2].is_dir);
-        assert!(!entries[3].is_dir);
+        assert!(entries[0].is_dir());
+        assert!(entries[1].is_dir());
+        assert!(!entries[2].is_dir());
+        assert!(!entries[3].is_dir());
     }
 
     #[test]
@@ -303,7 +410,7 @@ mod tests {
             create_test_entry("Cherry", false, 180, 1300),
         ];
 
-        sort_entries(&mut entries, SortMode::NameAsc);
+        sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
 
         assert_eq!(entries[0].name, "Apple");
         assert_eq!(entries[1].name, "banana");
@@ -319,7 +426,7 @@ mod tests {
             create_test_entry("gamma", false, 150, 1200),
         ];
 
-        sort_entries(&mut entries, SortMode::NameDesc);
+        sort_entries(&mut entries, SortMode::NameDesc, SortOptions::default());
 
         assert_eq!(entries[0].name, "gamma");
         assert_eq!(entries[1].name, "beta");
@@ -334,13 +441,13 @@ mod tests {
             create_test_entry("medium.txt", false, 1000, 1200),
         ];
 
-        sort_entries(&mut entries, SortMode::SizeAsc);
+        sort_entries(&mut entries, SortMode::SizeAsc, SortOptions::default());
 
         assert_eq!(entries[0].name, "small.txt");
         assert_eq!(entries[1].name, "medium.txt");
         assert_eq!(entries[2].name, "large.txt");
 
-        sort_entries(&mut entries, SortMode::SizeDesc);
+        sort_entries(&mut entries, SortMode::SizeDesc, SortOptions::default());
 
         assert_eq!(entries[0].name, "large.txt");
         assert_eq!(entries[1].name, "medium.txt");
@@ -355,13 +462,13 @@ mod tests {
             create_test_entry("middle.txt", false, 150, 1500),
         ];
 
-        sort_entries(&mut entries, SortMode::ModTimeAsc);
+        sort_entries(&mut entries, SortMode::ModTimeAsc, SortOptions::default());
 
         assert_eq!(entries[0].name, "old.txt");
         assert_eq!(entries[1].name, "middle.txt");
         assert_eq!(entries[2].name, "new.txt");
 
-        sort_entries(&mut entries, SortMode::ModTimeDesc);
+        sort_entries(&mut entries, SortMode::ModTimeDesc, SortOptions::default());
 
         assert_eq!(entries[0].name, "new.txt");
         assert_eq!(entries[1].name, "middle.txt");
@@ -378,14 +485,18 @@ mod tests {
         ];
 
         // Extensions: .png, .sh, .txt, .zip (alphabetical ascending)
-        sort_entries(&mut entries, SortMode::ExtensionAsc);
+        sort_entries(&mut entries, SortMode::ExtensionAsc, SortOptions::default());
 
         assert_eq!(entries[0].name, "image.png");
         assert_eq!(entries[1].name, "script.sh");
         assert_eq!(entries[2].name, "file.txt");
         assert_eq!(entries[3].name, "archive.zip");
 
-        sort_entries(&mut entries, SortMode::ExtensionDesc);
+        sort_entries(
+            &mut entries,
+            SortMode::ExtensionDesc,
+            SortOptions::default(),
+        );
 
         assert_eq!(entries[0].name, "archive.zip");
         assert_eq!(entries[1].name, "file.txt");
@@ -398,49 +509,31 @@ mod tests {
         let mut entries: Vec<FileEntry> = vec![];
 
         // Should not panic
-        sort_entries(&mut entries, SortMode::NameAsc);
+        sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
         assert_eq!(entries.len(), 0);
     }
 
     #[test]
     fn test_sort_with_same_values() {
-        // Create entries with same modification times to test stability
         let now = SystemTime::now();
         let mut entries = vec![
-            FileEntry {
-                name: "a.txt".to_string(),
-                path: PathBuf::from("a.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 100,
-                modified: now,
-                permissions: 0o644,
-                owner: "user".to_string(),
-                group: "group".to_string(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
-            FileEntry {
-                name: "b.txt".to_string(),
-                path: PathBuf::from("b.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 100,
-                modified: now,
-                permissions: 0o644,
-                owner: "user".to_string(),
-                group: "group".to_string(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
+            FileEntry::builder()
+                .name("a.txt")
+                .path("a.txt")
+                .size(100)
+                .modified(now)
+                .created(now)
+                .build(),
+            FileEntry::builder()
+                .name("b.txt")
+                .path("b.txt")
+                .size(100)
+                .modified(now)
+                .created(now)
+                .build(),
         ];
 
-        // This should maintain order or sort correctly alphabetically
-        sort_entries(&mut entries, SortMode::NameAsc);
+        sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
         assert!(matches!(entries[0].name.as_str(), "a.txt" | "b.txt"));
     }
 
@@ -450,11 +543,11 @@ mod tests {
         let file = create_test_entry("file.txt", false, 100, 1000);
 
         assert_eq!(
-            compare_entries(&dir, &file, SortMode::NameAsc),
+            compare_entries(&dir, &file, SortMode::NameAsc, SortOptions::default()),
             Ordering::Less
         );
         assert_eq!(
-            compare_entries(&file, &dir, SortMode::NameAsc),
+            compare_entries(&file, &dir, SortMode::NameAsc, SortOptions::default()),
             Ordering::Greater
         );
     }
@@ -466,12 +559,123 @@ mod tests {
         let file = create_test_entry("file.txt", false, 100, 1000);
 
         assert_eq!(
-            compare_entries(&ellipsis, &dir, SortMode::NameAsc),
+            compare_entries(&ellipsis, &dir, SortMode::NameAsc, SortOptions::default()),
             Ordering::Less
         );
         assert_eq!(
-            compare_entries(&ellipsis, &file, SortMode::NameAsc),
+            compare_entries(&ellipsis, &file, SortMode::NameAsc, SortOptions::default()),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn test_sort_natural_name_asc() {
+        let mut entries = vec![
+            create_test_entry("a10.txt", false, 100, 100),
+            create_test_entry("a2.txt", false, 100, 100),
+            create_test_entry("a1.txt", false, 100, 100),
+        ];
+
+        sort_entries(
+            &mut entries,
+            SortMode::NaturalNameAsc,
+            SortOptions::default(),
+        );
+
+        assert_eq!(entries[0].name, "a1.txt");
+        assert_eq!(entries[1].name, "a2.txt");
+        assert_eq!(entries[2].name, "a10.txt");
+    }
+
+    #[test]
+    fn test_sort_natural_name_desc() {
+        let mut entries = vec![
+            create_test_entry("a10.txt", false, 100, 100),
+            create_test_entry("a2.txt", false, 100, 100),
+            create_test_entry("a1.txt", false, 100, 100),
+        ];
+
+        sort_entries(
+            &mut entries,
+            SortMode::NaturalNameDesc,
+            SortOptions::default(),
+        );
+
+        assert_eq!(entries[0].name, "a10.txt");
+        assert_eq!(entries[1].name, "a2.txt");
+        assert_eq!(entries[2].name, "a1.txt");
+    }
+
+    #[test]
+    fn test_sort_natural_with_directories_first() {
+        let mut entries = vec![
+            create_test_entry("file10", false, 100, 100),
+            create_test_entry("file2", false, 100, 100),
+            create_test_entry("dir10", true, 0, 100),
+            create_test_entry("dir2", true, 0, 100),
+        ];
+
+        sort_entries(
+            &mut entries,
+            SortMode::NaturalNameAsc,
+            SortOptions::default(),
+        );
+
+        assert_eq!(entries[0].name, "dir2");
+        assert_eq!(entries[1].name, "dir10");
+        assert_eq!(entries[2].name, "file2");
+        assert_eq!(entries[3].name, "file10");
+    }
+
+    #[test]
+    fn test_sort_natural_ellipsis_first() {
+        let mut entries = vec![
+            create_test_entry("..", true, 0, 0),
+            create_test_entry("z10", false, 100, 100),
+            create_test_entry("a2", false, 100, 100),
+            create_test_entry("a1", false, 100, 100),
+        ];
+
+        sort_entries(
+            &mut entries,
+            SortMode::NaturalNameAsc,
+            SortOptions::default(),
+        );
+
+        assert_eq!(entries[0].name, "..");
+    }
+
+    #[test]
+    fn test_compare_entries_natural() {
+        let a2 = create_test_entry("a2", false, 100, 100);
+        let a10 = create_test_entry("a10", false, 100, 100);
+
+        assert_eq!(
+            compare_entries(&a2, &a10, SortMode::NaturalNameAsc, SortOptions::default()),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_entries(&a10, &a2, SortMode::NaturalNameAsc, SortOptions::default()),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_entries(&a2, &a10, SortMode::NaturalNameDesc, SortOptions::default()),
+            Ordering::Greater
+        );
+        assert_eq!(
+            compare_entries(&a10, &a2, SortMode::NaturalNameDesc, SortOptions::default()),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_natsort_unit() {
+        use crate::ops::natsort::natsort;
+
+        assert_eq!(natsort(b"a2", b"a10", true), Ordering::Less);
+        assert_eq!(natsort(b"a10", b"a2", true), Ordering::Greater);
+        assert_eq!(natsort(b"a1", b"a1", true), Ordering::Equal);
+        assert_eq!(natsort(b"b1", b"a10", true), Ordering::Greater);
+        assert_eq!(natsort(b"file2.txt", b"file10.txt", true), Ordering::Less);
     }
 }

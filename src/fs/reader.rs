@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::app::types::PanelState;
+use crate::fs::cha::Cha;
 
 const CACHE_MAX_SIZE: usize = 1024;
 
@@ -28,28 +29,6 @@ thread_local! {
         uid_to_name: HashMap::new(),
         gid_to_name: HashMap::new(),
     });
-}
-
-#[cfg(unix)]
-fn uid_gid(meta: &std::fs::Metadata) -> (u32, u32) {
-    use std::os::unix::fs::MetadataExt;
-    (meta.uid(), meta.gid())
-}
-
-#[cfg(not(unix))]
-fn uid_gid(_meta: &std::fs::Metadata) -> (u32, u32) {
-    (0, 0)
-}
-
-#[cfg(unix)]
-fn file_mode(meta: &std::fs::Metadata) -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    meta.mode()
-}
-
-#[cfg(not(unix))]
-fn file_mode(_meta: &std::fs::Metadata) -> u32 {
-    0
 }
 
 #[cfg(unix)]
@@ -101,16 +80,10 @@ pub fn read_directory(
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_path.to_path_buf(),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: true,
-            size: 0,
-            modified: SystemTime::now(),
-            permissions: 0o755,
+            cha: Cha::dummy_dir(),
             owner: String::new(),
             group: String::new(),
             selected: false,
-            is_hidden: false,
             mime_type: None,
         });
     }
@@ -165,52 +138,24 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     } else {
         None
     };
-    let is_dir = if is_symlink {
-        target_meta.as_ref().is_some_and(|m| m.is_dir())
+
+    let cha = if is_symlink {
+        Cha::from_link_metadata(&metadata, target_meta.as_ref())
     } else {
-        metadata.is_dir()
+        Cha::new(&metadata)
     };
+    let cha = cha.with_hidden(file_name.starts_with('.'));
 
-    let (size, modified, permissions, is_exec, uid, gid) =
-        if let Some(ref target_metadata) = target_meta {
-            let size = target_metadata.len();
-            let modified = target_metadata.modified()?;
-            let mode = file_mode(target_metadata);
-            let (uid, gid) = uid_gid(target_metadata);
-            (size, modified, mode, is_executable(mode), uid, gid)
-        } else {
-            let size = metadata.len();
-            let modified = metadata.modified()?;
-            let mode = file_mode(&metadata);
-            let (uid, gid) = uid_gid(&metadata);
-            let is_exec = if is_symlink && target_meta.is_none() {
-                false
-            } else {
-                is_executable(mode)
-            };
-            let display_mode = if is_symlink && target_meta.is_none() {
-                0
-            } else {
-                mode
-            };
-            (size, modified, display_mode, is_exec, uid, gid)
-        };
-
+    let (uid, gid) = (cha.uid, cha.gid);
     let (owner, group) = lookup_owner_group(uid, gid);
 
     Ok(FileEntry {
-        name: file_name.clone(),
+        name: file_name,
         path: path.to_path_buf(),
-        is_dir,
-        is_symlink,
-        is_executable: is_exec,
-        size,
-        modified,
-        permissions,
+        cha,
         owner,
         group,
         selected: false,
-        is_hidden: file_name.starts_with('.'),
         mime_type: None,
     })
 }
@@ -309,39 +254,28 @@ mod tests {
     }
 
     fn test_entry(name: &str, selected: bool) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from("/tmp").join(name),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 10,
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected,
-            is_hidden: name.starts_with('.'),
-            mime_type: None,
-        }
+        FileEntry::builder()
+            .name(name)
+            .path(PathBuf::from("/tmp").join(name))
+            .size(10)
+            .modified(SystemTime::now())
+            .created(SystemTime::now())
+            .is_hidden(name.starts_with('.'))
+            .owner("user")
+            .group("group")
+            .selected(selected)
+            .build()
     }
 
     fn parent_entry() -> FileEntry {
-        FileEntry {
-            name: "..".to_string(),
-            path: PathBuf::from("/tmp"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: true,
-            size: 0,
-            modified: SystemTime::now(),
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }
+        FileEntry::builder()
+            .name("..")
+            .path(PathBuf::from("/tmp"))
+            .is_dir(true)
+            .is_executable(true)
+            .modified(SystemTime::now())
+            .permissions(0o755)
+            .build()
     }
 
     fn test_panel(entries: Vec<FileEntry>) -> PanelState {
@@ -353,124 +287,82 @@ mod tests {
 
     #[test]
     fn test_format_size_zero() {
-        let entry = CanonicalFileEntry {
-            name: "test".to_string(),
-            path: PathBuf::from("test"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = CanonicalFileEntry::builder()
+            .name("test")
+            .path(PathBuf::from("test"))
+            .size(0)
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .build();
         assert_eq!(entry.display_size(), "     0 B");
     }
 
     #[test]
     fn test_format_size_bytes() {
-        let entry = CanonicalFileEntry {
-            name: "test".to_string(),
-            path: PathBuf::from("test"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 500,
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = CanonicalFileEntry::builder()
+            .name("test")
+            .path(PathBuf::from("test"))
+            .size(500)
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .build();
         assert_eq!(entry.display_size(), "   500 B");
     }
 
     #[test]
     fn test_format_size_kilobytes() {
-        let entry = CanonicalFileEntry {
-            name: "test".to_string(),
-            path: PathBuf::from("test"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 1536,
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = CanonicalFileEntry::builder()
+            .name("test")
+            .path(PathBuf::from("test"))
+            .size(1536)
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .build();
         let result = entry.display_size();
         assert!(result.contains("KB"));
     }
 
     #[test]
     fn test_format_size_megabytes() {
-        let entry = CanonicalFileEntry {
-            name: "test".to_string(),
-            path: PathBuf::from("test"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 1024 * 1024,
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = CanonicalFileEntry::builder()
+            .name("test")
+            .path(PathBuf::from("test"))
+            .size(1024 * 1024)
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .build();
         let result = entry.display_size();
         assert!(result.contains("MB"));
     }
 
     #[test]
     fn test_format_size_gigabytes() {
-        let entry = CanonicalFileEntry {
-            name: "test".to_string(),
-            path: PathBuf::from("test"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 1024 * 1024 * 1024,
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = CanonicalFileEntry::builder()
+            .name("test")
+            .path(PathBuf::from("test"))
+            .size(1024 * 1024 * 1024)
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .build();
         let result = entry.display_size();
         assert!(result.contains("GB"));
     }
 
     #[test]
     fn test_format_size_terabytes() {
-        let entry = CanonicalFileEntry {
-            name: "test".to_string(),
-            path: PathBuf::from("test"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 1024u64.pow(4),
-            modified: SystemTime::now(),
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        };
+        let entry = CanonicalFileEntry::builder()
+            .name("test")
+            .path(PathBuf::from("test"))
+            .size(1024u64.pow(4))
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .build();
         let result = entry.display_size();
         assert!(result.contains("TB"));
     }
@@ -524,7 +416,7 @@ mod tests {
         assert!(names.contains(&"subdir"));
 
         let subdir_entry = entries.iter().find(|e| e.name == "subdir").unwrap();
-        assert!(subdir_entry.is_dir);
+        assert!(subdir_entry.is_dir());
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }
@@ -554,7 +446,7 @@ mod tests {
 
         let info = get_file_info(&file_path).unwrap();
         assert_eq!(info.name, "test.txt");
-        assert!(!info.is_dir);
+        assert!(!info.is_dir());
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }
@@ -567,7 +459,7 @@ mod tests {
 
         let info = get_file_info(&subdir).unwrap();
         assert_eq!(info.name, "subdir");
-        assert!(info.is_dir);
+        assert!(info.is_dir());
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }
@@ -583,7 +475,7 @@ mod tests {
         file.set_permissions(perms).unwrap();
 
         let info = get_file_info(&file_path).unwrap();
-        assert!(info.is_executable);
+        assert!(info.is_executable());
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }
@@ -600,7 +492,7 @@ mod tests {
         let (entries, errors) = read_directory(&temp_dir, false).unwrap();
         assert!(errors.is_empty());
         if let Some(link_entry) = entries.iter().find(|e| e.name == "link.txt") {
-            assert!(link_entry.is_symlink);
+            assert!(link_entry.is_symlink());
         }
 
         fs::remove_dir_all(&temp_dir).unwrap();
@@ -641,12 +533,12 @@ mod tests {
         let mut panel = test_panel(vec![test_entry("file.txt", true)]);
         panel.unfiltered_entries = panel.entries.clone();
         let mut updated = test_entry("file.txt", false);
-        updated.size = 99;
+        updated.cha.len = 99;
 
         upsert_entry(&mut panel, updated);
 
         assert_eq!(panel.unfiltered_entries.len(), 1);
-        assert_eq!(panel.unfiltered_entries[0].size, 99);
+        assert_eq!(panel.unfiltered_entries[0].cha.len, 99);
         assert!(panel.unfiltered_entries[0].selected);
     }
 
