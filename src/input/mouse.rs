@@ -317,7 +317,7 @@ fn handle_mouse_panels(
         state.last_click_position = None;
 
         let entry = &panel.entries[clicked_index];
-        let is_dir = entry.is_dir;
+        let is_dir = entry.is_dir();
         let path = entry.path.clone();
         if is_dir {
             let panel_mut = state.active_panel_mut();

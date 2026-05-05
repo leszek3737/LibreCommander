@@ -18,7 +18,7 @@ use crate::app::types::{
 pub fn get_file_color(entry: &FileEntry) -> Style {
     let category = entry.category();
     let color = Theme::category_color(category);
-    Theme::panel_item(color, entry.is_dir || entry.is_executable)
+    Theme::panel_item(color, entry.is_dir() || entry.is_executable())
 }
 
 /// Get icon for a file entry (ASCII-safe, no variation selectors)
@@ -174,9 +174,9 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
 
     let icon = get_file_icon(entry);
     let icon_width = UnicodeWidthStr::width(icon);
-    let size_str = format!("{:>10}", format_size(entry.size));
-    let date_str = format_time(entry.modified);
-    let perms_str = format_permissions(entry.permissions);
+    let size_str = format!("{:>10}", format_size(entry.len()));
+    let date_str = format_time(entry.mtime());
+    let perms_str = format_permissions(entry.mode_bits());
 
     let (suffix, suffix_width) = {
         let full = format!(" {size_str} {date_str} {perms_str}");
@@ -351,8 +351,8 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
 
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
-        let size_str = format_size(entry.size);
-        let perms_str = format_permissions(entry.permissions);
+        let size_str = format_size(entry.len());
+        let perms_str = format_permissions(entry.mode_bits());
         let full_info = format!(
             "{} | {} | {} | {} | {}",
             entry.name, size_str, perms_str, entry.owner, entry.group,
@@ -471,22 +471,18 @@ mod tests {
     use std::path::PathBuf;
 
     fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(name),
-            is_dir,
-            is_symlink,
-            is_executable: is_exec,
-            size: 1024,
-            modified: SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected: false,
-            is_hidden: name.starts_with('.'),
-            mime_type: None,
-        }
+        FileEntry::builder()
+            .name(name)
+            .path(name)
+            .is_dir(is_dir)
+            .is_symlink(is_symlink)
+            .is_executable(is_exec)
+            .size(1024)
+            .modified(SystemTime::now())
+            .owner("user")
+            .group("group")
+            .is_hidden(name.starts_with('.'))
+            .build()
     }
 
     #[test]

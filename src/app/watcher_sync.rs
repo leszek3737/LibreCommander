@@ -157,7 +157,7 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
         return false;
     };
 
-    if !panel.show_hidden && entry.is_hidden {
+    if !panel.show_hidden && entry.is_hidden() {
         return apply_watcher_remove(panel, path);
     }
 
@@ -172,6 +172,9 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
                 .find(|existing| existing.path == entry.path)
         })
     {
+        if existing.cha.hits(&entry.cha) {
+            return false;
+        }
         entry.selected = existing.selected;
     }
 
@@ -258,22 +261,13 @@ mod tests {
     }
 
     fn parent_entry(path: &Path) -> reader::FileEntry {
-        reader::FileEntry {
-            name: "..".to_string(),
-            path: path.parent().unwrap_or(path).to_path_buf(),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: true,
-            size: 0,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }
+        reader::FileEntry::builder()
+            .name("..")
+            .path(path.parent().unwrap_or(path))
+            .is_dir(true)
+            .is_executable(true)
+            .permissions(0o755)
+            .build()
     }
 
     #[test]
@@ -437,5 +431,36 @@ mod tests {
             .map(|entry| entry.name.as_str())
             .collect();
         assert_eq!(names, vec!["..", "big.txt", "small.txt"]);
+    }
+
+    #[test]
+    fn watcher_skips_update_when_metadata_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("same.txt");
+        fs::write(&file, b"content").unwrap();
+
+        let mut panel = test_panel(dir.path());
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
+        assert_eq!(panel.entries.len(), 2);
+
+        assert!(!apply_watcher_upsert_if_matches(&mut panel, &file));
+        assert_eq!(panel.entries.len(), 2);
+        assert_eq!(panel.unfiltered_entries.len(), 2);
+    }
+
+    #[test]
+    fn watcher_updates_when_metadata_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("change.txt");
+        fs::write(&file, b"old").unwrap();
+
+        let mut panel = test_panel(dir.path());
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
+
+        fs::write(&file, b"new longer content").unwrap();
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
+
+        assert_eq!(panel.entries.len(), 2);
+        assert_eq!(panel.total_size, 18);
     }
 }

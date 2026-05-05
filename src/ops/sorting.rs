@@ -59,10 +59,10 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
     }
 
     // Ensure directories are always sorted before files (within each sort group)
-    if a.is_dir && !b.is_dir {
+    if a.is_dir() && !b.is_dir() {
         return Ordering::Less;
     }
-    if !a.is_dir && b.is_dir {
+    if !a.is_dir() && b.is_dir() {
         return Ordering::Greater;
     }
 
@@ -79,32 +79,32 @@ pub fn compare_entries(a: &FileEntry, b: &FileEntry, mode: SortMode) -> std::cmp
             ord.then_with(|| cmp_ignore_case(&a.name, &b.name))
         }
         SortMode::SizeAsc => a
-            .size
-            .cmp(&b.size)
+            .len()
+            .cmp(&b.len())
             .then_with(|| cmp_ignore_case(&a.name, &b.name)),
         SortMode::SizeDesc => b
-            .size
-            .cmp(&a.size)
+            .len()
+            .cmp(&a.len())
             .then_with(|| cmp_ignore_case(&a.name, &b.name)),
         SortMode::ModTimeAsc => a
-            .modified
-            .cmp(&b.modified)
+            .mtime()
+            .cmp(&b.mtime())
             .then_with(|| cmp_ignore_case(&a.name, &b.name)),
         SortMode::ModTimeDesc => b
-            .modified
-            .cmp(&a.modified)
+            .mtime()
+            .cmp(&a.mtime())
             .then_with(|| cmp_ignore_case(&a.name, &b.name)),
         SortMode::NaturalNameAsc => natsort::natsort(a.name.as_bytes(), b.name.as_bytes(), true)
             .then_with(|| a.name.cmp(&b.name)),
         SortMode::NaturalNameDesc => natsort::natsort(b.name.as_bytes(), a.name.as_bytes(), true)
             .then_with(|| b.name.cmp(&a.name)),
         SortMode::BtimeAsc => a
-            .created
-            .cmp(&b.created)
+            .btime()
+            .cmp(&b.btime())
             .then_with(|| cmp_ignore_case(&a.name, &b.name)),
         SortMode::BtimeDesc => b
-            .created
-            .cmp(&a.created)
+            .btime()
+            .cmp(&a.btime())
             .then_with(|| cmp_ignore_case(&a.name, &b.name)),
     }
 }
@@ -146,42 +146,42 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         SortMode::SizeAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                entry.size,
+                entry.len(),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                Reverse(entry.size),
+                Reverse(entry.len()),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::ModTimeAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                entry.modified,
+                entry.mtime(),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::ModTimeDesc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                Reverse(entry.modified),
+                Reverse(entry.mtime()),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::BtimeAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                entry.created,
+                entry.btime(),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::BtimeDesc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                Reverse(entry.created),
+                Reverse(entry.btime()),
                 name_key(entry, sensitive),
             )
         }),
@@ -201,7 +201,7 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
 }
 
 fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
-    match (entry.name.as_str(), dir_first, entry.is_dir) {
+    match (entry.name.as_str(), dir_first, entry.is_dir()) {
         ("..", _, _) => 0,
         (_, true, true) => 1,
         (_, true, false) => 2,
@@ -268,26 +268,20 @@ pub fn sort_mode_label(mode: SortMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::time::SystemTime;
 
     fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(name),
-            is_dir,
-            is_symlink: false,
-            is_executable: false,
-            size,
-            modified: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs),
-            created: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs),
-            permissions: 0o644,
-            owner: "testuser".to_string(),
-            group: "testgroup".to_string(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }
+        let ts = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs);
+        FileEntry::builder()
+            .name(name)
+            .path(name)
+            .is_dir(is_dir)
+            .size(size)
+            .modified(ts)
+            .created(ts)
+            .owner("testuser")
+            .group("testgroup")
+            .build()
     }
 
     #[test]
@@ -380,10 +374,10 @@ mod tests {
         sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
 
         // Directories should come before files
-        assert!(entries[0].is_dir);
-        assert!(entries[1].is_dir);
-        assert!(!entries[2].is_dir);
-        assert!(!entries[3].is_dir);
+        assert!(entries[0].is_dir());
+        assert!(entries[1].is_dir());
+        assert!(!entries[2].is_dir());
+        assert!(!entries[3].is_dir());
     }
 
     #[test]
@@ -500,44 +494,24 @@ mod tests {
 
     #[test]
     fn test_sort_with_same_values() {
-        // Create entries with same modification times to test stability
         let now = SystemTime::now();
         let mut entries = vec![
-            FileEntry {
-                name: "a.txt".to_string(),
-                path: PathBuf::from("a.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 100,
-                modified: now,
-                created: now,
-                permissions: 0o644,
-                owner: "user".to_string(),
-                group: "group".to_string(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
-            FileEntry {
-                name: "b.txt".to_string(),
-                path: PathBuf::from("b.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 100,
-                modified: now,
-                created: now,
-                permissions: 0o644,
-                owner: "user".to_string(),
-                group: "group".to_string(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
+            FileEntry::builder()
+                .name("a.txt")
+                .path("a.txt")
+                .size(100)
+                .modified(now)
+                .created(now)
+                .build(),
+            FileEntry::builder()
+                .name("b.txt")
+                .path("b.txt")
+                .size(100)
+                .modified(now)
+                .created(now)
+                .build(),
         ];
 
-        // This should maintain order or sort correctly alphabetically
         sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
         assert!(matches!(entries[0].name.as_str(), "a.txt" | "b.txt"));
     }

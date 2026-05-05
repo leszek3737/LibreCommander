@@ -43,9 +43,9 @@ pub fn compare_entries(
             (
                 e.name.as_str(),
                 EntryMeta {
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    mtime: e.modified,
+                    is_dir: e.is_dir(),
+                    size: e.len(),
+                    mtime: e.mtime(),
                 },
             )
         })
@@ -58,9 +58,9 @@ pub fn compare_entries(
             (
                 e.name.as_str(),
                 EntryMeta {
-                    is_dir: e.is_dir,
-                    size: e.size,
-                    mtime: e.modified,
+                    is_dir: e.is_dir(),
+                    size: e.len(),
+                    mtime: e.mtime(),
                 },
             )
         })
@@ -152,41 +152,20 @@ mod tests {
     use std::path::PathBuf;
 
     fn entry(name: &str, size: u64) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(format!("/tmp/{name}")),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }
+        FileEntry::builder()
+            .name(name)
+            .path(format!("/tmp/{name}"))
+            .size(size)
+            .build()
     }
 
     fn dir_entry(name: &str) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(format!("/tmp/{name}")),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }
+        FileEntry::builder()
+            .name(name)
+            .path(format!("/tmp/{name}"))
+            .is_dir(true)
+            .permissions(0o755)
+            .build()
     }
 
     #[test]
@@ -219,38 +198,24 @@ mod tests {
     #[test]
     fn thorough_mode_matches_on_size_and_mtime() {
         let t = std::time::SystemTime::UNIX_EPOCH;
-        let left = vec![FileEntry {
-            name: "a.txt".into(),
-            path: PathBuf::from("/tmp/a.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 100,
-            modified: t,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
-        let right = vec![FileEntry {
-            name: "a.txt".into(),
-            path: PathBuf::from("/tmp/a.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 100,
-            modified: t + std::time::Duration::from_secs(1),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let left = vec![
+            FileEntry::builder()
+                .name("a.txt")
+                .path("/tmp/a.txt")
+                .size(100)
+                .modified(t)
+                .created(std::time::SystemTime::UNIX_EPOCH)
+                .build(),
+        ];
+        let right = vec![
+            FileEntry::builder()
+                .name("a.txt")
+                .path("/tmp/a.txt")
+                .size(100)
+                .modified(t + std::time::Duration::from_secs(1))
+                .created(std::time::SystemTime::UNIX_EPOCH)
+                .build(),
+        ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
 
@@ -259,22 +224,14 @@ mod tests {
 
     #[test]
     fn dotdot_entries_are_ignored() {
-        let left = vec![FileEntry {
-            name: "..".into(),
-            path: PathBuf::from("/tmp/.."),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let left = vec![
+            FileEntry::builder()
+                .name("..")
+                .path("/tmp/..")
+                .is_dir(true)
+                .permissions(0o755)
+                .build(),
+        ];
         let right = vec![];
 
         let report = compare_entries(&left, &right, CompareMode::Quick);
@@ -298,38 +255,24 @@ mod tests {
 
     #[test]
     fn dirs_ignore_filesystem_size_in_size_mode() {
-        let left = vec![FileEntry {
-            name: "src".into(),
-            path: PathBuf::from("/tmp/src"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 4096,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
-        let right = vec![FileEntry {
-            name: "src".into(),
-            path: PathBuf::from("/tmp/src"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 8192,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let left = vec![
+            FileEntry::builder()
+                .name("src")
+                .path("/tmp/src")
+                .is_dir(true)
+                .size(4096)
+                .permissions(0o755)
+                .build(),
+        ];
+        let right = vec![
+            FileEntry::builder()
+                .name("src")
+                .path("/tmp/src")
+                .is_dir(true)
+                .size(8192)
+                .permissions(0o755)
+                .build(),
+        ];
 
         let report = compare_entries(&left, &right, CompareMode::Size);
 
@@ -340,38 +283,24 @@ mod tests {
 
     #[test]
     fn dirs_match_in_size_mode_when_equal() {
-        let left = vec![FileEntry {
-            name: "src".into(),
-            path: PathBuf::from("/tmp/src"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 4096,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
-        let right = vec![FileEntry {
-            name: "src".into(),
-            path: PathBuf::from("/tmp/src"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 4096,
-            modified: std::time::SystemTime::UNIX_EPOCH,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let left = vec![
+            FileEntry::builder()
+                .name("src")
+                .path("/tmp/src")
+                .is_dir(true)
+                .size(4096)
+                .permissions(0o755)
+                .build(),
+        ];
+        let right = vec![
+            FileEntry::builder()
+                .name("src")
+                .path("/tmp/src")
+                .is_dir(true)
+                .size(4096)
+                .permissions(0o755)
+                .build(),
+        ];
 
         let report = compare_entries(&left, &right, CompareMode::Size);
 
@@ -383,38 +312,26 @@ mod tests {
     #[test]
     fn dirs_ignore_filesystem_size_and_mtime_in_thorough_mode() {
         let t = std::time::SystemTime::UNIX_EPOCH;
-        let left = vec![FileEntry {
-            name: "lib".into(),
-            path: PathBuf::from("/tmp/lib"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 4096,
-            modified: t,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
-        let right = vec![FileEntry {
-            name: "lib".into(),
-            path: PathBuf::from("/tmp/lib"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 8192,
-            modified: t + std::time::Duration::from_secs(60),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let left = vec![
+            FileEntry::builder()
+                .name("lib")
+                .path("/tmp/lib")
+                .is_dir(true)
+                .size(4096)
+                .modified(t)
+                .permissions(0o755)
+                .build(),
+        ];
+        let right = vec![
+            FileEntry::builder()
+                .name("lib")
+                .path("/tmp/lib")
+                .is_dir(true)
+                .size(8192)
+                .modified(t + std::time::Duration::from_secs(60))
+                .permissions(0o755)
+                .build(),
+        ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
 
@@ -426,38 +343,26 @@ mod tests {
     #[test]
     fn dirs_match_in_thorough_mode_when_identical() {
         let t = std::time::SystemTime::UNIX_EPOCH;
-        let left = vec![FileEntry {
-            name: "lib".into(),
-            path: PathBuf::from("/tmp/lib"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 4096,
-            modified: t,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
-        let right = vec![FileEntry {
-            name: "lib".into(),
-            path: PathBuf::from("/tmp/lib"),
-            is_dir: true,
-            is_symlink: false,
-            is_executable: false,
-            size: 4096,
-            modified: t,
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o755,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let left = vec![
+            FileEntry::builder()
+                .name("lib")
+                .path("/tmp/lib")
+                .is_dir(true)
+                .size(4096)
+                .modified(t)
+                .permissions(0o755)
+                .build(),
+        ];
+        let right = vec![
+            FileEntry::builder()
+                .name("lib")
+                .path("/tmp/lib")
+                .is_dir(true)
+                .size(4096)
+                .modified(t)
+                .permissions(0o755)
+                .build(),
+        ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
 

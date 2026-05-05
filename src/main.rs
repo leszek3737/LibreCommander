@@ -881,7 +881,7 @@ fn handle_function_keys<B: ratatui::backend::Backend>(
         }
         KeyCode::F(3) => {
             if let Some(entry) = state.active_panel().current_entry()
-                && !entry.is_dir
+                && !entry.is_dir()
                 && let Ok(vs) = viewer::ViewerState::open(&entry.path)
             {
                 *viewer_state = Some(vs);
@@ -931,7 +931,7 @@ fn launch_editor<B: ratatui::backend::Backend>(
     let entry_info = state
         .active_panel()
         .current_entry()
-        .map(|e| (e.is_dir, e.path.clone()));
+        .map(|e| (e.is_dir(), e.path.clone()));
     if let Some((is_dir, path)) = entry_info
         && !is_dir
     {
@@ -1111,7 +1111,7 @@ fn handle_enter_key(state: &mut AppState, visible: usize) {
     let entry_info = state
         .active_panel()
         .current_entry()
-        .map(|e| (e.is_dir, e.path.clone(), e.name == ".."));
+        .map(|e| (e.is_dir(), e.path.clone(), e.name == ".."));
     if let Some((is_dir, path, is_dotdot)) = entry_info
         && is_dir
     {
@@ -1192,13 +1192,13 @@ fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize) {
             {
                 state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
                     name: entry.name.clone(),
-                    size: entry.size,
-                    mtime: entry.modified,
-                    permissions: entry.permissions,
+                    size: entry.len(),
+                    mtime: entry.mtime(),
+                    permissions: entry.mode_bits(),
                     owner: entry.owner.clone(),
                     group: entry.group.clone(),
-                    is_dir: entry.is_dir,
-                    is_symlink: entry.is_symlink,
+                    is_dir: entry.is_dir(),
+                    is_symlink: entry.is_symlink(),
                 });
             }
         }
@@ -2161,22 +2161,17 @@ mod tests {
     }
 
     fn make_test_entry(name: &str, size: u64, selected: bool) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(format!("/tmp/{name}")),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: String::new(),
-            group: String::new(),
-            selected,
-            is_hidden: false,
-            mime_type: None,
-        }
+        let mut cha = crate::fs::cha::Cha::dummy_dir();
+        cha.mode = crate::fs::cha::ChaMode::new(0o100644);
+        cha.len = size;
+        cha.mtime = Some(std::time::SystemTime::now());
+        cha.btime = Some(std::time::UNIX_EPOCH);
+        FileEntry::builder()
+            .name(name)
+            .path(PathBuf::from(format!("/tmp/{name}")))
+            .cha(cha)
+            .selected(selected)
+            .build()
     }
 
     #[test]
@@ -2265,22 +2260,13 @@ mod tests {
     fn menu_rename_opens_input_dialog_with_current_name() {
         let mut terminal = test_terminal();
         let mut state = AppState::default();
-        state.left_panel.entries.push(app::types::FileEntry {
-            name: "old.txt".to_string(),
-            path: std::env::temp_dir().join("old.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        });
+        state.left_panel.entries.push(
+            app::types::FileEntry::builder()
+                .name("old.txt")
+                .path(std::env::temp_dir().join("old.txt"))
+                .cha(crate::fs::cha::Cha::dummy_dir())
+                .build(),
+        );
         state.mode = AppMode::Menu;
         state.menu_selected = 1;
         state.menu_item_selected = 7;
@@ -2308,38 +2294,20 @@ mod tests {
     #[test]
     fn compare_directories_reports_summary() {
         let mut state = AppState::default();
-        state.left_panel.entries = vec![app::types::FileEntry {
-            name: "a.txt".to_string(),
-            path: std::env::temp_dir().join("a.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
-        state.right_panel.entries = vec![app::types::FileEntry {
-            name: "b.txt".to_string(),
-            path: std::env::temp_dir().join("b.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        state.left_panel.entries = vec![
+            app::types::FileEntry::builder()
+                .name("a.txt")
+                .path(std::env::temp_dir().join("a.txt"))
+                .cha(crate::fs::cha::Cha::dummy_dir())
+                .build(),
+        ];
+        state.right_panel.entries = vec![
+            app::types::FileEntry::builder()
+                .name("b.txt")
+                .path(std::env::temp_dir().join("b.txt"))
+                .cha(crate::fs::cha::Cha::dummy_dir())
+                .build(),
+        ];
 
         compare_directories(&mut state, CompareMode::Quick);
 
@@ -2512,76 +2480,25 @@ mod tests {
         assert_eq!(state.command_line, "git status");
     }
 
+    fn test_file_entry(name: &str, path: PathBuf) -> app::types::FileEntry {
+        app::types::FileEntry::builder()
+            .name(name)
+            .path(path)
+            .cha(crate::fs::cha::Cha::dummy_dir())
+            .build()
+    }
+
     #[test]
     fn compare_directories_marks_unique_entries_selected() {
         let mut state = AppState::default();
+        let tmp = std::env::temp_dir();
         state.left_panel.entries = vec![
-            app::types::FileEntry {
-                name: "same.txt".to_string(),
-                path: std::env::temp_dir().join("same.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 0,
-                modified: std::time::SystemTime::now(),
-                created: std::time::SystemTime::UNIX_EPOCH,
-                permissions: 0,
-                owner: String::new(),
-                group: String::new(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
-            app::types::FileEntry {
-                name: "left.txt".to_string(),
-                path: std::env::temp_dir().join("left.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 0,
-                modified: std::time::SystemTime::now(),
-                created: std::time::SystemTime::UNIX_EPOCH,
-                permissions: 0,
-                owner: String::new(),
-                group: String::new(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
+            test_file_entry("same.txt", tmp.join("same.txt")),
+            test_file_entry("left.txt", tmp.join("left.txt")),
         ];
         state.right_panel.entries = vec![
-            app::types::FileEntry {
-                name: "same.txt".to_string(),
-                path: std::env::temp_dir().join("same.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 0,
-                modified: std::time::SystemTime::now(),
-                created: std::time::SystemTime::UNIX_EPOCH,
-                permissions: 0,
-                owner: String::new(),
-                group: String::new(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
-            app::types::FileEntry {
-                name: "right.txt".to_string(),
-                path: std::env::temp_dir().join("right.txt"),
-                is_dir: false,
-                is_symlink: false,
-                is_executable: false,
-                size: 0,
-                modified: std::time::SystemTime::now(),
-                created: std::time::SystemTime::UNIX_EPOCH,
-                permissions: 0,
-                owner: String::new(),
-                group: String::new(),
-                selected: false,
-                is_hidden: false,
-                mime_type: None,
-            },
+            test_file_entry("same.txt", tmp.join("same.txt")),
+            test_file_entry("right.txt", tmp.join("right.txt")),
         ];
 
         compare_directories(&mut state, CompareMode::Quick);
@@ -2593,22 +2510,19 @@ mod tests {
     }
 
     fn make_entry(name: &str, selected: bool) -> FileEntry {
-        FileEntry {
-            name: name.to_string(),
-            path: PathBuf::from(format!("/tmp/{}", name)),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 100,
-            modified: UNIX_EPOCH + Duration::from_secs(0),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: "user".to_string(),
-            group: "group".to_string(),
-            selected,
-            is_hidden: false,
-            mime_type: None,
-        }
+        let mut cha = crate::fs::cha::Cha::dummy_dir();
+        cha.mode = crate::fs::cha::ChaMode::new(0o100644);
+        cha.len = 100;
+        cha.mtime = Some(UNIX_EPOCH + Duration::from_secs(0));
+        cha.btime = Some(std::time::SystemTime::UNIX_EPOCH);
+        FileEntry::builder()
+            .name(name)
+            .path(PathBuf::from(format!("/tmp/{}", name)))
+            .cha(cha)
+            .owner("user")
+            .group("group")
+            .selected(selected)
+            .build()
     }
 
     #[test]
@@ -3079,22 +2993,8 @@ mod tests {
     #[test]
     fn compare_mode_picker_enter_runs_quick_by_default() {
         let mut state = AppState::default();
-        state.left_panel.entries = vec![app::types::FileEntry {
-            name: "a.txt".to_string(),
-            path: std::env::temp_dir().join("a.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 0,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
-        }];
+        let tmp = std::env::temp_dir();
+        state.left_panel.entries = vec![test_file_entry("a.txt", tmp.join("a.txt"))];
         state.mode = AppMode::ListPicker(PickerKind::CompareMode);
         state.picker_selected = 0;
 
@@ -3118,21 +3018,15 @@ mod tests {
             picker_selected: 0,
             ..Default::default()
         };
-        state.left_panel.entries = vec![app::types::FileEntry {
-            name: "x.txt".to_string(),
-            path: std::env::temp_dir().join("x.txt"),
-            is_dir: false,
-            is_symlink: false,
-            is_executable: false,
-            size: 42,
-            modified: std::time::SystemTime::now(),
-            created: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0,
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            is_hidden: false,
-            mime_type: None,
+        state.left_panel.entries = vec![{
+            let mut cha = crate::fs::cha::Cha::dummy_dir();
+            cha.len = 42;
+            cha.mtime = Some(std::time::SystemTime::now());
+            app::types::FileEntry::builder()
+                .name("x.txt")
+                .path(std::env::temp_dir().join("x.txt"))
+                .cha(cha)
+                .build()
         }];
 
         handle_list_picker(&mut state, KeyCode::Down);
