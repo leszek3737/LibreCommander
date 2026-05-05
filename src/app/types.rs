@@ -43,9 +43,9 @@ pub enum FileCategory {
     Document,
     Code,
     Config,
+    Font,
     Executable,
     Symlink,
-    Hidden,
     Other,
 }
 
@@ -595,13 +595,11 @@ impl FileEntry {
     /// Priority (highest to lowest):
     /// 1. `Symlink` — always a symlink (regardless of target type)
     /// 2. `Dir` — always a directory
-    /// 3. `Hidden` — dot-prefixed files (e.g. `.bashrc`, `.archive.zip`)
-    /// 4. `Executable` — files with execute permission
-    /// 5. `Code` → `Config` → `Archive` → `Image` → `Video` → `Audio` → `Document`
-    /// 6. `Other` — fallback
+    /// 3. `Code` → `Config` → `Archive` → `Image` → `Video` → `Audio` → `Document` → `Font`
+    /// 4. `Executable` — files with execute permission (fallback for extensionless binaries)
+    /// 5. `Other` — fallback
     ///
-    /// A hidden executable (`.script.sh`) is categorized as `Hidden`, not `Executable`.
-    /// A hidden archive (`.backup.zip`) is `Hidden`, not `Archive`.
+    /// Hidden files get their real type (e.g. `.bashrc` → Config, `.backup.zip` → Archive).
     /// A symlink to a directory is `Symlink`, not `Dir`.
     pub fn category(&self) -> FileCategory {
         use crate::app::file_type as ft;
@@ -610,12 +608,6 @@ impl FileEntry {
         }
         if self.is_dir() {
             return FileCategory::Dir;
-        }
-        if self.is_hidden() {
-            return FileCategory::Hidden;
-        }
-        if self.is_executable() {
-            return FileCategory::Executable;
         }
         if ft::is_source_code(&self.name) {
             return FileCategory::Code;
@@ -637,6 +629,12 @@ impl FileEntry {
         }
         if ft::is_document(&self.name) {
             return FileCategory::Document;
+        }
+        if ft::is_font(&self.name) {
+            return FileCategory::Font;
+        }
+        if self.is_executable() {
+            return FileCategory::Executable;
         }
         FileCategory::Other
     }
@@ -1668,15 +1666,15 @@ mod tests {
     }
 
     #[test]
-    fn test_hidden_executable_is_hidden() {
+    fn test_hidden_script_is_code() {
         let entry = cha_entry(".script.sh", 0o100755, 100, true);
-        assert_eq!(entry.category(), FileCategory::Hidden);
+        assert_eq!(entry.category(), FileCategory::Code);
     }
 
     #[test]
-    fn test_hidden_archive_is_hidden() {
+    fn test_hidden_archive_is_archive() {
         let entry = cha_entry(".backup.zip", 0o100644, 100, true);
-        assert_eq!(entry.category(), FileCategory::Hidden);
+        assert_eq!(entry.category(), FileCategory::Archive);
     }
 
     #[test]
@@ -1692,15 +1690,15 @@ mod tests {
     }
 
     #[test]
-    fn test_executable_archive_is_executable() {
-        let entry = cha_entry("installer.exe", 0o100755, 100, false);
+    fn test_executable_without_extension_is_executable() {
+        let entry = cha_entry("mybinary", 0o100755, 100, false);
         assert_eq!(entry.category(), FileCategory::Executable);
     }
 
     #[test]
-    fn test_hidden_apk_is_hidden() {
+    fn test_hidden_apk_is_archive() {
         let entry = cha_entry(".app.apk", 0o100644, 100, true);
-        assert_eq!(entry.category(), FileCategory::Hidden);
+        assert_eq!(entry.category(), FileCategory::Archive);
     }
 
     #[test]

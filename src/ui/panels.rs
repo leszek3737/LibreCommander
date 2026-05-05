@@ -26,7 +26,6 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
     match entry.category() {
         FileCategory::Dir => "📁 ",
         FileCategory::Symlink => "🔗 ",
-        FileCategory::Hidden => "👁 ",
         FileCategory::Executable => "⚡ ",
         FileCategory::Code => "💻 ",
         FileCategory::Config => "⚙ ",
@@ -34,7 +33,8 @@ pub fn get_file_icon(entry: &FileEntry) -> &'static str {
         FileCategory::Image => "🖼 ",
         FileCategory::Video => "🎬 ",
         FileCategory::Audio => "🎵 ",
-        FileCategory::Document => "📄 ",
+        FileCategory::Document => "📝 ",
+        FileCategory::Font => "🔤 ",
         FileCategory::Other => "📄 ",
     }
 }
@@ -494,8 +494,15 @@ mod tests {
     }
 
     #[test]
-    fn test_get_file_color_executable() {
+    fn test_get_file_color_code_script() {
         let entry = create_test_entry("script.sh", false, true, false);
+        let style = get_file_color(&entry);
+        assert_eq!(style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn test_get_file_color_extensionless_executable() {
+        let entry = create_test_entry("mybinary", false, true, false);
         let style = get_file_color(&entry);
         assert_eq!(style.fg, Some(Color::Green));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -686,7 +693,7 @@ mod tests {
     #[test]
     fn test_get_file_icon_document() {
         let entry = create_test_entry("report.pdf", false, false, false);
-        assert_eq!(get_file_icon(&entry), "📄 ");
+        assert_eq!(get_file_icon(&entry), "📝 ");
     }
 
     #[test]

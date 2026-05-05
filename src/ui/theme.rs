@@ -24,7 +24,6 @@ impl Theme {
     pub const BORDER_ACTIVE: Color = Color::Yellow;
     pub const BORDER_INACTIVE: Color = Color::DarkGray;
     pub const TITLE: Color = Color::LightCyan;
-    pub const HIDDEN_FILE: Color = Color::White;
     pub const ERROR: Color = Color::Red;
     pub const WARNING: Color = Color::Yellow;
     pub const INFO: Color = Color::Cyan;
@@ -50,6 +49,7 @@ impl Theme {
     pub const DOCUMENT: Color = Color::LightYellow;
     pub const SOURCE_CODE: Color = Color::Yellow;
     pub const CONFIG: Color = Color::LightBlue;
+    pub const FONT: Color = Color::LightCyan;
     pub const REGULAR_FILE: Color = Color::White;
 
     // Styles
@@ -120,7 +120,6 @@ impl Theme {
             FileCategory::Dir => Self::DIRECTORY,
             FileCategory::Executable => Self::EXECUTABLE,
             FileCategory::Symlink => Self::SYMLINK,
-            FileCategory::Hidden => Self::HIDDEN_FILE,
             FileCategory::Archive => Self::ARCHIVE,
             FileCategory::Image => Self::IMAGE,
             FileCategory::Video => Self::VIDEO,
@@ -128,6 +127,7 @@ impl Theme {
             FileCategory::Document => Self::DOCUMENT,
             FileCategory::Code => Self::SOURCE_CODE,
             FileCategory::Config => Self::CONFIG,
+            FileCategory::Font => Self::FONT,
             FileCategory::Other => Self::REGULAR_FILE,
         }
     }
@@ -176,7 +176,6 @@ mod tests {
             (FileCategory::Dir, Theme::DIRECTORY),
             (FileCategory::Executable, Theme::EXECUTABLE),
             (FileCategory::Symlink, Theme::SYMLINK),
-            (FileCategory::Hidden, Theme::HIDDEN_FILE),
             (FileCategory::Archive, Theme::ARCHIVE),
             (FileCategory::Image, Theme::IMAGE),
             (FileCategory::Video, Theme::VIDEO),
@@ -184,6 +183,7 @@ mod tests {
             (FileCategory::Document, Theme::DOCUMENT),
             (FileCategory::Code, Theme::SOURCE_CODE),
             (FileCategory::Config, Theme::CONFIG),
+            (FileCategory::Font, Theme::FONT),
             (FileCategory::Other, Theme::REGULAR_FILE),
         ];
 

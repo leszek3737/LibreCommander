@@ -94,6 +94,8 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".dockerignore",
 ];
 
+const FONT_SUFFIXES: &[&str] = &[".ttf", ".otf", ".woff", ".woff2", ".eot"];
+
 #[inline]
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
     if suffix.is_empty() {
@@ -145,24 +147,23 @@ pub fn is_config(name: &str) -> bool {
     has_any_suffix(name, CONFIG_SUFFIXES)
 }
 
+#[inline]
+pub fn is_font(name: &str) -> bool {
+    has_any_suffix(name, FONT_SUFFIXES)
+}
+
 pub fn category(
     name: &str,
     is_dir: bool,
     is_exec: bool,
     is_link: bool,
-    is_hidden: bool,
+    _is_hidden: bool,
 ) -> FileCategory {
     if is_link {
         return FileCategory::Symlink;
     }
     if is_dir {
         return FileCategory::Dir;
-    }
-    if is_hidden {
-        return FileCategory::Hidden;
-    }
-    if is_exec {
-        return FileCategory::Executable;
     }
     if is_source_code(name) {
         return FileCategory::Code;
@@ -184,6 +185,12 @@ pub fn category(
     }
     if is_document(name) {
         return FileCategory::Document;
+    }
+    if is_font(name) {
+        return FileCategory::Font;
+    }
+    if is_exec {
+        return FileCategory::Executable;
     }
     FileCategory::Other
 }
@@ -302,10 +309,10 @@ mod tests {
         );
         assert_eq!(
             category(".archive.zip", false, false, false, true),
-            FileCategory::Hidden
+            FileCategory::Archive
         );
         assert_eq!(
-            category("archive.zip", false, true, false, false),
+            category("mybinary", false, true, false, false),
             FileCategory::Executable
         );
     }
@@ -345,32 +352,36 @@ mod tests {
             FileCategory::Config
         );
         assert_eq!(
+            category("font.woff2", false, false, false, false),
+            FileCategory::Font
+        );
+        assert_eq!(
             category("file.unknown", false, false, false, false),
             FileCategory::Other
         );
     }
 
     #[test]
-    fn test_hidden_executable_is_hidden() {
+    fn test_hidden_file_gets_real_type() {
         assert_eq!(
-            category(".script.sh", false, true, false, true),
-            FileCategory::Hidden
+            category(".script.sh", false, false, false, true),
+            FileCategory::Code
         );
     }
 
     #[test]
-    fn test_hidden_archive_is_hidden() {
+    fn test_hidden_archive_is_archive() {
         assert_eq!(
             category(".backup.zip", false, false, false, true),
-            FileCategory::Hidden
+            FileCategory::Archive
         );
     }
 
     #[test]
-    fn test_hidden_image_is_hidden() {
+    fn test_hidden_image_is_image() {
         assert_eq!(
             category(".photo.jpg", false, false, false, true),
-            FileCategory::Hidden
+            FileCategory::Image
         );
     }
 
@@ -391,9 +402,9 @@ mod tests {
     }
 
     #[test]
-    fn test_executable_archive_is_executable() {
+    fn test_extensionless_executable_is_executable() {
         assert_eq!(
-            category("installer.exe", false, true, false, false),
+            category("mybinary", false, true, false, false),
             FileCategory::Executable
         );
     }

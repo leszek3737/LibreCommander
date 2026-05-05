@@ -114,9 +114,11 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             _ => FileCategory::Other,
         };
     }
+    if mime.starts_with("font/") {
+        return FileCategory::Font;
+    }
     FileCategory::Other
 }
-
 #[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
     extension_mime(name)
@@ -394,8 +396,8 @@ mod tests {
 
     #[test]
     fn category_from_ext_font_types() {
-        assert_eq!(category_from_ext("font.ttf"), FileCategory::Other);
-        assert_eq!(category_from_ext("font.woff2"), FileCategory::Other);
+        assert_eq!(category_from_ext("font.ttf"), FileCategory::Font);
+        assert_eq!(category_from_ext("font.woff2"), FileCategory::Font);
     }
 
     #[test]
@@ -420,7 +422,7 @@ mod tests {
             FileCategory::Document
         );
         assert_eq!(mime_to_category("image/vnd.djvu"), FileCategory::Document);
-        assert_eq!(mime_to_category("font/ttf"), FileCategory::Other);
+        assert_eq!(mime_to_category("font/ttf"), FileCategory::Font);
     }
 
     #[test]
