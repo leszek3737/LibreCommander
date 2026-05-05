@@ -90,6 +90,7 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             | "application/wasm"
             | "application/x-httpd-php"
             | "application/x-sh" => FileCategory::Code,
+            "application/vnd.ms-fontobject" => FileCategory::Font,
             "application/zip"
             | "application/x-tar"
             | "application/gzip"
@@ -398,6 +399,7 @@ mod tests {
     fn category_from_ext_font_types() {
         assert_eq!(category_from_ext("font.ttf"), FileCategory::Font);
         assert_eq!(category_from_ext("font.woff2"), FileCategory::Font);
+        assert_eq!(category_from_ext("font.eot"), FileCategory::Font);
     }
 
     #[test]
@@ -423,6 +425,10 @@ mod tests {
         );
         assert_eq!(mime_to_category("image/vnd.djvu"), FileCategory::Document);
         assert_eq!(mime_to_category("font/ttf"), FileCategory::Font);
+        assert_eq!(
+            mime_to_category("application/vnd.ms-fontobject"),
+            FileCategory::Font
+        );
     }
 
     #[test]
