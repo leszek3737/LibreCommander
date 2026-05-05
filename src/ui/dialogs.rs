@@ -524,7 +524,7 @@ pub fn render_list_picker(
 
     if items.is_empty() {
         let empty = Paragraph::new("(empty)")
-            .style(Style::default().fg(Theme::HIDDEN_FILE))
+            .style(Style::default().fg(Theme::REGULAR_FILE))
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {
