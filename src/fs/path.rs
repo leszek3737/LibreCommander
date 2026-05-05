@@ -52,18 +52,6 @@ pub fn expand_path(input: &str) -> PathBuf {
     PathBuf::from(expanded)
 }
 
-#[cfg(unix)]
-fn stripped_tilde(s: &str) -> Option<&str> {
-    if let Some(rest) = s.strip_prefix("~/") {
-        return Some(rest);
-    }
-    if let Some(rest) = s.strip_prefix("~\\") {
-        return Some(rest);
-    }
-    None
-}
-
-#[cfg(not(unix))]
 fn stripped_tilde(s: &str) -> Option<&str> {
     if let Some(rest) = s.strip_prefix("~/") {
         return Some(rest);

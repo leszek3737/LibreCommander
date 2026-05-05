@@ -1,10 +1,77 @@
 use std::fmt::{self, Write};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
+#[cfg(unix)]
+use std::time::Duration;
+
+#[cfg(unix)]
 pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
     meta.mode()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_mode(_meta: &fs::Metadata) -> u32 {
+    0o100644
+}
+
+#[cfg(unix)]
+fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
+    let secs = meta.ctime();
+    let nsecs = meta.ctime_nsec() as u32;
+    if secs >= 0 {
+        Some(UNIX_EPOCH + Duration::new(secs as u64, nsecs))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn change_time(_meta: &fs::Metadata) -> Option<SystemTime> {
+    None
+}
+
+#[cfg(unix)]
+fn metadata_uid(meta: &fs::Metadata) -> u32 {
+    meta.uid()
+}
+
+#[cfg(not(unix))]
+fn metadata_uid(_meta: &fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn metadata_gid(meta: &fs::Metadata) -> u32 {
+    meta.gid()
+}
+
+#[cfg(not(unix))]
+fn metadata_gid(_meta: &fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn metadata_dev(meta: &fs::Metadata) -> u64 {
+    meta.dev()
+}
+
+#[cfg(not(unix))]
+fn metadata_dev(_meta: &fs::Metadata) -> u64 {
+    0
+}
+
+#[cfg(unix)]
+fn metadata_nlink(meta: &fs::Metadata) -> u64 {
+    meta.nlink()
+}
+
+#[cfg(not(unix))]
+fn metadata_nlink(_meta: &fs::Metadata) -> u64 {
+    0
 }
 
 bitflags::bitflags! {
@@ -46,24 +113,23 @@ impl ChaType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChaMode(u16);
+pub struct ChaMode(u32);
 
 impl ChaMode {
     pub fn new(mode: u32) -> Self {
-        debug_assert!(mode <= 0o177777, "Unix mode exceeds 16 bits");
-        Self(mode as u16)
+        Self(mode)
     }
 
-    pub fn raw(&self) -> u16 {
+    pub fn raw(&self) -> u32 {
         self.0
     }
 
     pub fn mode_u32(&self) -> u32 {
-        self.0 as u32
+        self.0
     }
 
     pub fn typ(&self) -> ChaType {
-        ChaType::from_mode(self.0 as u32)
+        ChaType::from_mode(self.0)
     }
 
     pub fn is_file(&self) -> bool {
@@ -95,7 +161,7 @@ impl ChaMode {
     }
 
     pub fn permissions(&self) -> u16 {
-        self.0 & 0o7777
+        (self.0 & 0o7777) as u16
     }
 
     pub fn is_executable(&self) -> bool {
@@ -127,20 +193,12 @@ impl Cha {
             len: meta.len(),
             mtime: meta.modified().ok(),
             btime: meta.created().ok(),
-            ctime: {
-                let secs = meta.ctime();
-                let nsecs = meta.ctime_nsec() as u32;
-                if secs >= 0 {
-                    Some(UNIX_EPOCH + Duration::new(secs as u64, nsecs))
-                } else {
-                    None
-                }
-            },
+            ctime: change_time(meta),
             atime: meta.accessed().ok(),
-            uid: meta.uid(),
-            gid: meta.gid(),
-            dev: meta.dev(),
-            nlink: meta.nlink(),
+            uid: metadata_uid(meta),
+            gid: metadata_gid(meta),
+            dev: metadata_dev(meta),
+            nlink: metadata_nlink(meta),
         }
     }
 
@@ -274,7 +332,7 @@ impl Cha {
 
 impl fmt::Display for ChaMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let m = self.0 as u32;
+        let m = self.0;
         f.write_char(if m & 0o400 != 0 { 'r' } else { '-' })?;
         f.write_char(if m & 0o200 != 0 { 'w' } else { '-' })?;
         f.write_char(if m & 0o4000 != 0 {
@@ -387,13 +445,15 @@ mod tests {
     }
 
     #[test]
-    fn cha_mode_truncation_to_u16() {
-        let raw: u32 = 0o100755;
+    fn cha_mode_preserves_raw_bits() {
+        let raw: u32 = 0x1_0000 | 0o100755;
         let mode = ChaMode::new(raw);
-        assert_eq!(mode.mode_u32(), raw & 0xFFFF);
+        assert_eq!(mode.mode_u32(), raw);
+        assert_eq!(mode.raw(), raw);
     }
 
     #[test]
+    #[cfg(unix)]
     fn cha_from_link_metadata_with_target() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("target.txt");
@@ -413,6 +473,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cha_from_link_metadata_orphan() {
         let dir = tempfile::tempdir().unwrap();
         let link_path = dir.path().join("dangling");
@@ -486,6 +547,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cha_symlink_dir_is_dir_and_link() {
         let dir = tempfile::tempdir().unwrap();
         let target_dir = dir.path().join("target_dir");
@@ -504,6 +566,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cha_symlink_file_not_dir_but_link() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("target.txt");
@@ -521,6 +584,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cha_broken_symlink_not_executable() {
         let dir = tempfile::tempdir().unwrap();
         let link_path = dir.path().join("dangling");

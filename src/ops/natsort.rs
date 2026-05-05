@@ -83,13 +83,6 @@ pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
     }
 
     loop {
-        while l.is_some_and(|c| c.is_ascii_whitespace()) {
-            left_next!();
-        }
-        while r.is_some_and(|c| c.is_ascii_whitespace()) {
-            right_next!();
-        }
-
         match (l, r) {
             (Some(&ll), Some(&rr)) => {
                 if ll.is_ascii_digit() && rr.is_ascii_digit() {
@@ -150,6 +143,12 @@ mod tests {
             "10-20",
             "fred",
             "jane",
+            "pic   7",
+            "pic 4 else",
+            "pic 5",
+            "pic 5 ",
+            "pic 5 something",
+            "pic 6",
             "pic01",
             "pic02",
             "pic02a",
@@ -158,12 +157,6 @@ mod tests {
             "pic2",
             "pic3",
             "pic4",
-            "pic 4 else",
-            "pic 5",
-            "pic 5 ",
-            "pic 5 something",
-            "pic 6",
-            "pic   7",
             "pic100",
             "pic100a",
             "pic120",
@@ -200,9 +193,13 @@ mod tests {
         assert_eq!(sorted_items, items);
 
         assert_eq!(natsort(b"", b"", true), std::cmp::Ordering::Equal);
-        assert_eq!(natsort(b" ", b"", true), std::cmp::Ordering::Equal);
-        assert_eq!(natsort(b"", b" ", true), std::cmp::Ordering::Equal);
-        assert_eq!(natsort(b"  ", b" ", true), std::cmp::Ordering::Equal);
+        assert_eq!(natsort(b" ", b"", true), std::cmp::Ordering::Greater);
+        assert_eq!(natsort(b"", b" ", true), std::cmp::Ordering::Less);
+        assert_eq!(natsort(b"  ", b" ", true), std::cmp::Ordering::Greater);
+        assert_eq!(
+            natsort(b"file 1.txt", b"file1.txt", true),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]
