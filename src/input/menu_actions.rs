@@ -91,6 +91,15 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
             state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
             Some(None)
         }
+        MenuAction::TogglePermissions => {
+            let panel = state.active_panel_mut();
+            panel.show_permissions = !panel.show_permissions;
+            state.status_message = Some(format!(
+                "Permissions: {}",
+                if panel.show_permissions { "ON" } else { "OFF" }
+            ));
+            Some(None)
+        }
         _ => None,
     }
 }

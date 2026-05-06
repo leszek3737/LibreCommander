@@ -19,6 +19,8 @@ pub struct PersistedPanel {
     pub filter: String,
     #[serde(default)]
     pub show_hidden: bool,
+    #[serde(default)]
+    pub show_permissions: bool,
 }
 
 // Silently falls back to default on invalid config values.
@@ -152,6 +154,7 @@ fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
         sort_mode: panel.sort_mode,
         filter: panel.filter.clone().unwrap_or_default(),
         show_hidden: panel.show_hidden,
+        show_permissions: panel.show_permissions,
     }
 }
 
@@ -213,6 +216,7 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
         Some(persisted.filter.clone())
     };
     panel.show_hidden = persisted.show_hidden;
+    panel.show_permissions = persisted.show_permissions;
 }
 
 #[cfg(test)]
@@ -267,11 +271,11 @@ mod tests {
                 sort_mode: SortMode::ExtensionAsc,
                 filter: "txt".to_string(),
                 show_hidden: false,
+                show_permissions: false,
             },
             right: PersistedPanel::default(),
             hotlist: vec![tmp_dir.clone(), PathBuf::from("/usr")],
         };
-
         settings.apply_to_state(&mut state);
 
         assert_eq!(state.active_panel, ActivePanel::Right);
@@ -303,11 +307,11 @@ mod tests {
                 sort_mode: SortMode::ModTimeDesc,
                 filter: "log".to_string(),
                 show_hidden: true,
+                show_permissions: false,
             },
             right: PersistedPanel::default(),
             hotlist: vec!["/tmp".to_string(), "/usr".to_string()],
         };
-
         let settings = Settings::from(setup.clone());
         let persisted = PersistedSetup::from(&settings);
 

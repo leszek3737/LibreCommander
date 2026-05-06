@@ -36,6 +36,7 @@ pub const MENU_ITEMS: [&[&str]; 5] = [
         "Panel options...",
         "Appearance...",
         "Show hidden files",
+        "Show permissions",
         "Save setup",
     ],
     &[
@@ -74,6 +75,7 @@ pub enum MenuAction {
     TogglePanelHidden,
     ResetPanelFilter,
     ToggleHiddenFiles,
+    TogglePermissions,
     SaveSetup,
 }
 
@@ -107,12 +109,13 @@ const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
     MenuAction::DirectoryHotlist,
 ];
 
-const OPTIONS_MENU_ACTIONS: [MenuAction; 6] = [
+const OPTIONS_MENU_ACTIONS: [MenuAction; 7] = [
     MenuAction::SaveCurrentPathToHotlist,
     MenuAction::ToggleLayoutMode,
     MenuAction::TogglePanelHidden,
     MenuAction::ResetPanelFilter,
     MenuAction::ToggleHiddenFiles,
+    MenuAction::TogglePermissions,
     MenuAction::SaveSetup,
 ];
 
@@ -190,7 +193,7 @@ mod tests {
 
     #[test]
     fn menu_action_at_rejects_out_of_range_items() {
-        assert_eq!(menu_action_at(3, 6), None);
+        assert_eq!(menu_action_at(3, 7), None);
         assert_eq!(menu_action_at(5, 0), None);
     }
 }

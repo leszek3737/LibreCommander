@@ -146,6 +146,7 @@ pub struct PanelState {
     pub sort_options: SortOptions,
     pub listing_mode: ListingMode,
     pub show_hidden: bool,
+    pub show_permissions: bool,
     pub filter: Option<String>,
     pub selected_count: usize,
     pub selected_size: u64,
@@ -678,7 +679,7 @@ impl FileEntry {
             )
             .unwrap_or(chrono::DateTime::UNIX_EPOCH)
             .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
+            .format("%d-%m-%y %H:%M")
             .to_string()
         } else {
             "Unknown".to_string()
@@ -701,6 +702,7 @@ impl PanelState {
             sort_options: SortOptions::default(),
             listing_mode: ListingMode::default(),
             show_hidden: true,
+            show_permissions: false,
             filter: None,
             selected_count: 0,
             selected_size: 0,
@@ -1026,7 +1028,7 @@ mod tests {
         let expected = chrono::DateTime::from_timestamp(1_000_000_000, 0)
             .unwrap()
             .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
+            .format("%d-%m-%y %H:%M")
             .to_string();
         assert_eq!(entry.display_modified(), expected);
     }
