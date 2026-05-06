@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
@@ -7,7 +8,9 @@ use std::time::Duration;
 
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -122,7 +125,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut running_job: Option<RunningJob> = None;
     let (watch_tx, watch_rx) = mpsc::channel();
-    let mut watcher = fs::watcher::Watcher::new(watch_tx).ok();
+    let mut watcher = match fs::watcher::Watcher::new(watch_tx) {
+        Ok(w) => Some(w),
+        Err(err) => {
+            state.status_message = Some(format!("watcher disabled: {err}"));
+            None
+        }
+    };
     let mut watcher_paused = false;
     let mut last_synced_paths: Option<(PathBuf, PathBuf)> = None;
 
@@ -193,7 +202,7 @@ fn dispatch_event(
                 handle_viewer_mode(state, viewer_state, key.code, sz, sz.width);
             }
             AppMode::CommandLine => {
-                handle_command_line(state, key.code);
+                handle_command_line(state, *key);
             }
             AppMode::Dialog(_) => {
                 handle_dialog(state, viewer_state, running_job, key.code, terminal.size()?);
@@ -377,9 +386,7 @@ fn filtered_sorted_entries(
 
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
     for entry in &mut panel.entries {
-        if saved.contains(&entry.path) {
-            entry.selected = true;
-        }
+        entry.selected = saved.contains(&entry.path);
     }
 }
 
@@ -405,10 +412,14 @@ fn clamp_panel_scroll(panel: &mut PanelState, visible_height: usize) {
     panel.ensure_cursor_visible(visible_height);
 }
 
-pub(crate) fn refresh_active(state: &mut AppState) {
-    let visible = crossterm::terminal::size()
+fn current_visible_height() -> usize {
+    crossterm::terminal::size()
         .map(|(_, h)| panel_visible_height(h))
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+pub(crate) fn refresh_active(state: &mut AppState) {
+    let visible = current_visible_height();
     match state.active_panel {
         ActivePanel::Left => refresh_panel(&mut state.left_panel, visible),
         ActivePanel::Right => refresh_panel(&mut state.right_panel, visible),
@@ -416,9 +427,7 @@ pub(crate) fn refresh_active(state: &mut AppState) {
 }
 
 pub(crate) fn refresh_both(state: &mut AppState) {
-    let visible = crossterm::terminal::size()
-        .map(|(_, h)| panel_visible_height(h))
-        .unwrap_or(0);
+    let visible = current_visible_height();
     refresh_panel(&mut state.left_panel, visible);
     refresh_panel(&mut state.right_panel, visible);
 }
@@ -490,15 +499,12 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
             );
         }
         PickerKind::CompareMode => {
-            let items = vec![
-                "Quick".to_string(),
-                "Size".to_string(),
-                "Thorough".to_string(),
-            ];
+            static COMPARE_MODES: std::sync::LazyLock<[String; 3]> =
+                std::sync::LazyLock::new(|| ["Quick".into(), "Size".into(), "Thorough".into()]);
             dialogs::render_list_picker(
                 f,
                 "Compare Mode",
-                &items,
+                &COMPARE_MODES[..],
                 state.picker_selected,
                 "Enter: select  Esc: cancel",
             );
@@ -586,15 +592,16 @@ fn render_ui(f: &mut Frame, state: &AppState, viewer_state: &Option<viewer::View
     };
     panels::render_status_bar(f, main_layout[2], active);
 
-    let cmd_text = if state.mode == AppMode::CommandLine {
-        format!("$ {}_", state.command_line)
+    let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
+        let (before, after) = state.command_line.split_at(state.command_cursor);
+        format!("$ {before}_{after}").into()
     } else if state.mode == AppMode::Search {
-        format!("Search: {}_", state.search_query)
+        format!("Search: {}_", state.search_query).into()
     } else if let Some(ref msg) = state.status_message {
-        msg.clone()
+        Cow::Borrowed(msg.as_str())
     } else {
         let ap = state.active_panel();
-        format!("{}", ap.path.display())
+        format!("{}", ap.path.display()).into()
     };
     let cmd_paragraph = ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar());
     f.render_widget(cmd_paragraph, main_layout[3]);
@@ -1326,26 +1333,98 @@ fn handle_viewer_mode(
     }
 }
 
-fn handle_command_line(state: &mut AppState, key: KeyCode) {
-    match key {
+fn command_delete_word_backward(state: &mut AppState) {
+    let cursor = state.command_cursor;
+    if cursor > 0 {
+        let text = &state.command_line[..cursor];
+        let word_start = text
+            .char_indices()
+            .rev()
+            .skip_while(|&(_, c)| c.is_whitespace())
+            .find(|&(_, c)| c.is_whitespace())
+            .map(|(i, _)| i + 1)
+            .unwrap_or(0);
+        state.command_line.drain(word_start..cursor);
+        state.command_cursor = word_start;
+        state.history_index = None;
+    }
+}
+
+fn command_execute(state: &mut AppState) {
+    let cmd = state.command_line.clone();
+    state.mode = AppMode::Normal;
+    state.command_line.clear();
+    state.command_cursor = 0;
+    state.history_index = None;
+    if !cmd.is_empty() {
+        shell::run_shell_command(state, &cmd, refresh_active);
+    }
+}
+
+fn handle_command_line(state: &mut AppState, key: KeyEvent) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('a') => {
+                state.command_cursor = 0;
+                return;
+            }
+            KeyCode::Char('e') => {
+                state.command_cursor = state.command_line.len();
+                return;
+            }
+            KeyCode::Char('u') => {
+                state.command_line.clear();
+                state.command_cursor = 0;
+                state.history_index = None;
+                return;
+            }
+            KeyCode::Char('w') => {
+                command_delete_word_backward(state);
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    match key.code {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
             state.command_line.clear();
+            state.command_cursor = 0;
             state.history_index = None;
         }
         KeyCode::Enter => {
-            let cmd = state.command_line.clone();
-            state.mode = AppMode::Normal;
-            state.command_line.clear();
-            state.history_index = None;
-            if !cmd.is_empty() {
-                shell::run_shell_command(state, &cmd, refresh_active);
-            }
+            command_execute(state);
         }
         KeyCode::Backspace => {
-            state.command_line.pop();
-            state.history_index = None;
+            let cursor = state.command_cursor;
+            if cursor > 0 {
+                let prev = state.command_line[..cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                state.command_line.drain(prev..cursor);
+                state.command_cursor = prev;
+                state.history_index = None;
+            }
         }
+        KeyCode::Left if state.command_cursor > 0 => {
+            state.command_cursor = state.command_line[..state.command_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+        KeyCode::Left => {}
+        KeyCode::Right if state.command_cursor < state.command_line.len() => {
+            state.command_cursor = state.command_line[state.command_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| state.command_cursor + i)
+                .unwrap_or(state.command_line.len());
+        }
+        KeyCode::Right => {}
         KeyCode::Up if !state.command_history.is_empty() => {
             if state.history_index.is_none() {
                 state.command_draft = state.command_line.clone();
@@ -1357,6 +1436,7 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
             };
             state.history_index = Some(idx);
             state.command_line = state.command_history[idx].clone();
+            state.command_cursor = state.command_line.len();
         }
         KeyCode::Down => {
             if let Some(idx) = state.history_index {
@@ -1367,10 +1447,12 @@ fn handle_command_line(state: &mut AppState, key: KeyCode) {
                     state.history_index = None;
                     state.command_line = state.command_draft.clone();
                 }
+                state.command_cursor = state.command_line.len();
             }
         }
         KeyCode::Char(c) => {
-            state.command_line.push(c);
+            state.command_line.insert(state.command_cursor, c);
+            state.command_cursor += c.len_utf8();
             state.history_index = None;
         }
         _ => {}
@@ -1421,54 +1503,39 @@ pub(crate) fn dismiss_dialog(state: &mut AppState) {
     }
 }
 
-/// Handle confirm dialog (yes/no with action)
 fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
-    match key {
-        KeyCode::Char('y' | 'Y') => {
-            if state.pending_action.is_some() {
-                start_confirmed_action(state, running_job);
-                state.dialog_selection = 0;
-                let start_failed = state.status_message.is_some();
-                if start_failed {
-                    state.mode = AppMode::Normal;
-                    refresh_both(state);
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
-                }
-            } else {
-                dismiss_dialog(state);
-                refresh_both(state);
-            }
-        }
-        KeyCode::Char('n' | 'N') => {
-            dismiss_dialog(state);
-        }
-        KeyCode::Enter => {
-            if state.dialog_selection == 1 {
-                dismiss_dialog(state);
-            } else if state.pending_action.is_some() {
-                start_confirmed_action(state, running_job);
-                state.dialog_selection = 0;
-                let start_failed = state.status_message.is_some();
-                if start_failed {
-                    state.mode = AppMode::Normal;
-                    refresh_both(state);
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        set_active_panel(state, panel);
-                    }
-                }
-            } else {
-                dismiss_dialog(state);
-            }
-        }
+    let confirmed = match key {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N') => Some(false),
+        KeyCode::Enter => Some(state.dialog_selection == 0),
         KeyCode::Esc => {
             dismiss_dialog(state);
+            return;
         }
         KeyCode::Left | KeyCode::Right => {
             state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
         }
-        _ => {}
+        _ => return,
+    };
+
+    if confirmed == Some(true) {
+        if state.pending_action.is_some() {
+            start_confirmed_action(state, running_job);
+            state.dialog_selection = 0;
+            if state.status_message.is_some() {
+                state.mode = AppMode::Normal;
+                refresh_both(state);
+                if let Some(panel) = state.menu_restore_panel.take() {
+                    set_active_panel(state, panel);
+                }
+            }
+        } else {
+            dismiss_dialog(state);
+            refresh_both(state);
+        }
+    } else {
+        dismiss_dialog(state);
     }
 }
 
@@ -1478,40 +1545,35 @@ fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
     let result_count = outcome.matches.len();
     let error_count = outcome.errors.len();
     let truncated = outcome.truncated;
-    if let Some(first) = outcome.matches.first() {
-        if let Some(parent) = first.path.parent() {
-            state.active_panel_mut().path = parent.to_path_buf();
-            refresh_active(state);
-            if let Some(pos) = state
-                .active_panel()
-                .entries
-                .iter()
-                .position(|e| e.path == first.path)
-            {
-                state.active_panel_mut().cursor = pos;
-                state
-                    .active_panel_mut()
-                    .ensure_cursor_visible(panel_visible_height(terminal_height));
-            }
+    if let Some(first) = outcome.matches.first()
+        && let Some(parent) = first.path.parent()
+    {
+        state.active_panel_mut().path = parent.to_path_buf();
+        refresh_active(state);
+        if let Some(pos) = state
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.path == first.path)
+        {
+            state.active_panel_mut().cursor = pos;
+            state
+                .active_panel_mut()
+                .ensure_cursor_visible(panel_visible_height(terminal_height));
         }
-        let mut message = format!("Found {result_count} match(es) for '{input}'");
-        if error_count > 0 {
-            message.push_str(&format!(", {error_count} error(s)"));
-        }
-        if truncated {
-            message.push_str(", truncated");
-        }
-        state.status_message = Some(message);
-    } else {
-        let mut message = format!("No matches for '{input}'");
-        if error_count > 0 {
-            message.push_str(&format!(", {error_count} error(s)"));
-        }
-        if truncated {
-            message.push_str(", truncated");
-        }
-        state.status_message = Some(message);
     }
+    let mut message = if result_count > 0 {
+        format!("Found {result_count} match(es) for '{input}'")
+    } else {
+        format!("No matches for '{input}'")
+    };
+    if error_count > 0 {
+        message.push_str(&format!(", {error_count} error(s)"));
+    }
+    if truncated {
+        message.push_str(", truncated");
+    }
+    state.status_message = Some(message);
 }
 
 fn handle_quick_cd(state: &mut AppState, input: &str) {
@@ -1715,10 +1777,59 @@ fn handle_properties_dialog(state: &mut AppState, key: KeyCode) {
     }
 }
 
-/// Handle copymove dialog (fallback - dismiss on Esc)
-fn handle_copymove_dialog(state: &mut AppState, key: KeyCode) {
-    if key == KeyCode::Esc {
-        dismiss_dialog_and_restore(state);
+fn handle_copymove_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    let confirmed = match key {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N') => Some(false),
+        KeyCode::Enter => Some(state.dialog_selection == 0),
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        _ => return,
+    };
+
+    if confirmed == Some(true) {
+        let action = if let AppMode::Dialog(app::types::DialogKind::CopyMove {
+            source,
+            dest,
+            is_move,
+        }) = &state.mode
+        {
+            if *is_move {
+                app::types::PendingAction::Move {
+                    sources: source.clone(),
+                    dest: dest.clone(),
+                }
+            } else {
+                app::types::PendingAction::Copy {
+                    sources: source.clone(),
+                    dest: dest.clone(),
+                }
+            }
+        } else {
+            return;
+        };
+        state.pending_action = Some(action);
+        start_confirmed_action(state, running_job);
+        state.dialog_selection = 0;
+        if state.status_message.is_some() {
+            state.mode = AppMode::Normal;
+            refresh_both(state);
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+        }
+    } else {
+        dismiss_dialog(state);
     }
 }
 
@@ -1819,10 +1930,9 @@ fn handle_dialog(
             handle_properties_dialog(state, key);
         }
         app::types::DialogKind::CopyMove { .. } => {
-            handle_copymove_dialog(state, key);
+            handle_copymove_dialog(state, running_job, key);
         }
         app::types::DialogKind::Help { .. } => {
-            // Already handled above, this should not be reached
             dismiss_dialog_and_restore(state);
         }
     }
@@ -1842,6 +1952,7 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Enter => {
             let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
             if let Some(cmd) = state.command_history.get(idx).cloned() {
+                state.command_cursor = cmd.len();
                 state.command_line = cmd;
                 state.mode = AppMode::CommandLine;
             } else {
@@ -2460,7 +2571,7 @@ mod tests {
         let mut state = AppState::default();
         state.command_history.push_back("git status".to_string());
 
-        handle_command_line(&mut state, KeyCode::Up);
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
         assert_eq!(state.command_line, "git status");
     }

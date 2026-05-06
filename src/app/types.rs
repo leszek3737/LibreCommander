@@ -300,6 +300,7 @@ pub struct PanelsState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CommandState {
     pub command_line: String,
+    pub command_cursor: usize,
     pub command_history: VecDeque<String>,
     pub history_index: Option<usize>,
     pub command_draft: String,
@@ -365,6 +366,7 @@ pub struct AppState {
     pub active_panel: ActivePanel,
     pub mode: AppMode,
     pub command_line: String,
+    pub command_cursor: usize,
     pub search_query: String,
     pub should_quit: bool,
     pub status_message: Option<String>,
@@ -879,6 +881,7 @@ impl AppState {
             active_panel: panels.active_panel,
             mode: AppMode::Normal,
             command_line: command.command_line,
+            command_cursor: command.command_cursor,
             search_query: String::new(),
             should_quit: false,
             status_message: None,
