@@ -172,22 +172,28 @@ fn format_entry_line(entry: &FileEntry, width: usize, show_permissions: bool) ->
     let icon_width = UnicodeWidthStr::width(icon);
     let size_str = format!("{:>10}", format_size(entry.len()));
     let date_str = format_time(entry.mtime());
-    let perms_str = format_permissions(entry.mode_bits());
+    let size_width = UnicodeWidthStr::width(size_str.as_str());
+    let date_width = UnicodeWidthStr::width(date_str.as_str());
 
     let (suffix, suffix_width) = {
-        let full_with_perms = format!(" {size_str} {date_str} {perms_str}");
-        let full_no_perms = format!(" {size_str} {date_str}");
-        let nd = format!(" {size_str}");
-
-        if show_permissions && 2 + UnicodeWidthStr::width(full_with_perms.as_str()) <= width {
-            let w = UnicodeWidthStr::width(full_with_perms.as_str());
-            (full_with_perms, w)
-        } else if 2 + UnicodeWidthStr::width(full_no_perms.as_str()) <= width {
-            let w = UnicodeWidthStr::width(full_no_perms.as_str());
-            (full_no_perms, w)
-        } else if 2 + UnicodeWidthStr::width(nd.as_str()) <= width {
-            let w = UnicodeWidthStr::width(nd.as_str());
-            (nd, w)
+        let size_date_width = size_width + date_width + 2;
+        if show_permissions {
+            let perms_str = format_permissions(entry.mode_bits());
+            let perms_width = UnicodeWidthStr::width(perms_str.as_str());
+            let full_width = size_date_width + perms_width + 1;
+            if 2 + full_width <= width {
+                (format!(" {size_str} {date_str} {perms_str}"), full_width)
+            } else if 2 + size_date_width <= width {
+                (format!(" {size_str} {date_str}"), size_date_width)
+            } else if 2 + size_width < width {
+                (format!(" {size_str}"), size_width + 1)
+            } else {
+                (String::new(), 0)
+            }
+        } else if 2 + size_date_width <= width {
+            (format!(" {size_str} {date_str}"), size_date_width)
+        } else if 2 + size_width <= width {
+            (format!(" {size_str}"), size_width + 1)
         } else {
             (String::new(), 0)
         }
@@ -233,6 +239,15 @@ fn format_entry_line(entry: &FileEntry, width: usize, show_permissions: bool) ->
     let padding = available_name_width.saturating_sub(name_actual_width);
 
     format!("{marker}{name}{}{suffix}", " ".repeat(padding))
+}
+
+fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> String {
+    if show_permissions {
+        let perms = format_permissions(entry.mode_bits());
+        format!("{size} | {perms} | {} | {}", entry.owner, entry.group)
+    } else {
+        format!("{size} | {} | {}", entry.owner, entry.group)
+    }
 }
 
 fn format_brief_entry_line(entry: &FileEntry, width: usize) -> String {
@@ -348,33 +363,14 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
         let size_str = format_size(entry.len());
-
-        let full_info = if panel.show_permissions {
-            let perms_str = format_permissions(entry.mode_bits());
-            format!(
-                "{} | {} | {} | {} | {}",
-                entry.name, size_str, perms_str, entry.owner, entry.group,
-            )
-        } else {
-            format!(
-                "{} | {} | {} | {}",
-                entry.name, size_str, entry.owner, entry.group,
-            )
-        };
+        let metadata = status_metadata(&size_str, entry, panel.show_permissions);
+        let full_info = format!("{} | {metadata}", entry.name);
         let full_width = UnicodeWidthStr::width(full_info.as_str());
 
         if full_width <= remaining {
             full_info
         } else {
-            let meta = if panel.show_permissions {
-                let perms_str = format_permissions(entry.mode_bits());
-                format!(
-                    " | {} | {} | {} | {}",
-                    size_str, perms_str, entry.owner, entry.group
-                )
-            } else {
-                format!(" | {} | {} | {}", size_str, entry.owner, entry.group)
-            };
+            let meta = format!(" | {metadata}");
             let meta_width = UnicodeWidthStr::width(meta.as_str());
             let name_budget = remaining.saturating_sub(meta_width);
 

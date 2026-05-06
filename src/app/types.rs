@@ -679,7 +679,7 @@ impl FileEntry {
             )
             .unwrap_or(chrono::DateTime::UNIX_EPOCH)
             .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
+            .format("%d-%m-%y %H:%M")
             .to_string()
         } else {
             "Unknown".to_string()
@@ -1028,7 +1028,7 @@ mod tests {
         let expected = chrono::DateTime::from_timestamp(1_000_000_000, 0)
             .unwrap()
             .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
+            .format("%d-%m-%y %H:%M")
             .to_string();
         assert_eq!(entry.display_modified(), expected);
     }
