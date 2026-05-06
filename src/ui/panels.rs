@@ -88,13 +88,9 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
     let inner_area = block.inner(area);
     f.render_widget(block, area);
 
-    // Split inner area horizontally: list area | scrollbar
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(95), // List area
-            Constraint::Percentage(5),  // Scrollbar area
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner_area);
 
     // Compute visible entries

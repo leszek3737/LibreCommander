@@ -444,14 +444,14 @@ fn format_line_with_highlight<'a>(
 
 pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP | Borders::BOTTOM)
         .style(Theme::panel())
         .title(state.file_path.display().to_string())
         .title_style(Theme::title());
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
-        horizontal: 1,
+        horizontal: 0,
         vertical: 1,
     });
 
@@ -550,17 +550,15 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
 }
 
 pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
-    let bg_block = Block::default().style(Theme::panel());
-    f.render_widget(bg_block, area);
-
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .style(Theme::panel())
         .title(format!("{} [Hex]", state.file_path.display()))
         .title_style(Theme::title());
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
-        horizontal: 1,
+        horizontal: 0,
         vertical: 1,
     });
     if inner_area.height == 0 {
