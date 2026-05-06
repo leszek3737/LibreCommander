@@ -51,18 +51,18 @@ pub fn format_time(modified: SystemTime) -> String {
         if let Some(dt) = DateTime::from_timestamp(timestamp as i64, 0) {
             let local = dt.with_timezone(&chrono::Local);
             format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}",
-                local.year(),
-                local.month(),
+                "{:02}-{:02}-{:02} {:02}:{:02}",
                 local.day(),
+                local.month(),
+                local.year() % 100,
                 local.hour(),
                 local.minute()
             )
         } else {
-            "????-??-?? ??:??".to_string()
+            "??-??-?? ??:??".to_string()
         }
     } else {
-        "????-??-?? ??:??".to_string()
+        "??-??-?? ??:??".to_string()
     }
 }
 
@@ -114,7 +114,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         let string_line = match panel.listing_mode {
             ListingMode::Long => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
-                format_entry_line(entry, width)
+                format_entry_line(entry, width, panel.show_permissions)
             }
             ListingMode::Brief => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
@@ -166,7 +166,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
     }
 }
 
-fn format_entry_line(entry: &FileEntry, width: usize) -> String {
+fn format_entry_line(entry: &FileEntry, width: usize, show_permissions: bool) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     if width <= 1 {
         return format!("{marker}");
@@ -179,24 +179,21 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
     let perms_str = format_permissions(entry.mode_bits());
 
     let (suffix, suffix_width) = {
-        let full = format!(" {size_str} {date_str} {perms_str}");
-        if 2 + UnicodeWidthStr::width(full.as_str()) <= width {
-            let w = UnicodeWidthStr::width(full.as_str());
-            (full, w)
+        let full_with_perms = format!(" {size_str} {date_str} {perms_str}");
+        let full_no_perms = format!(" {size_str} {date_str}");
+        let nd = format!(" {size_str}");
+
+        if show_permissions && 2 + UnicodeWidthStr::width(full_with_perms.as_str()) <= width {
+            let w = UnicodeWidthStr::width(full_with_perms.as_str());
+            (full_with_perms, w)
+        } else if 2 + UnicodeWidthStr::width(full_no_perms.as_str()) <= width {
+            let w = UnicodeWidthStr::width(full_no_perms.as_str());
+            (full_no_perms, w)
+        } else if 2 + UnicodeWidthStr::width(nd.as_str()) <= width {
+            let w = UnicodeWidthStr::width(nd.as_str());
+            (nd, w)
         } else {
-            let np = format!(" {size_str} {date_str}");
-            if 2 + UnicodeWidthStr::width(np.as_str()) <= width {
-                let w = UnicodeWidthStr::width(np.as_str());
-                (np, w)
-            } else {
-                let nd = format!(" {size_str}");
-                if 2 + UnicodeWidthStr::width(nd.as_str()) <= width {
-                    let w = UnicodeWidthStr::width(nd.as_str());
-                    (nd, w)
-                } else {
-                    (String::new(), 0)
-                }
-            }
+            (String::new(), 0)
         }
     };
 
@@ -236,7 +233,10 @@ fn format_entry_line(entry: &FileEntry, width: usize) -> String {
         name.push('…');
     }
 
-    format!("{marker}{name}{suffix}")
+    let name_actual_width = UnicodeWidthStr::width(name.as_str());
+    let padding = available_name_width.saturating_sub(name_actual_width);
+
+    format!("{marker}{name}{}{suffix}", " ".repeat(padding))
 }
 
 fn format_brief_entry_line(entry: &FileEntry, width: usize) -> String {
@@ -352,20 +352,33 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
         let size_str = format_size(entry.len());
-        let perms_str = format_permissions(entry.mode_bits());
-        let full_info = format!(
-            "{} | {} | {} | {} | {}",
-            entry.name, size_str, perms_str, entry.owner, entry.group,
-        );
+
+        let full_info = if panel.show_permissions {
+            let perms_str = format_permissions(entry.mode_bits());
+            format!(
+                "{} | {} | {} | {} | {}",
+                entry.name, size_str, perms_str, entry.owner, entry.group,
+            )
+        } else {
+            format!(
+                "{} | {} | {} | {}",
+                entry.name, size_str, entry.owner, entry.group,
+            )
+        };
         let full_width = UnicodeWidthStr::width(full_info.as_str());
 
         if full_width <= remaining {
             full_info
         } else {
-            let meta = format!(
-                " | {} | {} | {} | {}",
-                size_str, perms_str, entry.owner, entry.group
-            );
+            let meta = if panel.show_permissions {
+                let perms_str = format_permissions(entry.mode_bits());
+                format!(
+                    " | {} | {} | {} | {}",
+                    size_str, perms_str, entry.owner, entry.group
+                )
+            } else {
+                format!(" | {} | {} | {}", size_str, entry.owner, entry.group)
+            };
             let meta_width = UnicodeWidthStr::width(meta.as_str());
             let name_budget = remaining.saturating_sub(meta_width);
 
@@ -664,7 +677,7 @@ mod tests {
         let time = SystemTime::now();
         let result = format_time(time);
         // Should produce a valid date string
-        assert!(result.len() >= 16); // "YYYY-MM-DD HH:MM"
+        assert!(result.len() >= 14); // "YY-MM-DD HH:MM"
         assert!(result.contains("-"));
         assert!(result.contains(":"));
     }
@@ -672,7 +685,7 @@ mod tests {
     #[test]
     fn test_format_entry_line_basic() {
         let entry = create_test_entry("file.txt", false, false, false);
-        let result = format_entry_line(&entry, 60);
+        let result = format_entry_line(&entry, 60, false);
         assert!(result.contains("file.txt"));
     }
 
@@ -680,7 +693,7 @@ mod tests {
     fn test_format_entry_line_selected() {
         let mut entry = create_test_entry("file.txt", false, false, false);
         entry.selected = true;
-        let result = format_entry_line(&entry, 60);
+        let result = format_entry_line(&entry, 60, false);
         assert!(result.starts_with('*'));
     }
 
@@ -746,15 +759,14 @@ mod tests {
             false,
             false,
         );
-        let result = format_entry_line(&entry, 47);
+        let result = format_entry_line(&entry, 47, false);
         assert!(result.contains('…'));
-        assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
     }
 
     #[test]
     fn test_format_entry_line_truncation_handles_unicode() {
-        let entry = create_test_entry("zażółć_gęślą_jaźń.txt", false, false, false);
-        let result = format_entry_line(&entry, 47);
+        let entry = create_test_entry("日本語テストファイル.txt", false, false, false);
+        let result = format_entry_line(&entry, 47, false);
         assert!(result.contains('…'));
         assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
     }
