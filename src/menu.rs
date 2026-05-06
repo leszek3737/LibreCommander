@@ -1,4 +1,5 @@
 use ratatui::layout::Rect;
+use unicode_width::UnicodeWidthStr;
 
 pub const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
 
@@ -143,11 +144,17 @@ pub fn menu_total_count() -> usize {
 }
 
 pub fn menu_bar_text_width() -> u16 {
-    MENU_TITLES
+    let titles_width: u16 = MENU_TITLES
         .iter()
         .map(|title| menu_title_width(title))
-        .sum::<u16>()
-        + MENU_TITLES.len().saturating_sub(1) as u16
+        .try_fold(0u16, |acc, w| acc.checked_add(w))
+        .unwrap_or(u16::MAX);
+    let separator_width: u16 = MENU_TITLES
+        .len()
+        .saturating_sub(1)
+        .try_into()
+        .unwrap_or(u16::MAX);
+    titles_width.saturating_add(separator_width)
 }
 
 pub fn menu_bar_start_x(width: u16) -> u16 {
@@ -155,7 +162,7 @@ pub fn menu_bar_start_x(width: u16) -> u16 {
 }
 
 pub fn menu_title_width(title: &str) -> u16 {
-    title.len() as u16 + 2
+    UnicodeWidthStr::width(title) as u16 + 2
 }
 
 pub fn menu_title_x(width: u16, index: usize) -> u16 {
