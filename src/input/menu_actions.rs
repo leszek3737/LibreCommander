@@ -6,22 +6,34 @@ use lc::ops::sorting;
 
 use super::super::{refresh_active, set_tree_diagnostic_status, with_menu_panel};
 
+enum MenuResult {
+    NotHandled,
+    Handled,
+    EmitKey(KeyCode),
+}
+
 pub fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
     let action = menu_action_at(state.menu_selected, state.menu_item_selected)?;
 
-    if let Some(result) = execute_panel_action(&action, state) {
-        return result;
+    match execute_panel_action(&action, state) {
+        MenuResult::NotHandled => {}
+        MenuResult::Handled => return None,
+        MenuResult::EmitKey(kc) => return Some(kc),
     }
-    if let Some(result) = execute_navigation_action(&action, state) {
-        return result;
+    match execute_navigation_action(&action, state) {
+        MenuResult::NotHandled => {}
+        MenuResult::Handled => return None,
+        MenuResult::EmitKey(kc) => return Some(kc),
     }
-    if let Some(result) = execute_file_action(&action, state) {
-        return result;
+    match execute_file_action(&action, state) {
+        MenuResult::NotHandled => {}
+        MenuResult::Handled => return None,
+        MenuResult::EmitKey(kc) => return Some(kc),
     }
     execute_misc_action(&action, state)
 }
 
-fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Option<KeyCode>> {
+fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
     match action {
         MenuAction::ToggleListingMode => {
             with_menu_panel(state, |state| {
@@ -31,7 +43,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
                     ListingMode::Brief => ListingMode::Long,
                 };
             });
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::CycleSortOrder => {
             with_menu_panel(state, |state| {
@@ -39,7 +51,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
                 p.sort_mode = sorting::cycle_sort_mode(p.sort_mode);
                 refresh_active(state);
             });
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::OpenFilter => {
             with_menu_panel(state, |state| {
@@ -51,11 +63,11 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
                     action: InputAction::Filter,
                 });
             });
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::RefreshPanel => {
             with_menu_panel(state, refresh_active);
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::TogglePanelHidden => {
             let panel = state.active_panel_mut();
@@ -65,14 +77,14 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
                 "Panel options: hidden={}",
                 state.active_panel().show_hidden
             ));
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::ResetPanelFilter => {
             let panel = state.active_panel_mut();
             panel.filter = None;
             refresh_active(state);
             state.status_message = Some("Appearance reset active panel filter".to_string());
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::ToggleHiddenFiles => {
             let p = state.active_panel_mut();
@@ -80,16 +92,18 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
             p.cursor = 0;
             p.scroll_offset = 0;
             refresh_active(state);
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::ToggleLayoutMode => {
-            let panel = state.active_panel_mut();
-            panel.listing_mode = match panel.listing_mode {
-                ListingMode::Long => ListingMode::Brief,
-                ListingMode::Brief => ListingMode::Long,
-            };
-            state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
-            Some(None)
+            with_menu_panel(state, |state| {
+                let panel = state.active_panel_mut();
+                panel.listing_mode = match panel.listing_mode {
+                    ListingMode::Long => ListingMode::Brief,
+                    ListingMode::Brief => ListingMode::Long,
+                };
+                state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
+            });
+            MenuResult::Handled
         }
         MenuAction::TogglePermissions => {
             let panel = state.active_panel_mut();
@@ -98,13 +112,13 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> Option<Opt
                 "Permissions: {}",
                 if panel.show_permissions { "ON" } else { "OFF" }
             ));
-            Some(None)
+            MenuResult::Handled
         }
-        _ => None,
+        _ => MenuResult::NotHandled,
     }
 }
 
-fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> Option<Option<KeyCode>> {
+fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
     match action {
         MenuAction::DirectoryTree => {
             let path = state.active_panel().path.clone();
@@ -116,7 +130,7 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> Optio
             state.tree_scroll = 0;
             state.mode = AppMode::DirectoryTree;
             set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::FindFile => {
             state.dialog_input.clear();
@@ -126,7 +140,7 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> Optio
                 default_text: String::new(),
                 action: InputAction::FindFile,
             });
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::SwapPanels => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
@@ -134,29 +148,29 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> Optio
                 ActivePanel::Left => ActivePanel::Right,
                 ActivePanel::Right => ActivePanel::Left,
             };
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::SwitchPanels => {
             state.active_panel = match state.active_panel {
                 ActivePanel::Left => ActivePanel::Right,
                 ActivePanel::Right => ActivePanel::Left,
             };
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::CompareDirs => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::CompareMode);
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::History => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::History);
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::DirectoryHotlist => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::Hotlist);
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::SaveCurrentPathToHotlist => {
             if !state
@@ -168,22 +182,21 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> Optio
                     .directory_hotlist
                     .push(state.active_panel().path.clone());
             }
-            state.status_message =
-                Some("Configuration saved current path into hotlist".to_string());
-            Some(None)
+            state.status_message = Some("Path added to hotlist".to_string());
+            MenuResult::Handled
         }
-        _ => None,
+        _ => MenuResult::NotHandled,
     }
 }
 
-fn execute_file_action(action: &MenuAction, state: &mut AppState) -> Option<Option<KeyCode>> {
+fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
     match action {
-        MenuAction::ViewFile => Some(Some(KeyCode::F(3))),
-        MenuAction::EditFile => Some(Some(KeyCode::F(4))),
-        MenuAction::Copy => Some(Some(KeyCode::F(5))),
-        MenuAction::Move => Some(Some(KeyCode::F(6))),
-        MenuAction::MakeDirectory => Some(Some(KeyCode::F(7))),
-        MenuAction::Delete => Some(Some(KeyCode::F(8))),
+        MenuAction::ViewFile => MenuResult::EmitKey(KeyCode::F(3)),
+        MenuAction::EditFile => MenuResult::EmitKey(KeyCode::F(4)),
+        MenuAction::Copy => MenuResult::EmitKey(KeyCode::F(5)),
+        MenuAction::Move => MenuResult::EmitKey(KeyCode::F(6)),
+        MenuAction::MakeDirectory => MenuResult::EmitKey(KeyCode::F(7)),
+        MenuAction::Delete => MenuResult::EmitKey(KeyCode::F(8)),
         MenuAction::Rename => {
             let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
             if let Some(name) = entry_name
@@ -197,7 +210,7 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> Option<Opti
                     action: InputAction::Rename,
                 });
             }
-            Some(None)
+            MenuResult::Handled
         }
         MenuAction::Chmod => {
             let entry_info = state
@@ -215,9 +228,9 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> Option<Opti
                     action: InputAction::Chmod,
                 });
             }
-            Some(None)
+            MenuResult::Handled
         }
-        _ => None,
+        _ => MenuResult::NotHandled,
     }
 }
 

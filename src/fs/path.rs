@@ -1,34 +1,35 @@
 use std::path::{Component, Path, PathBuf};
 
 pub fn clean_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
+    let mut comps: Vec<Component<'_>> = Vec::new();
 
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                let last = out.components().next_back();
-                match last {
-                    Some(Component::RootDir | Component::Prefix(_)) => {}
-                    Some(Component::Normal(_)) => {
-                        out.pop();
-                    }
-                    _ => {
-                        out.push(component);
-                    }
+            Component::ParentDir => match comps.last() {
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::Normal(_)) => {
+                    comps.pop();
                 }
-            }
+                _ => {
+                    comps.push(component);
+                }
+            },
             _ => {
-                out.push(component);
+                comps.push(component);
             }
         }
     }
 
-    if out.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        out
+    if comps.is_empty() {
+        return PathBuf::from(".");
     }
+
+    let mut out = PathBuf::new();
+    for comp in comps {
+        out.push(comp);
+    }
+    out
 }
 
 pub fn expand_path(input: &str) -> PathBuf {
@@ -56,6 +57,7 @@ fn stripped_tilde(s: &str) -> Option<&str> {
     if let Some(rest) = s.strip_prefix("~/") {
         return Some(rest);
     }
+    #[cfg(windows)]
     if let Some(rest) = s.strip_prefix("~\\") {
         return Some(rest);
     }
@@ -79,41 +81,14 @@ fn expand_env_vars(input: &str) -> String {
 
     while i < len {
         if chars[i] == '$' {
-            if i + 1 < len && chars[i + 1] == '{' {
-                if let Some(end) = find_brace_close(&chars, i + 2) {
-                    if end > i + 2 {
-                        let var_name: String = chars[i + 2..end].iter().collect();
-                        if let Some(val) = env_var(&var_name) {
-                            result.push_str(&val);
-                        } else {
-                            let literal: String = chars[i..=end].iter().collect();
-                            result.push_str(&literal);
-                        }
-                    } else {
-                        result.push_str("${}");
-                    }
-                    i = end + 1;
-                    continue;
-                }
-                result.push('$');
-                i += 1;
+            if let Some((consumed, replacement)) = expand_brace_var(&chars, i) {
+                result.push_str(&replacement);
+                i += consumed;
                 continue;
             }
-            if i + 1 < len && is_env_name_start(chars[i + 1]) {
-                let start = i + 1;
-                let mut end = start;
-                while end < len && is_env_name_char(chars[end]) {
-                    end += 1;
-                }
-                let var_name: String = chars[start..end].iter().collect();
-                if let Some(val) = env_var(&var_name) {
-                    result.push_str(&val);
-                } else {
-                    for c in &chars[i..end] {
-                        result.push(*c);
-                    }
-                }
-                i = end;
+            if let Some((consumed, replacement)) = expand_dollar_var(&chars, i) {
+                result.push_str(&replacement);
+                i += consumed;
                 continue;
             }
         }
@@ -122,6 +97,41 @@ fn expand_env_vars(input: &str) -> String {
     }
 
     result
+}
+
+fn expand_brace_var(chars: &[char], i: usize) -> Option<(usize, String)> {
+    if i + 1 >= chars.len() || chars[i + 1] != '{' {
+        return None;
+    }
+    let end = find_brace_close(chars, i + 2)?;
+    if end > i + 2 {
+        let var_name: String = chars[i + 2..end].iter().collect();
+        if let Some(val) = env_var(&var_name) {
+            return Some((end - i + 1, val));
+        }
+        let literal: String = chars[i..=end].iter().collect();
+        Some((end - i + 1, literal))
+    } else {
+        Some((end - i + 1, "${}".to_string()))
+    }
+}
+
+fn expand_dollar_var(chars: &[char], i: usize) -> Option<(usize, String)> {
+    if i + 1 >= chars.len() || !is_env_name_start(chars[i + 1]) {
+        return None;
+    }
+    let start = i + 1;
+    let mut end = start;
+    while end < chars.len() && is_env_name_char(chars[end]) {
+        end += 1;
+    }
+    let var_name: String = chars[start..end].iter().collect();
+    if let Some(val) = env_var(&var_name) {
+        Some((end - i, val))
+    } else {
+        let literal: String = chars[i..end].iter().collect();
+        Some((end - i, literal))
+    }
 }
 
 fn find_brace_close(chars: &[char], from: usize) -> Option<usize> {

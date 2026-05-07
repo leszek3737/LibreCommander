@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn test_is_source_code_negative() {
         assert!(!is_source_code("image.png"));
-        assert!(!is_source_code("data.json"));
+        assert!(!is_source_code("data.ini"));
     }
 
     #[test]

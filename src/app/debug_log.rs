@@ -1,7 +1,8 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{Mutex, TryLockError};
-use std::time::SystemTime;
+
+use chrono::Local;
 
 /// Simple file-based debug logger for runtime diagnostics during TUI operation.
 /// Writes to a single log file, thread-safe via Mutex.
@@ -25,13 +26,9 @@ fn log_path() -> std::path::PathBuf {
         return cache_dir.join("lc").join("debug.log");
     }
 
-    let cache_dir = std::env::var("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            std::path::PathBuf::from(home).join(".cache")
-        });
-    cache_dir.join("lc").join("debug.log")
+    super::paths::cache_home(&super::paths::ProcessEnv)
+        .map(|dir| dir.join("debug.log"))
+        .unwrap_or_else(|| std::env::temp_dir().join("lc_debug.log"))
 }
 
 fn ensure_log_file() -> Option<std::fs::File> {
@@ -56,10 +53,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         *guard = ensure_log_file();
     }
     if let Some(file) = guard.as_mut() {
-        let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(file, "[{timestamp}] {args}");
     }
 }

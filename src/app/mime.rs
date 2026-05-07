@@ -60,9 +60,11 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     }
     if mime.starts_with("text/") {
         return match mime {
-            "text/plain" | "text/markdown" | "text/csv" | "text/tab-separated-values" => {
-                FileCategory::Document
-            }
+            "text/plain"
+            | "text/markdown"
+            | "text/csv"
+            | "text/tab-separated-values"
+            | "text/x-rst" => FileCategory::Document,
             "text/xml" | "text/yaml" | "text/config" => FileCategory::Config,
             _ => FileCategory::Code,
         };
@@ -269,6 +271,7 @@ fn document_mime(ext: &str) -> Option<&'static str> {
         "azw" | "azw3" => Some("application/vnd.amazon.ebook"),
         "chm" => Some("application/vnd.ms-htmlhelp"),
         "tex" => Some("application/x-tex"),
+        "txt" | "log" => Some("text/plain"),
         "rst" => Some("text/x-rst"),
         _ => None,
     }
@@ -292,7 +295,6 @@ fn config_mime(ext: &str) -> Option<&'static str> {
 #[must_use]
 fn code_mime(ext: &str) -> Option<&'static str> {
     match ext {
-        "txt" | "log" => Some("text/plain"),
         "md" | "markdown" => Some("text/markdown"),
         "rs" => Some("text/x-rust"),
         "py" | "pyw" => Some("text/x-python"),

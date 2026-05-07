@@ -68,20 +68,6 @@ pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
     let mut l = left.get(li);
     let mut r = right.get(ri);
 
-    macro_rules! left_next {
-        () => {{
-            li += 1;
-            l = left.get(li);
-        }};
-    }
-
-    macro_rules! right_next {
-        () => {{
-            ri += 1;
-            r = right.get(ri);
-        }};
-    }
-
     loop {
         match (l, r) {
             (Some(&ll), Some(&rr)) => {
@@ -108,9 +94,84 @@ pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
             (None, None) => return Ordering::Equal,
         }
 
-        left_next!();
-        right_next!();
+        li += 1;
+        l = left.get(li);
+        ri += 1;
+        r = right.get(ri);
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum NatKeySegment {
+    Text(Vec<u8>),
+    Num { value: u64, raw_len: usize },
+}
+
+impl Ord for NatKeySegment {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (NatKeySegment::Text(a), NatKeySegment::Text(b)) => a.cmp(b),
+            (
+                NatKeySegment::Num {
+                    value: va,
+                    raw_len: la,
+                },
+                NatKeySegment::Num {
+                    value: vb,
+                    raw_len: lb,
+                },
+            ) => va.cmp(vb).then(la.cmp(lb)),
+            (NatKeySegment::Text(_), NatKeySegment::Num { .. }) => Ordering::Less,
+            (NatKeySegment::Num { .. }, NatKeySegment::Text(_)) => Ordering::Greater,
+        }
+    }
+}
+
+impl PartialOrd for NatKeySegment {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[inline]
+fn parse_u64_digits(bytes: &[u8]) -> Option<u64> {
+    let mut result: u64 = 0;
+    for &b in bytes {
+        let digit = u64::from(b - b'0');
+        result = result.checked_mul(10)?.checked_add(digit)?;
+    }
+    Some(result)
+}
+
+pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
+    let mut segments = Vec::new();
+    let mut i = 0;
+
+    while i < name.len() {
+        if name[i].is_ascii_digit() {
+            let start = i;
+            while i < name.len() && name[i].is_ascii_digit() {
+                i += 1;
+            }
+            let num = parse_u64_digits(&name[start..i]).unwrap_or(u64::MAX);
+            segments.push(NatKeySegment::Num {
+                value: num,
+                raw_len: i - start,
+            });
+        } else {
+            let start = i;
+            while i < name.len() && !name[i].is_ascii_digit() {
+                i += 1;
+            }
+            let mut text = name[start..i].to_vec();
+            if insensitive {
+                text.make_ascii_lowercase();
+            }
+            segments.push(NatKeySegment::Text(text));
+        }
+    }
+
+    segments
 }
 
 #[cfg(test)]

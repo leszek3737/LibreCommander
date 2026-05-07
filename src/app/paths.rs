@@ -76,7 +76,7 @@ fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
         })
 }
 
-fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
+pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
     env.var_os("XDG_CACHE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

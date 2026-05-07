@@ -1,7 +1,7 @@
 use crate::debug_log;
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,7 +26,6 @@ enum WhichWatcher {
 pub struct Watcher {
     primary: RecommendedWatcher,
     fallback: Option<PollWatcher>,
-    watched_dirs: HashSet<PathBuf>,
     watchers: HashMap<PathBuf, WhichWatcher>,
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
@@ -50,7 +49,6 @@ impl Watcher {
         Ok(Self {
             primary,
             fallback: None,
-            watched_dirs: HashSet::new(),
             watchers: HashMap::new(),
             event_tx,
             paused,
@@ -84,13 +82,12 @@ impl Watcher {
             )
         })?;
 
-        if self.watched_dirs.contains(&path) {
+        if self.watchers.contains_key(&path) {
             return Ok(());
         }
 
         match self.primary.watch(&path, RecursiveMode::NonRecursive) {
             Ok(()) => {
-                self.watched_dirs.insert(path.clone());
                 self.watchers.insert(path, WhichWatcher::Primary);
                 Ok(())
             }
@@ -98,7 +95,6 @@ impl Watcher {
                 let fallback = self.create_fallback()?;
                 match fallback.watch(&path, RecursiveMode::NonRecursive) {
                     Ok(()) => {
-                        self.watched_dirs.insert(path.clone());
                         self.watchers.insert(path, WhichWatcher::Fallback);
                         Ok(())
                     }
@@ -138,28 +134,26 @@ impl Watcher {
             None => Ok(()),
         };
 
-        self.watched_dirs.remove(&path);
         self.watchers.remove(&path);
         result
     }
 
     fn remove_watched_dir_state(&mut self, path: &Path) {
         let removed = self
-            .watched_dirs
-            .iter()
+            .watchers
+            .keys()
             .find(|watched| {
                 watched.as_path() == path || path_points_to_missing_watch(path, watched)
             })
             .cloned();
 
         if let Some(path) = removed {
-            self.watched_dirs.remove(&path);
             self.watchers.remove(&path);
         }
     }
 
     pub fn watched_dirs(&self) -> Vec<PathBuf> {
-        self.watched_dirs.iter().cloned().collect()
+        self.watchers.keys().cloned().collect()
     }
 
     pub fn pause(&self) {
@@ -192,46 +186,41 @@ fn make_handler(
                     Some(p.clone())
                 }
                 WatchEvent::Renamed { from, to } => {
-                    // For renames, debounce both paths independently
-                    let now = Instant::now();
-                    let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
-                        debug_log!("watcher mutex poisoned (rename debounce), recovering: {e}");
-                        e.into_inner()
-                    });
-                    let from_allowed = debounce
-                        .get(from)
-                        .is_none_or(|last| now.duration_since(*last) >= Duration::from_millis(300));
-                    let to_allowed = debounce
-                        .get(to)
-                        .is_none_or(|last| now.duration_since(*last) >= Duration::from_millis(300));
-                    if from_allowed && to_allowed {
-                        debounce.insert(from.clone(), now);
-                        debounce.insert(to.clone(), now);
-                        drop(debounce);
+                    if should_emit(&debounce_state, &[from.as_path(), to.as_path()]) {
                         let _ = event_tx.send(watch_event);
                     }
                     continue;
                 }
             };
 
-            if let Some(path) = path {
-                let now = Instant::now();
-                let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
-                    debug_log!("watcher mutex poisoned (debounce), recovering: {e}");
-                    e.into_inner()
-                });
-                if let Some(last) = debounce.get(&path)
-                    && now.duration_since(*last) < Duration::from_millis(300)
-                {
-                    continue;
-                }
-                debounce.insert(path, now);
-                drop(debounce);
+            if let Some(path) = path
+                && !should_emit(&debounce_state, &[path.as_path()])
+            {
+                continue;
             }
 
             let _ = event_tx.send(watch_event);
         }
     }
+}
+
+fn should_emit(debounce_state: &Mutex<HashMap<PathBuf, Instant>>, paths: &[&Path]) -> bool {
+    let now = Instant::now();
+    let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
+        debug_log!("watcher mutex poisoned, recovering: {e}");
+        e.into_inner()
+    });
+    let dominated = paths.iter().any(|p| {
+        debounce
+            .get(*p)
+            .is_some_and(|last| now.duration_since(*last) < Duration::from_millis(300))
+    });
+    if !dominated {
+        for p in paths {
+            debounce.insert(p.to_path_buf(), now);
+        }
+    }
+    !dominated
 }
 
 fn convert_event(event: notify::Event) -> Vec<WatchEvent> {

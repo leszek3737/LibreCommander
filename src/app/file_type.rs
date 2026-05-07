@@ -19,7 +19,7 @@ const SOURCE_CODE_SUFFIXES: &[&str] = &[
     ".fs", ".fsx", ".vb", ".php", ".rb", ".lua", ".pl", ".pm", ".r", ".jl", ".scala", ".sc",
     ".clj", ".cljs", ".ex", ".exs", ".erl", ".hrl", ".hs", ".lhs", ".ml", ".mli", ".nim", ".zig",
     ".v", ".sv", ".dart", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".sql", ".html",
-    ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".wasm",
+    ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".wasm", ".json", ".xml",
 ];
 
 const DOCUMENT_SUFFIXES: &[&str] = &[
@@ -62,7 +62,6 @@ const VIDEO_SUFFIXES: &[&str] = &[
 ];
 
 const CONFIG_SUFFIXES: &[&str] = &[
-    ".json",
     ".jsonc",
     ".toml",
     ".yaml",
@@ -75,7 +74,6 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".env",
     ".properties",
     ".plist",
-    ".xml",
     ".desktop",
     ".service",
     ".timer",
@@ -261,7 +259,7 @@ mod tests {
     #[test]
     fn test_is_source_code_negative() {
         assert!(!is_source_code("image.png"));
-        assert!(!is_source_code("data.json"));
+        assert!(!is_source_code("data.txt"));
     }
 
     #[test]
@@ -402,7 +400,7 @@ mod tests {
         assert!(is_archive("FILE.ZIP"));
         assert!(is_image("PHOTO.JPG"));
         assert!(is_source_code("MAIN.RS"));
-        assert!(is_config("SETTINGS.JSON"));
+        assert!(is_source_code("SETTINGS.JSON"));
     }
 
     #[test]
