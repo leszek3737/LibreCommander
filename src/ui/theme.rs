@@ -53,10 +53,16 @@ impl Theme {
     pub const REGULAR_FILE: Color = Color::White;
 
     // Styles
+    /// Returns a bg-only `Style` intended for merging with a fg-only style via
+    /// Ratatui's `Style::patch`. Used by callers that set border/block backgrounds
+    /// independently of foreground: `ui::menu`, `ui::dir_tree`, main panel block.
     pub fn panel_bg() -> Style {
         Style::default().bg(Self::PANEL_BG)
     }
 
+    /// Returns an fg-only `Style` intended for merging with a bg-only style via
+    /// Ratatui's `Style::patch`. Used by `ui::menu` for border styling where
+    /// background comes from the container block.
     pub fn panel_fg() -> Style {
         Style::default().fg(Self::PANEL_FG)
     }
@@ -93,6 +99,8 @@ impl Theme {
         Style::default().fg(Self::ERROR).bg(Self::DIALOG_BG)
     }
 
+    /// Semantic alias of [`progress_bar()`] — intentionally separate so the
+    /// help dialog style can diverge independently in future.
     pub fn help_dialog() -> Style {
         Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
     }
@@ -101,6 +109,8 @@ impl Theme {
         Style::default().fg(Self::WARNING).bg(Self::DIALOG_BG)
     }
 
+    /// Semantic alias of [`help_dialog()`] — intentionally separate so the
+    /// progress bar style can diverge independently in future.
     pub fn progress_bar() -> Style {
         Self::help_dialog()
     }
@@ -174,8 +184,6 @@ mod tests {
     fn category_color_maps_file_categories_to_theme_colors() {
         let cases = [
             (FileCategory::Dir, Theme::DIRECTORY),
-            (FileCategory::Executable, Theme::EXECUTABLE),
-            (FileCategory::Symlink, Theme::SYMLINK),
             (FileCategory::Archive, Theme::ARCHIVE),
             (FileCategory::Image, Theme::IMAGE),
             (FileCategory::Video, Theme::VIDEO),
@@ -184,6 +192,8 @@ mod tests {
             (FileCategory::Code, Theme::SOURCE_CODE),
             (FileCategory::Config, Theme::CONFIG),
             (FileCategory::Font, Theme::FONT),
+            (FileCategory::Executable, Theme::EXECUTABLE),
+            (FileCategory::Symlink, Theme::SYMLINK),
             (FileCategory::Other, Theme::REGULAR_FILE),
         ];
 

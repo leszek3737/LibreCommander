@@ -440,6 +440,7 @@ where
                 file_bytes_so_far = file_bytes_so_far.min(current_total);
             }
             let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
+            // Files can grow between pre-scan size and copy; .max() prevents progress > 100%.
             bytes_total = bytes_total.max(current_bytes_done);
             report_file_active(
                 progress,

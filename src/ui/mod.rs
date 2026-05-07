@@ -12,6 +12,19 @@ pub mod viewer;
 pub const LAYOUT_OVERHEAD_ROWS: u16 = 6;
 
 /// Number of rows reserved for directory tree panel overhead.
-/// Accounts for: panel title/border (1) and column headers (2).
+/// Accounts for: top border (1), bottom border (1), and help bar (1).
 /// The remaining space is used for the actual tree listing.
 pub const DIR_TREE_OVERHEAD_ROWS: u16 = 3;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_overhead_rows_matches_fixed_constraints() {
+        assert_eq!(
+            LAYOUT_OVERHEAD_ROWS, 6,
+            "LAYOUT_OVERHEAD_ROWS = menu bar (1) + status bar (1) + command line (1) + function bar (1) + borders (2) = 6"
+        );
+    }
+}
