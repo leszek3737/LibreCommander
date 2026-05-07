@@ -23,10 +23,9 @@ pub struct PersistedPanel {
     pub show_permissions: bool,
 }
 
-// Silently falls back to default on invalid config values.
+// Falls back to default on invalid config values, logging via debug_log.
 // This runs during deserialization — in a TUI app eprintln! would corrupt
-// the alternate screen buffer. No `log`/`tracing` crate in this project,
-// so silent fallback is the safest option.
+// the alternate screen buffer. debug_log writes to a file instead.
 fn default_true() -> bool {
     true
 }
@@ -35,20 +34,24 @@ fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D
 where
     D: serde::Deserializer<'de>,
 {
-    ListingMode::deserialize(d).or_else(|_| Ok(ListingMode::default()))
+    ListingMode::deserialize(d).or_else(|_| {
+        crate::debug_log!("config: invalid value for listing_mode, using default");
+        Ok(ListingMode::default())
+    })
 }
 
 fn deserialize_sort_mode_with_fallback<'de, D>(d: D) -> Result<SortMode, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    SortMode::deserialize(d).or_else(|_| Ok(SortMode::default()))
+    SortMode::deserialize(d).or_else(|_| {
+        crate::debug_log!("config: invalid value for sort_mode, using default");
+        Ok(SortMode::default())
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedSetup {
-    #[serde(default)]
-    pub version: u32,
     #[serde(default)]
     pub active_panel: String,
     #[serde(default = "default_true")]
@@ -104,7 +107,6 @@ impl Settings {
 impl From<&Settings> for PersistedSetup {
     fn from(settings: &Settings) -> Self {
         Self {
-            version: 1,
             active_panel: match settings.active_panel {
                 ActivePanel::Left => "left",
                 ActivePanel::Right => "right",
@@ -143,10 +145,6 @@ impl From<PersistedSetup> for Settings {
     }
 }
 
-fn config_path() -> Option<PathBuf> {
-    paths::config_file_path()
-}
-
 fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
     PersistedPanel {
         path: Some(panel.path.display().to_string()),
@@ -163,7 +161,7 @@ pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
 }
 
 pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
-    let Some(path) = config_path() else {
+    let Some(path) = paths::config_file_path() else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
     };
 
@@ -187,7 +185,7 @@ pub fn load_setup(state: &mut AppState) -> Result<(), String> {
 }
 
 pub fn load_settings() -> Result<Option<Settings>, String> {
-    let Some(path) = config_path() else {
+    let Some(path) = paths::config_file_path() else {
         return Ok(None);
     };
     let content = match fs::read_to_string(&path) {
@@ -297,7 +295,6 @@ mod tests {
     #[test]
     fn persisted_setup_roundtrips_through_settings() {
         let setup = PersistedSetup {
-            version: 1,
             active_panel: "right".to_string(),
             dir_first: true,
             sort_sensitive: false,

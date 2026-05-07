@@ -287,76 +287,7 @@ pub enum AppMode {
 }
 
 // ============================================================================
-// 7. AppState substates
-// ============================================================================
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PanelsState {
-    pub left_panel: PanelState,
-    pub right_panel: PanelState,
-    pub active_panel: ActivePanel,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct CommandState {
-    pub command_line: String,
-    pub command_cursor: usize,
-    pub command_history: VecDeque<String>,
-    pub history_index: Option<usize>,
-    pub command_draft: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DialogState {
-    pub dialog_input: String,
-    pub dialog_cursor_pos: usize,
-    pub dialog_selection: usize,
-    pub pending_action: Option<PendingAction>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct MenuState {
-    pub directory_hotlist: Vec<PathBuf>,
-    pub menu_selected: usize,
-    pub menu_item_selected: usize,
-    pub user_menu_entries: Vec<MenuEntry>,
-    pub menu_restore_panel: Option<ActivePanel>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct PickerState {
-    pub picker_selected: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DirectoryTreeState {
-    pub tree_root: PathBuf,
-    pub tree_entries: Vec<TreeEntry>,
-    pub tree_selected: usize,
-    pub tree_scroll: usize,
-}
-
-impl PanelsState {
-    pub fn new(current_dir: PathBuf) -> Self {
-        Self {
-            left_panel: PanelState::new(current_dir.clone()),
-            right_panel: PanelState::new(current_dir),
-            active_panel: ActivePanel::Left,
-        }
-    }
-}
-
-impl MenuState {
-    pub fn new(initial_hotlist_path: PathBuf) -> Self {
-        Self {
-            directory_hotlist: vec![initial_hotlist_path],
-            ..Self::default()
-        }
-    }
-}
-
-// ============================================================================
-// 7b. AppState struct definition
+// 7. AppState struct definition
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -399,7 +330,7 @@ pub struct AppState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    Text { wrap: bool, line_numbers: bool },
+    Text,
     Hex,
 }
 
@@ -675,14 +606,15 @@ impl FileEntry {
         use std::time::UNIX_EPOCH;
 
         if let Ok(duration) = self.mtime().duration_since(UNIX_EPOCH) {
-            chrono::DateTime::from_timestamp(
-                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-                0,
-            )
-            .unwrap_or(chrono::DateTime::UNIX_EPOCH)
-            .with_timezone(&chrono::Local)
-            .format("%d-%m-%y %H:%M")
-            .to_string()
+            i64::try_from(duration.as_secs())
+                .ok()
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local)
+                        .format("%d-%m-%y %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "Unknown".to_string())
         } else {
             "Unknown".to_string()
         }
@@ -868,44 +800,37 @@ impl PanelState {
 impl AppState {
     pub fn new() -> Self {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-        let panels = PanelsState::new(current_dir.clone());
-        let command = CommandState::default();
-        let dialog = DialogState::default();
-        let menu = MenuState::new(current_dir);
-        let picker = PickerState::default();
-        let tree = DirectoryTreeState::default();
 
         Self {
-            left_panel: panels.left_panel,
-            right_panel: panels.right_panel,
-            active_panel: panels.active_panel,
+            left_panel: PanelState::new(current_dir.clone()),
+            right_panel: PanelState::new(current_dir.clone()),
+            active_panel: ActivePanel::Left,
             mode: AppMode::Normal,
-            command_line: command.command_line,
-            command_cursor: command.command_cursor,
+            command_line: String::new(),
+            command_cursor: 0,
             search_query: String::new(),
             should_quit: false,
             status_message: None,
-            dialog_input: dialog.dialog_input,
-            dialog_cursor_pos: dialog.dialog_cursor_pos,
-            command_history: command.command_history,
-            history_index: command.history_index,
-            command_draft: command.command_draft,
-            directory_hotlist: menu.directory_hotlist,
-            menu_selected: menu.menu_selected,
-            menu_item_selected: menu.menu_item_selected,
-            picker_selected: picker.picker_selected,
-            user_menu_entries: menu.user_menu_entries,
-            tree_root: tree.tree_root,
-            tree_entries: tree.tree_entries,
-            tree_selected: tree.tree_selected,
-            tree_scroll: tree.tree_scroll,
+            dialog_input: String::new(),
+            dialog_cursor_pos: 0,
+            command_history: VecDeque::new(),
+            history_index: None,
+            command_draft: String::new(),
+            directory_hotlist: vec![current_dir],
+            menu_selected: 0,
+            menu_item_selected: 0,
+            picker_selected: 0,
+            user_menu_entries: Vec::new(),
+            tree_root: PathBuf::new(),
+            tree_entries: Vec::new(),
+            tree_selected: 0,
+            tree_scroll: 0,
             prev_mode: None,
-            menu_restore_panel: menu.menu_restore_panel,
-            dialog_selection: dialog.dialog_selection,
-            // Mouse support fields
+            menu_restore_panel: None,
+            dialog_selection: 0,
             last_click_time: None,
             last_click_position: None,
-            pending_action: dialog.pending_action,
+            pending_action: None,
         }
     }
 
@@ -947,6 +872,62 @@ impl Default for AppState {
 mod tests {
     use super::*;
     use std::time::{Duration, UNIX_EPOCH};
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct PanelsState {
+        left_panel: PanelState,
+        right_panel: PanelState,
+        active_panel: ActivePanel,
+    }
+
+    impl PanelsState {
+        fn new(current_dir: PathBuf) -> Self {
+            Self {
+                left_panel: PanelState::new(current_dir.clone()),
+                right_panel: PanelState::new(current_dir),
+                active_panel: ActivePanel::Left,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct DialogState {
+        dialog_input: String,
+        dialog_cursor_pos: usize,
+        dialog_selection: usize,
+        pending_action: Option<PendingAction>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct MenuState {
+        directory_hotlist: Vec<PathBuf>,
+        menu_selected: usize,
+        menu_item_selected: usize,
+        user_menu_entries: Vec<MenuEntry>,
+        menu_restore_panel: Option<ActivePanel>,
+    }
+
+    impl MenuState {
+        fn new(initial_hotlist_path: PathBuf) -> Self {
+            Self {
+                directory_hotlist: vec![initial_hotlist_path],
+                ..Self::default()
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct PickerState {
+        picker_selected: usize,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct DirectoryTreeState {
+        tree_root: PathBuf,
+        tree_entries: Vec<TreeEntry>,
+        tree_selected: usize,
+        tree_scroll: usize,
+    }
 
     // Helper to create a test FileEntry
     fn create_test_entry(

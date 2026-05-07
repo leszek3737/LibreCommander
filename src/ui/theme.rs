@@ -53,10 +53,16 @@ impl Theme {
     pub const REGULAR_FILE: Color = Color::White;
 
     // Styles
+    /// Returns a bg-only `Style` intended for merging with a fg-only style via
+    /// Ratatui's `Style::patch`. Used by callers that set border/block backgrounds
+    /// independently of foreground: `ui::menu`, `ui::dir_tree`, main panel block.
     pub fn panel_bg() -> Style {
         Style::default().bg(Self::PANEL_BG)
     }
 
+    /// Returns an fg-only `Style` intended for merging with a bg-only style via
+    /// Ratatui's `Style::patch`. Used by `ui::menu` for border styling where
+    /// background comes from the container block.
     pub fn panel_fg() -> Style {
         Style::default().fg(Self::PANEL_FG)
     }
@@ -93,6 +99,8 @@ impl Theme {
         Style::default().fg(Self::ERROR).bg(Self::DIALOG_BG)
     }
 
+    /// Style for help dialogs — info color on dialog background.
+    /// Also used as the base for `progress_bar()`.
     pub fn help_dialog() -> Style {
         Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
     }
@@ -101,8 +109,10 @@ impl Theme {
         Style::default().fg(Self::WARNING).bg(Self::DIALOG_BG)
     }
 
+    /// Style for progress bars — delegates to `help_dialog()`.
+    /// Separate method so the style can diverge independently in future.
     pub fn progress_bar() -> Style {
-        Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
+        Self::help_dialog()
     }
 
     pub fn selected_error() -> Style {
@@ -118,8 +128,6 @@ impl Theme {
     pub fn category_color(category: FileCategory) -> Color {
         match category {
             FileCategory::Dir => Self::DIRECTORY,
-            FileCategory::Executable => Self::EXECUTABLE,
-            FileCategory::Symlink => Self::SYMLINK,
             FileCategory::Archive => Self::ARCHIVE,
             FileCategory::Image => Self::IMAGE,
             FileCategory::Video => Self::VIDEO,
@@ -128,6 +136,8 @@ impl Theme {
             FileCategory::Code => Self::SOURCE_CODE,
             FileCategory::Config => Self::CONFIG,
             FileCategory::Font => Self::FONT,
+            FileCategory::Executable => Self::EXECUTABLE,
+            FileCategory::Symlink => Self::SYMLINK,
             FileCategory::Other => Self::REGULAR_FILE,
         }
     }
@@ -174,8 +184,6 @@ mod tests {
     fn category_color_maps_file_categories_to_theme_colors() {
         let cases = [
             (FileCategory::Dir, Theme::DIRECTORY),
-            (FileCategory::Executable, Theme::EXECUTABLE),
-            (FileCategory::Symlink, Theme::SYMLINK),
             (FileCategory::Archive, Theme::ARCHIVE),
             (FileCategory::Image, Theme::IMAGE),
             (FileCategory::Video, Theme::VIDEO),
@@ -184,6 +192,8 @@ mod tests {
             (FileCategory::Code, Theme::SOURCE_CODE),
             (FileCategory::Config, Theme::CONFIG),
             (FileCategory::Font, Theme::FONT),
+            (FileCategory::Executable, Theme::EXECUTABLE),
+            (FileCategory::Symlink, Theme::SYMLINK),
             (FileCategory::Other, Theme::REGULAR_FILE),
         ];
 

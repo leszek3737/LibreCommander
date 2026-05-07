@@ -11,16 +11,19 @@ use super::types::{AppMode, AppState, DialogKind, PendingAction};
 
 enum JobMessage {
     Progress(ops::batch::BatchProgress),
-    Finished {
-        action_label: &'static str,
-        report: ops::batch::BatchReport,
-    },
+    Finished { report: ops::batch::BatchReport },
 }
 
 pub struct RunningJob {
     receiver: Receiver<JobMessage>,
     pub cancel: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for RunningJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 fn action_label(action: &PendingAction) -> &'static str {
@@ -45,7 +48,6 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     let (sender, receiver) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_worker = Arc::clone(&cancel);
-    let label_for_worker = action_label;
     let handle = thread::spawn(move || {
         let progress_sender = sender.clone();
         let report = ops::batch::execute_batch_with_byte_progress(
@@ -54,12 +56,9 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
                 let _ = progress_sender.send(JobMessage::Progress(progress));
             },
             Some(cancel_for_worker),
-            label_for_worker,
-        );
-        let _ = sender.send(JobMessage::Finished {
             action_label,
-            report,
-        });
+        );
+        let _ = sender.send(JobMessage::Finished { report });
     });
 
     state.active_panel_mut().clear_selection();
@@ -97,22 +96,18 @@ pub fn poll_running_job(
                     progress.byte_percent() / 100.0,
                 ));
             }
-            JobMessage::Finished {
-                action_label,
-                report,
-            } => finished = Some((action_label, report)),
+            JobMessage::Finished { report } => finished = Some(report),
         }
     }
 
-    if let Some((action_label, report)) = finished {
-        // Happy path: worker sent Finished — join to clean up thread
+    if let Some(report) = finished {
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
             && let Err(panic_payload) = handle.join()
         {
             debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
         }
-        finish_running_job(state, action_label, &report, refresh_both);
+        finish_running_job(state, &report, refresh_both);
         dirty = true;
     } else if let Some(job) = running_job.as_mut() {
         // No Finished received — check if worker died (panicked before sending)
@@ -179,7 +174,6 @@ fn format_duration_short(duration: Duration) -> String {
 
 fn finish_running_job(
     state: &mut AppState,
-    _action_label: &'static str,
     report: &ops::batch::BatchReport,
     refresh_both: fn(&mut AppState),
 ) {

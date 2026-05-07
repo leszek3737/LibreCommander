@@ -64,6 +64,7 @@ const VIDEO_SUFFIXES: &[&str] = &[
 const CONFIG_SUFFIXES: &[&str] = &[
     ".json",
     ".jsonc",
+    ".xml",
     ".toml",
     ".yaml",
     ".yml",
@@ -75,7 +76,6 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".env",
     ".properties",
     ".plist",
-    ".xml",
     ".desktop",
     ".service",
     ".timer",
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_is_source_code_negative() {
         assert!(!is_source_code("image.png"));
-        assert!(!is_source_code("data.json"));
+        assert!(!is_source_code("data.txt"));
     }
 
     #[test]

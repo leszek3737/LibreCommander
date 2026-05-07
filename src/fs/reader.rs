@@ -175,17 +175,10 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
 
     if let Some(existing) = panel
         .unfiltered_entries
-        .iter()
-        .find(|existing| existing.path == entry.path)
+        .iter_mut()
+        .find(|e| e.path == entry.path)
     {
         entry.selected = existing.selected;
-    }
-
-    if let Some(existing) = panel
-        .unfiltered_entries
-        .iter_mut()
-        .find(|existing| existing.path == entry.path)
-    {
         *existing = entry;
     } else {
         panel.unfiltered_entries.push(entry);

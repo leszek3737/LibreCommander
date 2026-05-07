@@ -24,7 +24,7 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
-            if let Err(err) = publish_temp(&temp_dest, dest) {
+            if let Err(err) = publish_temp(&temp_dest, dest, cancel) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
             }
@@ -79,17 +79,35 @@ fn copy_to_temp(
     Ok(total_written)
 }
 
-fn publish_temp(temp_dest: &Path, dest: &Path) -> io::Result<()> {
+fn publish_temp(temp_dest: &Path, dest: &Path, cancel: &AtomicBool) -> io::Result<()> {
     match fs::hard_link(temp_dest, dest) {
         Ok(()) => return fs::remove_file(temp_dest),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
         Err(_) => {}
     }
 
-    let mut src = File::open(temp_dest)?;
-    let mut dest_file = OpenOptions::new().write(true).create_new(true).open(dest)?;
-    io::copy(&mut src, &mut dest_file)?;
-    dest_file.sync_all()?;
+    let mut src = BufReader::new(File::open(temp_dest)?);
+    let mut dest_file = BufWriter::new(OpenOptions::new().write(true).create_new(true).open(dest)?);
+    let mut buffer = [0_u8; BUFFER_SIZE];
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            drop(dest_file);
+            let _ = fs::remove_file(dest);
+            let _ = fs::remove_file(temp_dest);
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+        }
+
+        let bytes_read = src.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        dest_file.write_all(&buffer[..bytes_read])?;
+    }
+
+    dest_file.flush()?;
+    dest_file.get_ref().sync_all()?;
     fs::remove_file(temp_dest)
 }
 

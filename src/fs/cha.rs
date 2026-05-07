@@ -120,10 +120,6 @@ impl ChaMode {
         Self(mode)
     }
 
-    pub fn raw(&self) -> u32 {
-        self.0
-    }
-
     pub fn mode_u32(&self) -> u32 {
         self.0
     }
@@ -304,6 +300,14 @@ impl Cha {
         self.nlink
     }
 
+    /// Compares file metadata for change detection (cache invalidation).
+    ///
+    /// Intentionally excludes:
+    /// - `atime` — unstable, changes on read access
+    /// - `dev` — device ID, irrelevant for content changes
+    /// - `nlink` — link count, irrelevant for content changes
+    ///
+    /// For full field equality, use `PartialEq` instead.
     pub fn hits(&self, other: &Self) -> bool {
         self.len == other.len
             && self.mtime == other.mtime
@@ -449,7 +453,6 @@ mod tests {
         let raw: u32 = 0x1_0000 | 0o100755;
         let mode = ChaMode::new(raw);
         assert_eq!(mode.mode_u32(), raw);
-        assert_eq!(mode.raw(), raw);
     }
 
     #[test]

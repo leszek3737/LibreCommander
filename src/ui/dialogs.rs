@@ -133,14 +133,44 @@ pub fn help_visible_height(area: Rect) -> usize {
     chunks[0].height as usize
 }
 
+fn dialog_block(title: &str, style: Style) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_type(BorderType::Thick)
+        .style(style)
+}
+
 fn truncate_path(path: &str, max_width: usize) -> String {
-    if path.chars().count() <= max_width {
+    let total_width = unicode_width::UnicodeWidthStr::width(path);
+    if total_width <= max_width {
         path.to_string()
     } else if max_width > 3 {
-        let suffix: String = path.chars().rev().take(max_width - 3).collect();
-        format!("...{}", suffix.chars().rev().collect::<String>())
+        let suffix_budget = max_width - 3;
+        let mut width = 0;
+        let mut split_idx = path.len();
+        for (idx, ch) in path.char_indices().rev() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width + cw > suffix_budget {
+                split_idx = idx + ch.len_utf8();
+                break;
+            }
+            width += cw;
+            split_idx = idx;
+        }
+        format!("...{}", &path[split_idx..])
     } else {
-        path.chars().take(max_width).collect()
+        let mut out = String::new();
+        let mut width = 0;
+        for ch in path.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width + cw > max_width {
+                break;
+            }
+            width += cw;
+            out.push(ch);
+        }
+        out
     }
 }
 
@@ -152,11 +182,7 @@ pub fn render_confirm_dialog(
     selection: usize,
     files: &[String],
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title.to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::dialog());
+    let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -177,7 +203,7 @@ pub fn render_confirm_dialog(
         ])
         .split(inner);
 
-    let msg_paragraph = Paragraph::new(message.to_string())
+    let msg_paragraph = Paragraph::new(message)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
     f.render_widget(msg_paragraph, chunks[0]);
@@ -222,6 +248,10 @@ pub fn render_confirm_dialog(
     f.render_widget(btn_paragraph, chunks[2]);
 }
 
+pub fn input_dialog_rect(area: Rect) -> Rect {
+    centered_rect(50, 40, area)
+}
+
 pub fn render_input_dialog(
     f: &mut Frame,
     area: Rect,
@@ -230,11 +260,7 @@ pub fn render_input_dialog(
     value: &str,
     cursor_pos: usize,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title.to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::dialog());
+    let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -247,7 +273,7 @@ pub fn render_input_dialog(
         ])
         .split(inner);
 
-    let prompt_paragraph = Paragraph::new(prompt.to_string());
+    let prompt_paragraph = Paragraph::new(prompt);
     f.render_widget(prompt_paragraph, chunks[0]);
 
     let input_block = Block::default()
@@ -257,7 +283,7 @@ pub fn render_input_dialog(
 
     let visible_width = input_inner.width as usize;
     if visible_width == 0 || input_inner.height == 0 {
-        let input_paragraph = Paragraph::new(value.to_string()).block(input_block);
+        let input_paragraph = Paragraph::new(value).block(input_block);
         f.render_widget(input_paragraph, chunks[1]);
         return;
     }
@@ -313,11 +339,7 @@ pub fn render_input_dialog(
 }
 
 pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title.to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::error_dialog());
+    let block = dialog_block(title, Theme::error_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -326,7 +348,7 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(inner);
 
-    let message_paragraph = Paragraph::new(message.to_string())
+    let message_paragraph = Paragraph::new(message)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center)
         .style(Theme::error());
@@ -345,11 +367,7 @@ pub fn render_help_dialog(
     message: &str,
     scroll_offset: usize,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title.to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::help_dialog());
+    let block = dialog_block(title, Theme::help_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -363,13 +381,12 @@ pub fn render_help_dialog(
     let total_lines = all_lines.len();
 
     let clamped_offset = scroll_offset.min(total_lines.saturating_sub(max_lines));
-    let visible_message = all_lines
+    let visible_lines: Vec<Line> = all_lines
         .iter()
         .skip(clamped_offset)
         .take(max_lines)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
+        .map(|l| Line::from(*l))
+        .collect();
 
     let has_scrollbar = total_lines > max_lines && chunks[0].width > 1;
     let message_area = if has_scrollbar {
@@ -383,22 +400,21 @@ pub fn render_help_dialog(
         chunks[0]
     };
 
-    let message_paragraph = Paragraph::new(visible_message)
+    let message_paragraph = Paragraph::new(visible_lines)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Left)
         .style(Theme::info());
     f.render_widget(message_paragraph, message_area);
 
-    // Show scrollbar indicator if content exceeds visible area
     if has_scrollbar {
         let scrollbar_height = max_lines.min(total_lines);
-        #[allow(clippy::manual_checked_ops)]
-        let scrollbar_pos = if total_lines > 0 {
-            clamped_offset * scrollbar_height / total_lines
-        } else {
-            0
-        };
-        let thumb_height = (max_lines * max_lines / total_lines.max(1)).max(1);
+        let scrollbar_pos = clamped_offset
+            .saturating_mul(scrollbar_height)
+            .saturating_div(total_lines.max(1));
+        let thumb_height = max_lines
+            .saturating_mul(max_lines)
+            .saturating_div(total_lines.max(1))
+            .max(1);
         let scrollbar_x = chunks[0].x + chunks[0].width.saturating_sub(1);
         let scrollbar_y = chunks[0].y;
         for i in 0..scrollbar_height {
@@ -422,11 +438,7 @@ pub fn render_help_dialog(
 }
 
 pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &str, percent: f32) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title.to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::dialog());
+    let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -439,12 +451,12 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         ])
         .split(inner);
 
-    let msg_paragraph = Paragraph::new(message.to_string())
+    let msg_paragraph = Paragraph::new(message)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
     f.render_widget(msg_paragraph, chunks[0]);
 
-    let clamped = percent.clamp(0.0, 100.0) as u16;
+    let clamped = (percent.clamp(0.0, 100.0).round()) as u16;
     let gauge = Gauge::default()
         .gauge_style(Theme::progress_bar())
         .percent(clamped)
@@ -469,11 +481,7 @@ pub fn render_properties_dialog(
     group: &str,
     file_type: &str,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("File Properties".to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::warning_dialog());
+    let block = dialog_block("File Properties", Theme::warning_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -504,16 +512,11 @@ pub fn render_list_picker(
     let area = f.area();
     let picker_area = centered_rect(60, 70, area);
 
-    // Fill picker area with blue background
     f.render_widget(Clear, picker_area);
     let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
     f.render_widget(bg_block, picker_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title.to_string())
-        .border_type(BorderType::Thick)
-        .style(Theme::dialog());
+    let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(picker_area);
     f.render_widget(block, picker_area);
 

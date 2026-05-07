@@ -98,10 +98,7 @@ impl ViewerState {
             wrap_lines: true,
             show_line_numbers: false,
             view_mode: if open_as_text {
-                ViewMode::Text {
-                    wrap: true,
-                    line_numbers: false,
-                }
+                ViewMode::Text
             } else {
                 ViewMode::Hex
             },
@@ -169,14 +166,20 @@ impl ViewerState {
 
         let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
 
+        let mut lower_buf = String::new();
+        let mut byte_map_buf = Vec::new();
+
         for (line_idx, line) in self.content.iter().enumerate() {
-            let (lower_line, byte_map) = build_lowercase_mapping(line);
+            build_lowercase_mapping(line, &mut lower_buf, &mut byte_map_buf);
             let mut search_start = 0;
-            while let Some(pos) = lower_line[search_start..].find(&lower_query) {
+            while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
                 let match_byte_start = search_start + pos;
                 let match_byte_end = match_byte_start + lower_query.len();
-                let orig_byte_start = byte_map[match_byte_start];
-                let orig_byte_end = byte_map.get(match_byte_end).copied().unwrap_or(line.len());
+                let orig_byte_start = byte_map_buf[match_byte_start];
+                let orig_byte_end = byte_map_buf
+                    .get(match_byte_end)
+                    .copied()
+                    .unwrap_or(line.len());
                 let char_pos = line[..orig_byte_start].chars().count();
                 let match_char_len = line[orig_byte_start..orig_byte_end].chars().count().max(1);
                 let global_idx = self.search_matches.len();
@@ -208,7 +211,7 @@ impl ViewerState {
     fn scroll_to_current_match(&mut self, page_height: usize) {
         if let Some(&(line_idx, _, _)) = self.search_matches.get(self.current_match) {
             let context = 5usize.min(page_height.saturating_sub(1));
-            self.scroll_offset = line_idx.saturating_sub(context);
+            self.scroll_offset = line_idx.saturating_sub(context).min(self.max_scroll());
         }
     }
 
@@ -235,10 +238,7 @@ impl ViewerState {
     pub fn toggle_line_numbers(&mut self) {
         self.show_line_numbers = !self.show_line_numbers;
         if !self.is_hex_mode() {
-            self.view_mode = ViewMode::Text {
-                wrap: self.wrap_lines,
-                line_numbers: self.show_line_numbers,
-            };
+            self.view_mode = ViewMode::Text;
         }
     }
 
@@ -248,19 +248,13 @@ impl ViewerState {
             self.horizontal_offset = 0;
         }
         if !self.is_hex_mode() {
-            self.view_mode = ViewMode::Text {
-                wrap: self.wrap_lines,
-                line_numbers: self.show_line_numbers,
-            };
+            self.view_mode = ViewMode::Text;
         }
     }
 
     pub fn toggle_hex_mode(&mut self) {
         self.view_mode = if self.is_hex_mode() {
-            ViewMode::Text {
-                wrap: self.wrap_lines,
-                line_numbers: self.show_line_numbers,
-            }
+            ViewMode::Text
         } else {
             ViewMode::Hex
         };
@@ -280,7 +274,7 @@ impl ViewerState {
         };
         let effective_width = visible_width.saturating_sub(line_num_width);
         let max_line = if self.is_hex_mode() {
-            unicode_width::UnicodeWidthStr::width(format_hex_line(0, &[0u8; 16]).as_str())
+            HEX_LINE_WIDTH
         } else {
             self.max_line_width
         };
@@ -305,9 +299,9 @@ fn paragraph_horizontal_scroll(horizontal_offset: usize) -> u16 {
     horizontal_offset.min(u16::MAX as usize) as u16
 }
 
-fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
-    let mut lower = String::with_capacity(original.len());
-    let mut byte_map = Vec::with_capacity(original.len());
+fn build_lowercase_mapping(original: &str, lower: &mut String, byte_map: &mut Vec<usize>) {
+    lower.clear();
+    byte_map.clear();
     for (orig_byte_idx, ch) in original.char_indices() {
         let lower_ch: String = ch.to_lowercase().collect();
         for _ in 0..lower_ch.len() {
@@ -315,7 +309,6 @@ fn build_lowercase_mapping(original: &str) -> (String, Vec<usize>) {
         }
         lower.push_str(&lower_ch);
     }
-    (lower, byte_map)
 }
 
 fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
@@ -442,6 +435,38 @@ fn format_line_with_highlight<'a>(
     spans
 }
 
+fn render_viewer_status(
+    f: &mut Frame,
+    inner_area: Rect,
+    state: &ViewerState,
+    mode_label: &str,
+    position_text: &str,
+) {
+    let status_area = Rect {
+        x: inner_area.x,
+        y: inner_area.y + inner_area.height.saturating_sub(1),
+        width: inner_area.width,
+        height: 1,
+    };
+
+    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
+    let size_label = format_size(state.file_size as u64);
+    let utf8_warning = if state.has_invalid_utf8 {
+        " \u{26a0} INVALID UTF-8"
+    } else {
+        ""
+    };
+    let status_text =
+        format!(" {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}",);
+    let status_style = if state.has_invalid_utf8 {
+        Theme::status_bar().fg(Theme::WARNING)
+    } else {
+        Theme::status_bar()
+    };
+    let status_paragraph = Paragraph::new(status_text).style(status_style);
+    f.render_widget(status_paragraph, status_area);
+}
+
 pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
@@ -515,38 +540,13 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
 
     f.render_widget(paragraph, content_area);
 
-    // Reserve the last row inside the border for status text.
-    let status_area = Rect {
-        x: inner_area.x,
-        y: inner_area.y + inner_area.height.saturating_sub(1),
-        width: inner_area.width,
-        height: 1,
-    };
-
     let current_line = if state.line_count == 0 {
         0
     } else {
         state.scroll_offset + 1
     };
-    let mode_label = if state.is_hex_mode() { "Hex" } else { "Text" };
-    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
-    let size_label = format_size(state.file_size as u64);
-    let utf8_warning = if state.has_invalid_utf8 {
-        " \u{26a0} INVALID UTF-8"
-    } else {
-        ""
-    };
-    let status_text = format!(
-        " {mode_label}  {mime_label}  {size_label}  Line: {current_line}/{}{utf8_warning}",
-        state.line_count,
-    );
-    let status_style = if state.has_invalid_utf8 {
-        Theme::status_bar().fg(Theme::WARNING)
-    } else {
-        Theme::status_bar()
-    };
-    let status_paragraph = Paragraph::new(status_text).style(status_style);
-    f.render_widget(status_paragraph, status_area);
+    let position_text = format!("Line: {current_line}/{}", state.line_count);
+    render_viewer_status(f, inner_area, state, "Text", &position_text);
 }
 
 pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
@@ -596,35 +596,13 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         Paragraph::new(lines).scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
     f.render_widget(paragraph, content_area);
 
-    let status_area = Rect {
-        x: inner_area.x,
-        y: inner_area.y + inner_area.height.saturating_sub(1),
-        width: inner_area.width,
-        height: 1,
-    };
-
     let current_line = if total_lines == 0 {
         0
     } else {
         state.scroll_offset + 1
     };
-    let mime_label = state.detected_mime.as_deref().unwrap_or("—");
-    let size_label = format_size(state.file_size as u64);
-    let utf8_warning = if state.has_invalid_utf8 {
-        " \u{26a0} INVALID UTF-8"
-    } else {
-        ""
-    };
-    let status_text = format!(
-        " Hex  {mime_label}  {size_label}  Offset: {current_line}/{total_lines}{utf8_warning}",
-    );
-    let status_style = if state.has_invalid_utf8 {
-        Theme::status_bar().fg(Theme::WARNING)
-    } else {
-        Theme::status_bar()
-    };
-    let status_paragraph = Paragraph::new(status_text).style(status_style);
-    f.render_widget(status_paragraph, status_area);
+    let position_text = format!("Offset: {current_line}/{total_lines}");
+    render_viewer_status(f, inner_area, state, "Hex", &position_text);
 }
 
 pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
@@ -635,6 +613,7 @@ pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
 
 const HEX_BYTES_PER_LINE: usize = 16;
 const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
+const HEX_LINE_WIDTH: usize = 78;
 
 fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
     use std::fmt::Write;
@@ -1114,13 +1093,7 @@ mod tests {
         assert!(state.is_hex_mode());
         assert_eq!(state.view_mode, ViewMode::Hex);
         state.toggle_hex_mode();
-        assert_eq!(
-            state.view_mode,
-            ViewMode::Text {
-                wrap: state.wrap_lines,
-                line_numbers: state.show_line_numbers,
-            }
-        );
+        assert_eq!(state.view_mode, ViewMode::Text);
     }
 
     #[test]

@@ -1,5 +1,9 @@
+use std::ffi::OsString;
+
+#[cfg(test)]
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+#[cfg(test)]
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 const APP_NAME: &str = "lc";
@@ -16,11 +20,13 @@ impl EnvProvider for ProcessEnv {
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 pub struct MapEnv {
     values: HashMap<String, OsString>,
 }
 
+#[cfg(test)]
 impl MapEnv {
     pub fn new(values: &[(&str, &OsStr)]) -> Self {
         Self {
@@ -32,6 +38,7 @@ impl MapEnv {
     }
 }
 
+#[cfg(test)]
 impl EnvProvider for MapEnv {
     fn var_os(&self, key: &str) -> Option<OsString> {
         self.values.get(key).cloned()
@@ -71,18 +78,20 @@ fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
         .map(|dir| dir.join(APP_NAME))
         .or_else(|| {
             env.var_os("HOME")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .map(|home| home.join(".config").join(APP_NAME))
         })
 }
 
-fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
+pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
     env.var_os("XDG_CACHE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .map(|dir| dir.join(APP_NAME))
         .or_else(|| {
             env.var_os("HOME")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .map(|home| home.join(".cache").join(APP_NAME))
         })
@@ -149,6 +158,13 @@ mod tests {
             terminal_state_file_path_with_env(&env),
             PathBuf::from("/home/user/.cache/lc/terminal_state")
         );
+    }
+
+    #[test]
+    fn config_path_returns_none_when_home_empty() {
+        let env = env(&[("HOME", "")]);
+        let result = config_file_path_with_env(&env);
+        assert!(result.is_none());
     }
 
     #[test]

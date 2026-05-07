@@ -10,9 +10,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::backend::Backend;
 
 use crate::app::types::AppState;
+use crate::debug_log;
 
 const EVENT_POLL_TIMEOUT_MS: u64 = 100;
 pub const MAX_HISTORY: usize = 100;
@@ -52,6 +52,20 @@ fn resume_terminal_stdout() -> io::Result<()> {
     enter_tui_stdout()
 }
 
+struct TerminalRestoreGuard {
+    restore_ok: bool,
+}
+
+impl Drop for TerminalRestoreGuard {
+    fn drop(&mut self) {
+        if !self.restore_ok
+            && let Err(err) = resume_terminal_stdout()
+        {
+            debug_log!("Terminal restore failed: {err}");
+        }
+    }
+}
+
 pub fn run_shell_command(
     state: &mut AppState,
     cmd: &str,
@@ -68,22 +82,7 @@ pub fn run_shell_command(
         }
     }
 
-    struct ShellRestoreGuard {
-        restore_ok: bool,
-    }
-
-    #[allow(clippy::print_stderr)]
-    impl Drop for ShellRestoreGuard {
-        fn drop(&mut self) {
-            if !self.restore_ok
-                && let Err(err) = resume_terminal_stdout()
-            {
-                eprintln!("Terminal restore failed after shell command: {err}");
-            }
-        }
-    }
-
-    let mut restore_guard = ShellRestoreGuard { restore_ok: false };
+    let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
     if suspend_terminal_stdout().is_err() {
         state.status_message = Some("Terminal suspend failed".into());
         return;
@@ -117,26 +116,13 @@ pub fn run_shell_command(
 
 /// Toggle external panel view (Ctrl+O) - hide panels to see terminal output.
 #[allow(clippy::print_stdout)]
-pub fn toggle_external_view<B: Backend>(
+pub fn toggle_external_view(
     state: &mut AppState,
-    _terminal: &mut ratatui::Terminal<B>,
     mut refresh_both: impl FnMut(&mut AppState),
 ) -> io::Result<()> {
     suspend_terminal_stdout()?;
 
-    struct ExternalViewRestoreGuard {
-        restore_ok: bool,
-    }
-
-    impl Drop for ExternalViewRestoreGuard {
-        fn drop(&mut self) {
-            if !self.restore_ok {
-                let _ = resume_terminal_stdout();
-            }
-        }
-    }
-
-    let mut restore_guard = ExternalViewRestoreGuard { restore_ok: false };
+    let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
 
     // Show message to user.
     println!("External view active. Press Ctrl+O to return to Libre Commander.");
@@ -149,16 +135,12 @@ pub fn toggle_external_view<B: Backend>(
             if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
                 && let Event::Key(key) = event::read()?
             {
-                if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    break;
-                }
-                // Also allow Enter to return.
-                if key.code == KeyCode::Enter {
-                    break;
-                }
-                // Esc to return.
-                if key.code == KeyCode::Esc {
-                    break;
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => break,
+                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => break,
+                    (KeyCode::Enter, _) => break,
+                    (KeyCode::Esc, _) => break,
+                    _ => {}
                 }
             }
         }

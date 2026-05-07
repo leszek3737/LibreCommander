@@ -2,18 +2,33 @@
 //!
 //! Full file search by name pattern or content.
 
+use std::path::Path;
+
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncationReason {
+    DepthLimit,
+    ItemLimit,
+    ContentResultLimit,
+    FileTooLarge,
+    LineTooLong,
+    BinaryFile,
+}
 
 #[derive(Debug, Clone)]
 pub struct SearchOutcome<T> {
     pub matches: Vec<T>,
     pub errors: Vec<String>,
-    pub truncated: bool,
+    pub truncated: Option<TruncationReason>,
 }
 
 impl<T> Default for SearchOutcome<T> {
@@ -21,15 +36,19 @@ impl<T> Default for SearchOutcome<T> {
         Self {
             matches: Vec::new(),
             errors: Vec::new(),
-            truncated: false,
+            truncated: None,
         }
     }
 }
 
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
+
+#[cfg(test)]
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+#[cfg(test)]
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
+#[cfg(test)]
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
 /// Inline char buffer that lives on the stack for sizes <= N,
@@ -108,7 +127,7 @@ impl FileSearch {
         item_count: &mut usize,
     ) {
         if depth >= MAX_SEARCH_DEPTH {
-            outcome.truncated = true;
+            outcome.truncated = Some(TruncationReason::DepthLimit);
             return;
         }
         if !path.is_dir() {
@@ -130,7 +149,7 @@ impl FileSearch {
 
         for entry in entries {
             if *item_count >= MAX_SEARCH_ITEMS {
-                outcome.truncated = true;
+                outcome.truncated = Some(TruncationReason::ItemLimit);
                 return;
             }
 
@@ -183,7 +202,8 @@ impl FileSearch {
         }
     }
 
-    pub fn search_content(
+    #[cfg(test)]
+    fn search_content(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -192,7 +212,8 @@ impl FileSearch {
         Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
     }
 
-    pub fn search_content_with_diagnostics(
+    #[cfg(test)]
+    fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -212,6 +233,7 @@ impl FileSearch {
         outcome
     }
 
+    #[cfg(test)]
     fn search_content_recursive(
         path: &Path,
         pattern: &str,
@@ -224,15 +246,19 @@ impl FileSearch {
         if !path.is_dir() {
             return;
         }
-        if depth >= MAX_SEARCH_DEPTH
-            || *item_count >= MAX_SEARCH_ITEMS
-            || outcome.matches.len() >= MAX_CONTENT_RESULTS
-        {
-            outcome.truncated = true;
+        if depth >= MAX_SEARCH_DEPTH {
+            outcome.truncated = Some(TruncationReason::DepthLimit);
+            return;
+        }
+        if *item_count >= MAX_SEARCH_ITEMS {
+            outcome.truncated = Some(TruncationReason::ItemLimit);
+            return;
+        }
+        if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+            outcome.truncated = Some(TruncationReason::ContentResultLimit);
             return;
         }
 
-        // Allocate pattern_lower once per recursive subtree, not per file.
         let pattern_lower: Vec<char> = if !case_sensitive {
             pattern.chars().flat_map(|c| c.to_lowercase()).collect()
         } else {
@@ -251,6 +277,7 @@ impl FileSearch {
         );
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn search_content_recursive_inner(
         path: &Path,
@@ -265,11 +292,16 @@ impl FileSearch {
         if !path.is_dir() {
             return;
         }
-        if depth >= MAX_SEARCH_DEPTH
-            || *item_count >= MAX_SEARCH_ITEMS
-            || outcome.matches.len() >= MAX_CONTENT_RESULTS
-        {
-            outcome.truncated = true;
+        if depth >= MAX_SEARCH_DEPTH {
+            outcome.truncated = Some(TruncationReason::DepthLimit);
+            return;
+        }
+        if *item_count >= MAX_SEARCH_ITEMS {
+            outcome.truncated = Some(TruncationReason::ItemLimit);
+            return;
+        }
+        if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+            outcome.truncated = Some(TruncationReason::ContentResultLimit);
             return;
         }
 
@@ -285,7 +317,11 @@ impl FileSearch {
 
         for entry in entries {
             if *item_count >= MAX_SEARCH_ITEMS || outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                outcome.truncated = true;
+                outcome.truncated = if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                    Some(TruncationReason::ContentResultLimit)
+                } else {
+                    Some(TruncationReason::ItemLimit)
+                };
                 return;
             }
             let entry = match entry {
@@ -349,6 +385,7 @@ impl FileSearch {
         }
     }
 
+    #[cfg(test)]
     fn search_in_file(
         path: &Path,
         pattern: &str,
@@ -361,7 +398,7 @@ impl FileSearch {
             return;
         }
         if file_len > MAX_CONTENT_FILE_BYTES {
-            outcome.truncated = true;
+            outcome.truncated = Some(TruncationReason::FileTooLarge);
             return;
         }
 
@@ -379,7 +416,7 @@ impl FileSearch {
 
         for (line_no, line) in reader.split(b'\n').enumerate() {
             if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                outcome.truncated = true;
+                outcome.truncated = Some(TruncationReason::ContentResultLimit);
                 return;
             }
             let line = match line {
@@ -392,10 +429,11 @@ impl FileSearch {
                 }
             };
             if line.contains(&0) {
+                outcome.truncated = Some(TruncationReason::BinaryFile);
                 return;
             }
             if line.len() > MAX_CONTENT_LINE_BYTES {
-                outcome.truncated = true;
+                outcome.truncated = Some(TruncationReason::LineTooLong);
                 continue;
             }
             let line_text = match String::from_utf8(line) {
@@ -683,7 +721,7 @@ mod tests {
 
         assert!(outcome.matches.is_empty());
         assert!(!outcome.errors.is_empty());
-        assert!(!outcome.truncated);
+        assert_eq!(outcome.truncated, None);
     }
 
     #[test]
@@ -704,7 +742,7 @@ mod tests {
         let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", false, false);
 
         assert_eq!(outcome.matches.len(), MAX_SEARCH_ITEMS);
-        assert!(outcome.truncated);
+        assert_eq!(outcome.truncated, Some(TruncationReason::ItemLimit));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -766,7 +804,10 @@ mod tests {
         let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert_eq!(outcome.matches.len(), MAX_CONTENT_RESULTS);
-        assert!(outcome.truncated);
+        assert_eq!(
+            outcome.truncated,
+            Some(TruncationReason::ContentResultLimit)
+        );
         assert!(outcome.errors.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -792,7 +833,7 @@ mod tests {
         let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert!(outcome.matches.is_empty());
-        assert!(outcome.truncated);
+        assert_eq!(outcome.truncated, Some(TruncationReason::FileTooLarge));
         assert!(outcome.errors.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -817,7 +858,7 @@ mod tests {
         let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert!(outcome.matches.is_empty());
-        assert!(!outcome.truncated);
+        assert_eq!(outcome.truncated, Some(TruncationReason::BinaryFile));
         assert!(outcome.errors.is_empty());
 
         let _ = fs::remove_dir_all(dir);

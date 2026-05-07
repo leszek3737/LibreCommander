@@ -8,6 +8,9 @@ use crate::ui::viewer;
 
 use super::super::{dismiss_dialog, refresh_both, refresh_panel};
 
+const SCROLL_LINES: usize = 3;
+const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
+
 pub enum MouseOutcome {
     Consumed,
     NormalKey(KeyCode),
@@ -91,12 +94,12 @@ fn handle_mouse_scroll(
     let len = panel.entries.len();
     match kind {
         MouseEventKind::ScrollUp => {
-            panel.cursor = panel.cursor.saturating_sub(3);
+            panel.cursor = panel.cursor.saturating_sub(SCROLL_LINES);
             panel.ensure_cursor_visible(visible_rows);
         }
         MouseEventKind::ScrollDown => {
-            if panel.cursor + 3 < len {
-                panel.cursor += 3;
+            if panel.cursor + SCROLL_LINES < len {
+                panel.cursor += SCROLL_LINES;
             } else {
                 panel.cursor = len.saturating_sub(1);
             }
@@ -119,19 +122,7 @@ fn handle_mouse_dialog(
     }
 
     if let AppMode::Dialog(DialogKind::Input { .. }) = state.mode {
-        let dialog_width = ((width as u32 * 50) / 100).max(30).min(width as u32) as u16;
-        let dialog_height = ((height as u32 * 40) / 100).max(5).min(height as u32) as u16;
-        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
-        let dialog_top = (height.saturating_sub(dialog_height)) / 2;
-        let inside_dialog = col >= dialog_left
-            && col < dialog_left.saturating_add(dialog_width)
-            && row >= dialog_top
-            && row < dialog_top.saturating_add(dialog_height);
-
-        if inside_dialog {
-            return Some(MouseOutcome::Consumed);
-        }
-        return None;
+        return Some(MouseOutcome::Consumed);
     }
 
     if let AppMode::Dialog(DialogKind::Confirm(_)) = state.mode {
@@ -181,7 +172,7 @@ fn handle_mouse_menu_bar(
     row: u16,
     width: u16,
 ) -> Option<MouseOutcome> {
-    if row != 0 || !matches!(state.mode, AppMode::Normal) {
+    if row != 0 || !matches!(state.mode, AppMode::Normal | AppMode::Menu) {
         return None;
     }
     for (i, title) in MENU_TITLES.iter().enumerate() {
@@ -194,6 +185,7 @@ fn handle_mouse_menu_bar(
             return Some(MouseOutcome::Consumed);
         }
     }
+    // Consume click on menu bar even outside title bounds — prevents click-through to panels.
     Some(MouseOutcome::Consumed)
 }
 
@@ -304,7 +296,7 @@ fn handle_mouse_panels(
         if let Some(last_pos) = state.last_click_position {
             last_pos.0 == col
                 && last_pos.1 == row
-                && now.duration_since(last_time) < Duration::from_millis(300)
+                && now.duration_since(last_time) < Duration::from_millis(DOUBLE_CLICK_THRESHOLD_MS)
         } else {
             false
         }
@@ -364,7 +356,7 @@ mod tests {
         let mut running_job = None;
         let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 0, 0, 100, 40);
 
-        assert!(outcomes.is_none());
+        assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
         assert!(matches!(
             state.mode,
             AppMode::Dialog(DialogKind::Input { .. })

@@ -25,6 +25,9 @@ const CRITICAL_DIRS: &[&str] = &[
     "/lib64",
     "/nix",
     "/private",
+    "/private/etc",
+    "/private/tmp",
+    "/private/var",
     "/proc",
     "/sbin",
     "/sys",
@@ -66,9 +69,14 @@ pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
     ensure_destination_absent(dest)?;
 
     reject_same_file(src, dest)?;
-    let src_perms = fs::metadata(src)?.permissions();
+    let src_meta = fs::metadata(src)?;
+    let src_perms = src_meta.permissions();
     let bytes = fs::copy(src, dest)?;
     fs::set_permissions(dest, src_perms)?;
+    let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
+    let atime = filetime::FileTime::from_last_access_time(&src_meta);
+    // Best-effort: some filesystems don't support timestamps
+    let _ = filetime::set_file_times(dest, atime, mtime);
     Ok(bytes)
 }
 
@@ -390,7 +398,7 @@ pub fn move_entry_with_progress(
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
-                if let Err(del_err) = delete_dir_recursive(src) {
+                if let Err(del_err) = delete_dir_recursive_cancelable(src, cancel) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
                         src.display(),
@@ -447,8 +455,21 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
             ));
         }
     }
+    let is_under_temp = {
+        let canonical_temp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        canonical.starts_with(&canonical_temp)
+    };
+    let original_str = path.to_string_lossy();
     for critical in CRITICAL_DIR_PREFIXES {
         if canonical_str.starts_with(&format!("{critical}/")) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("refusing to delete critical system directory: {critical}"),
+            ));
+        }
+        if !is_under_temp && original_str.starts_with(&format!("{critical}/")) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
@@ -461,9 +482,12 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
 }
 
 fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?;
+    let canonical = path.canonicalize().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("cannot canonicalize {}: {e}", path.display()),
+        )
+    })?;
     if canonical != root && !path_contains_canonical(root, &canonical) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -623,7 +647,7 @@ fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
 
 fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
     for _ in 0..128 {
-        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp = temp_dir_path_for(dest, seq);
         match fs::create_dir(&temp) {
             Ok(()) => return Ok(temp),
@@ -884,7 +908,7 @@ mod tests {
         fs::write(src.join("file.txt"), b"content").unwrap();
 
         let dest = tmp.join("dest_dir");
-        let seq = TEMP_DIR_COUNTER.load(Ordering::SeqCst);
+        let seq = TEMP_DIR_COUNTER.load(Ordering::Relaxed);
         let collision = temp_dir_path_for(&dest, seq);
         fs::create_dir(&collision).unwrap();
         fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
@@ -934,7 +958,7 @@ mod tests {
         fs::write(src.join("file.txt"), b"content").unwrap();
         let dest = tmp.join("dest_dir");
 
-        let seq = TEMP_DIR_COUNTER.load(Ordering::SeqCst);
+        let seq = TEMP_DIR_COUNTER.load(Ordering::Relaxed);
         let collision = temp_dir_path_for(&dest, seq);
         fs::create_dir(&collision).unwrap();
         fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
