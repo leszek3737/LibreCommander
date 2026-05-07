@@ -399,7 +399,7 @@ pub struct AppState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
-    Text { wrap: bool, line_numbers: bool },
+    Text,
     Hex,
 }
 

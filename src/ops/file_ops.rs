@@ -461,10 +461,7 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
 }
 
 fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?;
-    if canonical != root && !path_contains_canonical(root, &canonical) {
+    if path != root && !path_contains_canonical(root, path) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "refusing to delete path outside requested directory",

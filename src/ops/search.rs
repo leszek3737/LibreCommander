@@ -2,9 +2,14 @@
 //!
 //! Full file search by name pattern or content.
 
+use std::path::Path;
+
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
@@ -28,8 +33,12 @@ impl<T> Default for SearchOutcome<T> {
 
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
+
+#[cfg(test)]
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+#[cfg(test)]
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
+#[cfg(test)]
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
 /// Inline char buffer that lives on the stack for sizes <= N,
@@ -183,6 +192,7 @@ impl FileSearch {
         }
     }
 
+    #[cfg(test)]
     pub fn search_content(
         path: &Path,
         pattern: &str,
@@ -192,6 +202,7 @@ impl FileSearch {
         Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
     }
 
+    #[cfg(test)]
     pub fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
@@ -212,6 +223,7 @@ impl FileSearch {
         outcome
     }
 
+    #[cfg(test)]
     fn search_content_recursive(
         path: &Path,
         pattern: &str,
@@ -232,7 +244,6 @@ impl FileSearch {
             return;
         }
 
-        // Allocate pattern_lower once per recursive subtree, not per file.
         let pattern_lower: Vec<char> = if !case_sensitive {
             pattern.chars().flat_map(|c| c.to_lowercase()).collect()
         } else {
@@ -251,6 +262,7 @@ impl FileSearch {
         );
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn search_content_recursive_inner(
         path: &Path,
@@ -349,6 +361,7 @@ impl FileSearch {
         }
     }
 
+    #[cfg(test)]
     fn search_in_file(
         path: &Path,
         pattern: &str,

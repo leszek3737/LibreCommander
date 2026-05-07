@@ -3,11 +3,17 @@ use std::path::Path;
 use ratatui::{
     Frame,
     layout::Rect,
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
 
 use crate::app::dir_tree::TreeEntry;
 use crate::ui::theme::Theme;
+
+const INDENT_STR: &str =
+    "                                                                                ";
+
+const HELP_TEXT: &str = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
 
 pub fn render_directory_tree(
     f: &mut Frame,
@@ -52,7 +58,7 @@ pub fn render_directory_tree(
             break;
         }
 
-        let indent = "  ".repeat(entry.depth);
+        let indent_len = (entry.depth * 2).min(INDENT_STR.len());
         let prefix = if entry.is_dir {
             if entry.expanded { "- " } else { "+ " }
         } else {
@@ -67,15 +73,30 @@ pub fn render_directory_tree(
             Theme::panel_file(Theme::REGULAR_FILE)
         };
 
-        let text = format!("{}{}{}", indent, prefix, entry.name);
-        let para = Paragraph::new(text).style(line_style);
+        let line = Line::from(vec![
+            Span::styled(&INDENT_STR[..indent_len], line_style),
+            Span::styled(prefix, line_style),
+            Span::styled(entry.name.as_str(), line_style),
+        ]);
+        let para = Paragraph::new(line);
         let row_area = Rect::new(inner.x, y, inner.width, 1);
         f.render_widget(para, row_area);
     }
 
     let bottom_y = inner.y + inner.height.saturating_sub(1);
     let bottom_area = Rect::new(inner.x, bottom_y, inner.width, 1);
-    let help_text = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
-    let help_para = Paragraph::new(help_text).style(Theme::warning());
-    f.render_widget(help_para, bottom_area);
+
+    let avail = inner.width as usize;
+    let help_len = HELP_TEXT.len();
+    if avail >= help_len {
+        let help_para = Paragraph::new(HELP_TEXT).style(Theme::warning());
+        f.render_widget(help_para, bottom_area);
+    } else if avail > 1 {
+        let line = Line::from(vec![
+            Span::styled(&HELP_TEXT[..avail.saturating_sub(1)], Theme::warning()),
+            Span::styled("…", Theme::warning()),
+        ]);
+        let help_para = Paragraph::new(line);
+        f.render_widget(help_para, bottom_area);
+    }
 }
