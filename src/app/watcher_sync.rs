@@ -34,12 +34,16 @@ pub fn sync_watcher_paths(
     for path in current.difference(&desired) {
         if let Err(err) = watcher.unwatch(path) {
             debug_log!("Watcher unwatch failed for {}: {err}", path.display());
+            // Intentional: continue on error — one failing path shouldn't abort the entire sync.
+            // Worst case: a stale watch remains until next poll cycle cleans it up.
             continue;
         }
     }
     for path in desired.difference(&current) {
         if let Err(err) = watcher.watch(path) {
             debug_log!("Watcher watch failed for {}: {err}", path.display());
+            // Intentional: continue on error — one failing path shouldn't abort the entire sync.
+            // Worst case: a stale watch remains until next poll cycle cleans it up.
             continue;
         }
     }

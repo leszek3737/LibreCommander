@@ -210,17 +210,17 @@ fn should_emit(debounce_state: &Mutex<HashMap<PathBuf, Instant>>, paths: &[&Path
         debug_log!("watcher mutex poisoned, recovering: {e}");
         e.into_inner()
     });
-    let dominated = paths.iter().any(|p| {
+    let suppressed = paths.iter().any(|p| {
         debounce
             .get(*p)
             .is_some_and(|last| now.duration_since(*last) < Duration::from_millis(300))
     });
-    if !dominated {
+    if !suppressed {
         for p in paths {
             debounce.insert(p.to_path_buf(), now);
         }
     }
-    !dominated
+    !suppressed
 }
 
 fn convert_event(event: notify::Event) -> Vec<WatchEvent> {

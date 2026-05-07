@@ -248,6 +248,10 @@ pub fn render_confirm_dialog(
     f.render_widget(btn_paragraph, chunks[2]);
 }
 
+pub fn input_dialog_rect(area: Rect) -> Rect {
+    centered_rect(50, 40, area)
+}
+
 pub fn render_input_dialog(
     f: &mut Frame,
     area: Rect,

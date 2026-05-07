@@ -453,7 +453,6 @@ mod tests {
         let raw: u32 = 0x1_0000 | 0o100755;
         let mode = ChaMode::new(raw);
         assert_eq!(mode.mode_u32(), raw);
-        assert_eq!(mode.mode_u32(), raw);
     }
 
     #[test]

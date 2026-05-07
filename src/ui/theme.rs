@@ -99,8 +99,8 @@ impl Theme {
         Style::default().fg(Self::ERROR).bg(Self::DIALOG_BG)
     }
 
-    /// Semantic alias of [`progress_bar()`] — intentionally separate so the
-    /// help dialog style can diverge independently in future.
+    /// Style for help dialogs — info color on dialog background.
+    /// Also used as the base for `progress_bar()`.
     pub fn help_dialog() -> Style {
         Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
     }
@@ -109,8 +109,8 @@ impl Theme {
         Style::default().fg(Self::WARNING).bg(Self::DIALOG_BG)
     }
 
-    /// Semantic alias of [`help_dialog()`] — intentionally separate so the
-    /// progress bar style can diverge independently in future.
+    /// Style for progress bars — delegates to `help_dialog()`.
+    /// Separate method so the style can diverge independently in future.
     pub fn progress_bar() -> Style {
         Self::help_dialog()
     }

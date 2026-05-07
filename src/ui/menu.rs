@@ -34,6 +34,10 @@ pub fn render_menu_dropdown(
         f.render_widget(p, area);
     }
 
+    if MENU_ITEMS.is_empty() {
+        return;
+    }
+
     let selected_menu = selected_menu.min(MENU_ITEMS.len().saturating_sub(1));
     let items = MENU_ITEMS[selected_menu];
     let dropdown_width = items

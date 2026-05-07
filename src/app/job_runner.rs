@@ -96,7 +96,7 @@ pub fn poll_running_job(
                     progress.byte_percent() / 100.0,
                 ));
             }
-            JobMessage::Finished { report, .. } => finished = Some(report),
+            JobMessage::Finished { report } => finished = Some(report),
         }
     }
 

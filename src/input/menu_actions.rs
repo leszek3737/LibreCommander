@@ -104,7 +104,25 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
             ));
             MenuResult::Handled
         }
-        _ => MenuResult::NotHandled,
+        MenuAction::OpenUserMenu
+        | MenuAction::ViewFile
+        | MenuAction::EditFile
+        | MenuAction::Copy
+        | MenuAction::Move
+        | MenuAction::MakeDirectory
+        | MenuAction::Delete
+        | MenuAction::Rename
+        | MenuAction::Chmod
+        | MenuAction::Quit
+        | MenuAction::DirectoryTree
+        | MenuAction::FindFile
+        | MenuAction::SwapPanels
+        | MenuAction::SwitchPanels
+        | MenuAction::CompareDirs
+        | MenuAction::History
+        | MenuAction::DirectoryHotlist
+        | MenuAction::SaveCurrentPathToHotlist
+        | MenuAction::SaveSetup => MenuResult::NotHandled,
     }
 }
 
@@ -176,7 +194,25 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
                 Some("Path added to hotlist (run Save Setup to persist)".to_string());
             MenuResult::Handled
         }
-        _ => MenuResult::NotHandled,
+        MenuAction::ToggleListingMode
+        | MenuAction::CycleSortOrder
+        | MenuAction::OpenFilter
+        | MenuAction::RefreshPanel
+        | MenuAction::OpenUserMenu
+        | MenuAction::ViewFile
+        | MenuAction::EditFile
+        | MenuAction::Copy
+        | MenuAction::Move
+        | MenuAction::MakeDirectory
+        | MenuAction::Delete
+        | MenuAction::Rename
+        | MenuAction::Chmod
+        | MenuAction::Quit
+        | MenuAction::TogglePanelHidden
+        | MenuAction::ResetPanelFilter
+        | MenuAction::ToggleHiddenFiles
+        | MenuAction::TogglePermissions
+        | MenuAction::SaveSetup => MenuResult::NotHandled,
     }
 }
 
@@ -221,7 +257,25 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult 
             }
             MenuResult::Handled
         }
-        _ => MenuResult::NotHandled,
+        MenuAction::ToggleListingMode
+        | MenuAction::CycleSortOrder
+        | MenuAction::OpenFilter
+        | MenuAction::RefreshPanel
+        | MenuAction::OpenUserMenu
+        | MenuAction::Quit
+        | MenuAction::DirectoryTree
+        | MenuAction::FindFile
+        | MenuAction::SwapPanels
+        | MenuAction::SwitchPanels
+        | MenuAction::CompareDirs
+        | MenuAction::History
+        | MenuAction::DirectoryHotlist
+        | MenuAction::SaveCurrentPathToHotlist
+        | MenuAction::TogglePanelHidden
+        | MenuAction::ResetPanelFilter
+        | MenuAction::ToggleHiddenFiles
+        | MenuAction::TogglePermissions
+        | MenuAction::SaveSetup => MenuResult::NotHandled,
     }
 }
 
@@ -246,7 +300,30 @@ fn execute_misc_action(action: &MenuAction, state: &mut AppState) -> Option<KeyC
             open_user_menu(state);
             None
         }
-        _ => None,
+        MenuAction::ToggleListingMode
+        | MenuAction::CycleSortOrder
+        | MenuAction::OpenFilter
+        | MenuAction::RefreshPanel
+        | MenuAction::ViewFile
+        | MenuAction::EditFile
+        | MenuAction::Copy
+        | MenuAction::Move
+        | MenuAction::MakeDirectory
+        | MenuAction::Delete
+        | MenuAction::Rename
+        | MenuAction::Chmod
+        | MenuAction::DirectoryTree
+        | MenuAction::FindFile
+        | MenuAction::SwapPanels
+        | MenuAction::SwitchPanels
+        | MenuAction::CompareDirs
+        | MenuAction::History
+        | MenuAction::DirectoryHotlist
+        | MenuAction::SaveCurrentPathToHotlist
+        | MenuAction::TogglePanelHidden
+        | MenuAction::ResetPanelFilter
+        | MenuAction::ToggleHiddenFiles
+        | MenuAction::TogglePermissions => None,
     }
 }
 

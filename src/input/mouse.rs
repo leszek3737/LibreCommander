@@ -122,18 +122,6 @@ fn handle_mouse_dialog(
     }
 
     if let AppMode::Dialog(DialogKind::Input { .. }) = state.mode {
-        let dialog_width = ((width as u32 * 50) / 100).max(30).min(width as u32) as u16;
-        let dialog_height = ((height as u32 * 40) / 100).max(5).min(height as u32) as u16;
-        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
-        let dialog_top = (height.saturating_sub(dialog_height)) / 2;
-        let inside_dialog = col >= dialog_left
-            && col < dialog_left.saturating_add(dialog_width)
-            && row >= dialog_top
-            && row < dialog_top.saturating_add(dialog_height);
-
-        if inside_dialog {
-            return Some(MouseOutcome::Consumed);
-        }
         return Some(MouseOutcome::Consumed);
     }
 
@@ -197,6 +185,7 @@ fn handle_mouse_menu_bar(
             return Some(MouseOutcome::Consumed);
         }
     }
+    // Consume click on menu bar even outside title bounds — prevents click-through to panels.
     Some(MouseOutcome::Consumed)
 }
 

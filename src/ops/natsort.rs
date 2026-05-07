@@ -120,7 +120,7 @@ impl Ord for NatKeySegment {
                     value: vb,
                     raw_len: lb,
                 },
-            ) => va.cmp(vb).then(lb.cmp(la)),
+            ) => va.cmp(vb).then(la.cmp(lb)),
             (NatKeySegment::Text(_), NatKeySegment::Num { .. }) => Ordering::Less,
             (NatKeySegment::Num { .. }, NatKeySegment::Text(_)) => Ordering::Greater,
         }
@@ -244,6 +244,16 @@ mod tests {
     fn test_leading_zeros() {
         let items = ["pic02", "pic02000", "pic2"];
         sorted(&items);
+    }
+
+    #[test]
+    fn test_natsort_key_leading_zeros() {
+        let key_short = natsort_key(b"pic2", false);
+        let key_long = natsort_key(b"pic02", false);
+        // Both have value=2, but raw_len differs: 1 vs 2
+        // Shorter raw_len should sort first
+        assert_eq!(key_short.cmp(&key_long), Ordering::Less);
+        assert_eq!(key_long.cmp(&key_short), Ordering::Greater);
     }
 
     #[test]
