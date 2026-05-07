@@ -120,7 +120,7 @@ impl Ord for NatKeySegment {
                     value: vb,
                     raw_len: lb,
                 },
-            ) => va.cmp(vb).then(la.cmp(lb)),
+            ) => va.cmp(vb).then(lb.cmp(la)),
             (NatKeySegment::Text(_), NatKeySegment::Num { .. }) => Ordering::Less,
             (NatKeySegment::Num { .. }, NatKeySegment::Text(_)) => Ordering::Greater,
         }

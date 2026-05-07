@@ -124,12 +124,20 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
                 name_key(entry, sensitive),
             )
         }),
-        SortMode::NaturalNameDesc => entries.sort_by_cached_key(|entry| {
-            Reverse((
-                entry_group(entry, dir_first),
-                natsort::natsort_key(entry.name.as_bytes(), !sensitive),
-                name_key(entry, sensitive),
-            ))
+        SortMode::NaturalNameDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| {
+                    let key_a = (
+                        natsort::natsort_key(a.name.as_bytes(), !sensitive),
+                        name_key(a, sensitive),
+                    );
+                    let key_b = (
+                        natsort::natsort_key(b.name.as_bytes(), !sensitive),
+                        name_key(b, sensitive),
+                    );
+                    key_b.cmp(&key_a)
+                })
         }),
     }
 }

@@ -203,7 +203,7 @@ impl FileSearch {
     }
 
     #[cfg(test)]
-    pub fn search_content(
+    fn search_content(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -213,7 +213,7 @@ impl FileSearch {
     }
 
     #[cfg(test)]
-    pub fn search_content_with_diagnostics(
+    fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
         recursive: bool,

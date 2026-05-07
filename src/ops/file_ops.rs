@@ -69,14 +69,14 @@ pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
     ensure_destination_absent(dest)?;
 
     reject_same_file(src, dest)?;
-    let src_perms = fs::metadata(src)?.permissions();
+    let src_meta = fs::metadata(src)?;
+    let src_perms = src_meta.permissions();
     let bytes = fs::copy(src, dest)?;
     fs::set_permissions(dest, src_perms)?;
-    if let Ok(meta) = fs::metadata(src) {
-        let mtime = filetime::FileTime::from_last_modification_time(&meta);
-        let atime = filetime::FileTime::from_last_access_time(&meta);
-        let _ = filetime::set_file_times(dest, atime, mtime);
-    }
+    let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
+    let atime = filetime::FileTime::from_last_access_time(&src_meta);
+    // Best-effort: some filesystems don't support timestamps
+    let _ = filetime::set_file_times(dest, atime, mtime);
     Ok(bytes)
 }
 
@@ -482,7 +482,13 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
 }
 
 fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
-    if path != root && !path_contains_canonical(root, path) {
+    let canonical = path.canonicalize().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("cannot canonicalize {}: {e}", path.display()),
+        )
+    })?;
+    if canonical != root && !path_contains_canonical(root, &canonical) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "refusing to delete path outside requested directory",

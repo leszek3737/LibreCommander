@@ -186,6 +186,9 @@ fn build_suffix(
 }
 
 fn truncate_name(name: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
     let name_width = UnicodeWidthStr::width(name);
     if name_width <= max_width {
         return name.to_string();

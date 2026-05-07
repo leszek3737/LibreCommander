@@ -19,7 +19,7 @@ const SOURCE_CODE_SUFFIXES: &[&str] = &[
     ".fs", ".fsx", ".vb", ".php", ".rb", ".lua", ".pl", ".pm", ".r", ".jl", ".scala", ".sc",
     ".clj", ".cljs", ".ex", ".exs", ".erl", ".hrl", ".hs", ".lhs", ".ml", ".mli", ".nim", ".zig",
     ".v", ".sv", ".dart", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".sql", ".html",
-    ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".wasm", ".json", ".xml",
+    ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".wasm",
 ];
 
 const DOCUMENT_SUFFIXES: &[&str] = &[
@@ -62,7 +62,9 @@ const VIDEO_SUFFIXES: &[&str] = &[
 ];
 
 const CONFIG_SUFFIXES: &[&str] = &[
+    ".json",
     ".jsonc",
+    ".xml",
     ".toml",
     ".yaml",
     ".yml",
@@ -400,7 +402,7 @@ mod tests {
         assert!(is_archive("FILE.ZIP"));
         assert!(is_image("PHOTO.JPG"));
         assert!(is_source_code("MAIN.RS"));
-        assert!(is_source_code("SETTINGS.JSON"));
+        assert!(is_config("SETTINGS.JSON"));
     }
 
     #[test]

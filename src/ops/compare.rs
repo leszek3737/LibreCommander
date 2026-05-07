@@ -20,6 +20,7 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
         CompareMode::Quick => true,
         CompareMode::Size => left.size == right.size,
         CompareMode::Thorough => {
+            // Conservative: unavailable mtime → always different (can't verify equality)
             left.size == right.size
                 && left.mtime.is_some()
                 && right.mtime.is_some()

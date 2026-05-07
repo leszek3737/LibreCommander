@@ -1565,8 +1565,16 @@ fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
     if error_count > 0 {
         message.push_str(&format!(", {error_count} error(s)"));
     }
-    if truncated.is_some() {
-        message.push_str(", truncated");
+    if let Some(reason) = truncated {
+        let label = match reason {
+            ops::search::TruncationReason::DepthLimit => "depth limit",
+            ops::search::TruncationReason::ItemLimit => "item limit",
+            ops::search::TruncationReason::ContentResultLimit => "result limit",
+            ops::search::TruncationReason::FileTooLarge => "file too large",
+            ops::search::TruncationReason::LineTooLong => "line too long",
+            ops::search::TruncationReason::BinaryFile => "binary file",
+        };
+        message.push_str(&format!(", truncated ({label})"));
     }
     state.status_message = Some(message);
 }

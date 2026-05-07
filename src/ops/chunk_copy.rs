@@ -97,6 +97,9 @@ fn publish_temp(
 
     loop {
         if cancel.load(Ordering::Relaxed) {
+            drop(dest_file); // cleanup on cancel
+            let _ = fs::remove_file(dest);
+            let _ = fs::remove_file(temp_dest);
             return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
         }
 
