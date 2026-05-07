@@ -419,6 +419,7 @@ where
                 "{}: cannot copy/move root or parent directory",
                 src.display()
             ));
+            bytes_done = bytes_done.saturating_add(sizes[idx]);
             report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
             continue;
         }
@@ -513,6 +514,7 @@ fn batch_delete(
     );
     for (idx, path) in paths.iter().enumerate() {
         if !seen.insert(path.clone()) {
+            bytes_done = bytes_done.saturating_add(sizes[idx]);
             report_progress(
                 progress,
                 ProgressSnapshot {

@@ -24,7 +24,7 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
-            if let Err(err) = publish_temp(&temp_dest, dest, progress_tx, cancel) {
+            if let Err(err) = publish_temp(&temp_dest, dest, cancel) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
             }
@@ -79,12 +79,7 @@ fn copy_to_temp(
     Ok(total_written)
 }
 
-fn publish_temp(
-    temp_dest: &Path,
-    dest: &Path,
-    progress_tx: &std::sync::mpsc::Sender<u64>,
-    cancel: &AtomicBool,
-) -> io::Result<()> {
+fn publish_temp(temp_dest: &Path, dest: &Path, cancel: &AtomicBool) -> io::Result<()> {
     match fs::hard_link(temp_dest, dest) {
         Ok(()) => return fs::remove_file(temp_dest),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
@@ -97,7 +92,7 @@ fn publish_temp(
 
     loop {
         if cancel.load(Ordering::Relaxed) {
-            drop(dest_file); // cleanup on cancel
+            drop(dest_file);
             let _ = fs::remove_file(dest);
             let _ = fs::remove_file(temp_dest);
             return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
@@ -109,7 +104,6 @@ fn publish_temp(
         }
 
         dest_file.write_all(&buffer[..bytes_read])?;
-        let _ = progress_tx.send(bytes_read as u64);
     }
 
     dest_file.flush()?;
