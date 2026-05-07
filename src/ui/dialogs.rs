@@ -142,13 +142,35 @@ fn dialog_block(title: &str, style: Style) -> Block<'_> {
 }
 
 fn truncate_path(path: &str, max_width: usize) -> String {
-    if path.chars().count() <= max_width {
+    let total_width = unicode_width::UnicodeWidthStr::width(path);
+    if total_width <= max_width {
         path.to_string()
     } else if max_width > 3 {
-        let suffix: String = path.chars().rev().take(max_width - 3).collect();
-        format!("...{}", suffix.chars().rev().collect::<String>())
+        let suffix_budget = max_width - 3;
+        let mut width = 0;
+        let mut split_idx = path.len();
+        for (idx, ch) in path.char_indices().rev() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width + cw > suffix_budget {
+                split_idx = idx + ch.len_utf8();
+                break;
+            }
+            width += cw;
+            split_idx = idx;
+        }
+        format!("...{}", &path[split_idx..])
     } else {
-        path.chars().take(max_width).collect()
+        let mut out = String::new();
+        let mut width = 0;
+        for ch in path.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width + cw > max_width {
+                break;
+            }
+            width += cw;
+            out.push(ch);
+        }
+        out
     }
 }
 

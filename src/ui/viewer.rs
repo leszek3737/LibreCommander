@@ -211,7 +211,7 @@ impl ViewerState {
     fn scroll_to_current_match(&mut self, page_height: usize) {
         if let Some(&(line_idx, _, _)) = self.search_matches.get(self.current_match) {
             let context = 5usize.min(page_height.saturating_sub(1));
-            self.scroll_offset = line_idx.saturating_sub(context);
+            self.scroll_offset = line_idx.saturating_sub(context).min(self.max_scroll());
         }
     }
 

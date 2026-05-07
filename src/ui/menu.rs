@@ -3,9 +3,12 @@ use ratatui::{
     layout::Rect,
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::theme::Theme;
+
+const MIN_DROPDOWN_WIDTH: u16 = 10;
 
 pub fn render_menu_dropdown(
     f: &mut Frame,
@@ -31,8 +34,13 @@ pub fn render_menu_dropdown(
         f.render_widget(p, area);
     }
 
-    let items = MENU_ITEMS[selected_menu];
-    let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
+    let items = MENU_ITEMS.get(selected_menu).unwrap_or(&MENU_ITEMS[0]);
+    let dropdown_width = items
+        .iter()
+        .map(|s| s.width())
+        .max()
+        .unwrap_or(MIN_DROPDOWN_WIDTH as usize) as u16
+        + 4;
     let dropdown_height = items.len() as u16 + 2;
 
     let dropdown_y = menu_bar_area.y + 1;

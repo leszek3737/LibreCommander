@@ -102,7 +102,7 @@ impl Theme {
     }
 
     pub fn progress_bar() -> Style {
-        Style::default().fg(Self::INFO).bg(Self::DIALOG_BG)
+        Self::help_dialog()
     }
 
     pub fn selected_error() -> Style {
@@ -118,8 +118,6 @@ impl Theme {
     pub fn category_color(category: FileCategory) -> Color {
         match category {
             FileCategory::Dir => Self::DIRECTORY,
-            FileCategory::Executable => Self::EXECUTABLE,
-            FileCategory::Symlink => Self::SYMLINK,
             FileCategory::Archive => Self::ARCHIVE,
             FileCategory::Image => Self::IMAGE,
             FileCategory::Video => Self::VIDEO,
@@ -128,6 +126,8 @@ impl Theme {
             FileCategory::Code => Self::SOURCE_CODE,
             FileCategory::Config => Self::CONFIG,
             FileCategory::Font => Self::FONT,
+            FileCategory::Executable => Self::EXECUTABLE,
+            FileCategory::Symlink => Self::SYMLINK,
             FileCategory::Other => Self::REGULAR_FILE,
         }
     }

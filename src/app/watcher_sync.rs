@@ -21,7 +21,10 @@ pub fn sync_watcher_paths(
     let left = state.left_panel.path.clone();
     let right = state.right_panel.path.clone();
 
-    if last_synced.as_ref() == Some(&(left.clone(), right.clone())) {
+    if let Some((l, r)) = last_synced.as_ref()
+        && l == &left
+        && r == &right
+    {
         return;
     }
 
@@ -31,13 +34,13 @@ pub fn sync_watcher_paths(
     for path in current.difference(&desired) {
         if let Err(err) = watcher.unwatch(path) {
             debug_log!("Watcher unwatch failed for {}: {err}", path.display());
-            return;
+            continue;
         }
     }
     for path in desired.difference(&current) {
         if let Err(err) = watcher.watch(path) {
             debug_log!("Watcher watch failed for {}: {err}", path.display());
-            return;
+            continue;
         }
     }
 
@@ -134,12 +137,12 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
         return false;
     };
 
-    let parent_raw = parent.to_path_buf();
-    let panel_path_raw = panel_path.to_path_buf();
-
-    if parent_raw == panel_path_raw {
+    if parent == panel_path {
         return true;
     }
+
+    let parent_raw = parent.to_path_buf();
+    let panel_path_raw = panel_path.to_path_buf();
 
     let parent_canonical = parent.canonicalize().ok();
     let panel_canonical = panel_path.canonicalize().ok();
@@ -165,12 +168,6 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
         .unfiltered_entries
         .iter()
         .find(|existing| existing.path == entry.path)
-        .or_else(|| {
-            panel
-                .entries
-                .iter()
-                .find(|existing| existing.path == entry.path)
-        })
     {
         if existing.cha.hits(&entry.cha) {
             return false;
@@ -187,7 +184,6 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     let existed = panel
         .unfiltered_entries
         .iter()
-        .chain(panel.entries.iter())
         .any(|entry| entry.path == path);
     if existed {
         reader::remove_entry(panel, path);

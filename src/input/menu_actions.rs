@@ -42,6 +42,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
                     ListingMode::Long => ListingMode::Brief,
                     ListingMode::Brief => ListingMode::Long,
                 };
+                state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
             });
             MenuResult::Handled
         }
@@ -92,17 +93,6 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
             p.cursor = 0;
             p.scroll_offset = 0;
             refresh_active(state);
-            MenuResult::Handled
-        }
-        MenuAction::ToggleLayoutMode => {
-            with_menu_panel(state, |state| {
-                let panel = state.active_panel_mut();
-                panel.listing_mode = match panel.listing_mode {
-                    ListingMode::Long => ListingMode::Brief,
-                    ListingMode::Brief => ListingMode::Long,
-                };
-                state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
-            });
             MenuResult::Handled
         }
         MenuAction::TogglePermissions => {
@@ -182,7 +172,8 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
                     .directory_hotlist
                     .push(state.active_panel().path.clone());
             }
-            state.status_message = Some("Path added to hotlist".to_string());
+            state.status_message =
+                Some("Path added to hotlist (run Save Setup to persist)".to_string());
             MenuResult::Handled
         }
         _ => MenuResult::NotHandled,

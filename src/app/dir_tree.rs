@@ -9,7 +9,7 @@ pub struct TreeDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TreeBuildResult {
     pub entries: Vec<TreeEntry>,
     pub diagnostics: Vec<TreeDiagnostic>,
@@ -148,9 +148,8 @@ fn sort_entries(entries: &mut [TreeEntry]) {
 /// If expanding: reads children and inserts them after the entry.
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
-pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, show_hidden: bool) {
-    // Diagnostics logged to debug file; for programmatic access use toggle_expand_with_diagnostics.
-    let diagnostics = toggle_expand_with_diagnostics(entries, index, root, show_hidden);
+pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, show_hidden: bool) {
+    let diagnostics = toggle_expand_with_diagnostics(entries, index, show_hidden);
     if !diagnostics.is_empty() {
         debug_log!("Tree expand errors: {}", diagnostics.len());
         for diag in &diagnostics {
@@ -162,7 +161,6 @@ pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, root: &Path, sh
 pub fn toggle_expand_with_diagnostics(
     entries: &mut Vec<TreeEntry>,
     index: usize,
-    _root: &Path,
     show_hidden: bool,
 ) -> Vec<TreeDiagnostic> {
     let (is_dir, expanded, depth, path) = match entries.get(index) {
@@ -287,7 +285,7 @@ mod tests {
         let sub1_idx = entries.iter().position(|e| e.name == "sub1").unwrap();
         assert!(!entries[sub1_idx].expanded);
 
-        toggle_expand(&mut entries, sub1_idx, dir.path(), false);
+        toggle_expand(&mut entries, sub1_idx, false);
 
         // sub1 should now be expanded with its children
         assert!(entries[sub1_idx].expanded);
@@ -309,7 +307,7 @@ mod tests {
         assert!(entries[sub1_idx].expanded);
         let count_before = entries.len();
 
-        toggle_expand(&mut entries, sub1_idx, dir.path(), false);
+        toggle_expand(&mut entries, sub1_idx, false);
 
         assert!(!entries[sub1_idx].expanded);
         assert!(entries.len() < count_before);
@@ -347,7 +345,7 @@ mod tests {
 
         let a_idx = entries.iter().position(|e| e.name == "a.txt").unwrap();
         let len_before = entries.len();
-        toggle_expand(&mut entries, a_idx, dir.path(), false);
+        toggle_expand(&mut entries, a_idx, false);
         assert_eq!(entries.len(), len_before);
     }
 
@@ -356,7 +354,7 @@ mod tests {
         let dir = setup_test_dir();
         let mut entries = build_tree(dir.path(), 0, false);
         let len_before = entries.len();
-        toggle_expand(&mut entries, 9999, dir.path(), false);
+        toggle_expand(&mut entries, 9999, false);
         assert_eq!(entries.len(), len_before);
     }
 
@@ -409,7 +407,7 @@ mod tests {
             name: "missing".to_string(),
         }];
 
-        let diagnostics = toggle_expand_with_diagnostics(&mut entries, 0, dir.path(), false);
+        let diagnostics = toggle_expand_with_diagnostics(&mut entries, 0, false);
 
         assert_eq!(entries.len(), 1);
         assert!(!entries[0].expanded);

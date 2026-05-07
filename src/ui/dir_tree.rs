@@ -38,6 +38,8 @@ pub fn render_directory_tree(
         return;
     }
 
+    let selected = selected.min(entries.len() - 1);
+
     let visible_height = inner.height.saturating_sub(1) as usize;
 
     let effective_scroll = if selected < scroll {

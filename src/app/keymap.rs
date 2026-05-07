@@ -3,9 +3,13 @@
 /// Each binding records the app mode, key combo, semantic action, and
 /// human-readable description. The `find_duplicate_keys()` helper
 /// validates that no key appears twice within the same mode.
+use std::fmt::Write;
+use std::sync::OnceLock;
+
+#[cfg(test)]
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyBinding {
     pub mode: &'static str,
     pub key: &'static str,
@@ -634,7 +638,8 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
 
 /// Returns `(mode, key)` pairs for any key that appears more than once
 /// within the same mode. Empty vec means no duplicates.
-pub fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
+#[cfg(test)]
+pub(crate) fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
     let mut duplicates = Vec::new();
 
@@ -649,21 +654,24 @@ pub fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
 }
 
 /// Build a help message string grouped by mode (for F1 display).
-pub fn build_help_message() -> String {
-    let mut msg = String::new();
-    let mut current_mode = "";
-    for b in KEYBINDINGS {
-        if b.mode != current_mode {
-            if !msg.is_empty() {
-                msg.push('\n');
+pub fn build_help_message() -> &'static str {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut msg = String::with_capacity(KEYBINDINGS.len() * 40);
+        let mut current_mode = "";
+        for b in KEYBINDINGS {
+            if b.mode != current_mode {
+                if !msg.is_empty() {
+                    msg.push('\n');
+                }
+                msg.push_str(b.mode);
+                msg.push_str(":\n");
+                current_mode = b.mode;
             }
-            msg.push_str(b.mode);
-            msg.push_str(":\n");
-            current_mode = b.mode;
+            let _ = writeln!(msg, "  {:<16} {}", b.key, b.description);
         }
-        msg.push_str(&format!("  {:<16} {}\n", b.key, b.description));
-    }
-    msg
+        msg
+    })
 }
 
 #[cfg(test)]

@@ -72,7 +72,6 @@ pub enum MenuAction {
     History,
     DirectoryHotlist,
     SaveCurrentPathToHotlist,
-    ToggleLayoutMode,
     TogglePanelHidden,
     ResetPanelFilter,
     ToggleHiddenFiles,
@@ -112,7 +111,7 @@ const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
 
 const OPTIONS_MENU_ACTIONS: [MenuAction; 7] = [
     MenuAction::SaveCurrentPathToHotlist,
-    MenuAction::ToggleLayoutMode,
+    MenuAction::ToggleListingMode,
     MenuAction::TogglePanelHidden,
     MenuAction::ResetPanelFilter,
     MenuAction::ToggleHiddenFiles,

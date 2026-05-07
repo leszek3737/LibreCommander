@@ -41,7 +41,7 @@ impl PartialEq for MenuEntry {
 /// Shell-escape a single string value using single-quote wrapping.
 /// Internal single quotes become `'\''`.
 pub fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
+    let mut out = String::with_capacity(s.len() + 2 + 3 * s.chars().filter(|&c| c == '\'').count());
     out.push('\'');
     for ch in s.chars() {
         if ch == '\'' {
@@ -55,6 +55,7 @@ pub fn shell_quote(s: &str) -> String {
 }
 
 /// Context supplied by the caller for `%`-substitutions.
+#[derive(Debug)]
 pub struct SubstContext<'a> {
     /// Name of the file under the cursor (not the full path).
     pub current_file: &'a str,
@@ -134,6 +135,7 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
     while let Some((line_idx, line)) = lines.next() {
         // Skip blank lines and comments.
         if line.trim().is_empty() || line.starts_with('#') {
+            pending_condition = None;
             continue;
         }
 
@@ -148,10 +150,14 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
         let mut chars = line.chars();
         let hotkey = match chars.next() {
             Some(c) if !c.is_whitespace() => c,
-            _ => continue,
+            _ => {
+                pending_condition = None;
+                continue;
+            }
         };
         let title = chars.as_str().trim().to_string();
         if title.is_empty() {
+            pending_condition = None;
             continue;
         }
 

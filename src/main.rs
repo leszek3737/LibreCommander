@@ -758,7 +758,6 @@ fn handle_directory_tree(
                 let diagnostics = dir_tree::toggle_expand_with_diagnostics(
                     &mut state.tree_entries,
                     selected,
-                    &state.tree_root,
                     show_hidden,
                 );
                 set_tree_diagnostic_status(&mut state.status_message, &diagnostics);
@@ -862,7 +861,7 @@ fn handle_function_keys<B: ratatui::backend::Backend>(
     match key {
         KeyCode::F(1) => {
             state.mode = AppMode::Dialog(app::types::DialogKind::Help {
-                message: app::keymap::build_help_message(),
+                message: app::keymap::build_help_message().to_string(),
                 scroll_offset: 0,
             });
         }
@@ -1132,11 +1131,7 @@ fn handle_enter_key(state: &mut AppState, visible: usize) {
     }
 }
 
-fn handle_ctrl_keys<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    key: KeyCode,
-    terminal: &mut ratatui::Terminal<B>,
-) {
+fn handle_ctrl_keys(state: &mut AppState, key: KeyCode) {
     match key {
         KeyCode::Char('u') => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
@@ -1164,7 +1159,7 @@ fn handle_ctrl_keys<B: ratatui::backend::Backend>(
             refresh_active(state);
         }
         KeyCode::Char('o') => {
-            if let Err(e) = shell::toggle_external_view(state, terminal, refresh_both) {
+            if let Err(e) = shell::toggle_external_view(state, refresh_both) {
                 state.status_message = Some(format!("External view error: {e}"));
             }
         }
@@ -1263,7 +1258,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
             handle_enter_key(state, visible);
         }
         KeyCode::Char('u' | 's' | 'h' | 'r' | 'o') if modifiers.contains(KeyModifiers::CONTROL) => {
-            handle_ctrl_keys(state, key, terminal);
+            handle_ctrl_keys(state, key);
         }
         KeyCode::Enter | KeyCode::Backspace | KeyCode::Char(_)
             if modifiers.contains(KeyModifiers::ALT) =>
@@ -1570,7 +1565,7 @@ fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
     if error_count > 0 {
         message.push_str(&format!(", {error_count} error(s)"));
     }
-    if truncated {
+    if truncated.is_some() {
         message.push_str(", truncated");
     }
     state.status_message = Some(message);

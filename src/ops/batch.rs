@@ -414,6 +414,14 @@ where
         );
 
         let file_name = src.file_name().unwrap_or_default();
+        if file_name.is_empty() {
+            errors.push(format!(
+                "{}: cannot copy/move root or parent directory",
+                src.display()
+            ));
+            report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
+            continue;
+        }
         let target = dest_dir.join(file_name);
         if !used_dests.insert(target.clone()) {
             errors.push(format!(
@@ -482,6 +490,7 @@ fn batch_delete(
     let mut errors: Vec<String> = Vec::new();
     let mut success_count: usize = 0;
     let mut canceled = false;
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     let total = paths.len();
     let sizes = helpers::path_sizes(paths);
     let bytes_total = helpers::sum_sizes(&sizes);
@@ -502,6 +511,22 @@ fn batch_delete(
         },
     );
     for (idx, path) in paths.iter().enumerate() {
+        if !seen.insert(path.clone()) {
+            report_progress(
+                progress,
+                ProgressSnapshot {
+                    completed: idx + 1,
+                    total,
+                    current: helpers::next_path(paths, idx + 1),
+                    bytes_done,
+                    bytes_total,
+                    current_file_bytes: 0,
+                    current_file_total: 0,
+                    start_time,
+                },
+            );
+            continue;
+        }
         if is_canceled(&cancel) {
             canceled = true;
             break;
