@@ -668,7 +668,19 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
                 files: Some(source.iter().map(|p| p.display().to_string()).collect()),
             }
         }
-        app::types::DialogKind::Properties {
+        app::types::DialogKind::Properties { .. } => properties_to_ui_dialog(dialog_kind),
+        app::types::DialogKind::OverwriteConfirm { conflicting } => {
+            dialogs::DialogKind::OverwriteConfirm {
+                selection: state.dialog_selection,
+                files: conflicting.clone(),
+            }
+        }
+    }
+}
+
+fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind {
+    let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) =
+        if let app::types::DialogKind::Properties {
             name,
             size,
             mtime,
@@ -677,35 +689,47 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
             group,
             is_dir,
             is_symlink,
-        } => {
-            let file_type = if *is_symlink {
-                "Symlink"
-            } else if *is_dir {
-                "Directory"
-            } else {
-                "File"
-            };
-            use chrono::TimeZone;
-            let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                chrono::Local
-                    .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-                    .single()
-                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string()
-            } else {
-                "Unknown".to_string()
-            };
-            dialogs::DialogKind::Properties {
-                name: name.clone(),
-                size: app::types::FileEntry::format_size(*size),
-                mtime: mtime_str,
-                permissions: app::types::FileEntry::display_permissions_raw(*permissions),
-                owner: owner.clone(),
-                group: group.clone(),
-                file_type: file_type.to_string(),
-            }
-        }
+        } = dialog_kind
+        {
+            (
+                name,
+                size,
+                mtime,
+                permissions,
+                owner,
+                group,
+                is_dir,
+                is_symlink,
+            )
+        } else {
+            unreachable!()
+        };
+    let file_type = if *is_symlink {
+        "Symlink"
+    } else if *is_dir {
+        "Directory"
+    } else {
+        "File"
+    };
+    use chrono::TimeZone;
+    let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+        chrono::Local
+            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
+            .single()
+            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    } else {
+        "Unknown".to_string()
+    };
+    dialogs::DialogKind::Properties {
+        name: name.clone(),
+        size: app::types::FileEntry::format_size(*size),
+        mtime: mtime_str,
+        permissions: app::types::FileEntry::display_permissions_raw(*permissions),
+        owner: owner.clone(),
+        group: group.clone(),
+        file_type: file_type.to_string(),
     }
 }
 
@@ -882,12 +906,20 @@ fn handle_function_keys<B: ratatui::backend::Backend>(
         }
         KeyCode::F(5) => {
             confirm_file_transfer(state, "Copy Confirm", "Copy", |sources, dest| {
-                app::types::PendingAction::Copy { sources, dest }
+                app::types::PendingAction::Copy {
+                    sources,
+                    dest,
+                    overwrite: false,
+                }
             });
         }
         KeyCode::F(6) => {
             confirm_file_transfer(state, "Move Confirm", "Move", |sources, dest| {
-                app::types::PendingAction::Move { sources, dest }
+                app::types::PendingAction::Move {
+                    sources,
+                    dest,
+                    overwrite: false,
+                }
             });
         }
         KeyCode::F(7) => {
@@ -1498,6 +1530,63 @@ pub(crate) fn dismiss_dialog(state: &mut AppState) {
     }
 }
 
+#[cfg(unix)]
+fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(src_meta) = std::fs::symlink_metadata(src) else {
+        return false;
+    };
+    let Ok(dest_meta) = std::fs::symlink_metadata(dest) else {
+        return false;
+    };
+    src_meta.dev() == dest_meta.dev() && src_meta.ino() == dest_meta.ino()
+}
+
+#[cfg(not(unix))]
+fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    src == dest
+}
+
+fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
+    let action = state.pending_action.as_ref()?;
+    let (sources, dest_dir, overwrite) = match action {
+        app::types::PendingAction::Copy {
+            sources,
+            dest,
+            overwrite,
+        } => (sources, dest, *overwrite),
+        app::types::PendingAction::Move {
+            sources,
+            dest,
+            overwrite,
+        } => (sources, dest, *overwrite),
+        app::types::PendingAction::Delete { .. } => return None,
+    };
+    if overwrite {
+        return None;
+    }
+    let conflicting: Vec<String> = sources
+        .iter()
+        .filter_map(|s| {
+            let name = s.file_name()?;
+            let target = dest_dir.join(name);
+            if is_same_file(s, &target) {
+                return None;
+            }
+            if std::fs::symlink_metadata(&target).is_ok() {
+                Some(name.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if conflicting.is_empty() {
+        None
+    } else {
+        Some(conflicting)
+    }
+}
+
 fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
     let confirmed = match key {
         KeyCode::Char('y' | 'Y') => Some(true),
@@ -1516,6 +1605,12 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
 
     if confirmed == Some(true) {
         if state.pending_action.is_some() {
+            if let Some(conflicting) = check_overwrite_conflict(state) {
+                state.dialog_selection = 0;
+                state.mode =
+                    AppMode::Dialog(app::types::DialogKind::OverwriteConfirm { conflicting });
+                return;
+            }
             start_confirmed_action(state, running_job);
             state.dialog_selection = 0;
             if state.status_message.is_some() {
@@ -1531,6 +1626,64 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
         }
     } else {
         dismiss_dialog(state);
+    }
+}
+
+fn handle_overwrite_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    match key {
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left => {
+            state.dialog_selection = state.dialog_selection.saturating_sub(1);
+            return;
+        }
+        KeyCode::Right => {
+            state.dialog_selection = (state.dialog_selection + 1).min(1);
+            return;
+        }
+        KeyCode::Char('o' | 'O') => {
+            set_pending_overwrite(state);
+        }
+        KeyCode::Char('c' | 'C') => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Enter => match state.dialog_selection {
+            0 => set_pending_overwrite(state),
+            1 => {
+                dismiss_dialog(state);
+                return;
+            }
+            _ => return,
+        },
+        _ => return,
+    }
+    start_confirmed_action(state, running_job);
+    state.dialog_selection = 0;
+    if state.status_message.is_some() {
+        state.mode = AppMode::Normal;
+        refresh_both(state);
+        if let Some(panel) = state.menu_restore_panel.take() {
+            set_active_panel(state, panel);
+        }
+    }
+}
+
+fn set_pending_overwrite(state: &mut AppState) {
+    if let Some(action) = state.pending_action.as_mut() {
+        match action {
+            app::types::PendingAction::Copy { overwrite, .. }
+            | app::types::PendingAction::Move { overwrite, .. } => {
+                *overwrite = true;
+            }
+            app::types::PendingAction::Delete { .. } => {}
+        }
     }
 }
 
@@ -1811,17 +1964,24 @@ fn handle_copymove_dialog(
                 app::types::PendingAction::Move {
                     sources: source.clone(),
                     dest: dest.clone(),
+                    overwrite: false,
                 }
             } else {
                 app::types::PendingAction::Copy {
                     sources: source.clone(),
                     dest: dest.clone(),
+                    overwrite: false,
                 }
             }
         } else {
             return;
         };
         state.pending_action = Some(action);
+        if let Some(conflicting) = check_overwrite_conflict(state) {
+            state.dialog_selection = 0;
+            state.mode = AppMode::Dialog(app::types::DialogKind::OverwriteConfirm { conflicting });
+            return;
+        }
         start_confirmed_action(state, running_job);
         state.dialog_selection = 0;
         if state.status_message.is_some() {
@@ -1934,6 +2094,9 @@ fn handle_dialog(
         }
         app::types::DialogKind::CopyMove { .. } => {
             handle_copymove_dialog(state, running_job, key);
+        }
+        app::types::DialogKind::OverwriteConfirm { .. } => {
+            handle_overwrite_dialog(state, running_job, key);
         }
         app::types::DialogKind::Help { .. } => {
             dismiss_dialog_and_restore(state);
@@ -3419,5 +3582,125 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let rendered = buffer_to_string(buffer);
         assert!(rendered.contains("TEST HELP"));
+    }
+
+    #[test]
+    fn check_overwrite_no_conflicts_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("new.txt"), b"hello").unwrap();
+
+        let state = AppState {
+            pending_action: Some(app::types::PendingAction::Copy {
+                sources: vec![src.join("new.txt")],
+                dest,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+
+        assert!(check_overwrite_conflict(&state).is_none());
+    }
+
+    #[test]
+    fn check_overwrite_one_conflict_returns_some() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("clash.txt"), b"src").unwrap();
+        std::fs::write(dest.join("clash.txt"), b"dest").unwrap();
+
+        let state = AppState {
+            pending_action: Some(app::types::PendingAction::Copy {
+                sources: vec![src.join("clash.txt")],
+                dest,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+
+        let conflicts = check_overwrite_conflict(&state).unwrap();
+        assert_eq!(conflicts, vec!["clash.txt"]);
+    }
+
+    #[test]
+    fn check_overwrite_all_conflicts_returns_all_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("a.txt"), b"a").unwrap();
+        std::fs::write(src.join("b.txt"), b"b").unwrap();
+        std::fs::write(dest.join("a.txt"), b"a").unwrap();
+        std::fs::write(dest.join("b.txt"), b"b").unwrap();
+
+        let state = AppState {
+            pending_action: Some(app::types::PendingAction::Copy {
+                sources: vec![src.join("a.txt"), src.join("b.txt")],
+                dest,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+
+        let conflicts = check_overwrite_conflict(&state).unwrap();
+        assert_eq!(conflicts.len(), 2);
+        assert!(conflicts.contains(&"a.txt".to_string()));
+        assert!(conflicts.contains(&"b.txt".to_string()));
+    }
+
+    #[test]
+    fn check_overwrite_source_equals_dest_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("same.txt");
+        std::fs::write(&file, b"data").unwrap();
+
+        let state = AppState {
+            pending_action: Some(app::types::PendingAction::Copy {
+                sources: vec![file],
+                dest: tmp.path().to_path_buf(),
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+
+        assert!(check_overwrite_conflict(&state).is_none());
+    }
+
+    #[test]
+    fn check_overwrite_broken_symlink_at_dest_is_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("link.txt"), b"src").unwrap();
+
+        #[cfg(unix)]
+        {
+            let link_path = dest.join("link.txt");
+            std::os::unix::fs::symlink("/nonexistent/broken", &link_path).unwrap();
+        }
+
+        let state = AppState {
+            pending_action: Some(app::types::PendingAction::Copy {
+                sources: vec![src.join("link.txt")],
+                dest,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+
+        #[cfg(unix)]
+        {
+            let conflicts = check_overwrite_conflict(&state).unwrap();
+            assert_eq!(conflicts, vec!["link.txt"]);
+        }
     }
 }

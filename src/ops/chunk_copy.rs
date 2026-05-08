@@ -12,6 +12,7 @@ pub fn copy_with_progress(
     dest: &Path,
     progress_tx: &std::sync::mpsc::Sender<u64>,
     cancel: &AtomicBool,
+    overwrite: bool,
 ) -> io::Result<u64> {
     if cancel.load(Ordering::Relaxed) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
@@ -24,7 +25,7 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
-            if let Err(err) = publish_temp(&temp_dest, dest, cancel) {
+            if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
             }
@@ -79,7 +80,17 @@ fn copy_to_temp(
     Ok(total_written)
 }
 
-fn publish_temp(temp_dest: &Path, dest: &Path, cancel: &AtomicBool) -> io::Result<()> {
+fn publish_temp(
+    temp_dest: &Path,
+    dest: &Path,
+    cancel: &AtomicBool,
+    overwrite: bool,
+) -> io::Result<()> {
+    if overwrite {
+        fs::rename(temp_dest, dest)?;
+        return Ok(());
+    }
+
     match fs::hard_link(temp_dest, dest) {
         Ok(()) => return fs::remove_file(temp_dest),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
@@ -154,7 +165,8 @@ mod tests {
         let (progress_tx, progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
 
-        let copied = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect("copy file");
+        let copied =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy file");
 
         assert_eq!(copied, content.len() as u64);
         assert_eq!(fs::read(&dest).expect("read dest file"), content);
@@ -174,7 +186,8 @@ mod tests {
         let (progress_tx, progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
 
-        let copied = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect("copy file");
+        let copied =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy file");
 
         assert_eq!(copied, content.len() as u64);
         assert_eq!(fs::read(&dest).expect("read dest file"), content);
@@ -195,7 +208,8 @@ mod tests {
         let (progress_tx, progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
 
-        let err = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect_err("copy fails");
+        let err =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect_err("copy fails");
 
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&dest).expect("read dest file"), b"old content");
@@ -213,7 +227,8 @@ mod tests {
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(true);
 
-        let err = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect_err("cancel copy");
+        let err =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect_err("cancel copy");
 
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert!(!dest.exists());
@@ -230,9 +245,30 @@ mod tests {
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
 
-        let err = copy_with_progress(&src, &dest, &progress_tx, &cancel).expect_err("copy fails");
+        let err =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect_err("copy fails");
 
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(!dest.exists());
+    }
+
+    #[test]
+    fn test_publish_temp_overwrite_true() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.txt");
+        let dest = dir.path().join("dest.txt");
+        fs::write(&src, b"new content").expect("write source file");
+        fs::write(&dest, b"old content").expect("write dest file");
+
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        let copied =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, true).expect("overwrite copy");
+
+        assert_eq!(copied, 11);
+        assert_eq!(fs::read(&dest).expect("read dest file"), b"new content");
+        assert_eq!(progress_rx.try_iter().collect::<Vec<_>>(), vec![11]);
+        assert!(!temp_path_for(&dest).exists());
     }
 }

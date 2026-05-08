@@ -47,6 +47,10 @@ pub enum DialogKind {
         group: String,
         file_type: String,
     },
+    OverwriteConfirm {
+        selection: usize,
+        files: Vec<String>,
+    },
 }
 
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
@@ -118,6 +122,9 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
                 group,
                 file_type,
             );
+        }
+        DialogKind::OverwriteConfirm { selection, files } => {
+            render_overwrite_dialog(f, dialog_area, *selection, files);
         }
     }
 }
@@ -243,6 +250,69 @@ pub fn render_confirm_dialog(
         ratatui::text::Span::styled("[ Yes ]", yes_style),
         ratatui::text::Span::raw("  "),
         ratatui::text::Span::styled("[ No ]", no_style),
+    ]);
+    let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
+    f.render_widget(btn_paragraph, chunks[2]);
+}
+
+pub fn render_overwrite_dialog(f: &mut Frame, area: Rect, selection: usize, files: &[String]) {
+    let block = dialog_block("Overwrite?", Theme::dialog());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let msg = if files.len() == 1 {
+        "File already exists at destination:".to_string()
+    } else {
+        format!("{} files already exist at destination:", files.len())
+    };
+
+    let max_rows = inner.height.saturating_sub(5).max(3);
+    let file_rows = (files.len() as u16 + 1).min(max_rows);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Length(file_rows),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let msg_paragraph = Paragraph::new(msg)
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Center);
+    f.render_widget(msg_paragraph, chunks[0]);
+
+    let max_visible = chunks[1].height as usize;
+    let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
+    let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
+    if files.len() <= show_count {
+        for name in files {
+            let display = truncate_path(name, inner.width as usize - 2);
+            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+        }
+    } else {
+        for name in files.iter().take(show_count.saturating_sub(1)) {
+            let display = truncate_path(name, inner.width as usize - 2);
+            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+        }
+        let remaining = files.len() - show_count + 1;
+        lines.push(Line::from(format!("  ... +{remaining} more")));
+    }
+    let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
+    f.render_widget(file_paragraph, chunks[1]);
+
+    let btn_style = |idx: usize| -> Style {
+        if selection == idx {
+            Theme::highlight_bold()
+        } else {
+            Theme::dialog()
+        }
+    };
+    let buttons = Line::from(vec![
+        ratatui::text::Span::styled("[ Overwrite All ]", btn_style(0)),
+        ratatui::text::Span::raw("  "),
+        ratatui::text::Span::styled("[ Cancel ]", btn_style(1)),
     ]);
     let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
     f.render_widget(btn_paragraph, chunks[2]);

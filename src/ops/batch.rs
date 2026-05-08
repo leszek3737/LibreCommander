@@ -146,8 +146,16 @@ pub fn execute_batch_with_byte_progress(
     action_label: &'static str,
 ) -> BatchReport {
     let mut report = match action {
-        PendingAction::Copy { sources, dest } => batch_copy(&sources, &dest, &mut progress, cancel),
-        PendingAction::Move { sources, dest } => batch_move(&sources, &dest, &mut progress, cancel),
+        PendingAction::Copy {
+            sources,
+            dest,
+            overwrite,
+        } => batch_copy(&sources, &dest, &mut progress, cancel, overwrite),
+        PendingAction::Move {
+            sources,
+            dest,
+            overwrite,
+        } => batch_move(&sources, &dest, &mut progress, cancel, overwrite),
         PendingAction::Delete { paths } => batch_delete(&paths, &mut progress, cancel),
     };
     report.action_label = action_label;
@@ -249,9 +257,12 @@ fn copy_entry(
     dest: &Path,
     cancel: Option<Arc<AtomicBool>>,
     on_progress: &mut dyn FnMut(u64),
+    overwrite: bool,
 ) -> io::Result<()> {
     match src.symlink_metadata() {
-        Ok(meta) if meta.file_type().is_symlink() => file_ops::copy_symlink(src, dest).map(|_| ()),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            file_ops::copy_symlink(src, dest, overwrite).map(|_| ())
+        }
         Ok(meta) if meta.is_dir() => {
             let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
@@ -263,6 +274,7 @@ fn copy_entry(
                         dest,
                         &progress_tx,
                         &cancel_token,
+                        overwrite,
                     );
                     let _ = result_tx.send(result);
                 });
@@ -275,8 +287,13 @@ fn copy_entry(
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
             thread::scope(|scope| {
                 scope.spawn(|| {
-                    let result =
-                        file_ops::copy_file_with_progress(src, dest, &progress_tx, &cancel_token);
+                    let result = file_ops::copy_file_with_progress(
+                        src,
+                        dest,
+                        &progress_tx,
+                        &cancel_token,
+                        overwrite,
+                    );
                     let _ = result_tx.send(result);
                 });
                 wait_for_result_with_progress(result_rx, progress_rx, on_progress).map(|_| ())
@@ -291,13 +308,20 @@ fn move_entry(
     dest: &Path,
     cancel: Option<Arc<AtomicBool>>,
     on_progress: &mut dyn FnMut(u64),
+    overwrite: bool,
 ) -> io::Result<()> {
     let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let (progress_tx, progress_rx) = mpsc::channel::<u64>();
     let (result_tx, result_rx) = mpsc::channel::<io::Result<()>>();
     thread::scope(|scope| {
         scope.spawn(|| {
-            let result = file_ops::move_entry_with_progress(src, dest, &progress_tx, &cancel_token);
+            let result = file_ops::move_entry_with_progress(
+                src,
+                dest,
+                &progress_tx,
+                &cancel_token,
+                overwrite,
+            );
             let _ = result_tx.send(result);
         });
         wait_for_result_with_progress(result_rx, progress_rx, on_progress)
@@ -338,12 +362,15 @@ fn batch_copy(
     dest_dir: &Path,
     progress: &mut impl FnMut(BatchProgress),
     cancel: Option<Arc<AtomicBool>>,
+    overwrite: bool,
 ) -> BatchReport {
     let operation_cancel = cancel.clone();
     execute_batch_generic(
         paths,
         dest_dir,
-        |src, dest, on_progress| copy_entry(src, dest, operation_cancel.clone(), on_progress),
+        |src, dest, on_progress| {
+            copy_entry(src, dest, operation_cancel.clone(), on_progress, overwrite)
+        },
         progress,
         cancel,
     )
@@ -354,12 +381,15 @@ fn batch_move(
     dest_dir: &Path,
     progress: &mut impl FnMut(BatchProgress),
     cancel: Option<Arc<AtomicBool>>,
+    overwrite: bool,
 ) -> BatchReport {
     let operation_cancel = cancel.clone();
     execute_batch_generic(
         paths,
         dest_dir,
-        |src, dest, on_progress| move_entry(src, dest, operation_cancel.clone(), on_progress),
+        |src, dest, on_progress| {
+            move_entry(src, dest, operation_cancel.clone(), on_progress, overwrite)
+        },
         progress,
         cancel,
     )
@@ -617,6 +647,7 @@ mod tests {
         let action = PendingAction::Copy {
             sources: vec![f1, f2],
             dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
         };
 
         let report = execute_batch(action);
@@ -639,6 +670,7 @@ mod tests {
         let action = PendingAction::Copy {
             sources: vec![f1, f2],
             dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
         };
 
         let report = execute_batch(action);
@@ -660,6 +692,7 @@ mod tests {
         let action = PendingAction::Move {
             sources: vec![f1.clone(), f2.clone()],
             dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
         };
 
         let report = execute_batch(action);
@@ -740,6 +773,7 @@ mod tests {
         let action = PendingAction::Copy {
             sources: vec![f1, f2],
             dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
         };
 
         let report = execute_batch_with_progress(
@@ -768,6 +802,7 @@ mod tests {
         let action = PendingAction::Copy {
             sources: vec![f1, f2],
             dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
         };
         let mut updates = Vec::new();
 
@@ -803,6 +838,7 @@ mod tests {
         let action = PendingAction::Copy {
             sources: vec![file],
             dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
         };
         let mut updates = Vec::new();
 

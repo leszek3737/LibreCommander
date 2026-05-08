@@ -240,6 +240,9 @@ pub enum DialogKind {
         is_dir: bool,
         is_symlink: bool,
     },
+    OverwriteConfirm {
+        conflicting: Vec<String>,
+    },
 }
 
 // ============================================================================
@@ -343,10 +346,12 @@ pub enum PendingAction {
     Copy {
         sources: Vec<std::path::PathBuf>,
         dest: std::path::PathBuf,
+        overwrite: bool,
     },
     Move {
         sources: Vec<std::path::PathBuf>,
         dest: std::path::PathBuf,
+        overwrite: bool,
     },
     Delete {
         paths: Vec<std::path::PathBuf>,
