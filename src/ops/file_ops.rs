@@ -66,9 +66,7 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
 ];
 
 pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
-    if !overwrite {
-        ensure_destination_absent(dest)?;
-    }
+    prepare_dest(dest, overwrite)?;
 
     reject_same_file(src, dest)?;
     let src_meta = fs::metadata(src)?;
@@ -90,9 +88,7 @@ pub fn copy_file_with_progress(
     overwrite: bool,
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
-    if !overwrite {
-        ensure_destination_absent(dest)?;
-    }
+    prepare_dest(dest, overwrite)?;
     reject_same_file(src, dest)?;
 
     chunk_copy::copy_with_progress(src, dest, progress_tx, cancel, overwrite)
@@ -657,18 +653,22 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
 }
 
 fn prepare_dest(dest: &Path, overwrite: bool) -> io::Result<()> {
-    if overwrite {
-        if dest.exists() {
-            if dest.is_dir() {
-                fs::remove_dir_all(dest)?;
-            } else {
-                fs::remove_file(dest)?;
-            }
-        }
-        Ok(())
-    } else {
-        ensure_destination_absent(dest)
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+        return Ok(());
     }
+    let Ok(meta) = fs::symlink_metadata(dest) else {
+        return Ok(());
+    };
+    let ft = meta.file_type();
+    if ft.is_symlink() {
+        fs::remove_file(dest)?;
+    } else if ft.is_dir() {
+        fs::remove_dir_all(dest)?;
+    } else {
+        fs::remove_file(dest)?;
+    }
+    Ok(())
 }
 
 fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {

@@ -1530,6 +1530,23 @@ pub(crate) fn dismiss_dialog(state: &mut AppState) {
     }
 }
 
+#[cfg(unix)]
+fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(src_meta) = std::fs::symlink_metadata(src) else {
+        return false;
+    };
+    let Ok(dest_meta) = std::fs::symlink_metadata(dest) else {
+        return false;
+    };
+    src_meta.dev() == dest_meta.dev() && src_meta.ino() == dest_meta.ino()
+}
+
+#[cfg(not(unix))]
+fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    src == dest
+}
+
 fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
     let action = state.pending_action.as_ref()?;
     let (sources, dest_dir, overwrite) = match action {
@@ -1553,9 +1570,7 @@ fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
         .filter_map(|s| {
             let name = s.file_name()?;
             let target = dest_dir.join(name);
-            if let (Ok(src_canon), Ok(dst_canon)) = (s.canonicalize(), target.canonicalize())
-                && src_canon == dst_canon
-            {
+            if is_same_file(s, &target) {
                 return None;
             }
             if std::fs::symlink_metadata(&target).is_ok() {
