@@ -65,8 +65,10 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
 ];
 
-pub fn copy_file(src: &Path, dest: &Path) -> io::Result<u64> {
-    ensure_destination_absent(dest)?;
+pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
 
     reject_same_file(src, dest)?;
     let src_meta = fs::metadata(src)?;
@@ -85,20 +87,23 @@ pub fn copy_file_with_progress(
     dest: &Path,
     progress_tx: &Sender<u64>,
     cancel: &AtomicBool,
+    overwrite: bool,
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
-    ensure_destination_absent(dest)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
     reject_same_file(src, dest)?;
 
-    chunk_copy::copy_with_progress(src, dest, progress_tx, cancel)
+    chunk_copy::copy_with_progress(src, dest, progress_tx, cancel, overwrite)
 }
 
-pub fn copy_dir_recursive(src: &Path, dest: &Path) -> io::Result<u64> {
+pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
-    ensure_destination_absent(dest)?;
+    prepare_dest(dest, overwrite)?;
     let temp_dest = reserve_temp_dir_for(dest)?;
-    let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, 0);
+    let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, overwrite, 0);
     match result {
         Ok(bytes) => {
             if let Err(err) = publish_temp_dir(&temp_dest, dest) {
@@ -119,11 +124,12 @@ pub fn copy_dir_recursive_with_progress(
     dest: &Path,
     progress_tx: &Sender<u64>,
     cancel: &AtomicBool,
+    overwrite: bool,
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
-    ensure_destination_absent(dest)?;
+    prepare_dest(dest, overwrite)?;
     let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_with_progress_inner(
         src,
@@ -132,6 +138,7 @@ pub fn copy_dir_recursive_with_progress(
         &dest_root,
         progress_tx,
         cancel,
+        overwrite,
         0,
     );
     match result {
@@ -158,6 +165,7 @@ fn copy_dir_recursive_inner(
     dest: &Path,
     src_root: &Path,
     dest_root: &Path,
+    overwrite: bool,
     depth: usize,
 ) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
@@ -193,13 +201,20 @@ fn copy_dir_recursive_inner(
         let file_type = entry.file_type()?;
 
         if file_type.is_dir() {
-            let copied =
-                copy_dir_recursive_inner(&entry_path, &dest_path, src_root, dest_root, depth + 1)?;
+            let copied = copy_dir_recursive_inner(
+                &entry_path,
+                &dest_path,
+                src_root,
+                dest_root,
+                overwrite,
+                depth + 1,
+            )?;
             total_bytes = total_bytes.saturating_add(copied);
         } else if file_type.is_symlink() {
-            copy_symlink(&entry_path, &dest_path)?;
+            copy_symlink(&entry_path, &dest_path, overwrite)?;
         } else {
-            total_bytes = total_bytes.saturating_add(copy_file(&entry_path, &dest_path)?);
+            total_bytes =
+                total_bytes.saturating_add(copy_file(&entry_path, &dest_path, overwrite)?);
         }
     }
 
@@ -207,6 +222,7 @@ fn copy_dir_recursive_inner(
     Ok(total_bytes)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_dir_recursive_with_progress_inner(
     src: &Path,
     dest: &Path,
@@ -214,6 +230,7 @@ fn copy_dir_recursive_with_progress_inner(
     dest_root: &Path,
     progress_tx: &Sender<u64>,
     cancel: &AtomicBool,
+    overwrite: bool,
     depth: usize,
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
@@ -258,17 +275,19 @@ fn copy_dir_recursive_with_progress_inner(
                 dest_root,
                 progress_tx,
                 cancel,
+                overwrite,
                 depth + 1,
             )?;
             total_bytes = total_bytes.saturating_add(copied);
         } else if file_type.is_symlink() {
-            copy_symlink(&entry_path, &dest_path)?;
+            copy_symlink(&entry_path, &dest_path, overwrite)?;
         } else {
             total_bytes = total_bytes.saturating_add(copy_file_with_progress(
                 &entry_path,
                 &dest_path,
                 progress_tx,
                 cancel,
+                overwrite,
             )?);
         }
     }
@@ -278,8 +297,8 @@ fn copy_dir_recursive_with_progress_inner(
     Ok(total_bytes)
 }
 
-pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
-    ensure_destination_absent(dest)?;
+pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
+    prepare_dest(dest, overwrite)?;
 
     let target = fs::read_link(src)?;
     #[cfg(unix)]
@@ -292,7 +311,7 @@ pub fn copy_symlink(src: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
+pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
         _ => src == dest,
@@ -304,7 +323,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
             fs::rename(src, dest)
         };
     }
-    ensure_destination_absent(dest)?;
+    prepare_dest(dest, overwrite)?;
 
     if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
@@ -317,7 +336,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
             let meta = src.symlink_metadata()?;
             if meta.file_type().is_symlink() {
-                copy_symlink(src, dest)?;
+                copy_symlink(src, dest, overwrite)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
@@ -327,7 +346,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                     )));
                 }
             } else if meta.is_dir() {
-                copy_dir_recursive(src, dest)?;
+                copy_dir_recursive(src, dest, overwrite)?;
                 if !path_contains(src, dest)?
                     && let Err(del_err) = delete_dir_recursive(src)
                 {
@@ -339,7 +358,7 @@ pub fn move_entry(src: &Path, dest: &Path) -> io::Result<()> {
                     )));
                 }
             } else {
-                copy_file(src, dest)?;
+                copy_file(src, dest, overwrite)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
@@ -360,6 +379,7 @@ pub fn move_entry_with_progress(
     dest: &Path,
     progress_tx: &Sender<u64>,
     cancel: &AtomicBool,
+    overwrite: bool,
 ) -> io::Result<()> {
     check_canceled(cancel)?;
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
@@ -373,7 +393,7 @@ pub fn move_entry_with_progress(
             fs::rename(src, dest)
         };
     }
-    ensure_destination_absent(dest)?;
+    prepare_dest(dest, overwrite)?;
 
     if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
@@ -387,7 +407,7 @@ pub fn move_entry_with_progress(
             check_canceled(cancel)?;
             let meta = src.symlink_metadata()?;
             if meta.file_type().is_symlink() {
-                copy_symlink(src, dest)?;
+                copy_symlink(src, dest, overwrite)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
@@ -397,7 +417,7 @@ pub fn move_entry_with_progress(
                     )));
                 }
             } else if meta.is_dir() {
-                copy_dir_recursive_with_progress(src, dest, progress_tx, cancel)?;
+                copy_dir_recursive_with_progress(src, dest, progress_tx, cancel, overwrite)?;
                 if let Err(del_err) = delete_dir_recursive_cancelable(src, cancel) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
@@ -407,7 +427,7 @@ pub fn move_entry_with_progress(
                     )));
                 }
             } else {
-                copy_file_with_progress(src, dest, progress_tx, cancel)?;
+                copy_file_with_progress(src, dest, progress_tx, cancel, overwrite)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
@@ -636,6 +656,21 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     }
 }
 
+fn prepare_dest(dest: &Path, overwrite: bool) -> io::Result<()> {
+    if overwrite {
+        if dest.exists() {
+            if dest.is_dir() {
+                fs::remove_dir_all(dest)?;
+            } else {
+                fs::remove_file(dest)?;
+            }
+        }
+        Ok(())
+    } else {
+        ensure_destination_absent(dest)
+    }
+}
+
 fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     let mut name = dest
         .file_name()
@@ -802,7 +837,8 @@ mod tests {
         let dest = tmp.join("dest.txt");
         fs::write(&src, b"hello world").unwrap();
 
-        let bytes = copy_file(&src, &dest).unwrap();
+        let bytes = copy_file(&src, &dest, false).unwrap();
+        let _dest_mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(bytes, 11);
         assert_eq!(fs::read_to_string(&dest).unwrap(), "hello world");
 
@@ -815,7 +851,7 @@ mod tests {
         let src = tmp.join("same.txt");
         fs::write(&src, b"data").unwrap();
 
-        let result = copy_file(&src, &src);
+        let result = copy_file(&src, &src, false);
         assert!(result.is_err());
 
         fs::remove_dir_all(&tmp).unwrap();
@@ -829,7 +865,7 @@ mod tests {
         fs::write(&src, b"#!/bin/bash").unwrap();
         fs::set_permissions(&src, fs::Permissions::from_mode(0o755)).unwrap();
 
-        copy_file(&src, &dest).unwrap();
+        copy_file(&src, &dest, false).unwrap();
         let dest_mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(dest_mode, 0o755);
 
@@ -847,7 +883,7 @@ mod tests {
         let (progress_tx, progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
 
-        let bytes = copy_file_with_progress(&src, &dest, &progress_tx, &cancel).unwrap();
+        let bytes = copy_file_with_progress(&src, &dest, &progress_tx, &cancel, false).unwrap();
 
         assert_eq!(bytes, content.len() as u64);
         assert_eq!(fs::read(&dest).unwrap(), content);
@@ -866,7 +902,7 @@ mod tests {
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(true);
 
-        let err = move_entry_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+        let err = move_entry_with_progress(&src, &dest, &progress_tx, &cancel, false).unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert_eq!(fs::read_to_string(&src).unwrap(), "keep source");
@@ -885,7 +921,7 @@ mod tests {
         fs::write(src.join("subdir").join("file2.txt"), b"content2").unwrap();
 
         let dest = tmp.join("dest_dir");
-        let bytes = copy_dir_recursive(&src, &dest).unwrap();
+        let bytes = copy_dir_recursive(&src, &dest, false).unwrap();
         assert!(bytes > 0);
         assert!(dest.join("file1.txt").exists());
         assert!(dest.join("subdir").join("file2.txt").exists());
@@ -913,7 +949,7 @@ mod tests {
         fs::create_dir(&collision).unwrap();
         fs::write(collision.join("sentinel.txt"), b"keep").unwrap();
 
-        let bytes = copy_dir_recursive(&src, &dest).unwrap();
+        let bytes = copy_dir_recursive(&src, &dest, false).unwrap();
 
         assert!(bytes > 0);
         assert!(dest.join("file.txt").exists());
@@ -935,7 +971,8 @@ mod tests {
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(true);
 
-        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel, false)
+            .unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert!(!dest.exists());
@@ -966,7 +1003,8 @@ mod tests {
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(true);
 
-        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel).unwrap_err();
+        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel, false)
+            .unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert!(!dest.exists());
@@ -985,7 +1023,7 @@ mod tests {
         let dest = tmp.join("moved.txt");
         fs::write(&src, b"moving").unwrap();
 
-        move_entry(&src, &dest).unwrap();
+        move_entry(&src, &dest, false).unwrap();
         assert!(!src.exists());
         assert_eq!(fs::read_to_string(&dest).unwrap(), "moving");
 
@@ -1000,7 +1038,7 @@ mod tests {
         fs::write(src.join("inside.txt"), b"inside").unwrap();
 
         let dest = tmp.join("moved_dir");
-        move_entry(&src, &dest).unwrap();
+        move_entry(&src, &dest, false).unwrap();
         assert!(!src.exists());
         assert!(dest.join("inside.txt").exists());
 
@@ -1015,7 +1053,7 @@ mod tests {
         fs::write(&src, b"new content").unwrap();
         fs::write(&dest, b"existing content").unwrap();
 
-        let err = copy_file(&src, &dest).unwrap_err();
+        let err = copy_file(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
         assert_eq!(fs::read_to_string(&src).unwrap(), "new content");
@@ -1031,10 +1069,76 @@ mod tests {
         fs::write(&src, b"new content").unwrap();
         fs::write(&dest, b"existing content").unwrap();
 
-        let err = move_entry(&src, &dest).unwrap_err();
+        let err = move_entry(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
         assert_eq!(fs::read_to_string(&src).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_file_overwrite_true() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"new content").unwrap();
+        fs::write(&dest, b"old content").unwrap();
+
+        let bytes = copy_file(&src, &dest, true).unwrap();
+        assert_eq!(bytes, 11);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_move_entry_overwrite_true() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src.txt");
+        let dest = tmp.join("dest.txt");
+        fs::write(&src, b"new content").unwrap();
+        fs::write(&dest, b"old content").unwrap();
+
+        move_entry(&src, &dest, true).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "new content");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_overwrite_true_removes_existing_file() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"new content").unwrap();
+        let dest = tmp.join("dest.txt");
+        fs::write(&dest, b"old content").unwrap();
+
+        copy_dir_recursive(&src, &dest, true).unwrap();
+        assert!(dest.is_dir());
+        assert_eq!(
+            fs::read_to_string(dest.join("file.txt")).unwrap(),
+            "new content"
+        );
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_overwrite_true_removes_existing_dir() {
+        let tmp = unique_temp_dir();
+        let src = tmp.join("src_dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("file.txt"), b"new").unwrap();
+        let dest = tmp.join("dest_dir");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("stale.txt"), b"old").unwrap();
+
+        copy_dir_recursive(&src, &dest, true).unwrap();
+        assert!(dest.join("file.txt").exists());
+        assert!(!dest.join("stale.txt").exists());
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -1046,7 +1150,7 @@ mod tests {
         fs::create_dir(&src).unwrap();
 
         let dest = src.join("nested");
-        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        let err = copy_dir_recursive(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 
         fs::remove_dir_all(&tmp).unwrap();
@@ -1060,7 +1164,7 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
 
         let dest = subdir.join("..").join("nested");
-        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        let err = copy_dir_recursive(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 
         fs::remove_dir_all(&tmp).unwrap();
@@ -1075,7 +1179,7 @@ mod tests {
         let dest = tmp.join("dest.txt");
         fs::write(&dest, b"existing content").unwrap();
 
-        let err = copy_dir_recursive(&src, &dest).unwrap_err();
+        let err = copy_dir_recursive(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&dest).unwrap(), "existing content");
 
@@ -1089,7 +1193,7 @@ mod tests {
         fs::create_dir(&src).unwrap();
 
         let dest = src.join("nested");
-        let err = move_entry(&src, &dest).unwrap_err();
+        let err = move_entry(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 
         fs::remove_dir_all(&tmp).unwrap();
@@ -1103,7 +1207,7 @@ mod tests {
         fs::create_dir_all(&subdir).unwrap();
 
         let dest = subdir.join("..").join("nested");
-        let err = move_entry(&src, &dest).unwrap_err();
+        let err = move_entry(&src, &dest, false).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(src.exists());
 
@@ -1124,7 +1228,7 @@ mod tests {
         symlink(&linked, src.join("symlink_dir")).unwrap();
 
         let dest = tmp.join("dest_dir");
-        copy_dir_recursive(&src, &dest).unwrap();
+        copy_dir_recursive(&src, &dest, false).unwrap();
         assert!(
             dest.join("symlink_dir")
                 .symlink_metadata()
@@ -1291,9 +1395,9 @@ mod tests {
             let file_name = src.file_name().unwrap_or_default();
             let dest = dest_dir.join(file_name);
             let result = if src.is_dir() {
-                copy_dir_recursive(src, &dest).map(|_| ())
+                copy_dir_recursive(src, &dest, false).map(|_| ())
             } else {
-                copy_file(src, &dest).map(|_| ())
+                copy_file(src, &dest, false).map(|_| ())
             };
             if let Err(e) = result {
                 errors.push(format!("{}: {}", src.display(), e));

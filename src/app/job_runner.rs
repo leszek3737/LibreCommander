@@ -35,14 +35,14 @@ fn action_label(action: &PendingAction) -> &'static str {
 }
 
 pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<RunningJob>) {
-    let action = match state.pending_action.take() {
-        Some(a) => a,
-        None => return,
-    };
     if running_job.is_some() {
         state.status_message = Some("Another job is already running".to_string());
         return;
     }
+    let action = match state.pending_action.take() {
+        Some(a) => a,
+        None => return,
+    };
 
     let action_label = action_label(&action);
     let (sender, receiver) = mpsc::channel();
