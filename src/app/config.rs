@@ -1,5 +1,5 @@
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub struct PersistedPanel {
     pub sort_mode: SortMode,
     #[serde(default)]
     pub filter: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub show_hidden: bool,
     #[serde(default)]
     pub show_permissions: bool,
@@ -98,9 +98,7 @@ impl Settings {
         };
         state.left_panel.sort_options = sort_opts;
         state.right_panel.sort_options = sort_opts;
-        if !self.hotlist.is_empty() {
-            state.directory_hotlist = self.hotlist.clone();
-        }
+        state.directory_hotlist = self.hotlist.clone();
     }
 }
 
@@ -173,7 +171,14 @@ pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
 
     let content = toml::to_string_pretty(&setup)
         .map_err(|e| io::Error::other(format!("serialize config: {e}")))?;
-    fs::write(&path, content)?;
+
+    let temp_path = path.with_extension("toml.tmp");
+    {
+        let mut f = File::create(&temp_path)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&temp_path, &path)?;
     Ok(path)
 }
 

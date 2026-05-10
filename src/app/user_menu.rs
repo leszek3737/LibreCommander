@@ -227,7 +227,10 @@ fn parse_condition(line: &str) -> Option<String> {
     let rest = line.trim_start_matches('+').trim();
     let mut parts = rest.splitn(2, char::is_whitespace);
     match parts.next() {
-        Some("f") => parts.next().map(|r| r.trim().to_string()),
+        Some("f") => parts
+            .next()
+            .map(|r| r.trim().to_string())
+            .filter(|s| !s.is_empty()),
         _ => None,
     }
 }
@@ -516,6 +519,21 @@ mod tests {
         }];
         assert_eq!(filter_entries(&entries, "main.rs").len(), 1);
         assert_eq!(filter_entries(&entries, "main.py").len(), 0);
+    }
+
+    #[test]
+    fn test_parse_condition_f_empty_pattern_is_none() {
+        assert_eq!(parse_condition("+ f"), None);
+        assert_eq!(parse_condition("+ f "), None);
+        assert_eq!(parse_condition("+ f  "), None);
+    }
+
+    #[test]
+    fn test_parse_condition_f_empty_pattern_entry_has_no_condition() {
+        let src = "T  Test\n\tcmd\n+ f \n";
+        let entries = parse_menu(src);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].condition.is_none());
     }
 
     #[test]

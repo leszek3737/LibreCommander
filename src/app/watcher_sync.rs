@@ -48,7 +48,8 @@ pub fn sync_watcher_paths(
         }
     }
 
-    if all_paths_present {
+    let current_after: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
+    if all_paths_present && desired.iter().all(|p| current_after.contains(p)) {
         *last_synced = Some((left, right));
     }
 }

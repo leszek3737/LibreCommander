@@ -1,4 +1,5 @@
 use crate::debug_log;
+use crate::ops::helpers::action_label;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -7,7 +8,7 @@ use std::time::Duration;
 
 use crate::ops;
 
-use super::types::{AppMode, AppState, DialogKind, PendingAction};
+use super::types::{AppMode, AppState, DialogKind};
 
 enum JobMessage {
     Progress(ops::batch::BatchProgress),
@@ -23,14 +24,6 @@ pub struct RunningJob {
 impl Drop for RunningJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
-    }
-}
-
-fn action_label(action: &PendingAction) -> &'static str {
-    match action {
-        PendingAction::Copy { .. } => "Copy",
-        PendingAction::Move { .. } => "Move",
-        PendingAction::Delete { .. } => "Delete",
     }
 }
 

@@ -415,8 +415,9 @@ fn format_line_with_highlight<'a>(
         let is_current = line_match.global_idx == current_match_idx;
 
         let style = if is_current {
-            Theme::highlight()
+            Style::default()
                 .fg(Theme::SEARCH_MATCH_CURRENT_FG)
+                .bg(Theme::SEARCH_MATCH_CURRENT_BG)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()

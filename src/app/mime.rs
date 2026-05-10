@@ -112,8 +112,10 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             | "application/vnd.android.package-archive"
             | "application/x-unix-archive"
             | "application/x-cpio"
-            | "application/java-archive"
-            | "application/vnd.rn-realmedia" => FileCategory::Archive,
+            | "application/java-archive" => FileCategory::Archive,
+            "application/vnd.rn-realmedia" => FileCategory::Video,
+            "application/x-plist" => FileCategory::Config,
+            "application/postscript" => FileCategory::Image,
             _ => FileCategory::Other,
         };
     }
@@ -372,6 +374,11 @@ mod tests {
         assert_eq!(category_from_ext("main.rs"), FileCategory::Code);
         assert_eq!(category_from_ext("readme.txt"), FileCategory::Document);
         assert_eq!(category_from_ext("unknown.bin"), FileCategory::Other);
+        assert_eq!(category_from_ext("movie.rm"), FileCategory::Video);
+        assert_eq!(category_from_ext("movie.rmvb"), FileCategory::Video);
+        assert_eq!(category_from_ext("logo.ai"), FileCategory::Image);
+        assert_eq!(category_from_ext("logo.eps"), FileCategory::Image);
+        assert_eq!(category_from_ext("settings.plist"), FileCategory::Config);
     }
 
     #[test]
@@ -459,6 +466,18 @@ mod tests {
         assert_eq!(
             mime_to_category("application/x-apple-diskimage"),
             FileCategory::Archive
+        );
+        assert_eq!(
+            mime_to_category("application/vnd.rn-realmedia"),
+            FileCategory::Video
+        );
+        assert_eq!(
+            mime_to_category("application/postscript"),
+            FileCategory::Image
+        );
+        assert_eq!(
+            mime_to_category("application/x-plist"),
+            FileCategory::Config
         );
     }
 

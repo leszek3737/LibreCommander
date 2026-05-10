@@ -42,6 +42,10 @@ pub fn render_directory_tree(
 
     let visible_height = inner.height.saturating_sub(1) as usize;
 
+    if visible_height == 0 {
+        return;
+    }
+
     let effective_scroll = if selected < scroll {
         selected
     } else if selected >= scroll + visible_height {

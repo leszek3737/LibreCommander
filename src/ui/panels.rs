@@ -86,7 +86,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner_area);
 
-    let start_idx = panel.scroll_offset;
+    let start_idx = panel.scroll_offset.min(panel.entries.len());
     let end_idx = std::cmp::min(panel.entries.len(), start_idx + inner_area.height as usize);
 
     let mut list_items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
@@ -95,7 +95,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         .entries
         .iter()
         .skip(start_idx)
-        .take(end_idx - start_idx)
+        .take(end_idx.saturating_sub(start_idx))
     {
         let cat = entry.category();
         let bold = entry.is_dir() || entry.is_executable();
@@ -296,10 +296,10 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let total_entries = panel.entries.len();
-    let scroll_offset = panel.scroll_offset;
-
     let height = area.height as usize;
     let max_scroll = total_entries.saturating_sub(height);
+    let scroll_offset = panel.scroll_offset.min(max_scroll);
+
     let thumb_pos = if max_scroll > 0 && height > 1 {
         scroll_offset * (height - 1) / max_scroll
     } else {

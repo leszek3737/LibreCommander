@@ -221,12 +221,12 @@ pub fn render_confirm_dialog(
         let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
         if files.len() <= show_count {
             for name in files {
-                let display = truncate_path(name, inner.width as usize - 2);
+                let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
                 lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
             }
         } else {
             for name in files.iter().take(show_count.saturating_sub(1)) {
-                let display = truncate_path(name, inner.width as usize - 2);
+                let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
                 lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
             }
             let remaining = files.len() - show_count + 1;
@@ -288,12 +288,12 @@ pub fn render_overwrite_dialog(f: &mut Frame, area: Rect, selection: usize, file
     let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
     if files.len() <= show_count {
         for name in files {
-            let display = truncate_path(name, inner.width as usize - 2);
+            let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
             lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
         }
     } else {
         for name in files.iter().take(show_count.saturating_sub(1)) {
-            let display = truncate_path(name, inner.width as usize - 2);
+            let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
             lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
         }
         let remaining = files.len() - show_count + 1;

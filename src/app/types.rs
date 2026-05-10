@@ -655,8 +655,8 @@ impl PanelState {
 
     fn update_selection_stats(&mut self, size: u64, selected: bool) {
         if selected {
-            self.selected_count += 1;
-            self.selected_size += size;
+            self.selected_count = self.selected_count.saturating_add(1);
+            self.selected_size = self.selected_size.saturating_add(size);
         } else {
             self.selected_count = self.selected_count.saturating_sub(1);
             self.selected_size = self.selected_size.saturating_sub(size);
@@ -752,10 +752,10 @@ impl PanelState {
             &self.unfiltered_entries
         };
         for entry in source {
-            self.total_size += entry.len();
+            self.total_size = self.total_size.saturating_add(entry.len());
             if entry.selected {
-                self.selected_count += 1;
-                self.selected_size += entry.len();
+                self.selected_count = self.selected_count.saturating_add(1);
+                self.selected_size = self.selected_size.saturating_add(entry.len());
             }
         }
     }

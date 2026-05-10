@@ -143,11 +143,11 @@ fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
     }
 }
 
-fn name_key(entry: &FileEntry, sensitive: bool) -> String {
+fn name_key(entry: &FileEntry, sensitive: bool) -> (String, String) {
     if sensitive {
-        entry.name.clone()
+        (entry.name.clone(), String::new())
     } else {
-        entry.name.to_lowercase()
+        (entry.name.to_lowercase(), entry.name.clone())
     }
 }
 
@@ -182,6 +182,7 @@ pub fn cycle_sort_mode(current: SortMode) -> SortMode {
 }
 
 /// Returns a human-readable label for the sort mode.
+#[allow(dead_code)]
 pub fn sort_mode_label(mode: SortMode) -> &'static str {
     match mode {
         SortMode::NameAsc => "Name ↑",

@@ -68,13 +68,16 @@ pub fn terminal_state_file_path() -> PathBuf {
 pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> PathBuf {
     cache_home(env)
         .map(|dir| dir.join("terminal_state"))
-        .unwrap_or_else(|| std::env::temp_dir().join("lc_terminal_state"))
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("lc_{}_terminal_state", std::process::id()))
+        })
 }
 
 fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
     env.var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
         .map(|dir| dir.join(APP_NAME))
         .or_else(|| {
             env.var_os("HOME")
@@ -88,6 +91,7 @@ pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
     env.var_os("XDG_CACHE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
         .map(|dir| dir.join(APP_NAME))
         .or_else(|| {
             env.var_os("HOME")
@@ -173,7 +177,30 @@ mod tests {
 
         assert_eq!(
             terminal_state_file_path_with_env(&env),
-            std::env::temp_dir().join("lc_terminal_state")
+            std::env::temp_dir().join(format!("lc_{}_terminal_state", std::process::id()))
+        );
+    }
+
+    #[test]
+    fn config_path_rejects_relative_xdg_config_home() {
+        let env = env(&[
+            ("XDG_CONFIG_HOME", "relative/config"),
+            ("HOME", "/home/user"),
+        ]);
+
+        assert_eq!(
+            config_file_path_with_env(&env),
+            Some(PathBuf::from("/home/user/.config/lc/config.toml"))
+        );
+    }
+
+    #[test]
+    fn terminal_state_path_rejects_relative_xdg_cache_home() {
+        let env = env(&[("XDG_CACHE_HOME", "relative/cache"), ("HOME", "/home/user")]);
+
+        assert_eq!(
+            terminal_state_file_path_with_env(&env),
+            PathBuf::from("/home/user/.cache/lc/terminal_state")
         );
     }
 }
