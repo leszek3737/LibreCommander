@@ -48,6 +48,9 @@ pub fn render_menu_dropdown(
         + 4;
     let dropdown_y = menu_bar_area.y + 1;
     let max_visible = f.area().height.saturating_sub(dropdown_y);
+    if max_visible < 2 {
+        return;
+    }
     let dropdown_height = ((items.len().min(u16::MAX as usize - 2)) as u16 + 2).min(max_visible);
     let dropdown_x = menu_dropdown_x(menu_bar_area, selected_menu, dropdown_width);
     let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);

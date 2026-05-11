@@ -68,9 +68,7 @@ pub fn terminal_state_file_path() -> PathBuf {
 pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> PathBuf {
     cache_home(env)
         .map(|dir| dir.join("terminal_state"))
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("lc_{}_terminal_state", std::process::id()))
-        })
+        .unwrap_or_else(|| std::env::temp_dir().join("lc_terminal_state"))
 }
 
 fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
@@ -177,7 +175,7 @@ mod tests {
 
         assert_eq!(
             terminal_state_file_path_with_env(&env),
-            std::env::temp_dir().join(format!("lc_{}_terminal_state", std::process::id()))
+            std::env::temp_dir().join("lc_terminal_state")
         );
     }
 
