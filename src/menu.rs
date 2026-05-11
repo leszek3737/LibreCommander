@@ -32,12 +32,10 @@ pub const MENU_ITEMS: [&[&str]; 5] = [
         "Directory hotlist",
     ],
     &[
-        "Configuration...",
-        "Layout...",
-        "Panel options...",
-        "Appearance...",
         "Show hidden files",
         "Show permissions",
+        "Add to hotlist",
+        "Reset filter",
         "Save setup",
     ],
     &[
@@ -109,13 +107,11 @@ const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
     MenuAction::DirectoryHotlist,
 ];
 
-const OPTIONS_MENU_ACTIONS: [MenuAction; 7] = [
-    MenuAction::SaveCurrentPathToHotlist,
-    MenuAction::ToggleListingMode,
-    MenuAction::TogglePanelHidden,
-    MenuAction::ResetPanelFilter,
+const OPTIONS_MENU_ACTIONS: [MenuAction; 5] = [
     MenuAction::ToggleHiddenFiles,
     MenuAction::TogglePermissions,
+    MenuAction::SaveCurrentPathToHotlist,
+    MenuAction::ResetPanelFilter,
     MenuAction::SaveSetup,
 ];
 
@@ -199,7 +195,19 @@ mod tests {
 
     #[test]
     fn menu_action_at_rejects_out_of_range_items() {
-        assert_eq!(menu_action_at(3, 7), None);
+        assert_eq!(menu_action_at(3, 5), None);
         assert_eq!(menu_action_at(5, 0), None);
+    }
+
+    #[test]
+    fn menu_action_at_maps_options_menu() {
+        assert_eq!(menu_action_at(3, 0), Some(MenuAction::ToggleHiddenFiles));
+        assert_eq!(menu_action_at(3, 1), Some(MenuAction::TogglePermissions));
+        assert_eq!(
+            menu_action_at(3, 2),
+            Some(MenuAction::SaveCurrentPathToHotlist)
+        );
+        assert_eq!(menu_action_at(3, 3), Some(MenuAction::ResetPanelFilter));
+        assert_eq!(menu_action_at(3, 4), Some(MenuAction::SaveSetup));
     }
 }

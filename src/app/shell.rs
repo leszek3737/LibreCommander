@@ -82,11 +82,11 @@ pub fn run_shell_command(
         }
     }
 
-    let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
     if suspend_terminal_stdout().is_err() {
         state.status_message = Some("Terminal suspend failed".into());
         return;
     }
+    let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
     let status = Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -125,8 +125,7 @@ pub fn toggle_external_view(
     let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
 
     // Show message to user.
-    println!("External view active. Press Ctrl+O to return to Libre Commander.");
-    println!("Press Enter to continue...");
+    println!("External view active. Press Enter/Esc/Ctrl+O to return to Libre Commander.");
 
     // Wait for Ctrl+O or any key.
     enable_raw_mode()?;

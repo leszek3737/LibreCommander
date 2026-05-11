@@ -65,10 +65,10 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
 ];
 
+#[allow(dead_code)]
 pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
-    prepare_dest(dest, overwrite)?;
-
     reject_same_file(src, dest)?;
+    prepare_dest(dest, overwrite)?;
     let src_meta = fs::metadata(src)?;
     let src_perms = src_meta.permissions();
     let bytes = fs::copy(src, dest)?;
@@ -88,15 +88,28 @@ pub fn copy_file_with_progress(
     overwrite: bool,
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
-    prepare_dest(dest, overwrite)?;
     reject_same_file(src, dest)?;
+    prepare_dest(dest, overwrite)?;
 
     chunk_copy::copy_with_progress(src, dest, progress_tx, cancel, overwrite)
 }
 
+#[allow(dead_code)]
 pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
+    if src_root == dest_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into itself",
+        ));
+    }
+    if path_contains_canonical(&src_root, &dest_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into its descendant",
+        ));
+    }
     prepare_dest(dest, overwrite)?;
     let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, overwrite, 0);
@@ -125,6 +138,18 @@ pub fn copy_dir_recursive_with_progress(
     check_canceled(cancel)?;
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
+    if src_root == dest_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into itself",
+        ));
+    }
+    if path_contains_canonical(&src_root, &dest_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy directory into its descendant",
+        ));
+    }
     prepare_dest(dest, overwrite)?;
     let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_with_progress_inner(
@@ -156,6 +181,7 @@ pub fn copy_dir_recursive_with_progress(
     }
 }
 
+#[allow(dead_code)]
 fn copy_dir_recursive_inner(
     src: &Path,
     dest: &Path,
@@ -307,6 +333,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
@@ -319,14 +346,14 @@ pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
             fs::rename(src, dest)
         };
     }
-    prepare_dest(dest, overwrite)?;
-
     if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
         ));
     }
+    prepare_dest(dest, overwrite)?;
+
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
@@ -389,14 +416,14 @@ pub fn move_entry_with_progress(
             fs::rename(src, dest)
         };
     }
-    prepare_dest(dest, overwrite)?;
-
     if src.is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
         ));
     }
+    prepare_dest(dest, overwrite)?;
+
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
@@ -601,10 +628,12 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     fs::set_permissions(path, permissions)
 }
 
+#[allow(dead_code)]
 pub fn calculate_dir_size(path: &Path) -> io::Result<u64> {
     calculate_dir_size_inner(path, 0)
 }
 
+#[allow(dead_code)]
 fn calculate_dir_size_inner(path: &Path, depth: usize) -> io::Result<u64> {
     if depth > MAX_RECURSION_DEPTH {
         return Err(io::Error::other(format!(

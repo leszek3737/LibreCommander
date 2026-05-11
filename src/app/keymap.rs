@@ -214,121 +214,121 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
     },
     // ── Viewer ───────────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "Esc",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "F3",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "F10",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "q",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "Up",
         action: "ScrollUp",
         description: "Scroll up one line",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "Down",
         action: "ScrollDown",
         description: "Scroll down one line",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "k",
         action: "ScrollUp",
         description: "Scroll up one line (vi)",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "j",
         action: "ScrollDown",
         description: "Scroll down one line (vi)",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "PageUp",
         action: "PageUp",
         description: "Page up",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "PageDown",
         action: "PageDown",
         description: "Page down",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "Home",
         action: "Top",
         description: "Go to beginning of file",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "End",
         action: "Bottom",
         description: "Go to end of file",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "Left",
         action: "ScrollLeft",
         description: "Scroll left",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "Right",
         action: "ScrollRight",
         description: "Scroll right",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "l",
         action: "ToggleLineNum",
         description: "Toggle line numbers",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "w",
         action: "ToggleWrap",
         description: "Toggle line wrapping",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "h",
         action: "ToggleHex",
         description: "Toggle hex mode",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "n",
         action: "NextMatch",
         description: "Next search match",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "N",
         action: "PrevMatch",
         description: "Previous search match",
     },
     KeyBinding {
-        mode: "Viewer",
+        mode: "Viewing",
         key: "/",
         action: "Search",
         description: "Open search dialog",
@@ -639,7 +639,7 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
 /// Returns `(mode, key)` pairs for any key that appears more than once
 /// within the same mode. Empty vec means no duplicates.
 #[cfg(test)]
-pub(crate) fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
+fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
     let mut duplicates = Vec::new();
 
@@ -695,7 +695,7 @@ mod tests {
     fn all_modes_are_non_empty() {
         let modes = [
             "Normal",
-            "Viewer",
+            "Viewing",
             "CommandLine",
             "Search",
             "Menu",
@@ -733,7 +733,7 @@ mod tests {
         let msg = build_help_message();
         let modes = [
             "Normal",
-            "Viewer",
+            "Viewing",
             "CommandLine",
             "Search",
             "Menu",
@@ -750,8 +750,18 @@ mod tests {
     #[test]
     fn build_help_message_lines_are_not_empty() {
         let msg = build_help_message();
-        for line in msg.lines() {
-            assert!(!line.trim().is_empty() || line.is_empty());
+        for (i, line) in msg.lines().enumerate() {
+            if !line.is_empty() {
+                assert!(
+                    !line.trim().is_empty(),
+                    "Line {i} is non-empty but only whitespace"
+                );
+                assert!(
+                    line.trim().len() > 2,
+                    "Line {i} is suspiciously short: {:?}",
+                    line
+                );
+            }
         }
     }
 }

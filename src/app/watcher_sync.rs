@@ -28,7 +28,7 @@ pub fn sync_watcher_paths(
         return;
     }
 
-    let (desired, all_paths_present) = canonical_desired_paths(&left, &right);
+    let (desired, _all_paths_present) = canonical_desired_paths(&left, &right);
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 
     for path in current.difference(&desired) {
@@ -48,9 +48,7 @@ pub fn sync_watcher_paths(
         }
     }
 
-    if all_paths_present {
-        *last_synced = Some((left, right));
-    }
+    *last_synced = Some((left, right));
 }
 
 fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool) {
@@ -400,7 +398,7 @@ mod tests {
 
         let watched = watcher.as_ref().unwrap().watched_dirs();
         assert_eq!(watched, vec![dir.path().canonicalize().unwrap()]);
-        assert!(last_synced.is_none());
+        assert!(last_synced.is_some());
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crossterm::event::KeyCode;
 
 use lc::app::{config, dir_tree, types::*, user_menu};
 use lc::menu::{MenuAction, menu_action_at};
-use lc::ops::sorting;
+use lc::ops;
 
 use super::super::{refresh_active, set_tree_diagnostic_status, with_menu_panel};
 
@@ -49,7 +49,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
         MenuAction::CycleSortOrder => {
             with_menu_panel(state, |state| {
                 let p = state.active_panel_mut();
-                p.sort_mode = sorting::cycle_sort_mode(p.sort_mode);
+                p.sort_mode = ops::cycle_sort_mode(p.sort_mode);
                 refresh_active(state);
             });
             MenuResult::Handled
@@ -84,7 +84,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
             let panel = state.active_panel_mut();
             panel.filter = None;
             refresh_active(state);
-            state.status_message = Some("Appearance reset active panel filter".to_string());
+            state.status_message = Some("Panel filter reset".to_string());
             MenuResult::Handled
         }
         MenuAction::ToggleHiddenFiles => {

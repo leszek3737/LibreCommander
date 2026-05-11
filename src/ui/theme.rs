@@ -36,7 +36,8 @@ impl Theme {
     pub const FUNCTION_BAR_BG: Color = Color::DarkGray;
     pub const SEARCH_MATCH_FG: Color = Color::Black;
     pub const SEARCH_MATCH_BG: Color = Color::LightGreen;
-    pub const SEARCH_MATCH_CURRENT_FG: Color = Color::Yellow;
+    pub const SEARCH_MATCH_CURRENT_FG: Color = Color::Black;
+    pub const SEARCH_MATCH_CURRENT_BG: Color = Color::Yellow;
 
     // File type colors
     pub const DIRECTORY: Color = Color::White;

@@ -31,7 +31,7 @@ use app::{dir_tree, paths, shell, user_menu, watcher_sync};
 use fs::reader;
 use fs::watcher::Watcher;
 use menu::{menu_item_count, menu_total_count};
-use ops::sorting;
+
 use ui::theme::Theme;
 use ui::{DIR_TREE_OVERHEAD_ROWS, LAYOUT_OVERHEAD_ROWS, dialogs, panels, viewer};
 
@@ -373,14 +373,14 @@ fn filtered_sorted_entries(
             if e.name == ".." {
                 true
             } else if let Some(filter) = filter {
-                ops::search::FileSearch::matches_pattern(&e.name, filter, false)
+                ops::FileSearch::matches_pattern(&e.name, filter, false)
             } else {
                 true
             }
         })
         .cloned()
         .collect();
-    sorting::sort_entries(&mut sort_entries, sort_mode, sort_options);
+    ops::sort_entries(&mut sort_entries, sort_mode, sort_options);
     sort_entries
 }
 
@@ -1689,7 +1689,7 @@ fn set_pending_overwrite(state: &mut AppState) {
 
 fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
     let dir = state.active_panel().path.clone();
-    let outcome = ops::search::FileSearch::search_files_with_diagnostics(&dir, input, true, false);
+    let outcome = ops::FileSearch::search_files_with_diagnostics(&dir, input, true, false);
     let result_count = outcome.matches.len();
     let error_count = outcome.errors.len();
     let truncated = outcome.truncated;
@@ -1720,12 +1720,12 @@ fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
     }
     if let Some(reason) = truncated {
         let label = match reason {
-            ops::search::TruncationReason::DepthLimit => "depth limit",
-            ops::search::TruncationReason::ItemLimit => "item limit",
-            ops::search::TruncationReason::ContentResultLimit => "result limit",
-            ops::search::TruncationReason::FileTooLarge => "file too large",
-            ops::search::TruncationReason::LineTooLong => "line too long",
-            ops::search::TruncationReason::BinaryFile => "binary file",
+            ops::TruncationReason::DepthLimit => "depth limit",
+            ops::TruncationReason::ItemLimit => "item limit",
+            ops::TruncationReason::ContentResultLimit => "result limit",
+            ops::TruncationReason::FileTooLarge => "file too large",
+            ops::TruncationReason::LineTooLong => "line too long",
+            ops::TruncationReason::BinaryFile => "binary file",
         };
         message.push_str(&format!(", truncated ({label})"));
     }
@@ -1775,7 +1775,7 @@ fn handle_input_action(
                 state.status_message = Some("Invalid path: '..' not allowed".to_string());
             } else {
                 let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
-                if let Err(err) = ops::file_ops::create_directory(&target) {
+                if let Err(err) = ops::create_directory(&target) {
                     state.status_message = Some(format!("Create directory failed: {err}"));
                 } else {
                     refresh_active(state);
@@ -1784,7 +1784,7 @@ fn handle_input_action(
         }
         InputAction::Rename if !input.is_empty() => {
             if let Some(entry) = state.active_panel().current_entry()
-                && let Err(err) = ops::file_ops::rename_entry(&entry.path, &input)
+                && let Err(err) = ops::rename_entry(&entry.path, &input)
             {
                 state.status_message = Some(format!("Rename failed: {err}"));
             }
@@ -1792,7 +1792,7 @@ fn handle_input_action(
         InputAction::Chmod if !input.is_empty() => {
             if let Some(mode) = parse_octal_mode(&input) {
                 if let Some(entry) = state.active_panel().current_entry()
-                    && let Err(err) = ops::file_ops::chmod(&entry.path, mode)
+                    && let Err(err) = ops::chmod(&entry.path, mode)
                 {
                     state.status_message = Some(format!("Chmod failed: {err}"));
                 }
@@ -2388,9 +2388,8 @@ pub(crate) fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
 }
 
 fn compare_directories(state: &mut AppState, mode: CompareMode) {
-    let report =
-        ops::compare::compare_entries(&state.left_panel.entries, &state.right_panel.entries, mode);
-    ops::compare::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
+    let report = ops::compare_entries(&state.left_panel.entries, &state.right_panel.entries, mode);
+    ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 
     let mode_name = match mode {
         CompareMode::Quick => "Quick",
@@ -2513,7 +2512,7 @@ mod tests {
         state.left_panel.show_hidden = false;
         state.mode = AppMode::Menu;
         state.menu_selected = 3;
-        state.menu_item_selected = 4;
+        state.menu_item_selected = 0;
 
         handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
 

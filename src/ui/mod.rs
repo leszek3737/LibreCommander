@@ -6,9 +6,9 @@ pub mod theme;
 pub mod viewer;
 
 /// Number of rows reserved for UI elements outside the main panels.
-/// Accounts for: top menu bar (1), title bars (2), function key bar (1),
-/// and command line/status area (2). Used to calculate available height
-/// for file panels and viewer.
+/// Accounts for: top menu bar (1), status bar (1), command line (1),
+/// function key bar (1), and borders (2). Used to calculate available
+/// height for file panels and viewer.
 pub const LAYOUT_OVERHEAD_ROWS: u16 = 6;
 
 /// Number of rows reserved for directory tree panel overhead.

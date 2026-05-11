@@ -129,10 +129,10 @@ fn handle_mouse_dialog(
         let dialog_height = height * 40 / 100;
         let dialog_y = (height.saturating_sub(dialog_height)) / 2;
         let btn_row = dialog_y + dialog_height.saturating_sub(2);
+        let dialog_width = width / 2;
+        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
 
-        if row == btn_row {
-            let dialog_width = width / 2;
-            let dialog_left = (width.saturating_sub(dialog_width)) / 2;
+        if row == btn_row && col >= dialog_left && col < dialog_left + dialog_width {
             let btn_center = dialog_left + dialog_width / 2;
             let new_sel = if col < btn_center { 0 } else { 1 };
             if state.dialog_selection == new_sel {
@@ -263,7 +263,7 @@ fn handle_mouse_panels(
     let panel_start_row = 1u16;
     let panel_end_row = height.saturating_sub(4);
 
-    if row < panel_start_row || row > panel_end_row {
+    if row <= panel_start_row || row >= panel_end_row {
         return;
     }
 
@@ -331,7 +331,7 @@ fn handle_mouse_panels(
 
         let panel_mut = state.active_panel_mut();
         panel_mut.cursor = clicked_index;
-        panel_mut.ensure_cursor_visible(panel_height as usize);
+        panel_mut.ensure_cursor_visible(panel_height.saturating_sub(2) as usize);
     }
 }
 

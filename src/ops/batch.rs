@@ -66,6 +66,7 @@ pub struct BatchProgress {
 }
 
 impl BatchProgress {
+    #[allow(dead_code)]
     pub fn new(completed: usize, total: usize, current: Option<PathBuf>) -> Self {
         Self {
             completed,
@@ -125,11 +126,13 @@ impl BatchProgress {
     }
 }
 
+#[allow(dead_code)]
 pub fn execute_batch(action: PendingAction) -> BatchReport {
     let label = helpers::action_label(&action);
     execute_batch_with_progress(action, |_| {}, None, label)
 }
 
+#[allow(dead_code)]
 pub fn execute_batch_with_progress(
     action: PendingAction,
     progress: impl FnMut(BatchProgress),

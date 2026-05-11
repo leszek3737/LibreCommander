@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::app::types::PendingAction;
-pub fn action_label(action: &PendingAction) -> &'static str {
+pub(crate) fn action_label(action: &PendingAction) -> &'static str {
     match action {
         PendingAction::Copy { .. } => "Copy",
         PendingAction::Move { .. } => "Move",
