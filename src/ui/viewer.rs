@@ -612,14 +612,14 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let mut lines: Vec<Line> = Vec::new();
     let visible_height = content_area.height as usize;
 
-    let use_visual = state.wrap_lines && !state.is_hex_mode() && !state.visual_heights.is_empty();
+    let use_visual = state.is_visual_scroll();
 
     let (start_idx, sub_row, end_idx) = if use_visual {
         let (logical_start, sub) = state.visual_row_to_logical(state.scroll_offset);
-        let mut visual_budget = visible_height + sub;
+        let mut visual_budget = visible_height.saturating_add(sub);
         let mut end = logical_start;
         while end < state.content.len() && visual_budget > 0 {
-            visual_budget -= state.visual_heights[end];
+            visual_budget = visual_budget.saturating_sub(state.visual_heights[end]);
             end += 1;
         }
         (logical_start, sub, end)

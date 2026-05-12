@@ -725,7 +725,7 @@ fn handle_viewer_mode(
 ) {
     if let Some(vs) = viewer_state.as_mut() {
         let page_height = terminal_size.height.saturating_sub(3) as usize;
-        let content_width = terminal_width.saturating_sub(2) as usize;
+        let content_width = terminal_width as usize;
         vs.update_wrap_layout(content_width);
         match key {
             KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
