@@ -726,6 +726,7 @@ fn handle_viewer_mode(
     if let Some(vs) = viewer_state.as_mut() {
         let page_height = terminal_size.height.saturating_sub(3) as usize;
         let content_width = terminal_width.saturating_sub(2) as usize;
+        vs.update_wrap_layout(content_width);
         match key {
             KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
                 state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
@@ -801,7 +802,6 @@ fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16)
             state.search_query.clear();
             let panel = state.active_panel_mut();
             panel.filter = None;
-            panel.entries = std::mem::take(&mut panel.unfiltered_entries);
             panel.cursor = 0;
             panel.scroll_offset = 0;
             panel_ops::refresh_active(state);

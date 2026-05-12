@@ -193,15 +193,15 @@ fn make_handler(
                     Some(p.clone())
                 }
                 WatchEvent::Renamed { from, to } => {
-                    if should_emit(&debounce_state, &[from.as_path(), to.as_path()]) {
-                        let _ = event_tx.send(watch_event);
-                    }
+                    should_emit(&debounce_state, &[from.as_path(), to.as_path()], true);
+                    let _ = event_tx.send(watch_event);
                     continue;
                 }
             };
 
+            let skip_debounce = matches!(&watch_event, WatchEvent::Deleted(_));
             if let Some(path) = path
-                && !should_emit(&debounce_state, &[path.as_path()])
+                && !should_emit(&debounce_state, &[path.as_path()], skip_debounce)
             {
                 continue;
             }
@@ -211,12 +211,22 @@ fn make_handler(
     }
 }
 
-fn should_emit(debounce_state: &Mutex<HashMap<PathBuf, Instant>>, paths: &[&Path]) -> bool {
+fn should_emit(
+    debounce_state: &Mutex<HashMap<PathBuf, Instant>>,
+    paths: &[&Path],
+    skip_debounce: bool,
+) -> bool {
     let now = Instant::now();
     let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
         debug_log!("watcher mutex poisoned, recovering: {e}");
         e.into_inner()
     });
+    if skip_debounce {
+        for p in paths {
+            debounce.insert(p.to_path_buf(), now);
+        }
+        return true;
+    }
     let suppressed = paths.iter().any(|p| {
         debounce
             .get(*p)

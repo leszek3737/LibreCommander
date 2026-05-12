@@ -40,6 +40,8 @@ pub struct ViewerState {
     pub file_size: usize,
     pub has_invalid_utf8: bool,
     originally_binary: bool,
+    visual_heights: Vec<usize>,
+    cached_content_width: usize,
 }
 
 impl ViewerState {
@@ -109,6 +111,8 @@ impl ViewerState {
             file_size,
             has_invalid_utf8,
             originally_binary: !open_as_text,
+            visual_heights: Vec::new(),
+            cached_content_width: 0,
         })
     }
 
@@ -120,9 +124,34 @@ impl ViewerState {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
     }
 
+    fn is_visual_scroll(&self) -> bool {
+        self.wrap_lines && !self.is_hex_mode() && !self.visual_heights.is_empty()
+    }
+
+    fn total_visual_rows(&self) -> usize {
+        self.visual_heights.iter().sum()
+    }
+
+    fn visual_row_to_logical(&self, visual_row: usize) -> (usize, usize) {
+        let mut acc = 0usize;
+        for (i, &h) in self.visual_heights.iter().enumerate() {
+            if acc + h > visual_row {
+                return (i, visual_row - acc);
+            }
+            acc += h;
+        }
+        (self.content.len().saturating_sub(1), 0)
+    }
+
+    fn logical_to_visual_row(&self, logical_line: usize) -> usize {
+        self.visual_heights.iter().take(logical_line).sum()
+    }
+
     fn max_scroll(&self) -> usize {
         if self.is_hex_mode() {
             self.raw_bytes.len().div_ceil(16).saturating_sub(1)
+        } else if self.is_visual_scroll() {
+            self.total_visual_rows().saturating_sub(1)
         } else {
             self.line_count.saturating_sub(1)
         }
@@ -150,6 +179,8 @@ impl ViewerState {
     pub fn go_to_bottom(&mut self, page_height: usize) {
         let total = if self.is_hex_mode() {
             self.raw_bytes.len().div_ceil(16)
+        } else if self.is_visual_scroll() {
+            self.total_visual_rows()
         } else {
             self.line_count
         };
@@ -207,8 +238,13 @@ impl ViewerState {
             }
         }
 
+        let current_logical = if self.is_visual_scroll() {
+            self.visual_row_to_logical(self.scroll_offset).0
+        } else {
+            self.scroll_offset
+        };
         for (i, &(line_idx, _, _)) in self.search_matches.iter().enumerate() {
-            if line_idx >= self.scroll_offset {
+            if line_idx >= current_logical {
                 self.current_match = i;
                 self.scroll_to_current_match(page_height);
                 return;
@@ -223,7 +259,12 @@ impl ViewerState {
     fn scroll_to_current_match(&mut self, page_height: usize) {
         if let Some(&(line_idx, _, _)) = self.search_matches.get(self.current_match) {
             let context = 5usize.min(page_height.saturating_sub(1));
-            self.scroll_offset = line_idx.saturating_sub(context).min(self.max_scroll());
+            if self.is_visual_scroll() {
+                let visual_row = self.logical_to_visual_row(line_idx);
+                self.scroll_offset = visual_row.saturating_sub(context).min(self.max_scroll());
+            } else {
+                self.scroll_offset = line_idx.saturating_sub(context).min(self.max_scroll());
+            }
         }
     }
 
@@ -249,6 +290,8 @@ impl ViewerState {
 
     pub fn toggle_line_numbers(&mut self) {
         self.show_line_numbers = !self.show_line_numbers;
+        self.visual_heights.clear();
+        self.cached_content_width = 0;
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
@@ -259,6 +302,8 @@ impl ViewerState {
         if self.wrap_lines {
             self.horizontal_offset = 0;
         }
+        self.visual_heights.clear();
+        self.cached_content_width = 0;
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
@@ -291,6 +336,39 @@ impl ViewerState {
             self.current_match = 0;
             self.search_query = None;
             self.has_invalid_utf8 = std::str::from_utf8(&self.raw_bytes).is_err();
+        }
+    }
+
+    pub fn update_wrap_layout(&mut self, content_width: usize) {
+        if !self.wrap_lines || self.is_hex_mode() || self.content.is_empty() {
+            if !self.visual_heights.is_empty() {
+                self.visual_heights.clear();
+                self.cached_content_width = 0;
+            }
+            return;
+        }
+        if self.cached_content_width == content_width && !self.visual_heights.is_empty() {
+            return;
+        }
+        let line_num_width = if self.show_line_numbers {
+            line_number_column_width(self.line_count)
+        } else {
+            0
+        };
+        let width = content_width.max(1);
+        self.visual_heights = self
+            .content
+            .iter()
+            .map(|line| {
+                let text_width = unicode_width::UnicodeWidthStr::width(line.as_str());
+                let total_width = line_num_width.saturating_add(text_width);
+                total_width.div_ceil(width).max(1)
+            })
+            .collect();
+        self.cached_content_width = content_width;
+        let max = self.max_scroll();
+        if self.scroll_offset > max {
+            self.scroll_offset = max;
         }
     }
 
@@ -533,8 +611,23 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
 
     let mut lines: Vec<Line> = Vec::new();
     let visible_height = content_area.height as usize;
-    let start_idx = state.scroll_offset;
-    let end_idx = (start_idx + visible_height).min(state.content.len());
+
+    let use_visual = state.wrap_lines && !state.is_hex_mode() && !state.visual_heights.is_empty();
+
+    let (start_idx, sub_row, end_idx) = if use_visual {
+        let (logical_start, sub) = state.visual_row_to_logical(state.scroll_offset);
+        let mut visual_budget = visible_height + sub;
+        let mut end = logical_start;
+        while end < state.content.len() && visual_budget > 0 {
+            visual_budget -= state.visual_heights[end];
+            end += 1;
+        }
+        (logical_start, sub, end)
+    } else {
+        let start = state.scroll_offset;
+        let end = (start + visible_height).min(state.content.len());
+        (start, 0, end)
+    };
 
     let visible_matches = &state.search_matches_by_line;
     let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
@@ -574,18 +667,23 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     let mut paragraph = Paragraph::new(lines);
     if state.wrap_lines {
         paragraph = paragraph.wrap(Wrap { trim: false });
+        if use_visual && sub_row > 0 {
+            paragraph = paragraph.scroll((sub_row as u16, 0));
+        }
     } else {
         paragraph = paragraph.scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
     }
 
     f.render_widget(paragraph, content_area);
 
-    let current_line = if state.line_count == 0 {
+    let current_line = if use_visual {
+        state.visual_row_to_logical(state.scroll_offset).0
+    } else if state.line_count == 0 {
         0
     } else {
-        state.scroll_offset + 1
+        state.scroll_offset
     };
-    let position_text = format!("Line: {current_line}/{}", state.line_count);
+    let position_text = format!("Line: {}/{}", current_line + 1, state.line_count);
     render_viewer_status(f, inner_area, state, "Text", &position_text);
 }
 
@@ -1218,5 +1316,116 @@ mod tests {
         assert!(status.contains("Line: 1/3"));
         assert!(status.contains("Text"));
         assert!(!status.contains("line 3"));
+    }
+
+    #[test]
+    fn test_wrap_scroll_advances_by_visual_row() {
+        let long_line = "a".repeat(200);
+        let content = format!("short\n{long_line}\nend");
+        let file = create_test_file(&content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        assert!(state.wrap_lines);
+
+        state.update_wrap_layout(80);
+        assert!(!state.visual_heights.is_empty());
+
+        let short_height = state.visual_heights[0];
+        let long_height = state.visual_heights[1];
+        assert_eq!(short_height, 1);
+        assert!(
+            long_height > 1,
+            "long line should wrap to multiple visual rows"
+        );
+
+        let total_visual: usize = state.visual_heights.iter().sum();
+        assert!(total_visual > state.line_count);
+
+        state.scroll_down(1);
+        assert_eq!(state.scroll_offset, 1);
+
+        state.scroll_down(1);
+        assert_eq!(state.scroll_offset, 2);
+
+        state.scroll_up(1);
+        assert_eq!(state.scroll_offset, 1);
+
+        let max = state.max_scroll();
+        assert_eq!(max, total_visual.saturating_sub(1));
+        assert!(max > state.line_count);
+    }
+
+    #[test]
+    fn test_wrap_scroll_with_narrow_width() {
+        let content = "abcdefghij";
+        let file = create_test_file(content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.update_wrap_layout(5);
+
+        assert_eq!(state.visual_heights.len(), 1);
+        assert_eq!(state.visual_heights[0], 2);
+
+        state.scroll_down(1);
+        assert_eq!(state.scroll_offset, 1);
+
+        let max = state.max_scroll();
+        assert_eq!(max, 1);
+    }
+
+    #[test]
+    fn test_wrap_go_to_bottom_uses_visual_rows() {
+        let long_line = "x".repeat(160);
+        let content = format!("a\nb\n{long_line}\nc");
+        let file = create_test_file(&content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.update_wrap_layout(80);
+
+        let total_visual: usize = state.visual_heights.iter().sum();
+        state.go_to_bottom(3);
+        assert_eq!(
+            state.scroll_offset,
+            total_visual.saturating_sub(3).min(state.max_scroll())
+        );
+    }
+
+    #[test]
+    fn test_toggle_wrap_clears_visual_heights() {
+        let content = "some text";
+        let file = create_test_file(content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.update_wrap_layout(80);
+        assert!(!state.visual_heights.is_empty());
+
+        state.toggle_wrap();
+        assert!(state.visual_heights.is_empty());
+        assert_eq!(state.cached_content_width, 0);
+    }
+
+    #[test]
+    fn test_no_wrap_uses_logical_lines() {
+        let content = "Line 1\nLine 2\nLine 3";
+        let file = create_test_file(content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.wrap_lines = false;
+
+        assert!(!state.is_visual_scroll());
+        assert_eq!(state.max_scroll(), 2);
+
+        state.scroll_down(1);
+        assert_eq!(state.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_visual_row_to_logical_roundtrip() {
+        let content = "short\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nend";
+        let file = create_test_file(content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.update_wrap_layout(10);
+
+        let total_visual: usize = state.visual_heights.iter().sum();
+        for row in 0..total_visual {
+            let (logical, sub) = state.visual_row_to_logical(row);
+            let back = state.logical_to_visual_row(logical);
+            assert_eq!(back + sub, row, "roundtrip failed for visual row {row}");
+        }
     }
 }

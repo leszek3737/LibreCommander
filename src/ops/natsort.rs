@@ -123,9 +123,14 @@ impl Ord for NatKeySegment {
         match (self, other) {
             (NatKeySegment::Text(a), NatKeySegment::Text(b)) => a.cmp(b),
             (NatKeySegment::Num(a), NatKeySegment::Num(b)) => {
-                let sa = strip_leading_zeros(a);
-                let sb = strip_leading_zeros(b);
-                sa.len().cmp(&sb.len()).then(sa.cmp(sb))
+                let has_leading_zero = a.first() == Some(&b'0') || b.first() == Some(&b'0');
+                if has_leading_zero {
+                    a.cmp(b)
+                } else {
+                    let sa = strip_leading_zeros(a);
+                    let sb = strip_leading_zeros(b);
+                    sa.len().cmp(&sb.len()).then(sa.cmp(sb))
+                }
             }
             (NatKeySegment::Text(_), NatKeySegment::Num(_)) => Ordering::Less,
             (NatKeySegment::Num(_), NatKeySegment::Text(_)) => Ordering::Greater,
@@ -237,9 +242,9 @@ mod tests {
         let key_short = natsort_key(b"pic2", true);
         let key_long = natsort_key(b"pic02", true);
         let key_longer = natsort_key(b"pic02000", true);
-        assert_eq!(key_short.cmp(&key_long), Ordering::Equal);
-        assert_eq!(key_long.cmp(&key_short), Ordering::Equal);
-        assert!(key_short < key_longer);
+        assert_eq!(key_short.cmp(&key_long), Ordering::Greater);
+        assert_eq!(key_long.cmp(&key_short), Ordering::Less);
+        assert!(key_short > key_longer);
         assert!(key_long < key_longer);
     }
 
@@ -247,8 +252,8 @@ mod tests {
     fn test_natsort_key_leading_zeros() {
         let key_short = natsort_key(b"pic2", false);
         let key_long = natsort_key(b"pic02", false);
-        assert_eq!(key_short.cmp(&key_long), Ordering::Equal);
-        assert_eq!(key_long.cmp(&key_short), Ordering::Equal);
+        assert_eq!(key_short.cmp(&key_long), Ordering::Greater);
+        assert_eq!(key_long.cmp(&key_short), Ordering::Less);
     }
 
     #[test]
@@ -430,5 +435,34 @@ mod tests {
     fn test_nat_key_segment_cross_variant() {
         assert!(NatKeySegment::Text(b"a".to_vec()) < NatKeySegment::Num(b"1".to_vec()));
         assert!(NatKeySegment::Num(b"1".to_vec()) > NatKeySegment::Text(b"a".to_vec()));
+    }
+
+    #[test]
+    fn test_natsort_key_matches_natsort_leading_zeros() {
+        let pairs: &[(&[u8], &[u8])] = &[
+            (b"pic2", b"pic02"),
+            (b"pic02", b"pic02000"),
+            (b"pic2", b"pic02000"),
+            (b"00", b"0"),
+            (b"001", b"01"),
+            (b"pic01", b"pic02"),
+            (b"pic05", b"pic2"),
+            (b"pic02000", b"pic05"),
+            (b"1-02", b"1-2"),
+            (b"x2-y08", b"x2-y7"),
+        ];
+        for (a, b) in pairs {
+            let direct = natsort(a, b, true);
+            let via_key = natsort_key(a, true).cmp(&natsort_key(b, true));
+            assert_eq!(
+                direct,
+                via_key,
+                "natsort vs natsort_key mismatch for {:?} vs {:?}: direct={:?}, key={:?}",
+                String::from_utf8_lossy(a),
+                String::from_utf8_lossy(b),
+                direct,
+                via_key,
+            );
+        }
     }
 }
