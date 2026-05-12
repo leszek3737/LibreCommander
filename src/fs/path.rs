@@ -163,7 +163,7 @@ fn is_env_name_char(c: char) -> bool {
 }
 
 fn env_var(name: &str) -> Option<String> {
-    std::env::var_os(name).and_then(|v| v.into_string().ok())
+    std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

@@ -299,4 +299,100 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_natsort_key_matches_natsort_file_sequence() {
+        let names = [
+            "file1.txt",
+            "file10.txt",
+            "file2.txt",
+            "file20.txt",
+            "file3.txt",
+        ];
+        let mut by_natsort = names.to_vec();
+        by_natsort.sort_by(|a, b| natsort(a.as_bytes(), b.as_bytes(), true));
+
+        let mut by_key = names.to_vec();
+        by_key.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+
+        assert_eq!(
+            by_natsort, by_key,
+            "natsort_key must produce same order as natsort"
+        );
+        assert_eq!(
+            by_key,
+            [
+                "file1.txt",
+                "file2.txt",
+                "file3.txt",
+                "file10.txt",
+                "file20.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_natsort_key_pairwise_consistency() {
+        let pairs: &[(&[u8], &[u8])] = &[
+            (b"file2", b"file10"),
+            (b"a2b", b"a10b"),
+            (b"z99", b"z100"),
+            (b"v2rc14", b"v2rc2"),
+            (b"1", b"10"),
+            (b"abc", b"abcd"),
+        ];
+        for (a, b) in pairs {
+            let direct = natsort(a, b, true);
+            let via_key = natsort_key(a, true).cmp(&natsort_key(b, true));
+            assert_eq!(
+                direct,
+                via_key,
+                "natsort vs natsort_key mismatch for {:?} vs {:?}: direct={:?}, key={:?}",
+                String::from_utf8_lossy(a),
+                String::from_utf8_lossy(b),
+                direct,
+                via_key,
+            );
+        }
+    }
+
+    #[test]
+    fn test_natsort_key_mixed_alpha_numeric() {
+        let names = ["a10b", "a2b", "a1b"];
+        let mut sorted = names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted, ["a1b", "a2b", "a10b"]);
+    }
+
+    #[test]
+    fn test_natsort_polish_diacritics() {
+        let names = ["ząb", "zab", "źreb", "aąb"];
+        let mut sorted = names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted.len(), 4);
+    }
+
+    #[test]
+    fn test_natsort_emoji_filenames() {
+        let names = ["📄doc", "📊data", "a📝", "plain"];
+        let mut sorted = names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted.len(), 4);
+    }
+
+    #[test]
+    fn test_natsort_zero_width_joiner() {
+        let zwj_names = ["a\u{200d}b", "a\u{200c}b", "ab", "a\u{200b}b"];
+        let mut sorted = zwj_names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted.len(), 4);
+    }
+
+    #[test]
+    fn test_natsort_unicode_combining_chars() {
+        let names = ["z\u{0301}", "za", "\u{007a}\u{0301}b", "ab"];
+        let mut sorted = names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted.len(), 4);
+    }
 }

@@ -538,4 +538,189 @@ mod tests {
         assert_eq!(natsort(b"b1", b"a10", true), Ordering::Greater);
         assert_eq!(natsort(b"file2.txt", b"file10.txt", true), Ordering::Less);
     }
+
+    fn create_entry_without_btime(
+        name: &str,
+        is_dir: bool,
+        size: u64,
+        modified_secs: u64,
+    ) -> FileEntry {
+        let ts = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs);
+        FileEntry::builder()
+            .name(name)
+            .path(name)
+            .is_dir(is_dir)
+            .size(size)
+            .modified(ts)
+            .owner("testuser")
+            .group("testgroup")
+            .build()
+    }
+
+    #[test]
+    fn test_sort_btime_asc_none_after_some() {
+        let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let t2 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
+        let mut entries = vec![
+            FileEntry::builder()
+                .name("no_btime.txt")
+                .path("no_btime.txt")
+                .size(10)
+                .modified(t1)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("old.txt")
+                .path("old.txt")
+                .size(10)
+                .modified(t1)
+                .created(t1)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("new.txt")
+                .path("new.txt")
+                .size(10)
+                .modified(t2)
+                .created(t2)
+                .owner("u")
+                .group("g")
+                .build(),
+        ];
+
+        sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+
+        assert_eq!(entries[0].name, "old.txt");
+        assert_eq!(entries[1].name, "new.txt");
+        assert_eq!(entries[2].name, "no_btime.txt");
+    }
+
+    #[test]
+    fn test_sort_btime_desc_none_after_some() {
+        let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let t2 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
+        let mut entries = vec![
+            FileEntry::builder()
+                .name("no_btime.txt")
+                .path("no_btime.txt")
+                .size(10)
+                .modified(t1)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("old.txt")
+                .path("old.txt")
+                .size(10)
+                .modified(t1)
+                .created(t1)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("new.txt")
+                .path("new.txt")
+                .size(10)
+                .modified(t2)
+                .created(t2)
+                .owner("u")
+                .group("g")
+                .build(),
+        ];
+
+        sort_entries(&mut entries, SortMode::BtimeDesc, SortOptions::default());
+
+        assert_eq!(entries[0].name, "new.txt");
+        assert_eq!(entries[1].name, "old.txt");
+        assert_eq!(entries[2].name, "no_btime.txt");
+    }
+
+    #[test]
+    fn test_sort_btime_same_btime_stable() {
+        let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(300);
+        let mut entries = vec![
+            FileEntry::builder()
+                .name("beta.txt")
+                .path("beta.txt")
+                .size(10)
+                .modified(t)
+                .created(t)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("alpha.txt")
+                .path("alpha.txt")
+                .size(10)
+                .modified(t)
+                .created(t)
+                .owner("u")
+                .group("g")
+                .build(),
+        ];
+
+        sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+
+        assert_eq!(entries[0].name, "alpha.txt");
+        assert_eq!(entries[1].name, "beta.txt");
+    }
+
+    #[test]
+    fn test_sort_btime_all_none() {
+        let mut entries = vec![
+            create_entry_without_btime("c.txt", false, 10, 100),
+            create_entry_without_btime("a.txt", false, 10, 100),
+            create_entry_without_btime("b.txt", false, 10, 100),
+        ];
+
+        sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+
+        assert_eq!(entries[0].name, "a.txt");
+        assert_eq!(entries[1].name, "b.txt");
+        assert_eq!(entries[2].name, "c.txt");
+    }
+
+    #[test]
+    fn test_sort_btime_mixed_with_dirs() {
+        let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let t2 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
+        let mut entries = vec![
+            FileEntry::builder()
+                .name("file_no_btime")
+                .path("file_no_btime")
+                .size(10)
+                .modified(t1)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("dir_old")
+                .path("dir_old")
+                .is_dir(true)
+                .size(0)
+                .modified(t1)
+                .created(t1)
+                .owner("u")
+                .group("g")
+                .build(),
+            FileEntry::builder()
+                .name("dir_new")
+                .path("dir_new")
+                .is_dir(true)
+                .size(0)
+                .modified(t2)
+                .created(t2)
+                .owner("u")
+                .group("g")
+                .build(),
+        ];
+
+        sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+
+        assert_eq!(entries[0].name, "dir_old");
+        assert_eq!(entries[1].name, "dir_new");
+        assert_eq!(entries[2].name, "file_no_btime");
+    }
 }

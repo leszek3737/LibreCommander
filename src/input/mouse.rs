@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
@@ -199,7 +200,12 @@ fn handle_mouse_menu_dropdown(
         return None;
     }
     let items = MENU_ITEMS[state.menu_selected];
-    let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
+    let dropdown_width = items
+        .iter()
+        .map(|s| UnicodeWidthStr::width(*s))
+        .max()
+        .unwrap_or(10) as u16
+        + 4;
     let menu_bar_area = Rect::new(0, 0, width, 1);
     let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
 
