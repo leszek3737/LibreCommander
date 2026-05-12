@@ -8,9 +8,21 @@ use ratatui::{
     style::Style,
     text::Line,
     widgets::{
-        Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap,
+        Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
+
+#[derive(Debug, Clone)]
+pub struct PropertiesInfo {
+    pub name: String,
+    pub size: String,
+    pub mtime: String,
+    pub permissions: String,
+    pub owner: String,
+    pub group: String,
+    pub file_type: String,
+}
 
 #[derive(Debug, Clone)]
 pub enum DialogKind<'a> {
@@ -41,13 +53,7 @@ pub enum DialogKind<'a> {
         percent: f32,
     },
     Properties {
-        name: Cow<'a, str>,
-        size: Cow<'a, str>,
-        mtime: Cow<'a, str>,
-        permissions: Cow<'a, str>,
-        owner: Cow<'a, str>,
-        group: Cow<'a, str>,
-        file_type: Cow<'a, str>,
+        info: PropertiesInfo,
     },
     OverwriteConfirm {
         selection: usize,
@@ -56,6 +62,10 @@ pub enum DialogKind<'a> {
 }
 
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
+    if matches!(dialog, DialogKind::OverwriteConfirm { files, .. } if files.is_empty()) {
+        return;
+    }
+
     let rect = f.area();
     let dialog_area = centered_rect(50, 40, rect);
 
@@ -104,26 +114,8 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
         } => {
             render_progress_dialog(f, dialog_area, title, message, *percent);
         }
-        DialogKind::Properties {
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            file_type,
-        } => {
-            render_properties_dialog(
-                f,
-                dialog_area,
-                name,
-                size,
-                mtime,
-                permissions,
-                owner,
-                group,
-                file_type,
-            );
+        DialogKind::Properties { info } => {
+            render_properties_dialog(f, dialog_area, info);
         }
         DialogKind::OverwriteConfirm { selection, files } => {
             render_overwrite_dialog(f, dialog_area, *selection, files);
@@ -150,15 +142,12 @@ fn dialog_block(title: &str, style: Style) -> Block<'_> {
         .style(style)
 }
 
-fn truncate_path(path: &str, max_width: usize) -> String {
-    let total_width = unicode_width::UnicodeWidthStr::width(path);
-    if total_width <= max_width {
-        path.to_string()
-    } else if max_width > 3 {
+fn truncate_suffix(s: &str, max_width: usize) -> String {
+    if max_width > 3 {
         let suffix_budget = max_width - 3;
         let mut width = 0;
-        let mut split_idx = path.len();
-        for (idx, ch) in path.char_indices().rev() {
+        let mut split_idx = s.len();
+        for (idx, ch) in s.char_indices().rev() {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             if width + cw > suffix_budget {
                 split_idx = idx + ch.len_utf8();
@@ -167,11 +156,11 @@ fn truncate_path(path: &str, max_width: usize) -> String {
             width += cw;
             split_idx = idx;
         }
-        format!("...{}", &path[split_idx..])
+        format!("...{}", &s[split_idx..])
     } else {
         let mut out = String::new();
         let mut width = 0;
-        for ch in path.chars() {
+        for ch in s.chars() {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             if width + cw > max_width {
                 break;
@@ -181,6 +170,45 @@ fn truncate_path(path: &str, max_width: usize) -> String {
         }
         out
     }
+}
+
+fn truncate_path(path: &str, max_width: usize) -> String {
+    let total_width = unicode_width::UnicodeWidthStr::width(path);
+    if total_width <= max_width {
+        return path.to_string();
+    }
+    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
+    let file_width = unicode_width::UnicodeWidthStr::width(file);
+    if file_width >= max_width {
+        return truncate_suffix(file, max_width);
+    }
+    if dir.is_empty() {
+        return truncate_suffix(path, max_width);
+    }
+    let budget = max_width - file_width - 1;
+    let dir_part = truncate_suffix(dir, budget);
+    format!("{dir_part}/{file}")
+}
+
+fn render_file_list(f: &mut Frame, area: Rect, files: &[impl AsRef<str>], max_name_width: usize) {
+    let max_visible = area.height as usize;
+    let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
+    let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
+    if files.len() <= show_count {
+        for name in files {
+            let display = truncate_path(name.as_ref(), max_name_width);
+            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+        }
+    } else {
+        for name in files.iter().take(show_count.saturating_sub(1)) {
+            let display = truncate_path(name.as_ref(), max_name_width);
+            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+        }
+        let remaining = files.len() - show_count + 1;
+        lines.push(Line::from(format!("  ... +{remaining} more")));
+    }
+    let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
+    f.render_widget(file_paragraph, area);
 }
 
 pub fn render_confirm_dialog(
@@ -218,24 +246,8 @@ pub fn render_confirm_dialog(
     f.render_widget(msg_paragraph, chunks[0]);
 
     if has_files {
-        let max_visible = chunks[1].height as usize;
-        let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
-        let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
-        if files.len() <= show_count {
-            for name in files {
-                let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
-                lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
-            }
-        } else {
-            for name in files.iter().take(show_count.saturating_sub(1)) {
-                let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
-                lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
-            }
-            let remaining = files.len() - show_count + 1;
-            lines.push(Line::from(format!("  ... +{remaining} more")));
-        }
-        let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
-        f.render_widget(file_paragraph, chunks[1]);
+        let max_name_width = inner.width.saturating_sub(2) as usize;
+        render_file_list(f, chunks[1], files, max_name_width);
     }
 
     let yes_style = if selection == 0 {
@@ -263,6 +275,10 @@ pub fn render_overwrite_dialog(
     selection: usize,
     files: &[impl AsRef<str>],
 ) {
+    if files.is_empty() {
+        return;
+    }
+
     let block = dialog_block("Overwrite?", Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -290,24 +306,8 @@ pub fn render_overwrite_dialog(
         .alignment(Alignment::Center);
     f.render_widget(msg_paragraph, chunks[0]);
 
-    let max_visible = chunks[1].height as usize;
-    let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
-    let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
-    if files.len() <= show_count {
-        for name in files {
-            let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
-            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
-        }
-    } else {
-        for name in files.iter().take(show_count.saturating_sub(1)) {
-            let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
-            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
-        }
-        let remaining = files.len() - show_count + 1;
-        lines.push(Line::from(format!("  ... +{remaining} more")));
-    }
-    let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
-    f.render_widget(file_paragraph, chunks[1]);
+    let max_name_width = inner.width.saturating_sub(2) as usize;
+    render_file_list(f, chunks[1], files, max_name_width);
 
     let btn_style = |idx: usize| -> Style {
         if selection == idx {
@@ -484,28 +484,26 @@ pub fn render_help_dialog(
     f.render_widget(message_paragraph, message_area);
 
     if has_scrollbar {
-        let scrollbar_height = max_lines.min(total_lines);
-        let scrollbar_pos = clamped_offset
-            .saturating_mul(scrollbar_height)
-            .saturating_div(total_lines.max(1));
-        let thumb_height = max_lines
-            .saturating_mul(max_lines)
-            .saturating_div(total_lines.max(1))
-            .max(1);
-        let scrollbar_x = chunks[0].x + chunks[0].width.saturating_sub(1);
-        let scrollbar_y = chunks[0].y;
-        for i in 0..scrollbar_height {
-            let y = scrollbar_y + i as u16;
-            let in_thumb =
-                i == scrollbar_pos || (i >= scrollbar_pos && i < scrollbar_pos + thumb_height);
-            let symbol = if in_thumb { "█" } else { "░" };
-            let cell =
-                ratatui::text::Span::styled(symbol, Style::default().fg(Theme::scrollbar_active()));
-            f.render_widget(
-                ratatui::widgets::Paragraph::new(cell),
-                Rect::new(scrollbar_x, y, 1, 1),
-            );
-        }
+        let scrollbar_area = Rect::new(
+            chunks[0].x + chunks[0].width.saturating_sub(1),
+            chunks[0].y,
+            1,
+            chunks[0].height,
+        );
+        let mut scrollbar_state = ScrollbarState::new(total_lines)
+            .viewport_content_length(max_lines)
+            .position(clamped_offset);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("█")
+                .track_symbol(Some("░"))
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(Theme::scrollbar_active()))
+                .track_style(Style::default().fg(Theme::scrollbar_active())),
+            scrollbar_area,
+            &mut scrollbar_state,
+        );
     }
 
     let ok_btn = Paragraph::new("[ Press any key to exit, Arrows/PgUp/PgDn to scroll ]")
@@ -546,29 +544,20 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
     f.render_widget(hint, chunks[2]);
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn render_properties_dialog(
-    f: &mut Frame,
-    area: Rect,
-    name: &str,
-    size: &str,
-    mtime: &str,
-    permissions: &str,
-    owner: &str,
-    group: &str,
-    file_type: &str,
-) {
-    let block = dialog_block("File Properties", Theme::warning_dialog());
+pub fn render_properties_dialog(f: &mut Frame, area: Rect, info: &PropertiesInfo) {
+    let display_name = truncate_path(&info.name, 30);
+    let title = format!("Properties — {display_name}");
+    let block = dialog_block(&title, Theme::warning_dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let lines = vec![
-        Line::from(format!("Name: {}", name)),
-        Line::from(format!("Type: {}", file_type)),
-        Line::from(format!("Size: {}", size)),
-        Line::from(format!("Modified: {}", mtime)),
-        Line::from(format!("Permissions: {}", permissions)),
-        Line::from(format!("Owner: {}:{}", owner, group)),
+        Line::from(format!("Name: {}", info.name)),
+        Line::from(format!("Type: {}", info.file_type)),
+        Line::from(format!("Size: {}", info.size)),
+        Line::from(format!("Modified: {}", info.mtime)),
+        Line::from(format!("Permissions: {}", info.permissions)),
+        Line::from(format!("Owner: {}:{}", info.owner, info.group)),
         Line::from(""),
         Line::from("[ Press Enter or Esc to close ]").style(Theme::info()),
     ];
@@ -609,11 +598,18 @@ pub fn render_list_picker<T: AsRef<str>>(
         f.render_widget(empty, chunks[0]);
     } else {
         let visible_height = chunks[0].height as usize;
-        let selected = selected.min(items.len().saturating_sub(1));
+        let clamped_selected = selected.min(items.len().saturating_sub(1));
         let start_idx = if visible_height == 0 {
-            selected
+            clamped_selected
         } else {
-            selected.saturating_sub(visible_height.saturating_sub(1))
+            let half = visible_height / 2;
+            if clamped_selected < half {
+                0
+            } else if clamped_selected + half >= items.len() {
+                items.len().saturating_sub(visible_height)
+            } else {
+                clamped_selected - half
+            }
         };
         let end_idx = (start_idx + visible_height).min(items.len());
         let list_items: Vec<ListItem> = items[start_idx..end_idx]
@@ -624,7 +620,7 @@ pub fn render_list_picker<T: AsRef<str>>(
             .highlight_style(Theme::highlight_bold())
             .highlight_symbol("> ");
         let mut list_state = ListState::default();
-        list_state.select(Some(selected - start_idx));
+        list_state.select(Some(clamped_selected - start_idx));
         f.render_stateful_widget(list, chunks[0], &mut list_state);
     }
 
@@ -752,6 +748,31 @@ mod tests {
     #[test]
     fn truncate_path_truncates_tiny_utf8_width_safely() {
         assert_eq!(truncate_path("żółć", 3), "żół");
+    }
+
+    #[test]
+    fn truncate_path_preserves_filename() {
+        assert_eq!(
+            truncate_path("/very/long/directory/path/file.txt", 15),
+            "...ath/file.txt"
+        );
+    }
+
+    #[test]
+    fn overwrite_dialog_empty_files_returns_early() {
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_dialog(
+                    f,
+                    &DialogKind::OverwriteConfirm {
+                        selection: 0,
+                        files: vec![],
+                    },
+                );
+            })
+            .unwrap();
     }
 
     #[test]

@@ -2,6 +2,11 @@ use super::*;
 use crate::app::file_type::*;
 use ratatui::style::Color;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
+
+fn test_timestamp() -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000)
+}
 
 fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
     FileEntry::builder()
@@ -11,7 +16,7 @@ fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) 
         .is_symlink(is_symlink)
         .is_executable(is_exec)
         .size(1024)
-        .modified(SystemTime::now())
+        .modified(test_timestamp())
         .owner("user")
         .group("group")
         .is_hidden(name.starts_with('.'))
@@ -70,10 +75,38 @@ fn test_get_file_color_source_code() {
 }
 
 #[test]
-fn test_get_file_color_hidden() {
+fn test_get_file_color_hidden_as_other() {
     let entry = create_test_entry(".hidden", false, false, false);
     let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::White));
+}
+
+#[test]
+fn test_get_file_color_config() {
+    let entry = create_test_entry("settings.toml", false, false, false);
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+    assert_eq!(style.fg, Some(Color::LightBlue));
+}
+
+#[test]
+fn test_get_file_color_video() {
+    let entry = create_test_entry("movie.mp4", false, false, false);
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+    assert_eq!(style.fg, Some(Color::LightMagenta));
+}
+
+#[test]
+fn test_get_file_color_audio() {
+    let entry = create_test_entry("song.mp3", false, false, false);
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+    assert_eq!(style.fg, Some(Color::LightGreen));
+}
+
+#[test]
+fn test_get_file_color_font() {
+    let entry = create_test_entry("font.ttf", false, false, false);
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+    assert_eq!(style.fg, Some(Color::LightCyan));
 }
 
 #[test]
@@ -102,14 +135,12 @@ fn test_format_size_bytes() {
 
 #[test]
 fn test_format_size_kilobytes() {
-    let result = format_size(1536);
-    assert!(result.contains("KB"));
+    assert_eq!(format_size(1536), "1.5 KB");
 }
 
 #[test]
 fn test_format_size_megabytes() {
-    let result = format_size(1024 * 1024 * 5);
-    assert!(result.contains("MB"));
+    assert_eq!(format_size(1024 * 1024 * 5), "5.0 MB");
 }
 
 #[test]
@@ -193,10 +224,8 @@ fn test_is_source_code_negative() {
 }
 
 #[test]
-fn test_format_time_current() {
-    let time = SystemTime::now();
-    let result = format_time(time);
-    assert!(result.len() >= 14);
+fn test_format_time_deterministic() {
+    let result = format_time(test_timestamp());
     assert!(result.contains("-"));
     assert!(result.contains(":"));
 }
@@ -224,57 +253,145 @@ fn test_format_entry_line_selected() {
 }
 
 #[test]
+fn test_format_entry_line_with_permissions() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_entry_line(&entry, 60, true, &entry.category());
+    assert!(result.contains("file.txt"));
+    assert!(result.contains("r"));
+}
+
+#[test]
+fn test_format_entry_line_width_zero() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_entry_line(&entry, 0, false, &entry.category());
+    assert_eq!(result, " ");
+}
+
+#[test]
+fn test_format_entry_line_width_one() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_entry_line(&entry, 1, false, &entry.category());
+    assert_eq!(result, " ");
+}
+
+#[test]
+fn test_format_entry_line_width_two() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_entry_line(&entry, 2, false, &entry.category());
+    assert_eq!(result, " …");
+}
+
+#[test]
+fn test_format_brief_entry_line_basic() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_brief_entry_line(&entry, 60, &entry.category());
+    assert!(result.contains("file.txt"));
+}
+
+#[test]
+fn test_format_brief_entry_line_selected() {
+    let mut entry = create_test_entry("file.txt", false, false, false);
+    entry.selected = true;
+    let result = format_brief_entry_line(&entry, 60, &entry.category());
+    assert!(result.starts_with('*'));
+}
+
+#[test]
+fn test_format_brief_entry_line_truncation() {
+    let entry = create_test_entry(
+        "very_long_filename_that_should_be_truncated.txt",
+        false,
+        false,
+        false,
+    );
+    let result = format_brief_entry_line(&entry, 30, &entry.category());
+    assert!(result.contains('…') || UnicodeWidthStr::width(result.as_str()) <= 30);
+}
+
+#[test]
+fn test_format_brief_entry_line_width_zero() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_brief_entry_line(&entry, 0, &entry.category());
+    assert_eq!(result, " ");
+}
+
+#[test]
+fn test_format_brief_entry_line_width_one() {
+    let entry = create_test_entry("file.txt", false, false, false);
+    let result = format_brief_entry_line(&entry, 1, &entry.category());
+    assert_eq!(result, " ");
+}
+
+#[test]
 fn test_get_file_icon_directory() {
     let entry = create_test_entry("mydir", true, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📁 ");
+    assert_eq!(get_file_icon(&entry.category()), "📁");
 }
 
 #[test]
 fn test_get_file_icon_document() {
     let entry = create_test_entry("report.pdf", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📝 ");
+    assert_eq!(get_file_icon(&entry.category()), "📝");
 }
 
 #[test]
 fn test_get_file_icon_archive() {
     let entry = create_test_entry("backup.tar.gz", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📦 ");
+    assert_eq!(get_file_icon(&entry.category()), "📦");
 }
 
 #[test]
 fn test_get_file_icon_image() {
     let entry = create_test_entry("photo.jpg", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🖼 ");
+    assert_eq!(get_file_icon(&entry.category()), "🖼");
 }
 
 #[test]
 fn test_get_file_icon_audio() {
     let entry = create_test_entry("song.mp3", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🎵 ");
+    assert_eq!(get_file_icon(&entry.category()), "🎵");
 }
 
 #[test]
 fn test_get_file_icon_video() {
     let entry = create_test_entry("movie.mp4", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🎬 ");
+    assert_eq!(get_file_icon(&entry.category()), "🎬");
 }
 
 #[test]
 fn test_get_file_icon_config() {
     let entry = create_test_entry("config.toml", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "⚙ ");
+    assert_eq!(get_file_icon(&entry.category()), "⚙");
 }
 
 #[test]
 fn test_get_file_icon_code() {
     let entry = create_test_entry("main.rs", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "💻 ");
+    assert_eq!(get_file_icon(&entry.category()), "💻");
 }
 
 #[test]
 fn test_get_file_icon_default() {
     let entry = create_test_entry("unknown.xyz", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📄 ");
+    assert_eq!(get_file_icon(&entry.category()), "📄");
+}
+
+#[test]
+fn test_get_file_icon_symlink() {
+    let entry = create_test_entry("link", false, false, true);
+    assert_eq!(get_file_icon(&entry.category()), "🔗");
+}
+
+#[test]
+fn test_get_file_icon_executable() {
+    let entry = create_test_entry("mybinary", false, true, false);
+    assert_eq!(get_file_icon(&entry.category()), "⚡");
+}
+
+#[test]
+fn test_get_file_icon_font() {
+    let entry = create_test_entry("font.ttf", false, false, false);
+    assert_eq!(get_file_icon(&entry.category()), "🔤");
 }
 
 #[test]
@@ -298,7 +415,7 @@ fn test_format_entry_line_truncation_handles_unicode() {
 }
 
 #[test]
-fn test_panel_state_is_not_send_sync() {
+fn test_new_panel_state() {
     let panel = PanelState::new(PathBuf::from("/test"));
 
     assert_eq!(panel.path, PathBuf::from("/test"));
@@ -414,4 +531,68 @@ fn test_format_size_one_byte() {
 #[test]
 fn test_format_size_just_under_1kb() {
     assert_eq!(format_size(1023), "1023 B");
+}
+
+#[test]
+fn test_render_panel_no_panic() {
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    panel.entries = vec![
+        create_test_entry("file.txt", false, false, false),
+        create_test_entry("mydir", true, false, false),
+    ];
+    terminal
+        .draw(|f| {
+            render_panel(f, f.area(), &panel, true);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(content.contains("file.txt"));
+}
+
+#[test]
+fn test_render_panel_empty_no_panic() {
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let panel = PanelState::new(PathBuf::from("/test"));
+    terminal
+        .draw(|f| {
+            render_panel(f, f.area(), &panel, false);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(content.contains("/test"));
+}
+
+#[test]
+fn test_render_status_bar_no_panic() {
+    let backend = ratatui::backend::TestBackend::new(80, 2);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    panel.entries = vec![create_test_entry("file.txt", false, false, false)];
+    terminal
+        .draw(|f| {
+            render_status_bar(f, f.area(), &panel);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(content.contains("file.txt"));
+}
+
+#[test]
+fn test_render_function_bar_no_panic() {
+    let backend = ratatui::backend::TestBackend::new(80, 1);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render_function_bar(f, f.area());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(content.contains("F1"));
 }

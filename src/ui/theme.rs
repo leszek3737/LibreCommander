@@ -135,7 +135,6 @@ fn parse_color(s: &str) -> Option<Color> {
     if s.is_empty() {
         return None;
     }
-    // Hex: #RRGGBB or #rgb
     if let Some(hex) = s.strip_prefix('#') {
         if hex.len() == 6 {
             let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -151,11 +150,9 @@ fn parse_color(s: &str) -> Option<Color> {
         }
         return None;
     }
-    // Indexed: 0-255
     if let Ok(idx) = s.parse::<u8>() {
         return Some(Color::Indexed(idx));
     }
-    // Named colors
     match s.to_ascii_lowercase().as_str() {
         "black" => Some(Color::Black),
         "red" => Some(Color::Red),
@@ -173,60 +170,84 @@ fn parse_color(s: &str) -> Option<Color> {
         "lightmagenta" | "light_magenta" => Some(Color::LightMagenta),
         "lightcyan" | "light_cyan" => Some(Color::LightCyan),
         "white" => Some(Color::White),
+        "orange" => Some(Color::Rgb(255, 165, 0)),
+        "purple" => Some(Color::Rgb(128, 0, 128)),
+        "brown" => Some(Color::Rgb(165, 42, 42)),
+        "pink" => Some(Color::Rgb(255, 192, 203)),
+        "navy" => Some(Color::Rgb(0, 0, 128)),
+        "teal" => Some(Color::Rgb(0, 128, 128)),
+        "olive" => Some(Color::Rgb(128, 128, 0)),
+        "maroon" => Some(Color::Rgb(128, 0, 0)),
+        "aqua" => Some(Color::Cyan),
+        "fuchsia" => Some(Color::Magenta),
+        "lime" => Some(Color::Rgb(0, 255, 0)),
+        "silver" => Some(Color::Rgb(192, 192, 192)),
         _ => None,
     }
 }
 
+macro_rules! theme_color_accessor {
+    ($($method:ident => $field:ident),* $(,)?) => {
+        $(
+        pub fn $method() -> Color {
+            Self::colors().$field
+        }
+        )*
+    };
+}
+
+macro_rules! resolve_color {
+    ($colors:expr, $($field:ident),* $(,)?) => {
+        Self {
+            $($field: $colors.$field.as_ref()
+                .and_then(|s| parse_color(s))
+                .unwrap_or(DEFAULT_COLORS.$field),)*
+        }
+    };
+}
+
 impl ThemeColors {
     fn from_config(cfg: &ThemeConfig) -> Self {
-        let resolve = |opt: &Option<String>, fallback: Color| -> Color {
-            opt.as_deref().and_then(parse_color).unwrap_or(fallback)
-        };
-        Self {
-            panel_bg: resolve(&cfg.panel_bg, DEFAULT_COLORS.panel_bg),
-            status_bar_bg: resolve(&cfg.status_bar_bg, DEFAULT_COLORS.status_bar_bg),
-            menu_bar_bg: resolve(&cfg.menu_bar_bg, DEFAULT_COLORS.menu_bar_bg),
-            dialog_bg: resolve(&cfg.dialog_bg, DEFAULT_COLORS.dialog_bg),
-            highlight_bg: resolve(&cfg.highlight_bg, DEFAULT_COLORS.highlight_bg),
-            panel_fg: resolve(&cfg.panel_fg, DEFAULT_COLORS.panel_fg),
-            status_bar_fg: resolve(&cfg.status_bar_fg, DEFAULT_COLORS.status_bar_fg),
-            menu_bar_fg: resolve(&cfg.menu_bar_fg, DEFAULT_COLORS.menu_bar_fg),
-            dialog_fg: resolve(&cfg.dialog_fg, DEFAULT_COLORS.dialog_fg),
-            highlight_fg: resolve(&cfg.highlight_fg, DEFAULT_COLORS.highlight_fg),
-            border_active: resolve(&cfg.border_active, DEFAULT_COLORS.border_active),
-            border_inactive: resolve(&cfg.border_inactive, DEFAULT_COLORS.border_inactive),
-            title: resolve(&cfg.title, DEFAULT_COLORS.title),
-            error: resolve(&cfg.error, DEFAULT_COLORS.error),
-            warning: resolve(&cfg.warning, DEFAULT_COLORS.warning),
-            info: resolve(&cfg.info, DEFAULT_COLORS.info),
-            selected_file_fg: resolve(&cfg.selected_file_fg, DEFAULT_COLORS.selected_file_fg),
-            scrollbar_active: resolve(&cfg.scrollbar_active, DEFAULT_COLORS.scrollbar_active),
-            scrollbar_inactive: resolve(&cfg.scrollbar_inactive, DEFAULT_COLORS.scrollbar_inactive),
-            function_bar_fg: resolve(&cfg.function_bar_fg, DEFAULT_COLORS.function_bar_fg),
-            function_bar_bg: resolve(&cfg.function_bar_bg, DEFAULT_COLORS.function_bar_bg),
-            search_match_fg: resolve(&cfg.search_match_fg, DEFAULT_COLORS.search_match_fg),
-            search_match_bg: resolve(&cfg.search_match_bg, DEFAULT_COLORS.search_match_bg),
-            search_match_current_fg: resolve(
-                &cfg.search_match_current_fg,
-                DEFAULT_COLORS.search_match_current_fg,
-            ),
-            search_match_current_bg: resolve(
-                &cfg.search_match_current_bg,
-                DEFAULT_COLORS.search_match_current_bg,
-            ),
-            directory: resolve(&cfg.directory, DEFAULT_COLORS.directory),
-            executable: resolve(&cfg.executable, DEFAULT_COLORS.executable),
-            symlink: resolve(&cfg.symlink, DEFAULT_COLORS.symlink),
-            archive: resolve(&cfg.archive, DEFAULT_COLORS.archive),
-            image: resolve(&cfg.image, DEFAULT_COLORS.image),
-            video: resolve(&cfg.video, DEFAULT_COLORS.video),
-            audio: resolve(&cfg.audio, DEFAULT_COLORS.audio),
-            document: resolve(&cfg.document, DEFAULT_COLORS.document),
-            source_code: resolve(&cfg.source_code, DEFAULT_COLORS.source_code),
-            config: resolve(&cfg.config, DEFAULT_COLORS.config),
-            font: resolve(&cfg.font, DEFAULT_COLORS.font),
-            regular_file: resolve(&cfg.regular_file, DEFAULT_COLORS.regular_file),
-        }
+        resolve_color!(
+            cfg,
+            panel_bg,
+            status_bar_bg,
+            menu_bar_bg,
+            dialog_bg,
+            highlight_bg,
+            panel_fg,
+            status_bar_fg,
+            menu_bar_fg,
+            dialog_fg,
+            highlight_fg,
+            border_active,
+            border_inactive,
+            title,
+            error,
+            warning,
+            info,
+            selected_file_fg,
+            scrollbar_active,
+            scrollbar_inactive,
+            function_bar_fg,
+            function_bar_bg,
+            search_match_fg,
+            search_match_bg,
+            search_match_current_fg,
+            search_match_current_bg,
+            directory,
+            executable,
+            symlink,
+            archive,
+            image,
+            video,
+            audio,
+            document,
+            source_code,
+            config,
+            font,
+            regular_file,
+        )
     }
 }
 
@@ -234,7 +255,6 @@ impl ThemeColors {
 pub struct Theme;
 
 impl Theme {
-    // Background colors — kept as pub const for backward compatibility
     #[deprecated(note = "Use Theme::panel_bg_color() instead")]
     pub const PANEL_BG: Color = Color::Rgb(0, 0, 128);
     #[deprecated(note = "Use Theme::status_bar_bg() instead")]
@@ -246,7 +266,6 @@ impl Theme {
     #[deprecated(note = "Use Theme::highlight_bg() instead")]
     pub const HIGHLIGHT_BG: Color = Color::Cyan;
 
-    // Foreground colors
     #[deprecated(note = "Use Theme::panel_fg_color() instead")]
     pub const PANEL_FG: Color = Color::White;
     #[deprecated(note = "Use Theme::status_bar_fg() instead")]
@@ -258,7 +277,6 @@ impl Theme {
     #[deprecated(note = "Use Theme::highlight_fg() instead")]
     pub const HIGHLIGHT_FG: Color = Color::Black;
 
-    // Special colors
     #[deprecated(note = "Use Theme::border_active_color() instead")]
     pub const BORDER_ACTIVE: Color = Color::Yellow;
     #[deprecated(note = "Use Theme::border_inactive_color() instead")]
@@ -272,7 +290,6 @@ impl Theme {
     #[deprecated(note = "Use Theme::info_color() instead")]
     pub const INFO: Color = Color::Cyan;
 
-    // UI element colors
     #[deprecated(note = "Use Theme::selected_file_fg() instead")]
     pub const SELECTED_FILE_FG: Color = Color::LightYellow;
     #[deprecated(note = "Use Theme::scrollbar_active() instead")]
@@ -292,7 +309,6 @@ impl Theme {
     #[deprecated(note = "Use Theme::search_match_current_bg() instead")]
     pub const SEARCH_MATCH_CURRENT_BG: Color = Color::Yellow;
 
-    // File type colors
     #[deprecated(note = "Use Theme::directory() instead")]
     pub const DIRECTORY: Color = Color::White;
     #[deprecated(note = "Use Theme::executable() instead")]
@@ -334,157 +350,45 @@ impl Theme {
         THEME_COLORS.get().unwrap_or(&DEFAULT_COLORS)
     }
 
-    // Color accessors — each reads from the dynamic theme (config-overridable).
-
-    pub fn panel_bg_color() -> Color {
-        Self::colors().panel_bg
-    }
-
-    pub fn status_bar_bg() -> Color {
-        Self::colors().status_bar_bg
-    }
-
-    pub fn menu_bar_bg() -> Color {
-        Self::colors().menu_bar_bg
-    }
-
-    pub fn dialog_bg() -> Color {
-        Self::colors().dialog_bg
-    }
-
-    pub fn highlight_bg() -> Color {
-        Self::colors().highlight_bg
-    }
-
-    pub fn panel_fg_color() -> Color {
-        Self::colors().panel_fg
-    }
-
-    pub fn status_bar_fg() -> Color {
-        Self::colors().status_bar_fg
-    }
-
-    pub fn menu_bar_fg() -> Color {
-        Self::colors().menu_bar_fg
-    }
-
-    pub fn dialog_fg() -> Color {
-        Self::colors().dialog_fg
-    }
-
-    pub fn highlight_fg() -> Color {
-        Self::colors().highlight_fg
-    }
-
-    pub fn border_active_color() -> Color {
-        Self::colors().border_active
-    }
-
-    pub fn border_inactive_color() -> Color {
-        Self::colors().border_inactive
-    }
-
-    pub fn title_color() -> Color {
-        Self::colors().title
-    }
-
-    pub fn error_color() -> Color {
-        Self::colors().error
-    }
-
-    pub fn warning_color() -> Color {
-        Self::colors().warning
-    }
-
-    pub fn info_color() -> Color {
-        Self::colors().info
-    }
-
-    pub fn selected_file_fg() -> Color {
-        Self::colors().selected_file_fg
-    }
-
-    pub fn scrollbar_active() -> Color {
-        Self::colors().scrollbar_active
-    }
-
-    pub fn scrollbar_inactive() -> Color {
-        Self::colors().scrollbar_inactive
-    }
-
-    pub fn function_bar_fg() -> Color {
-        Self::colors().function_bar_fg
-    }
-
-    pub fn function_bar_bg() -> Color {
-        Self::colors().function_bar_bg
-    }
-
-    pub fn search_match_fg() -> Color {
-        Self::colors().search_match_fg
-    }
-
-    pub fn search_match_bg() -> Color {
-        Self::colors().search_match_bg
-    }
-
-    pub fn search_match_current_fg() -> Color {
-        Self::colors().search_match_current_fg
-    }
-
-    pub fn search_match_current_bg() -> Color {
-        Self::colors().search_match_current_bg
-    }
-
-    pub fn directory() -> Color {
-        Self::colors().directory
-    }
-
-    pub fn executable() -> Color {
-        Self::colors().executable
-    }
-
-    pub fn symlink() -> Color {
-        Self::colors().symlink
-    }
-
-    pub fn archive() -> Color {
-        Self::colors().archive
-    }
-
-    pub fn image() -> Color {
-        Self::colors().image
-    }
-
-    pub fn video() -> Color {
-        Self::colors().video
-    }
-
-    pub fn audio() -> Color {
-        Self::colors().audio
-    }
-
-    pub fn document() -> Color {
-        Self::colors().document
-    }
-
-    pub fn source_code() -> Color {
-        Self::colors().source_code
-    }
-
-    pub fn config() -> Color {
-        Self::colors().config
-    }
-
-    pub fn font() -> Color {
-        Self::colors().font
-    }
-
-    pub fn regular_file() -> Color {
-        Self::colors().regular_file
-    }
-
-    // Styles
+    theme_color_accessor!(
+        panel_bg_color => panel_bg,
+        status_bar_bg => status_bar_bg,
+        menu_bar_bg => menu_bar_bg,
+        dialog_bg => dialog_bg,
+        highlight_bg => highlight_bg,
+        panel_fg_color => panel_fg,
+        status_bar_fg => status_bar_fg,
+        menu_bar_fg => menu_bar_fg,
+        dialog_fg => dialog_fg,
+        highlight_fg => highlight_fg,
+        border_active_color => border_active,
+        border_inactive_color => border_inactive,
+        title_color => title,
+        error_color => error,
+        warning_color => warning,
+        info_color => info,
+        selected_file_fg => selected_file_fg,
+        scrollbar_active => scrollbar_active,
+        scrollbar_inactive => scrollbar_inactive,
+        function_bar_fg => function_bar_fg,
+        function_bar_bg => function_bar_bg,
+        search_match_fg => search_match_fg,
+        search_match_bg => search_match_bg,
+        search_match_current_fg => search_match_current_fg,
+        search_match_current_bg => search_match_current_bg,
+        directory => directory,
+        executable => executable,
+        symlink => symlink,
+        archive => archive,
+        image => image,
+        video => video,
+        audio => audio,
+        document => document,
+        source_code => source_code,
+        config => config,
+        font => font,
+        regular_file => regular_file,
+    );
 
     /// Returns a bg-only `Style` intended for merging with a fg-only style via
     /// Ratatui's `Style::patch`. Used by callers that set border/block backgrounds
@@ -658,6 +562,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_color_css_named() {
+        assert_eq!(parse_color("orange"), Some(Color::Rgb(255, 165, 0)));
+        assert_eq!(parse_color("purple"), Some(Color::Rgb(128, 0, 128)));
+        assert_eq!(parse_color("brown"), Some(Color::Rgb(165, 42, 42)));
+        assert_eq!(parse_color("pink"), Some(Color::Rgb(255, 192, 203)));
+        assert_eq!(parse_color("navy"), Some(Color::Rgb(0, 0, 128)));
+        assert_eq!(parse_color("teal"), Some(Color::Rgb(0, 128, 128)));
+        assert_eq!(parse_color("olive"), Some(Color::Rgb(128, 128, 0)));
+        assert_eq!(parse_color("maroon"), Some(Color::Rgb(128, 0, 0)));
+        assert_eq!(parse_color("aqua"), Some(Color::Cyan));
+        assert_eq!(parse_color("fuchsia"), Some(Color::Magenta));
+        assert_eq!(parse_color("lime"), Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(parse_color("silver"), Some(Color::Rgb(192, 192, 192)));
+    }
+
+    #[test]
     fn parse_color_hex() {
         assert_eq!(parse_color("#FF0000"), Some(Color::Rgb(255, 0, 0)));
         assert_eq!(parse_color("#00ff00"), Some(Color::Rgb(0, 255, 0)));
@@ -681,7 +601,6 @@ mod tests {
 
     #[test]
     fn defaults_match_when_no_config() {
-        // Without calling load_from_config, colors() returns DEFAULT_COLORS
         let c = Theme::colors();
         assert_eq!(c.panel_bg, Color::Rgb(0, 0, 128));
         assert_eq!(c.directory, Color::White);
@@ -712,7 +631,6 @@ mod tests {
         let colors = ThemeColors::from_config(&cfg);
         assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(colors.directory, Color::Cyan);
-        // Unset fields fall back to defaults
         assert_eq!(colors.error, DEFAULT_COLORS.error);
         assert_eq!(colors.panel_fg, DEFAULT_COLORS.panel_fg);
     }
