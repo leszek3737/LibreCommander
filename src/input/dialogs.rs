@@ -47,7 +47,10 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
 
 #[cfg(not(unix))]
 fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
-    src == dest
+    match (src.canonicalize(), dest.canonicalize()) {
+        (Ok(s), Ok(d)) => s == d,
+        _ => src == dest,
+    }
 }
 
 pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
@@ -598,9 +601,8 @@ pub(crate) fn handle_dialog(
         DialogKind::OverwriteConfirm { .. } => {
             handle_overwrite_dialog(state, running_job, key);
         }
-        DialogKind::Help { .. } => {
-            dismiss_dialog_and_restore(state);
-        }
+        // unreachable: Help handled above; arm kept for match exhaustiveness
+        DialogKind::Help { .. } => {}
     }
 }
 

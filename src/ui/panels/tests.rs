@@ -294,7 +294,7 @@ fn test_format_entry_line_truncation_handles_unicode() {
     let entry = create_test_entry("日本語テストファイル.txt", false, false, false);
     let result = format_entry_line(&entry, 47, false, &entry.category());
     assert!(result.contains('…'));
-    assert!(UnicodeWidthStr::width(result.as_str()) <= 48);
+    assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
 }
 
 #[test]

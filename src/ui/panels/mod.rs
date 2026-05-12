@@ -16,7 +16,9 @@ use crate::app::types::{
     FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
 };
 
-const ICON_DISPLAY_WIDTH: usize = 2;
+fn icon_display_width() -> usize {
+    UnicodeWidthStr::width(get_file_icon(&FileCategory::Other))
+}
 
 /// Get color/style for a file category
 pub fn get_file_color(category: &FileCategory, bold: bool) -> Style {
@@ -222,7 +224,7 @@ fn format_entry_line(
     }
 
     let icon = get_file_icon(category);
-    let icon_width = ICON_DISPLAY_WIDTH;
+    let icon_width = icon_display_width();
     let size_str = format!("{:>10}", format_size(entry.len()));
     let date_str = format_time(entry.mtime());
     let (suffix, suffix_width) = build_suffix(entry, &size_str, &date_str, width, show_permissions);
@@ -277,7 +279,7 @@ fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> Str
 fn format_brief_entry_line(entry: &FileEntry, width: usize, category: &FileCategory) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     let icon = get_file_icon(category);
-    let icon_width = ICON_DISPLAY_WIDTH;
+    let icon_width = icon_display_width();
     let available = width.saturating_sub(1);
     if available == 0 {
         return format!("{marker}");
