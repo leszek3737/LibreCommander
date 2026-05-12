@@ -25,7 +25,7 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
-            if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
+            if let Err(err) = publish_temp(&temp_dest, dest, &metadata, cancel, overwrite) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
             }
@@ -83,6 +83,7 @@ fn copy_to_temp(
 fn publish_temp(
     temp_dest: &Path,
     dest: &Path,
+    src_metadata: &fs::Metadata,
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<()> {
@@ -119,7 +120,14 @@ fn publish_temp(
 
     dest_file.flush()?;
     dest_file.get_ref().sync_all()?;
-    fs::remove_file(temp_dest)
+    let perm_result = preserve_permissions(dest, src_metadata);
+    let atime = filetime::FileTime::from_last_access_time(src_metadata);
+    let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
+    let _ = fs::remove_file(temp_dest);
+    perm_result?;
+    let _ = filetime::set_file_times(dest, atime, mtime);
+
+    Ok(())
 }
 
 fn temp_path_for(dest: &Path) -> std::path::PathBuf {

@@ -85,14 +85,44 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
     while let Ok(event) = receiver.try_recv() {
         match event {
             WatchEvent::Created(path) | WatchEvent::Modified(path) => {
+                if event_is_panel_dir(&path, &state.left_panel)
+                    || event_is_panel_dir(&path, &state.right_panel)
+                {
+                    dirty = true;
+                }
                 dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &path);
                 dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &path);
             }
             WatchEvent::Deleted(path) => {
+                if event_is_panel_dir(&path, &state.left_panel) {
+                    if let Some(parent) = state.left_panel.path.parent().map(Path::to_path_buf) {
+                        state.left_panel.path = parent;
+                    }
+                    dirty = true;
+                }
+                if event_is_panel_dir(&path, &state.right_panel) {
+                    if let Some(parent) = state.right_panel.path.parent().map(Path::to_path_buf) {
+                        state.right_panel.path = parent;
+                    }
+                    dirty = true;
+                }
                 dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &path);
                 dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &path);
             }
             WatchEvent::Renamed { from, to } => {
+                if event_is_panel_dir(&from, &state.left_panel) {
+                    state.left_panel.path = to.clone();
+                    dirty = true;
+                }
+                if event_is_panel_dir(&from, &state.right_panel) {
+                    state.right_panel.path = to.clone();
+                    dirty = true;
+                }
+                if event_is_panel_dir(&to, &state.left_panel)
+                    || event_is_panel_dir(&to, &state.right_panel)
+                {
+                    dirty = true;
+                }
                 dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &from);
                 dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &from);
                 dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &to);
@@ -128,6 +158,19 @@ pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> b
 
 fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
     path.file_name().map(|name| panel.path.join(name))
+}
+
+fn event_is_panel_dir(path: &Path, panel: &PanelState) -> bool {
+    if path == panel.path {
+        return true;
+    }
+
+    let panel_canonical = match panel.path.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    path.canonicalize().is_ok_and(|p| p == panel_canonical)
 }
 
 fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {

@@ -463,6 +463,7 @@ where
                 src.display(),
                 target.display()
             ));
+            bytes_done = bytes_done.saturating_add(sizes[idx]);
             report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
             continue;
         }

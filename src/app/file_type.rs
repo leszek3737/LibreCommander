@@ -94,6 +94,27 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".dockerignore",
 ];
 
+const CONFIG_EXACT_NAMES: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "tsconfig.json",
+    "CMakeLists.txt",
+    ".gitignore",
+    ".env",
+    ".editorconfig",
+];
+
+const CONFIG_PREFIXES: &[&str] = &[".env."];
+
+const SOURCE_EXACT_NAMES: &[&str] = &[
+    "Dockerfile",
+    "Makefile",
+    "Vagrantfile",
+    "Rakefile",
+    "Gemfile",
+    "justfile",
+];
+
 const FONT_SUFFIXES: &[&str] = &[".ttf", ".otf", ".woff", ".woff2", ".eot"];
 
 #[inline]
@@ -126,7 +147,10 @@ pub fn is_image(name: &str) -> bool {
 
 #[inline]
 pub fn is_source_code(name: &str) -> bool {
-    has_any_suffix(name, SOURCE_CODE_SUFFIXES)
+    SOURCE_EXACT_NAMES
+        .iter()
+        .any(|&n| name.eq_ignore_ascii_case(n))
+        || has_any_suffix(name, SOURCE_CODE_SUFFIXES)
 }
 
 #[inline]
@@ -146,7 +170,11 @@ pub fn is_video(name: &str) -> bool {
 
 #[inline]
 pub fn is_config(name: &str) -> bool {
-    has_any_suffix(name, CONFIG_SUFFIXES)
+    CONFIG_EXACT_NAMES
+        .iter()
+        .any(|&n| name.eq_ignore_ascii_case(n))
+        || CONFIG_PREFIXES.iter().any(|&p| name.starts_with(p))
+        || has_any_suffix(name, CONFIG_SUFFIXES)
 }
 
 #[inline]

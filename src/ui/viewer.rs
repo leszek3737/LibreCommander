@@ -39,6 +39,7 @@ pub struct ViewerState {
     pub detected_mime: Option<String>,
     pub file_size: usize,
     pub has_invalid_utf8: bool,
+    originally_binary: bool,
 }
 
 impl ViewerState {
@@ -107,6 +108,7 @@ impl ViewerState {
             detected_mime: mime,
             file_size,
             has_invalid_utf8,
+            originally_binary: !open_as_text,
         })
     }
 
@@ -160,7 +162,7 @@ impl ViewerState {
         self.search_matches_by_line.clear();
         self.current_match = 0;
 
-        if query.is_empty() {
+        if query.is_empty() || self.is_hex_mode() {
             return;
         }
 
@@ -176,10 +178,20 @@ impl ViewerState {
                 let match_byte_start = search_start + pos;
                 let match_byte_end = match_byte_start + lower_query.len();
                 let orig_byte_start = byte_map_buf[match_byte_start];
-                let orig_byte_end = byte_map_buf
+                let mapped_end = byte_map_buf
                     .get(match_byte_end)
                     .copied()
                     .unwrap_or(line.len());
+                let orig_byte_end = if mapped_end <= orig_byte_start && orig_byte_start < line.len()
+                {
+                    line[orig_byte_start..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| orig_byte_start + i)
+                        .unwrap_or(line.len())
+                } else {
+                    mapped_end
+                };
                 let char_pos = line[..orig_byte_start].chars().count();
                 let match_char_len = line[orig_byte_start..orig_byte_end].chars().count().max(1);
                 let global_idx = self.search_matches.len();
@@ -260,6 +272,26 @@ impl ViewerState {
         };
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
+
+        if !self.is_hex_mode() && self.originally_binary {
+            let content_str = String::from_utf8_lossy(&self.raw_bytes);
+            self.content = content_str.lines().map(String::from).collect();
+            if self.raw_bytes.last() == Some(&b'\n') {
+                self.content.push(String::new());
+            }
+            self.line_count = self.content.len();
+            self.max_line_width = self
+                .content
+                .iter()
+                .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
+                .max()
+                .unwrap_or(0);
+            self.search_matches.clear();
+            self.search_matches_by_line.clear();
+            self.current_match = 0;
+            self.search_query = None;
+            self.has_invalid_utf8 = std::str::from_utf8(&self.raw_bytes).is_err();
+        }
     }
 
     pub fn scroll_left(&mut self, cols: usize) {
@@ -416,13 +448,13 @@ fn format_line_with_highlight<'a>(
 
         let style = if is_current {
             Style::default()
-                .fg(Theme::SEARCH_MATCH_CURRENT_FG)
-                .bg(Theme::SEARCH_MATCH_CURRENT_BG)
+                .fg(Theme::search_match_current_fg())
+                .bg(Theme::search_match_current_bg())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
-                .fg(Theme::SEARCH_MATCH_FG)
-                .bg(Theme::SEARCH_MATCH_BG)
+                .fg(Theme::search_match_fg())
+                .bg(Theme::search_match_bg())
         };
 
         spans.push(Span::styled(match_text, style));
@@ -457,13 +489,20 @@ fn render_viewer_status(
     } else {
         ""
     };
-    let status_text =
-        format!(" {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}",);
-    let status_style = if state.has_invalid_utf8 {
-        Theme::status_bar().fg(Theme::WARNING)
+    let binary_warning = if !state.is_hex_mode() && state.originally_binary {
+        " \u{26a0} BINARY CONTENT"
     } else {
-        Theme::status_bar()
+        ""
     };
+    let status_text = format!(
+        " {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}{binary_warning}",
+    );
+    let status_style =
+        if state.has_invalid_utf8 || (!state.is_hex_mode() && state.originally_binary) {
+            Theme::status_bar().fg(Theme::warning_color())
+        } else {
+            Theme::status_bar()
+        };
     let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }

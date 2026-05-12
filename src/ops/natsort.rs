@@ -107,25 +107,28 @@ pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NatKeySegment {
     Text(Vec<u8>),
-    Num { value: u64, raw_len: usize },
+    Num(Vec<u8>),
+}
+
+fn strip_leading_zeros(digits: &[u8]) -> &[u8] {
+    let start = digits
+        .iter()
+        .position(|&d| d != b'0')
+        .unwrap_or(digits.len());
+    &digits[start..]
 }
 
 impl Ord for NatKeySegment {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (NatKeySegment::Text(a), NatKeySegment::Text(b)) => a.cmp(b),
-            (
-                NatKeySegment::Num {
-                    value: va,
-                    raw_len: la,
-                },
-                NatKeySegment::Num {
-                    value: vb,
-                    raw_len: lb,
-                },
-            ) => va.cmp(vb).then(la.cmp(lb)),
-            (NatKeySegment::Text(_), NatKeySegment::Num { .. }) => Ordering::Less,
-            (NatKeySegment::Num { .. }, NatKeySegment::Text(_)) => Ordering::Greater,
+            (NatKeySegment::Num(a), NatKeySegment::Num(b)) => {
+                let sa = strip_leading_zeros(a);
+                let sb = strip_leading_zeros(b);
+                sa.len().cmp(&sb.len()).then(sa.cmp(sb))
+            }
+            (NatKeySegment::Text(_), NatKeySegment::Num(_)) => Ordering::Less,
+            (NatKeySegment::Num(_), NatKeySegment::Text(_)) => Ordering::Greater,
         }
     }
 }
@@ -134,16 +137,6 @@ impl PartialOrd for NatKeySegment {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
-}
-
-#[inline]
-fn parse_u64_digits(bytes: &[u8]) -> Option<u64> {
-    let mut result: u64 = 0;
-    for &b in bytes {
-        let digit = u64::from(b - b'0');
-        result = result.checked_mul(10)?.checked_add(digit)?;
-    }
-    Some(result)
 }
 
 pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
@@ -156,11 +149,7 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
             while i < name.len() && name[i].is_ascii_digit() {
                 i += 1;
             }
-            let num = parse_u64_digits(&name[start..i]).unwrap_or(u64::MAX);
-            segments.push(NatKeySegment::Num {
-                value: num,
-                raw_len: i - start,
-            });
+            segments.push(NatKeySegment::Num(name[start..i].to_vec()));
         } else {
             let start = i;
             while i < name.len() && !name[i].is_ascii_digit() {
@@ -245,18 +234,21 @@ mod tests {
 
     #[test]
     fn test_leading_zeros() {
-        let items = ["pic02", "pic02000", "pic2"];
-        sorted(&items);
+        let key_short = natsort_key(b"pic2", true);
+        let key_long = natsort_key(b"pic02", true);
+        let key_longer = natsort_key(b"pic02000", true);
+        assert_eq!(key_short.cmp(&key_long), Ordering::Equal);
+        assert_eq!(key_long.cmp(&key_short), Ordering::Equal);
+        assert!(key_short < key_longer);
+        assert!(key_long < key_longer);
     }
 
     #[test]
     fn test_natsort_key_leading_zeros() {
         let key_short = natsort_key(b"pic2", false);
         let key_long = natsort_key(b"pic02", false);
-        // Both have value=2, but raw_len differs: 1 vs 2
-        // Shorter raw_len should sort first
-        assert_eq!(key_short.cmp(&key_long), Ordering::Less);
-        assert_eq!(key_long.cmp(&key_short), Ordering::Greater);
+        assert_eq!(key_short.cmp(&key_long), Ordering::Equal);
+        assert_eq!(key_long.cmp(&key_short), Ordering::Equal);
     }
 
     #[test]

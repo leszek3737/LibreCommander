@@ -66,9 +66,31 @@ impl Drop for TerminalRestoreGuard {
     }
 }
 
+#[cfg(windows)]
+fn get_shell(_for_menu: bool) -> (String, &'static str) {
+    let shell = std::env::var("COMSPEC")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("cmd.exe".to_string());
+    (shell, "/C")
+}
+
+#[cfg(not(windows))]
+fn get_shell(for_menu: bool) -> (String, &'static str) {
+    if for_menu {
+        return ("sh".to_string(), "-c");
+    }
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("sh".to_string());
+    (shell, "-c")
+}
+
 pub fn run_shell_command(
     state: &mut AppState,
     cmd: &str,
+    for_menu: bool,
     mut refresh_active: impl FnMut(&mut AppState),
 ) {
     if cmd.trim().is_empty() {
@@ -87,8 +109,9 @@ pub fn run_shell_command(
         return;
     }
     let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
-    let status = Command::new("sh")
-        .arg("-c")
+    let (shell, flag) = get_shell(for_menu);
+    let status = Command::new(&shell)
+        .arg(flag)
         .arg(cmd)
         .current_dir(&state.active_panel().path)
         .stdin(Stdio::inherit())

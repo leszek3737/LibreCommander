@@ -7,6 +7,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::app::dir_tree::TreeEntry;
 use crate::ui::theme::Theme;
 
@@ -74,9 +76,9 @@ pub fn render_directory_tree(
         let line_style = if row == selected {
             Theme::highlight()
         } else if entry.is_dir {
-            Theme::panel_file(Theme::DIRECTORY)
+            Theme::panel_file(Theme::directory())
         } else {
-            Theme::panel_file(Theme::REGULAR_FILE)
+            Theme::panel_file(Theme::regular_file())
         };
 
         let line = Line::from(vec![
@@ -93,13 +95,24 @@ pub fn render_directory_tree(
     let bottom_area = Rect::new(inner.x, bottom_y, inner.width, 1);
 
     let avail = inner.width as usize;
-    let help_len = HELP_TEXT.len();
-    if avail >= help_len {
+    let help_width = UnicodeWidthStr::width(HELP_TEXT);
+    if avail >= help_width {
         let help_para = Paragraph::new(HELP_TEXT).style(Theme::warning());
         f.render_widget(help_para, bottom_area);
     } else if avail > 1 {
+        let target = avail.saturating_sub(1);
+        let mut cut = 0;
+        let mut w = 0;
+        for (i, ch) in HELP_TEXT.char_indices() {
+            let cw = ch.width().unwrap_or(0);
+            if w + cw > target {
+                break;
+            }
+            w += cw;
+            cut = i + ch.len_utf8();
+        }
         let line = Line::from(vec![
-            Span::styled(&HELP_TEXT[..avail.saturating_sub(1)], Theme::warning()),
+            Span::styled(&HELP_TEXT[..cut], Theme::warning()),
             Span::styled("…", Theme::warning()),
         ]);
         let help_para = Paragraph::new(line);

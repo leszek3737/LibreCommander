@@ -1,6 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use crate::app::types::{CompareMode, FileEntry, PanelState};
+
+/// Cross-filesystem mtime resolution tolerance (e.g. FAT32 has 2s granularity,
+/// network filesystems may lose sub-second precision during sync).
+const MTIME_TOLERANCE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq)]
 struct EntryMeta {
@@ -22,10 +27,20 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
         CompareMode::Thorough => {
             // Conservative: unavailable mtime → always different (can't verify equality)
             left.size == right.size
-                && left.mtime.is_some()
-                && right.mtime.is_some()
-                && left.mtime == right.mtime
+                && left
+                    .mtime
+                    .is_some_and(|l| right.mtime.is_some_and(|r| mtime_matches(l, r)))
         }
+    }
+}
+
+fn mtime_matches(left: std::time::SystemTime, right: std::time::SystemTime) -> bool {
+    match (
+        left.duration_since(std::time::UNIX_EPOCH),
+        right.duration_since(std::time::UNIX_EPOCH),
+    ) {
+        (Ok(l), Ok(r)) => l.abs_diff(r) <= MTIME_TOLERANCE,
+        _ => left == right,
     }
 }
 
@@ -206,7 +221,7 @@ mod tests {
                 .name("a.txt")
                 .path("/tmp/a.txt")
                 .size(100)
-                .modified(t + std::time::Duration::from_secs(1))
+                .modified(t + std::time::Duration::from_secs(3))
                 .created(std::time::SystemTime::UNIX_EPOCH)
                 .build(),
         ];

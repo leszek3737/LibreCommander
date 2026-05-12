@@ -134,7 +134,9 @@ impl Watcher {
             None => Ok(()),
         };
 
-        self.watchers.remove(&path);
+        if result.is_ok() {
+            self.watchers.remove(&path);
+        }
         result
     }
 
@@ -171,16 +173,21 @@ fn make_handler(
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
+    let pending_from: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     move |result| {
         if paused.load(Ordering::Relaxed) {
             return;
         }
 
-        let Ok(event) = result else {
-            return;
+        let event = match result {
+            Ok(event) => event,
+            Err(err) => {
+                debug_log!("notify watcher error: {err}");
+                return;
+            }
         };
 
-        for watch_event in convert_event(event) {
+        for watch_event in convert_event_with_rename_pairing(event, &pending_from) {
             let path = match &watch_event {
                 WatchEvent::Created(p) | WatchEvent::Deleted(p) | WatchEvent::Modified(p) => {
                     Some(p.clone())
@@ -223,6 +230,47 @@ fn should_emit(debounce_state: &Mutex<HashMap<PathBuf, Instant>>, paths: &[&Path
     !suppressed
 }
 
+fn lock_pending(
+    pending_from: &Mutex<Option<PathBuf>>,
+) -> std::sync::MutexGuard<'_, Option<PathBuf>> {
+    pending_from.lock().unwrap_or_else(|e| {
+        debug_log!("pending_from mutex poisoned, recovering: {e}");
+        e.into_inner()
+    })
+}
+
+fn convert_event_with_rename_pairing(
+    event: notify::Event,
+    pending_from: &Mutex<Option<PathBuf>>,
+) -> Vec<WatchEvent> {
+    match &event.kind {
+        EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
+            if let Some(path) = event.paths.into_iter().next() {
+                let mut pending = lock_pending(pending_from);
+                if let Some(stale) = pending.take() {
+                    debug_log!(
+                        "orphan rename From: emitting Deleted for stale path {}",
+                        stale.display(),
+                    );
+                    return vec![WatchEvent::Deleted(stale)];
+                }
+                *pending = Some(path);
+            }
+            Vec::new()
+        }
+        EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)) => {
+            let to_path = event.paths.into_iter().next();
+            let from_path = lock_pending(pending_from).take();
+            match (from_path, to_path) {
+                (Some(from), Some(to)) => vec![WatchEvent::Renamed { from, to }],
+                (None, Some(to)) => vec![WatchEvent::Created(to)],
+                _ => Vec::new(),
+            }
+        }
+        _ => convert_event(event),
+    }
+}
+
 fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
     match event.kind {
         EventKind::Access(_) => Vec::new(),
@@ -237,12 +285,6 @@ fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
             } else {
                 map_paths(event.paths, WatchEvent::Modified)
             }
-        }
-        EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
-            map_paths(event.paths, WatchEvent::Deleted)
-        }
-        EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)) => {
-            map_paths(event.paths, WatchEvent::Created)
         }
         EventKind::Modify(_) => map_paths(event.paths, WatchEvent::Modified),
         EventKind::Any => map_paths(event.paths, WatchEvent::Modified),
@@ -367,6 +409,7 @@ mod tests {
 
     #[test]
     fn convert_event_maps_split_rename_events() {
+        let pending: Mutex<Option<PathBuf>> = Mutex::new(None);
         let from = notify::Event {
             kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
             paths: vec![PathBuf::from("old")],
@@ -378,11 +421,12 @@ mod tests {
             attrs: Default::default(),
         };
 
+        let from_events = convert_event_with_rename_pairing(from, &pending);
+        assert!(from_events.is_empty());
+
+        let to_events = convert_event_with_rename_pairing(to, &pending);
         assert!(
-            matches!(convert_event(from).as_slice(), [WatchEvent::Deleted(path)] if path == &PathBuf::from("old"))
-        );
-        assert!(
-            matches!(convert_event(to).as_slice(), [WatchEvent::Created(path)] if path == &PathBuf::from("new"))
+            matches!(to_events.as_slice(), [WatchEvent::Renamed { from, to }] if from == &PathBuf::from("old") && to == &PathBuf::from("new"))
         );
     }
 

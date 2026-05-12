@@ -5,11 +5,12 @@
 use std::path::Path;
 
 #[cfg(test)]
+use std::path::PathBuf;
+
+#[cfg(test)]
 use std::fs::File;
 #[cfg(test)]
 use std::io::{BufRead, BufReader};
-#[cfg(test)]
-use std::path::PathBuf;
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
@@ -188,7 +189,11 @@ impl FileSearch {
                 }
             }
 
-            if recursive && file_type.is_dir() && !file_type.is_symlink() {
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if recursive && file_type.is_dir() {
                 Self::search_files_recursive(
                     &entry_path,
                     pattern,
@@ -347,7 +352,11 @@ impl FileSearch {
 
             *item_count += 1;
 
-            if file_type.is_dir() && !file_type.is_symlink() {
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_dir() {
                 if recursive {
                     Self::search_content_recursive_inner(
                         &entry_path,
