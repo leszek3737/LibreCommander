@@ -1,0 +1,600 @@
+use std::sync::atomic::Ordering;
+
+use crossterm::event::KeyCode;
+use ratatui::layout::Rect;
+
+use lc::app::job_runner::{RunningJob, start_confirmed_action};
+use lc::app::types::*;
+use lc::fs;
+use lc::ops;
+use lc::ui::{dialogs, viewer};
+
+use crate::app::panel_ops::{panel_visible_height, refresh_active, refresh_both, set_active_panel};
+
+pub(crate) fn parse_octal_mode(input: &str) -> Option<u32> {
+    let mode = u32::from_str_radix(input.trim(), 8).ok()?;
+    if mode <= 0o7777 { Some(mode) } else { None }
+}
+
+fn dismiss_dialog_and_restore(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+}
+
+pub(crate) fn dismiss_dialog(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    state.pending_action = None;
+    state.status_message = None;
+    state.dialog_selection = 0;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+}
+
+#[cfg(unix)]
+fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(src_meta) = std::fs::symlink_metadata(src) else {
+        return false;
+    };
+    let Ok(dest_meta) = std::fs::symlink_metadata(dest) else {
+        return false;
+    };
+    src_meta.dev() == dest_meta.dev() && src_meta.ino() == dest_meta.ino()
+}
+
+#[cfg(not(unix))]
+fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    src == dest
+}
+
+pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
+    let action = state.pending_action.as_ref()?;
+    let (sources, dest_dir, overwrite) = match action {
+        PendingAction::Copy {
+            sources,
+            dest,
+            overwrite,
+        } => (sources, dest, *overwrite),
+        PendingAction::Move {
+            sources,
+            dest,
+            overwrite,
+        } => (sources, dest, *overwrite),
+        PendingAction::Delete { .. } => return None,
+    };
+    if overwrite {
+        return None;
+    }
+    let conflicting: Vec<String> = sources
+        .iter()
+        .filter_map(|s| {
+            let name = s.file_name()?;
+            let target = dest_dir.join(name);
+            if is_same_file(s, &target) {
+                return None;
+            }
+            if std::fs::symlink_metadata(&target).is_ok() {
+                Some(name.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if conflicting.is_empty() {
+        None
+    } else {
+        Some(conflicting)
+    }
+}
+
+fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
+    let confirmed = match key {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N') => Some(false),
+        KeyCode::Enter => Some(state.dialog_selection == 0),
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        _ => return,
+    };
+
+    if confirmed == Some(true) {
+        if state.pending_action.is_some() {
+            if let Some(conflicting) = check_overwrite_conflict(state) {
+                state.dialog_selection = 0;
+                state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
+                return;
+            }
+            start_confirmed_action(state, running_job);
+            state.dialog_selection = 0;
+            if state.status_message.is_some() {
+                state.mode = AppMode::Normal;
+                refresh_both(state);
+                if let Some(panel) = state.menu_restore_panel.take() {
+                    set_active_panel(state, panel);
+                }
+            }
+        } else {
+            dismiss_dialog(state);
+            refresh_both(state);
+        }
+    } else {
+        dismiss_dialog(state);
+    }
+}
+
+fn handle_overwrite_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    match key {
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left => {
+            state.dialog_selection = state.dialog_selection.saturating_sub(1);
+            return;
+        }
+        KeyCode::Right => {
+            state.dialog_selection = (state.dialog_selection + 1).min(1);
+            return;
+        }
+        KeyCode::Char('o' | 'O') => {
+            set_pending_overwrite(state);
+        }
+        KeyCode::Char('c' | 'C') => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Enter => match state.dialog_selection {
+            0 => set_pending_overwrite(state),
+            1 => {
+                dismiss_dialog(state);
+                return;
+            }
+            _ => return,
+        },
+        _ => return,
+    }
+    start_confirmed_action(state, running_job);
+    state.dialog_selection = 0;
+    if state.status_message.is_some() {
+        state.mode = AppMode::Normal;
+        refresh_both(state);
+        if let Some(panel) = state.menu_restore_panel.take() {
+            set_active_panel(state, panel);
+        }
+    }
+}
+
+fn set_pending_overwrite(state: &mut AppState) {
+    if let Some(action) = state.pending_action.as_mut() {
+        match action {
+            PendingAction::Copy { overwrite, .. } | PendingAction::Move { overwrite, .. } => {
+                *overwrite = true;
+            }
+            PendingAction::Delete { .. } => {}
+        }
+    }
+}
+
+fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
+    let dir = state.active_panel().path.clone();
+    let outcome = ops::FileSearch::search_files_with_diagnostics(&dir, input, true, false);
+    let result_count = outcome.matches.len();
+    let error_count = outcome.errors.len();
+    let truncated = outcome.truncated;
+    if let Some(first) = outcome.matches.first()
+        && let Some(parent) = first.path.parent()
+    {
+        state.active_panel_mut().path = parent.to_path_buf();
+        refresh_active(state);
+        if let Some(pos) = state
+            .active_panel()
+            .entries
+            .iter()
+            .position(|e| e.path == first.path)
+        {
+            state.active_panel_mut().cursor = pos;
+            state
+                .active_panel_mut()
+                .ensure_cursor_visible(panel_visible_height(terminal_height));
+        }
+    }
+    let mut message = if result_count > 0 {
+        format!("Found {result_count} match(es) for '{input}'")
+    } else {
+        format!("No matches for '{input}'")
+    };
+    if error_count > 0 {
+        message.push_str(&format!(", {error_count} error(s)"));
+    }
+    if let Some(reason) = truncated {
+        let label = match reason {
+            ops::TruncationReason::DepthLimit => "depth limit",
+            ops::TruncationReason::ItemLimit => "item limit",
+            ops::TruncationReason::ContentResultLimit => "result limit",
+            ops::TruncationReason::FileTooLarge => "file too large",
+            ops::TruncationReason::LineTooLong => "line too long",
+            ops::TruncationReason::BinaryFile => "binary file",
+        };
+        message.push_str(&format!(", truncated ({label})"));
+    }
+    state.status_message = Some(message);
+}
+
+fn handle_quick_cd(state: &mut AppState, input: &str) {
+    let expanded = fs::path::resolve_user_path(&state.active_panel().path, input);
+
+    if expanded.is_dir() {
+        let panel = state.active_panel_mut();
+        panel.history.push(panel.path.clone());
+        panel.path = expanded.clone();
+        panel.cursor = 0;
+        panel.scroll_offset = 0;
+        refresh_active(state);
+        if !state.directory_hotlist.iter().any(|p| p == &expanded) {
+            state.directory_hotlist.push(expanded);
+        }
+    } else {
+        state.status_message = Some(format!("Directory not found: {input}"));
+    }
+}
+
+fn handle_input_action(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    action: &InputAction,
+    terminal_height: u16,
+) -> bool {
+    let input = state.dialog_input.clone();
+    match action {
+        InputAction::ViewerSearch => {
+            if let Some(vs) = viewer_state.as_mut() {
+                vs.search(&input, terminal_height.saturating_sub(3) as usize);
+            }
+            state.mode = AppMode::Viewing;
+            state.dialog_input.clear();
+            state.dialog_cursor_pos = 0;
+            return true;
+        }
+        InputAction::CreateDirectory if !input.trim().is_empty() => {
+            if std::path::Path::new(&input)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                state.status_message = Some("Invalid path: '..' not allowed".to_string());
+            } else {
+                let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
+                if let Err(err) = ops::create_directory(&target) {
+                    state.status_message = Some(format!("Create directory failed: {err}"));
+                } else {
+                    refresh_active(state);
+                }
+            }
+        }
+        InputAction::Rename if !input.is_empty() => {
+            if let Some(entry) = state.active_panel().current_entry()
+                && let Err(err) = ops::rename_entry(&entry.path, &input)
+            {
+                state.status_message = Some(format!("Rename failed: {err}"));
+            }
+        }
+        InputAction::Chmod if !input.is_empty() => {
+            if let Some(mode) = parse_octal_mode(&input) {
+                if let Some(entry) = state.active_panel().current_entry()
+                    && let Err(err) = ops::chmod(&entry.path, mode)
+                {
+                    state.status_message = Some(format!("Chmod failed: {err}"));
+                }
+            } else {
+                state.status_message = Some(format!("Invalid octal mode '{input}'"));
+            }
+        }
+        InputAction::Filter => {
+            let panel = state.active_panel_mut();
+            panel.filter = if input.trim().is_empty() {
+                None
+            } else {
+                Some(input)
+            };
+        }
+        InputAction::QuickCd => handle_quick_cd(state, &input),
+        InputAction::FindFile => handle_find_file(state, &input, terminal_height),
+        _ => {}
+    }
+    state.mode = AppMode::Normal;
+    state.dialog_input.clear();
+    state.dialog_cursor_pos = 0;
+    refresh_active(state);
+    if let Some(panel) = state.menu_restore_panel.take() {
+        set_active_panel(state, panel);
+    }
+    false
+}
+
+fn handle_dialog_text_edit(state: &mut AppState, key: KeyCode) {
+    match key {
+        KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
+            state.dialog_cursor_pos -= 1;
+            let byte_pos = state
+                .dialog_input
+                .char_indices()
+                .nth(state.dialog_cursor_pos)
+                .map(|(i, _)| i)
+                .unwrap_or(state.dialog_input.len());
+            let next_byte = state.dialog_input[byte_pos..]
+                .chars()
+                .next()
+                .map(|c| byte_pos + c.len_utf8())
+                .unwrap_or(state.dialog_input.len());
+            state.dialog_input.drain(byte_pos..next_byte);
+        }
+        KeyCode::Delete => {
+            let byte_pos = state
+                .dialog_input
+                .char_indices()
+                .nth(state.dialog_cursor_pos)
+                .map(|(i, _)| i);
+            if let Some(pos) = byte_pos {
+                let next_char_end = state.dialog_input[pos..]
+                    .chars()
+                    .next()
+                    .map(|c| pos + c.len_utf8())
+                    .unwrap_or(state.dialog_input.len());
+                state.dialog_input.drain(pos..next_char_end);
+            }
+        }
+        KeyCode::Char(c) => {
+            let byte_pos = state
+                .dialog_input
+                .char_indices()
+                .nth(state.dialog_cursor_pos)
+                .map(|(i, _)| i)
+                .unwrap_or(state.dialog_input.len());
+            state.dialog_input.insert(byte_pos, c);
+            state.dialog_cursor_pos += 1;
+        }
+        KeyCode::Left if state.dialog_cursor_pos > 0 => {
+            state.dialog_cursor_pos -= 1;
+        }
+        KeyCode::Right if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
+            state.dialog_cursor_pos += 1;
+        }
+        KeyCode::Home => {
+            state.dialog_cursor_pos = 0;
+        }
+        KeyCode::End => {
+            state.dialog_cursor_pos = state.dialog_input.chars().count();
+        }
+        _ => {}
+    }
+}
+
+fn handle_input_dialog(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    action: &InputAction,
+    key: KeyCode,
+    terminal_height: u16,
+) -> bool {
+    match key {
+        KeyCode::Enter => handle_input_action(state, viewer_state, action, terminal_height),
+        KeyCode::Esc => {
+            state.mode = if *action == InputAction::ViewerSearch {
+                AppMode::Viewing
+            } else {
+                AppMode::Normal
+            };
+            state.dialog_input.clear();
+            state.dialog_cursor_pos = 0;
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+            false
+        }
+        _ => {
+            handle_dialog_text_edit(state, key);
+            false
+        }
+    }
+}
+
+fn handle_error_dialog(state: &mut AppState, key: KeyCode) {
+    if matches!(key, KeyCode::Enter | KeyCode::Esc) {
+        dismiss_dialog_and_restore(state);
+    }
+}
+
+fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>, key: KeyCode) {
+    if key == KeyCode::Esc
+        && let Some(job) = running_job.as_ref()
+    {
+        job.cancel.store(true, Ordering::Relaxed);
+        state.status_message = Some("Cancel requested".to_string());
+    }
+}
+
+fn handle_properties_dialog(state: &mut AppState, key: KeyCode) {
+    if matches!(key, KeyCode::Enter | KeyCode::Esc) {
+        dismiss_dialog_and_restore(state);
+    }
+}
+
+fn handle_copymove_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    let confirmed = match key {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N') => Some(false),
+        KeyCode::Enter => Some(state.dialog_selection == 0),
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        _ => return,
+    };
+
+    if confirmed == Some(true) {
+        let action = if let AppMode::Dialog(DialogKind::CopyMove {
+            source,
+            dest,
+            is_move,
+        }) = &state.mode
+        {
+            if *is_move {
+                PendingAction::Move {
+                    sources: source.clone(),
+                    dest: dest.clone(),
+                    overwrite: false,
+                }
+            } else {
+                PendingAction::Copy {
+                    sources: source.clone(),
+                    dest: dest.clone(),
+                    overwrite: false,
+                }
+            }
+        } else {
+            return;
+        };
+        state.pending_action = Some(action);
+        if let Some(conflicting) = check_overwrite_conflict(state) {
+            state.dialog_selection = 0;
+            state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
+            return;
+        }
+        start_confirmed_action(state, running_job);
+        state.dialog_selection = 0;
+        if state.status_message.is_some() {
+            state.mode = AppMode::Normal;
+            refresh_both(state);
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+        }
+    } else {
+        dismiss_dialog(state);
+    }
+}
+
+pub(crate) fn handle_dialog(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+    terminal_size: ratatui::layout::Size,
+) {
+    if let AppMode::Dialog(DialogKind::Help {
+        message,
+        scroll_offset,
+    }) = &mut state.mode
+    {
+        let total_lines = message.lines().count();
+        let max_lines = dialogs::help_visible_height(Rect::new(
+            0,
+            0,
+            terminal_size.width,
+            terminal_size.height,
+        ));
+        let should_exit = match key {
+            KeyCode::Up | KeyCode::Char('k') => {
+                *scroll_offset = scroll_offset.saturating_sub(1);
+                false
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if total_lines > max_lines {
+                    *scroll_offset = (*scroll_offset + 1).min(total_lines - max_lines);
+                }
+                false
+            }
+            KeyCode::PageUp => {
+                *scroll_offset = scroll_offset.saturating_sub(max_lines);
+                false
+            }
+            KeyCode::PageDown => {
+                if total_lines > max_lines {
+                    *scroll_offset = (*scroll_offset + max_lines).min(total_lines - max_lines);
+                }
+                false
+            }
+            KeyCode::Home => {
+                *scroll_offset = 0;
+                false
+            }
+            KeyCode::End => {
+                if total_lines > max_lines {
+                    *scroll_offset = total_lines - max_lines;
+                }
+                false
+            }
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => true,
+            _ => true,
+        };
+        if should_exit {
+            state.mode = AppMode::Normal;
+            if let Some(panel) = state.menu_restore_panel.take() {
+                set_active_panel(state, panel);
+            }
+        }
+        return;
+    }
+
+    let input_action = if let AppMode::Dialog(DialogKind::Input { ref action, .. }) = state.mode {
+        Some(*action)
+    } else {
+        None
+    };
+
+    let dk = if let AppMode::Dialog(ref dk) = state.mode {
+        dk
+    } else {
+        return;
+    };
+
+    match dk {
+        DialogKind::Confirm(_) => {
+            handle_confirm_dialog(state, running_job, key);
+        }
+        DialogKind::Input { .. } => {
+            if let Some(action) = input_action {
+                let _ =
+                    handle_input_dialog(state, viewer_state, &action, key, terminal_size.height);
+            }
+        }
+        DialogKind::Error(_) => {
+            handle_error_dialog(state, key);
+        }
+        DialogKind::Progress(_, _) => {
+            handle_progress_dialog(state, running_job, key);
+        }
+        DialogKind::Properties { .. } => {
+            handle_properties_dialog(state, key);
+        }
+        DialogKind::CopyMove { .. } => {
+            handle_copymove_dialog(state, running_job, key);
+        }
+        DialogKind::OverwriteConfirm { .. } => {
+            handle_overwrite_dialog(state, running_job, key);
+        }
+        DialogKind::Help { .. } => {
+            dismiss_dialog_and_restore(state);
+        }
+    }
+}

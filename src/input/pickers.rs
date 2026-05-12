@@ -1,0 +1,195 @@
+use std::path::PathBuf;
+
+use crossterm::event::KeyCode;
+
+use lc::app::{types::*, user_menu};
+use lc::ops;
+
+use crate::app::panel_ops::refresh_active;
+
+fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
+    match key {
+        KeyCode::Esc => {
+            state.mode = AppMode::Normal;
+        }
+        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+            state.picker_selected -= 1;
+        }
+        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+            state.picker_selected += 1;
+        }
+        KeyCode::Enter => {
+            let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
+            if let Some(cmd) = state.command_history.get(idx).cloned() {
+                state.command_cursor = cmd.len();
+                state.command_line = cmd;
+                state.mode = AppMode::CommandLine;
+            } else {
+                state.mode = AppMode::Normal;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
+    match key {
+        KeyCode::Esc => {
+            state.mode = AppMode::Normal;
+        }
+        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+            state.picker_selected -= 1;
+        }
+        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+            state.picker_selected += 1;
+        }
+        KeyCode::Enter => {
+            if let Some(path) = state.directory_hotlist.get(state.picker_selected).cloned() {
+                if path.is_dir() {
+                    state.active_panel_mut().path = path;
+                    state.active_panel_mut().cursor = 0;
+                    state.active_panel_mut().scroll_offset = 0;
+                    refresh_active(state);
+                } else {
+                    state.status_message = Some("Hotlist entry no longer exists".to_string());
+                }
+                state.mode = AppMode::Normal;
+            }
+        }
+        KeyCode::Char('a') => {
+            let cur = state.active_panel().path.clone();
+            if state.directory_hotlist.iter().any(|p| p == &cur) {
+                state.status_message = Some("Directory already in hotlist".to_string());
+            } else {
+                state.directory_hotlist.push(cur);
+                state.status_message = Some("Added current directory to hotlist".to_string());
+            }
+        }
+        KeyCode::Char('d') if state.picker_selected < state.directory_hotlist.len() => {
+            state.directory_hotlist.remove(state.picker_selected);
+            if state.picker_selected > 0 && state.picker_selected >= state.directory_hotlist.len() {
+                state.picker_selected -= 1;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
+    const MODES: [CompareMode; 3] = [CompareMode::Quick, CompareMode::Size, CompareMode::Thorough];
+    let len = MODES.len();
+    match key {
+        KeyCode::Esc => {
+            state.mode = AppMode::Normal;
+        }
+        KeyCode::Up if state.picker_selected > 0 => {
+            state.picker_selected -= 1;
+        }
+        KeyCode::Down if state.picker_selected + 1 < len => {
+            state.picker_selected += 1;
+        }
+        KeyCode::Enter => {
+            let chosen = MODES[state.picker_selected.min(len - 1)];
+            state.mode = AppMode::Normal;
+            compare_directories(state, chosen);
+        }
+        _ => {}
+    }
+}
+
+fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
+    let len = state.user_menu_entries.len();
+    match key {
+        KeyCode::Esc => {
+            state.mode = AppMode::Normal;
+        }
+        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
+            state.picker_selected -= 1;
+        }
+        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
+            state.picker_selected += 1;
+        }
+        KeyCode::Enter => {
+            let idx = state.picker_selected.min(len.saturating_sub(1));
+            state.mode = AppMode::Normal;
+            if let Some(entry) = state.user_menu_entries.get(idx).cloned() {
+                let active_dir = state.active_panel().path.clone();
+                let other_dir = state.inactive_panel().path.clone();
+                let current_file = state
+                    .active_panel()
+                    .current_entry()
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                let tagged: Vec<PathBuf> = state
+                    .active_panel()
+                    .selected_entries()
+                    .into_iter()
+                    .filter(|e| e.name != "..")
+                    .map(|e| e.path.clone())
+                    .collect();
+                let ctx = user_menu::SubstContext {
+                    current_file: &current_file,
+                    active_dir: &active_dir,
+                    other_dir: &other_dir,
+                    tagged: &tagged,
+                };
+                let cmd = user_menu::apply_substitutions(&entry.command, &ctx);
+                lc::app::shell::run_shell_command(state, &cmd, true, refresh_active);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
+    let kind = if let AppMode::ListPicker(ref k) = state.mode {
+        *k
+    } else {
+        return;
+    };
+
+    match kind {
+        PickerKind::History => {
+            handle_history_picker(state, key, state.command_history.len());
+        }
+        PickerKind::Hotlist => {
+            handle_hotlist_picker(state, key, state.directory_hotlist.len());
+        }
+        PickerKind::CompareMode => {
+            handle_compare_mode_picker(state, key);
+        }
+        PickerKind::UserMenu => {
+            handle_user_menu_picker(state, key);
+        }
+    }
+}
+
+pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
+    let left_entries = if state.left_panel.unfiltered_entries.is_empty() {
+        &state.left_panel.entries
+    } else {
+        &state.left_panel.unfiltered_entries
+    };
+    let right_entries = if state.right_panel.unfiltered_entries.is_empty() {
+        &state.right_panel.entries
+    } else {
+        &state.right_panel.unfiltered_entries
+    };
+    let report = ops::compare_entries(left_entries, right_entries, mode);
+    ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
+
+    let mode_name = match mode {
+        CompareMode::Quick => "Quick",
+        CompareMode::Size => "Size",
+        CompareMode::Thorough => "Thorough",
+    };
+    state.status_message = None;
+    state.dialog_selection = 0;
+    state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+        "Compare Results",
+        &format!(
+            "Compare dirs ({mode_name}):\nUnique in left:  {}\nUnique in right: {}\nDiffering:       {}",
+            report.unique_left, report.unique_right, report.differing
+        ),
+    )));
+}

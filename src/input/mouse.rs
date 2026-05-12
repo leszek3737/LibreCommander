@@ -7,7 +7,8 @@ use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::viewer;
 
-use super::super::{dismiss_dialog, refresh_both, refresh_panel};
+use super::dialogs::dismiss_dialog;
+use crate::app::panel_ops::{refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;

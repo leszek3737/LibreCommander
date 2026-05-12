@@ -1,7 +1,9 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use super::*;
-use app::types::{ActivePanel, FileEntry};
+use crate::input::{command_line, dialogs, directory_tree, pickers};
+use app::types::{ActivePanel, CompareMode, FileEntry, PickerKind};
+use crossterm::event::KeyEvent;
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
@@ -35,7 +37,7 @@ fn confirm_enter_without_pending_action_dismisses_dialog() {
         ..Default::default()
     };
 
-    handle_dialog(
+    dialogs::handle_dialog(
         &mut state,
         &mut None,
         &mut None,
@@ -136,9 +138,9 @@ fn menu_rename_opens_input_dialog_with_current_name() {
 
 #[test]
 fn parse_octal_mode_accepts_valid_input() {
-    assert_eq!(parse_octal_mode("755"), Some(0o755));
-    assert_eq!(parse_octal_mode("0644"), Some(0o644));
-    assert_eq!(parse_octal_mode("bad"), None);
+    assert_eq!(dialogs::parse_octal_mode("755"), Some(0o755));
+    assert_eq!(dialogs::parse_octal_mode("0644"), Some(0o644));
+    assert_eq!(dialogs::parse_octal_mode("bad"), None);
 }
 
 #[test]
@@ -159,7 +161,7 @@ fn compare_directories_reports_summary() {
             .build(),
     ];
 
-    compare_directories(&mut state, CompareMode::Quick);
+    pickers::compare_directories(&mut state, CompareMode::Quick);
 
     assert_eq!(
         state.mode,
@@ -322,7 +324,7 @@ fn command_line_up_loads_last_history_entry() {
     let mut state = AppState::default();
     state.command_history.push_back("git status".to_string());
 
-    handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    command_line::handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
     assert_eq!(state.command_line, "git status");
 }
@@ -348,7 +350,7 @@ fn compare_directories_marks_unique_entries_selected() {
         test_file_entry("right.txt", tmp.join("right.txt")),
     ];
 
-    compare_directories(&mut state, CompareMode::Quick);
+    pickers::compare_directories(&mut state, CompareMode::Quick);
 
     assert!(!state.left_panel.entries[0].selected);
     assert!(state.left_panel.entries[1].selected);
@@ -443,7 +445,7 @@ fn directory_tree_page_down_uses_terminal_height() {
         ..Default::default()
     };
 
-    handle_directory_tree(&mut state, &mut None, KeyCode::PageDown, 12);
+    directory_tree::handle_directory_tree(&mut state, &mut None, KeyCode::PageDown, 12);
 
     assert_eq!(state.tree_selected, 9);
     assert_eq!(state.tree_scroll, 9);
@@ -466,7 +468,7 @@ fn directory_tree_page_up_uses_terminal_height() {
         ..Default::default()
     };
 
-    handle_directory_tree(&mut state, &mut None, KeyCode::PageUp, 12);
+    directory_tree::handle_directory_tree(&mut state, &mut None, KeyCode::PageUp, 12);
 
     assert_eq!(state.tree_selected, 16);
     assert_eq!(state.tree_scroll, 16);
@@ -526,7 +528,7 @@ fn history_picker_enter_loads_command_line() {
     state.mode = AppMode::ListPicker(PickerKind::History);
     state.picker_selected = 0;
 
-    handle_list_picker(&mut state, KeyCode::Enter);
+    pickers::handle_list_picker(&mut state, KeyCode::Enter);
 
     assert_eq!(state.mode, AppMode::CommandLine);
     assert_eq!(state.command_line, "git log");
@@ -538,7 +540,7 @@ fn history_picker_esc_cancels() {
     state.command_history.push_back("ls".to_string());
     state.mode = AppMode::ListPicker(PickerKind::History);
 
-    handle_list_picker(&mut state, KeyCode::Esc);
+    pickers::handle_list_picker(&mut state, KeyCode::Esc);
 
     assert_eq!(state.mode, AppMode::Normal);
 }
@@ -552,10 +554,10 @@ fn history_picker_navigate_up_down() {
     state.mode = AppMode::ListPicker(PickerKind::History);
     state.picker_selected = 0;
 
-    handle_list_picker(&mut state, KeyCode::Down);
+    pickers::handle_list_picker(&mut state, KeyCode::Down);
     assert_eq!(state.picker_selected, 1);
 
-    handle_list_picker(&mut state, KeyCode::Up);
+    pickers::handle_list_picker(&mut state, KeyCode::Up);
     assert_eq!(state.picker_selected, 0);
 }
 
@@ -567,7 +569,7 @@ fn hotlist_picker_add_current_dir() {
     state.directory_hotlist.clear();
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 
-    handle_list_picker(&mut state, KeyCode::Char('a'));
+    pickers::handle_list_picker(&mut state, KeyCode::Char('a'));
 
     assert!(state.directory_hotlist.contains(&tmp));
 }
@@ -580,7 +582,7 @@ fn hotlist_picker_add_dedup() {
     state.directory_hotlist = vec![tmp.clone()];
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 
-    handle_list_picker(&mut state, KeyCode::Char('a'));
+    pickers::handle_list_picker(&mut state, KeyCode::Char('a'));
 
     assert_eq!(
         state
@@ -605,7 +607,7 @@ fn hotlist_picker_delete_entry() {
         ..Default::default()
     };
 
-    handle_list_picker(&mut state, KeyCode::Char('d'));
+    pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
 
     assert_eq!(state.directory_hotlist.len(), 2);
     assert!(!state.directory_hotlist.contains(&PathBuf::from("/b")));
@@ -620,7 +622,7 @@ fn hotlist_picker_delete_adjusts_cursor() {
         ..Default::default()
     };
 
-    handle_list_picker(&mut state, KeyCode::Char('d'));
+    pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
 
     assert_eq!(state.directory_hotlist.len(), 1);
     assert_eq!(state.picker_selected, 0);
@@ -673,7 +675,7 @@ fn user_menu_picker_esc_closes() {
         ..Default::default()
     };
 
-    handle_list_picker(&mut state, KeyCode::Esc);
+    pickers::handle_list_picker(&mut state, KeyCode::Esc);
 
     assert_eq!(state.mode, AppMode::Normal);
 }
@@ -700,11 +702,11 @@ fn user_menu_picker_navigate_and_select() {
     };
 
     // Navigate down
-    handle_list_picker(&mut state, KeyCode::Down);
+    pickers::handle_list_picker(&mut state, KeyCode::Down);
     assert_eq!(state.picker_selected, 1);
 
     // Navigate up
-    handle_list_picker(&mut state, KeyCode::Up);
+    pickers::handle_list_picker(&mut state, KeyCode::Up);
     assert_eq!(state.picker_selected, 0);
 }
 
@@ -831,7 +833,7 @@ fn compare_mode_picker_esc_cancels() {
         ..Default::default()
     };
 
-    handle_list_picker(&mut state, KeyCode::Esc);
+    pickers::handle_list_picker(&mut state, KeyCode::Esc);
 
     assert_eq!(state.mode, AppMode::Normal);
 }
@@ -844,7 +846,7 @@ fn compare_mode_picker_enter_runs_quick_by_default() {
     state.mode = AppMode::ListPicker(PickerKind::CompareMode);
     state.picker_selected = 0;
 
-    handle_list_picker(&mut state, KeyCode::Enter);
+    pickers::handle_list_picker(&mut state, KeyCode::Enter);
 
     assert_eq!(
         state.mode,
@@ -875,13 +877,13 @@ fn compare_mode_picker_navigate_and_select_thorough() {
             .build()
     }];
 
-    handle_list_picker(&mut state, KeyCode::Down);
+    pickers::handle_list_picker(&mut state, KeyCode::Down);
     assert_eq!(state.picker_selected, 1);
 
-    handle_list_picker(&mut state, KeyCode::Down);
+    pickers::handle_list_picker(&mut state, KeyCode::Down);
     assert_eq!(state.picker_selected, 2);
 
-    handle_list_picker(&mut state, KeyCode::Enter);
+    pickers::handle_list_picker(&mut state, KeyCode::Enter);
     assert_eq!(
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Confirm(
@@ -1186,7 +1188,7 @@ fn check_overwrite_no_conflicts_returns_none() {
         ..Default::default()
     };
 
-    assert!(check_overwrite_conflict(&state).is_none());
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
 }
 
 #[test]
@@ -1208,7 +1210,7 @@ fn check_overwrite_one_conflict_returns_some() {
         ..Default::default()
     };
 
-    let conflicts = check_overwrite_conflict(&state).unwrap();
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
     assert_eq!(conflicts, vec!["clash.txt"]);
 }
 
@@ -1233,7 +1235,7 @@ fn check_overwrite_all_conflicts_returns_all_names() {
         ..Default::default()
     };
 
-    let conflicts = check_overwrite_conflict(&state).unwrap();
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
     assert_eq!(conflicts.len(), 2);
     assert!(conflicts.contains(&"a.txt".to_string()));
     assert!(conflicts.contains(&"b.txt".to_string()));
@@ -1254,7 +1256,7 @@ fn check_overwrite_source_equals_dest_skipped() {
         ..Default::default()
     };
 
-    assert!(check_overwrite_conflict(&state).is_none());
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
 }
 
 #[test]
@@ -1283,7 +1285,7 @@ fn check_overwrite_broken_symlink_at_dest_is_conflict() {
 
     #[cfg(unix)]
     {
-        let conflicts = check_overwrite_conflict(&state).unwrap();
+        let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
         assert_eq!(conflicts, vec!["link.txt"]);
     }
 }
