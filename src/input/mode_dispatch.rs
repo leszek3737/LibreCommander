@@ -135,7 +135,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
         }
         KeyCode::Backspace => {
             state.search_query.pop();
-            state.search_cursor = state.search_cursor.saturating_sub(1);
+            state.search_cursor = state.search_query.len();
             let filter_query = if state.search_query.is_empty() {
                 None
             } else {
