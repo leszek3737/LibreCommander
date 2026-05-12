@@ -70,7 +70,6 @@ pub enum MenuAction {
     History,
     DirectoryHotlist,
     SaveCurrentPathToHotlist,
-    TogglePanelHidden,
     ResetPanelFilter,
     ToggleHiddenFiles,
     TogglePermissions,

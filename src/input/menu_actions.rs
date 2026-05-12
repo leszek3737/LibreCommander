@@ -71,16 +71,6 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
             with_menu_panel(state, refresh_active);
             MenuResult::Handled
         }
-        MenuAction::TogglePanelHidden => {
-            let panel = state.active_panel_mut();
-            panel.show_hidden = !panel.show_hidden;
-            refresh_active(state);
-            state.status_message = Some(format!(
-                "Panel options: hidden={}",
-                state.active_panel().show_hidden
-            ));
-            MenuResult::Handled
-        }
         MenuAction::ResetPanelFilter => {
             let panel = state.active_panel_mut();
             panel.filter = None;
@@ -94,6 +84,10 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
             p.cursor = 0;
             p.scroll_offset = 0;
             refresh_active(state);
+            state.status_message = Some(format!(
+                "Panel options: hidden={}",
+                state.active_panel().show_hidden
+            ));
             MenuResult::Handled
         }
         MenuAction::TogglePermissions => {
@@ -209,7 +203,6 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
         | MenuAction::Rename
         | MenuAction::Chmod
         | MenuAction::Quit
-        | MenuAction::TogglePanelHidden
         | MenuAction::ResetPanelFilter
         | MenuAction::ToggleHiddenFiles
         | MenuAction::TogglePermissions
@@ -272,7 +265,6 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult 
         | MenuAction::History
         | MenuAction::DirectoryHotlist
         | MenuAction::SaveCurrentPathToHotlist
-        | MenuAction::TogglePanelHidden
         | MenuAction::ResetPanelFilter
         | MenuAction::ToggleHiddenFiles
         | MenuAction::TogglePermissions
@@ -321,7 +313,6 @@ fn execute_misc_action(action: &MenuAction, state: &mut AppState) -> Option<KeyC
         | MenuAction::History
         | MenuAction::DirectoryHotlist
         | MenuAction::SaveCurrentPathToHotlist
-        | MenuAction::TogglePanelHidden
         | MenuAction::ResetPanelFilter
         | MenuAction::ToggleHiddenFiles
         | MenuAction::TogglePermissions => None,
