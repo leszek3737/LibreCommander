@@ -284,7 +284,12 @@ fn handle_input_action(
             }
         }
         InputAction::Rename if !input.is_empty() => {
-            if let Some(entry) = state.active_panel().current_entry()
+            if std::path::Path::new(&input)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                state.status_message = Some("Invalid name: '..' not allowed".to_string());
+            } else if let Some(entry) = state.active_panel().current_entry()
                 && let Err(err) = ops::rename_entry(&entry.path, &input)
             {
                 state.status_message = Some(format!("Rename failed: {err}"));
@@ -545,7 +550,7 @@ pub(crate) fn handle_dialog(
                 false
             }
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => true,
-            _ => true,
+            _ => false,
         };
         if should_exit {
             state.mode = AppMode::Normal;
@@ -596,5 +601,116 @@ pub(crate) fn handle_dialog(
         DialogKind::Help { .. } => {
             dismiss_dialog_and_restore(state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_input_state(text: &str, cursor: usize) -> AppState {
+        AppState {
+            dialog_input: text.to_string(),
+            dialog_cursor_pos: cursor,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn text_edit_insert_char() {
+        let mut state = make_input_state("hello", 5);
+        handle_dialog_text_edit(&mut state, KeyCode::Char('!'));
+        assert_eq!(state.dialog_input, "hello!");
+        assert_eq!(state.dialog_cursor_pos, 6);
+    }
+
+    #[test]
+    fn text_edit_insert_middle() {
+        let mut state = make_input_state("helo", 2);
+        handle_dialog_text_edit(&mut state, KeyCode::Char('l'));
+        assert_eq!(state.dialog_input, "hello");
+        assert_eq!(state.dialog_cursor_pos, 3);
+    }
+
+    #[test]
+    fn text_edit_backspace() {
+        let mut state = make_input_state("hello", 5);
+        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        assert_eq!(state.dialog_input, "hell");
+        assert_eq!(state.dialog_cursor_pos, 4);
+    }
+
+    #[test]
+    fn text_edit_backspace_at_start() {
+        let mut state = make_input_state("hello", 0);
+        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        assert_eq!(state.dialog_input, "hello");
+        assert_eq!(state.dialog_cursor_pos, 0);
+    }
+
+    #[test]
+    fn text_edit_delete() {
+        let mut state = make_input_state("hello", 0);
+        handle_dialog_text_edit(&mut state, KeyCode::Delete);
+        assert_eq!(state.dialog_input, "ello");
+        assert_eq!(state.dialog_cursor_pos, 0);
+    }
+
+    #[test]
+    fn text_edit_delete_at_end() {
+        let mut state = make_input_state("hello", 5);
+        handle_dialog_text_edit(&mut state, KeyCode::Delete);
+        assert_eq!(state.dialog_input, "hello");
+        assert_eq!(state.dialog_cursor_pos, 5);
+    }
+
+    #[test]
+    fn text_edit_left_right() {
+        let mut state = make_input_state("hello", 3);
+        handle_dialog_text_edit(&mut state, KeyCode::Left);
+        assert_eq!(state.dialog_cursor_pos, 2);
+        handle_dialog_text_edit(&mut state, KeyCode::Right);
+        assert_eq!(state.dialog_cursor_pos, 3);
+    }
+
+    #[test]
+    fn text_edit_home_end() {
+        let mut state = make_input_state("hello", 3);
+        handle_dialog_text_edit(&mut state, KeyCode::Home);
+        assert_eq!(state.dialog_cursor_pos, 0);
+        handle_dialog_text_edit(&mut state, KeyCode::End);
+        assert_eq!(state.dialog_cursor_pos, 5);
+    }
+
+    #[test]
+    fn text_edit_multibyte_insert() {
+        let mut state = make_input_state("hello", 5);
+        handle_dialog_text_edit(&mut state, KeyCode::Char('ą'));
+        assert_eq!(state.dialog_input, "helloą");
+        assert_eq!(state.dialog_cursor_pos, 6);
+    }
+
+    #[test]
+    fn text_edit_multibyte_backspace() {
+        let mut state = make_input_state("helloą", 6);
+        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        assert_eq!(state.dialog_input, "hello");
+        assert_eq!(state.dialog_cursor_pos, 5);
+    }
+
+    #[test]
+    fn text_edit_emoji_insert() {
+        let mut state = make_input_state("test", 4);
+        handle_dialog_text_edit(&mut state, KeyCode::Char('🎉'));
+        assert_eq!(state.dialog_input, "test🎉");
+        assert_eq!(state.dialog_cursor_pos, 5);
+    }
+
+    #[test]
+    fn text_edit_emoji_backspace() {
+        let mut state = make_input_state("test🎉", 5);
+        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        assert_eq!(state.dialog_input, "test");
+        assert_eq!(state.dialog_cursor_pos, 4);
     }
 }

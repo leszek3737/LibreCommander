@@ -193,3 +193,115 @@ pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
         ),
     )));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_picker_esc_returns_normal() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::History),
+            ..Default::default()
+        };
+        handle_list_picker(&mut state, KeyCode::Esc);
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn history_picker_enter_empty_history() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::History),
+            picker_selected: 0,
+            ..Default::default()
+        };
+        handle_list_picker(&mut state, KeyCode::Enter);
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn history_picker_navigate_bounds() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::History),
+            picker_selected: 0,
+            ..Default::default()
+        };
+        state.command_history.push_back("cmd1".to_string());
+        state.command_history.push_back("cmd2".to_string());
+
+        // Can't go up from 0
+        handle_list_picker(&mut state, KeyCode::Up);
+        assert_eq!(state.picker_selected, 0);
+
+        // Can go down
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 1);
+
+        // Can't go past end
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 1);
+    }
+
+    #[test]
+    fn hotlist_picker_empty_hotlist_enter() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::Hotlist),
+            directory_hotlist: vec![],
+            picker_selected: 0,
+            ..Default::default()
+        };
+        handle_list_picker(&mut state, KeyCode::Enter);
+        assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
+    }
+
+    #[test]
+    fn compare_mode_picker_navigate() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::CompareMode),
+            picker_selected: 0,
+            ..Default::default()
+        };
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 1);
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 2);
+        // Can't go past 2 (3 modes)
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 2);
+
+        handle_list_picker(&mut state, KeyCode::Up);
+        assert_eq!(state.picker_selected, 1);
+        handle_list_picker(&mut state, KeyCode::Up);
+        assert_eq!(state.picker_selected, 0);
+        // Can't go below 0
+        handle_list_picker(&mut state, KeyCode::Up);
+        assert_eq!(state.picker_selected, 0);
+    }
+
+    #[test]
+    fn user_menu_picker_empty_list() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::UserMenu),
+            user_menu_entries: vec![],
+            picker_selected: 0,
+            ..Default::default()
+        };
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 0);
+        handle_list_picker(&mut state, KeyCode::Enter);
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn hotlist_picker_delete_empty_after_delete() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::Hotlist),
+            directory_hotlist: vec![PathBuf::from("/only")],
+            picker_selected: 0,
+            ..Default::default()
+        };
+        handle_list_picker(&mut state, KeyCode::Char('d'));
+        assert!(state.directory_hotlist.is_empty());
+        assert_eq!(state.picker_selected, 0);
+    }
+}

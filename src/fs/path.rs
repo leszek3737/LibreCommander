@@ -163,7 +163,14 @@ fn is_env_name_char(c: char) -> bool {
 }
 
 fn env_var(name: &str) -> Option<String> {
-    std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+    let val = std::env::var_os(name)?;
+    match val.to_str() {
+        Some(s) => Some(s.to_string()),
+        None => {
+            crate::debug_log!("env var '{name}' has non-UTF-8 value, skipping");
+            None
+        }
+    }
 }
 
 #[cfg(test)]

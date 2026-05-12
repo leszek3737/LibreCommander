@@ -370,6 +370,10 @@ mod tests {
         let mut sorted = names.to_vec();
         sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
         assert_eq!(sorted.len(), 4);
+        assert_eq!(sorted[0], "aąb");
+        assert_eq!(sorted[1], "zab");
+        assert_eq!(sorted[2], "ząb");
+        assert_eq!(sorted[3], "źreb");
     }
 
     #[test]
@@ -378,6 +382,8 @@ mod tests {
         let mut sorted = names.to_vec();
         sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
         assert_eq!(sorted.len(), 4);
+        assert_eq!(sorted[0], "a📝");
+        assert_eq!(sorted[1], "plain");
     }
 
     #[test]
@@ -386,6 +392,7 @@ mod tests {
         let mut sorted = zwj_names.to_vec();
         sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
         assert_eq!(sorted.len(), 4);
+        assert_eq!(sorted[0], "ab");
     }
 
     #[test]
@@ -394,5 +401,34 @@ mod tests {
         let mut sorted = names.to_vec();
         sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
         assert_eq!(sorted.len(), 4);
+        assert_eq!(sorted[0], "ab");
+    }
+
+    #[test]
+    fn test_natsort_sensitive_ascii() {
+        assert_eq!(natsort(b"abc", b"abc", false), Ordering::Equal);
+        assert_eq!(natsort(b"abc", b"abd", false), Ordering::Less);
+        assert_eq!(natsort(b"abc", b"ABC", false), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_natsort_sensitive_digits() {
+        assert_eq!(natsort(b"a2", b"a10", false), Ordering::Less);
+        assert_eq!(natsort(b"a10", b"a2", false), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_strip_leading_zeros() {
+        assert_eq!(strip_leading_zeros(b"000"), b"");
+        assert_eq!(strip_leading_zeros(b"00123"), b"123");
+        assert_eq!(strip_leading_zeros(b"0"), b"");
+        assert_eq!(strip_leading_zeros(b"42"), b"42");
+        assert_eq!(strip_leading_zeros(b""), b"");
+    }
+
+    #[test]
+    fn test_nat_key_segment_cross_variant() {
+        assert!(NatKeySegment::Text(b"a".to_vec()) < NatKeySegment::Num(b"1".to_vec()));
+        assert!(NatKeySegment::Num(b"1".to_vec()) > NatKeySegment::Text(b"a".to_vec()));
     }
 }

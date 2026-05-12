@@ -129,3 +129,180 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_cmd_state(line: &str, cursor: usize) -> AppState {
+        AppState {
+            command_line: line.to_string(),
+            command_cursor: cursor,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cmd_backspace_deletes_char() {
+        let mut state = make_cmd_state("hello", 5);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_line, "hell");
+        assert_eq!(state.command_cursor, 4);
+    }
+
+    #[test]
+    fn cmd_backspace_at_start_does_nothing() {
+        let mut state = make_cmd_state("hello", 0);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_line, "hello");
+        assert_eq!(state.command_cursor, 0);
+    }
+
+    #[test]
+    fn cmd_left_moves_cursor() {
+        let mut state = make_cmd_state("hello", 3);
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(state.command_cursor, 2);
+    }
+
+    #[test]
+    fn cmd_left_at_start_does_nothing() {
+        let mut state = make_cmd_state("hello", 0);
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(state.command_cursor, 0);
+    }
+
+    #[test]
+    fn cmd_right_moves_cursor() {
+        let mut state = make_cmd_state("hello", 2);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_cursor, 3);
+    }
+
+    #[test]
+    fn cmd_right_at_end_does_nothing() {
+        let mut state = make_cmd_state("hello", 5);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_cursor, 5);
+    }
+
+    #[test]
+    fn cmd_ctrl_a_moves_to_start() {
+        let mut state = make_cmd_state("hello", 3);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.command_cursor, 0);
+    }
+
+    #[test]
+    fn cmd_ctrl_e_moves_to_end() {
+        let mut state = make_cmd_state("hello", 2);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.command_cursor, 5);
+    }
+
+    #[test]
+    fn cmd_ctrl_u_clears_line() {
+        let mut state = make_cmd_state("hello world", 5);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.command_line, "");
+        assert_eq!(state.command_cursor, 0);
+    }
+
+    #[test]
+    fn cmd_ctrl_w_deletes_word() {
+        let mut state = make_cmd_state("hello world", 11);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.command_line, "hello ");
+        assert_eq!(state.command_cursor, 6);
+    }
+
+    #[test]
+    fn cmd_insert_char() {
+        let mut state = make_cmd_state("hllo", 1);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_line, "hello");
+        assert_eq!(state.command_cursor, 2);
+    }
+
+    #[test]
+    fn cmd_multibyte_char_cursor() {
+        let mut state = make_cmd_state("test", 4);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('ą'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_line, "testą");
+        assert_eq!(state.command_cursor, 6);
+    }
+
+    #[test]
+    fn cmd_esc_clears() {
+        let mut state = make_cmd_state("hello", 5);
+        state.history_index = Some(0);
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(state.mode, AppMode::Normal);
+        assert_eq!(state.command_line, "");
+        assert_eq!(state.command_cursor, 0);
+        assert!(state.history_index.is_none());
+    }
+
+    #[test]
+    fn cmd_up_loads_history() {
+        let mut state = make_cmd_state("", 0);
+        state.command_history.push_back("first".to_string());
+        state.command_history.push_back("second".to_string());
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.command_line, "second");
+        assert_eq!(state.command_cursor, 6);
+        assert_eq!(state.history_index, Some(1));
+    }
+
+    #[test]
+    fn cmd_down_restores_draft() {
+        let mut state = make_cmd_state("draft", 5);
+        state.command_history.push_back("first".to_string());
+        state.history_index = Some(0);
+        state.command_draft = "draft".to_string();
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.command_line, "draft");
+        assert!(state.history_index.is_none());
+    }
+
+    #[test]
+    fn cmd_delete_word_backward_first_word() {
+        let mut state = make_cmd_state("hello", 5);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.command_line, "");
+        assert_eq!(state.command_cursor, 0);
+    }
+}

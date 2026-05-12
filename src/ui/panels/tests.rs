@@ -384,3 +384,34 @@ fn test_truncate_name_unicode() {
     assert!(result.ends_with('…'));
     assert!(UnicodeWidthStr::width(result.as_str()) <= 6);
 }
+
+#[test]
+fn test_format_size_exact_1kb() {
+    assert_eq!(format_size(1024), "1.0 KB");
+}
+
+#[test]
+fn test_format_size_exact_1mb() {
+    assert_eq!(format_size(1024 * 1024), "1.0 MB");
+}
+
+#[test]
+fn test_format_size_exact_1gb() {
+    assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
+}
+
+#[test]
+fn test_format_size_u64_max() {
+    let result = format_size(u64::MAX);
+    assert!(result.contains("EB"));
+}
+
+#[test]
+fn test_format_size_one_byte() {
+    assert_eq!(format_size(1), "1 B");
+}
+
+#[test]
+fn test_format_size_just_under_1kb() {
+    assert_eq!(format_size(1023), "1023 B");
+}

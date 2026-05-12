@@ -180,11 +180,14 @@ pub fn set_active_panel(state: &mut AppState, panel: ActivePanel) {
     state.active_panel = panel;
 }
 
+const MENU_ITEM_LEFT_PANEL: usize = 0;
+const MENU_ITEM_RIGHT_PANEL: usize = 4;
+
 pub fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
     let original = state.active_panel;
     match state.menu_selected {
-        0 => set_active_panel(state, ActivePanel::Left),
-        4 => set_active_panel(state, ActivePanel::Right),
+        MENU_ITEM_LEFT_PANEL => set_active_panel(state, ActivePanel::Left),
+        MENU_ITEM_RIGHT_PANEL => set_active_panel(state, ActivePanel::Right),
         _ => {}
     }
     let result = f(state);
@@ -201,14 +204,58 @@ pub fn panel_visible_height(terminal_height: u16) -> usize {
 }
 
 pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
-    if let Some(path) = state.directory_hotlist.get(index).cloned()
+    if let Some(path) = state.directory_hotlist.get(index)
         && path.is_dir()
     {
-        let panel = state.active_panel_mut();
-        panel.path = path.clone();
-        panel.cursor = 0;
-        panel.scroll_offset = 0;
+        let display = path.display().to_string();
+        let path = path.clone();
+        state.active_panel_mut().path = path;
+        state.active_panel_mut().cursor = 0;
+        state.active_panel_mut().scroll_offset = 0;
         refresh_active(state);
-        state.status_message = Some(format!("cd to {}", path.display()));
+        state.status_message = Some(format!("cd to {display}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_panel_visible_height() {
+        assert_eq!(panel_visible_height(24), 18);
+        assert_eq!(panel_visible_height(10), 4);
+        assert_eq!(panel_visible_height(0), 0);
+        assert_eq!(panel_visible_height(3), 0);
+    }
+
+    #[test]
+    fn test_file_names_from_paths() {
+        let paths = vec![
+            PathBuf::from("/tmp/a.txt"),
+            PathBuf::from("/home/user/b.rs"),
+            PathBuf::from("/"),
+        ];
+        let names = file_names_from_paths(&paths);
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[0], PathBuf::from("a.txt"));
+        assert_eq!(names[1], PathBuf::from("b.rs"));
+        assert_eq!(names[2], PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_file_names_from_paths_empty() {
+        let paths: Vec<PathBuf> = vec![];
+        let names = file_names_from_paths(&paths);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_set_active_panel() {
+        let mut state = AppState::default();
+        set_active_panel(&mut state, ActivePanel::Right);
+        assert_eq!(state.active_panel, ActivePanel::Right);
+        set_active_panel(&mut state, ActivePanel::Left);
+        assert_eq!(state.active_panel, ActivePanel::Left);
     }
 }
