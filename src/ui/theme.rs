@@ -235,78 +235,253 @@ pub struct Theme;
 
 impl Theme {
     // Background colors — kept as pub const for backward compatibility
+    #[deprecated(note = "Use Theme::panel_bg_color() instead")]
     pub const PANEL_BG: Color = Color::Rgb(0, 0, 128);
+    #[deprecated(note = "Use Theme::status_bar_bg() instead")]
     pub const STATUS_BAR_BG: Color = Color::Rgb(0, 0, 128);
+    #[deprecated(note = "Use Theme::menu_bar_bg() instead")]
     pub const MENU_BAR_BG: Color = Color::Rgb(0, 0, 128);
+    #[deprecated(note = "Use Theme::dialog_bg() instead")]
     pub const DIALOG_BG: Color = Color::Black;
+    #[deprecated(note = "Use Theme::highlight_bg() instead")]
     pub const HIGHLIGHT_BG: Color = Color::Cyan;
 
     // Foreground colors
+    #[deprecated(note = "Use Theme::panel_fg_color() instead")]
     pub const PANEL_FG: Color = Color::White;
+    #[deprecated(note = "Use Theme::status_bar_fg() instead")]
     pub const STATUS_BAR_FG: Color = Color::White;
+    #[deprecated(note = "Use Theme::menu_bar_fg() instead")]
     pub const MENU_BAR_FG: Color = Color::White;
+    #[deprecated(note = "Use Theme::dialog_fg() instead")]
     pub const DIALOG_FG: Color = Color::White;
+    #[deprecated(note = "Use Theme::highlight_fg() instead")]
     pub const HIGHLIGHT_FG: Color = Color::Black;
 
     // Special colors
+    #[deprecated(note = "Use Theme::border_active_color() instead")]
     pub const BORDER_ACTIVE: Color = Color::Yellow;
+    #[deprecated(note = "Use Theme::border_inactive_color() instead")]
     pub const BORDER_INACTIVE: Color = Color::DarkGray;
+    #[deprecated(note = "Use Theme::title_color() instead")]
     pub const TITLE: Color = Color::LightCyan;
+    #[deprecated(note = "Use Theme::error_color() instead")]
     pub const ERROR: Color = Color::Red;
+    #[deprecated(note = "Use Theme::warning_color() instead")]
     pub const WARNING: Color = Color::Yellow;
+    #[deprecated(note = "Use Theme::info_color() instead")]
     pub const INFO: Color = Color::Cyan;
 
     // UI element colors
+    #[deprecated(note = "Use Theme::selected_file_fg() instead")]
     pub const SELECTED_FILE_FG: Color = Color::LightYellow;
+    #[deprecated(note = "Use Theme::scrollbar_active() instead")]
     pub const SCROLLBAR_ACTIVE: Color = Color::Yellow;
+    #[deprecated(note = "Use Theme::scrollbar_inactive() instead")]
     pub const SCROLLBAR_INACTIVE: Color = Color::DarkGray;
+    #[deprecated(note = "Use Theme::function_bar_fg() instead")]
     pub const FUNCTION_BAR_FG: Color = Color::LightBlue;
+    #[deprecated(note = "Use Theme::function_bar_bg() instead")]
     pub const FUNCTION_BAR_BG: Color = Color::DarkGray;
+    #[deprecated(note = "Use Theme::search_match_fg() instead")]
     pub const SEARCH_MATCH_FG: Color = Color::Black;
+    #[deprecated(note = "Use Theme::search_match_bg() instead")]
     pub const SEARCH_MATCH_BG: Color = Color::LightGreen;
+    #[deprecated(note = "Use Theme::search_match_current_fg() instead")]
     pub const SEARCH_MATCH_CURRENT_FG: Color = Color::Black;
+    #[deprecated(note = "Use Theme::search_match_current_bg() instead")]
     pub const SEARCH_MATCH_CURRENT_BG: Color = Color::Yellow;
 
     // File type colors
+    #[deprecated(note = "Use Theme::directory() instead")]
     pub const DIRECTORY: Color = Color::White;
+    #[deprecated(note = "Use Theme::executable() instead")]
     pub const EXECUTABLE: Color = Color::Green;
+    #[deprecated(note = "Use Theme::symlink() instead")]
     pub const SYMLINK: Color = Color::Cyan;
+    #[deprecated(note = "Use Theme::archive() instead")]
     pub const ARCHIVE: Color = Color::Red;
+    #[deprecated(note = "Use Theme::image() instead")]
     pub const IMAGE: Color = Color::Magenta;
+    #[deprecated(note = "Use Theme::video() instead")]
     pub const VIDEO: Color = Color::LightMagenta;
+    #[deprecated(note = "Use Theme::audio() instead")]
     pub const AUDIO: Color = Color::LightGreen;
+    #[deprecated(note = "Use Theme::document() instead")]
     pub const DOCUMENT: Color = Color::LightYellow;
+    #[deprecated(note = "Use Theme::source_code() instead")]
     pub const SOURCE_CODE: Color = Color::Yellow;
+    #[deprecated(note = "Use Theme::config() instead")]
     pub const CONFIG: Color = Color::LightBlue;
+    #[deprecated(note = "Use Theme::font() instead")]
     pub const FONT: Color = Color::LightCyan;
+    #[deprecated(note = "Use Theme::regular_file() instead")]
     pub const REGULAR_FILE: Color = Color::White;
 
-    pub fn load_from_config() {
-        let cfg = match crate::app::paths::config_file_path() {
-            Some(path) => match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    let full: toml::Value = match toml::from_str(&content) {
-                        Ok(v) => v,
-                        Err(_) => return,
-                    };
-                    match full.get("theme").cloned() {
-                        Some(theme_val) => match ThemeConfig::deserialize(theme_val) {
-                            Ok(cfg) => cfg,
-                            Err(_) => return,
-                        },
-                        None => return,
-                    }
-                }
-                Err(_) => return,
-            },
-            None => return,
+    pub fn apply_from_value(raw: &toml::Value) -> Result<(), String> {
+        let Some(theme_val) = raw.get("theme") else {
+            return Ok(());
         };
+        let cfg: ThemeConfig = ThemeConfig::deserialize(theme_val.clone())
+            .map_err(|e| format!("Failed to parse [theme] section: {e}"))?;
         let colors = ThemeColors::from_config(&cfg);
-        let _ = THEME_COLORS.set(colors);
+        THEME_COLORS
+            .set(colors)
+            .map_err(|_| "Theme already loaded".to_string())
     }
 
     fn colors() -> &'static ThemeColors {
         THEME_COLORS.get().unwrap_or(&DEFAULT_COLORS)
+    }
+
+    // Color accessors — each reads from the dynamic theme (config-overridable).
+
+    pub fn panel_bg_color() -> Color {
+        Self::colors().panel_bg
+    }
+
+    pub fn status_bar_bg() -> Color {
+        Self::colors().status_bar_bg
+    }
+
+    pub fn menu_bar_bg() -> Color {
+        Self::colors().menu_bar_bg
+    }
+
+    pub fn dialog_bg() -> Color {
+        Self::colors().dialog_bg
+    }
+
+    pub fn highlight_bg() -> Color {
+        Self::colors().highlight_bg
+    }
+
+    pub fn panel_fg_color() -> Color {
+        Self::colors().panel_fg
+    }
+
+    pub fn status_bar_fg() -> Color {
+        Self::colors().status_bar_fg
+    }
+
+    pub fn menu_bar_fg() -> Color {
+        Self::colors().menu_bar_fg
+    }
+
+    pub fn dialog_fg() -> Color {
+        Self::colors().dialog_fg
+    }
+
+    pub fn highlight_fg() -> Color {
+        Self::colors().highlight_fg
+    }
+
+    pub fn border_active_color() -> Color {
+        Self::colors().border_active
+    }
+
+    pub fn border_inactive_color() -> Color {
+        Self::colors().border_inactive
+    }
+
+    pub fn title_color() -> Color {
+        Self::colors().title
+    }
+
+    pub fn error_color() -> Color {
+        Self::colors().error
+    }
+
+    pub fn warning_color() -> Color {
+        Self::colors().warning
+    }
+
+    pub fn info_color() -> Color {
+        Self::colors().info
+    }
+
+    pub fn selected_file_fg() -> Color {
+        Self::colors().selected_file_fg
+    }
+
+    pub fn scrollbar_active() -> Color {
+        Self::colors().scrollbar_active
+    }
+
+    pub fn scrollbar_inactive() -> Color {
+        Self::colors().scrollbar_inactive
+    }
+
+    pub fn function_bar_fg() -> Color {
+        Self::colors().function_bar_fg
+    }
+
+    pub fn function_bar_bg() -> Color {
+        Self::colors().function_bar_bg
+    }
+
+    pub fn search_match_fg() -> Color {
+        Self::colors().search_match_fg
+    }
+
+    pub fn search_match_bg() -> Color {
+        Self::colors().search_match_bg
+    }
+
+    pub fn search_match_current_fg() -> Color {
+        Self::colors().search_match_current_fg
+    }
+
+    pub fn search_match_current_bg() -> Color {
+        Self::colors().search_match_current_bg
+    }
+
+    pub fn directory() -> Color {
+        Self::colors().directory
+    }
+
+    pub fn executable() -> Color {
+        Self::colors().executable
+    }
+
+    pub fn symlink() -> Color {
+        Self::colors().symlink
+    }
+
+    pub fn archive() -> Color {
+        Self::colors().archive
+    }
+
+    pub fn image() -> Color {
+        Self::colors().image
+    }
+
+    pub fn video() -> Color {
+        Self::colors().video
+    }
+
+    pub fn audio() -> Color {
+        Self::colors().audio
+    }
+
+    pub fn document() -> Color {
+        Self::colors().document
+    }
+
+    pub fn source_code() -> Color {
+        Self::colors().source_code
+    }
+
+    pub fn config() -> Color {
+        Self::colors().config
+    }
+
+    pub fn font() -> Color {
+        Self::colors().font
+    }
+
+    pub fn regular_file() -> Color {
+        Self::colors().regular_file
     }
 
     // Styles
@@ -452,6 +627,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn category_color_maps_file_categories_to_theme_colors() {
         let cases = [
             (FileCategory::Dir, Theme::DIRECTORY),

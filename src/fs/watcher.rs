@@ -230,22 +230,37 @@ fn should_emit(debounce_state: &Mutex<HashMap<PathBuf, Instant>>, paths: &[&Path
     !suppressed
 }
 
+fn lock_pending(
+    pending_from: &Mutex<Option<PathBuf>>,
+) -> std::sync::MutexGuard<'_, Option<PathBuf>> {
+    pending_from.lock().unwrap_or_else(|e| {
+        debug_log!("pending_from mutex poisoned, recovering: {e}");
+        e.into_inner()
+    })
+}
+
 fn convert_event_with_rename_pairing(
     event: notify::Event,
     pending_from: &Mutex<Option<PathBuf>>,
 ) -> Vec<WatchEvent> {
     match &event.kind {
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
-            if let Some(path) = event.paths.into_iter().next()
-                && let Ok(mut pending) = pending_from.lock()
-            {
+            if let Some(path) = event.paths.into_iter().next() {
+                let mut pending = lock_pending(pending_from);
+                if let Some(stale) = pending.take() {
+                    debug_log!(
+                        "orphan rename From: emitting Deleted for stale path {}",
+                        stale.display(),
+                    );
+                    return vec![WatchEvent::Deleted(stale)];
+                }
                 *pending = Some(path);
             }
             Vec::new()
         }
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)) => {
             let to_path = event.paths.into_iter().next();
-            let from_path = pending_from.lock().ok().and_then(|mut p| p.take());
+            let from_path = lock_pending(pending_from).take();
             match (from_path, to_path) {
                 (Some(from), Some(to)) => vec![WatchEvent::Renamed { from, to }],
                 (None, Some(to)) => vec![WatchEvent::Created(to)],

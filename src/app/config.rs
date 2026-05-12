@@ -184,14 +184,29 @@ pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn load_setup(state: &mut AppState) -> Result<(), String> {
-    if let Some(settings) = load_settings()? {
-        settings.apply_to_state(state);
-    }
-    Ok(())
+pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
+    let Some(raw) = read_config_raw()? else {
+        return Ok(None);
+    };
+    let setup: PersistedSetup = raw
+        .clone()
+        .try_into()
+        .map_err(|e| format!("Failed to parse config: {e}"))?;
+    Settings::from(setup).apply_to_state(state);
+    Ok(Some(raw))
 }
 
 pub fn load_settings() -> Result<Option<Settings>, String> {
+    let Some(raw) = read_config_raw()? else {
+        return Ok(None);
+    };
+    let setup: PersistedSetup = raw
+        .try_into()
+        .map_err(|e| format!("Failed to parse config: {e}"))?;
+    Ok(Some(Settings::from(setup)))
+}
+
+fn read_config_raw() -> Result<Option<toml::Value>, String> {
     let Some(path) = paths::config_file_path() else {
         return Ok(None);
     };
@@ -200,9 +215,9 @@ pub fn load_settings() -> Result<Option<Settings>, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("Failed to read config {}: {e}", path.display())),
     };
-    let setup: PersistedSetup = toml::from_str(&content)
+    let value: toml::Value = toml::from_str(&content)
         .map_err(|e| format!("Failed to parse config {}: {e}", path.display()))?;
-    Ok(Some(Settings::from(setup)))
+    Ok(Some(value))
 }
 
 fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
@@ -254,7 +269,7 @@ mod tests {
             settings.sort_sensitive,
             state.left_panel.sort_options.sort_sensitive
         );
-        assert_eq!(settings.left.path, Some(tmp_dir.display().to_string()));
+        assert_eq!(settings.left.path, tmp_dir.to_str().map(String::from));
         assert_eq!(settings.left.listing_mode, ListingMode::Brief);
         assert_eq!(settings.left.sort_mode, SortMode::SizeDesc);
         assert_eq!(settings.left.filter, "rs");
@@ -271,7 +286,7 @@ mod tests {
             dir_first: true,
             sort_sensitive: false,
             left: PersistedPanel {
-                path: Some(tmp_dir.display().to_string()),
+                path: tmp_dir.to_str().map(String::from),
                 listing_mode: ListingMode::Brief,
                 sort_mode: SortMode::ExtensionAsc,
                 filter: "txt".to_string(),

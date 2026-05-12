@@ -112,7 +112,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         };
 
         let line_style = if entry.selected {
-            get_file_color(&cat, bold).fg(Theme::SELECTED_FILE_FG)
+            get_file_color(&cat, bold).fg(Theme::selected_file_fg())
         } else {
             get_file_color(&cat, bold)
         };
@@ -317,9 +317,9 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let style = if is_active {
-        Style::default().fg(Theme::SCROLLBAR_ACTIVE)
+        Style::default().fg(Theme::scrollbar_active())
     } else {
-        Style::default().fg(Theme::SCROLLBAR_INACTIVE)
+        Style::default().fg(Theme::scrollbar_inactive())
     };
 
     let paragraph = Paragraph::new(scrollbar)
@@ -414,7 +414,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let full_text = format!("{info_line}{right_info}");
 
     let paragraph = Paragraph::new(full_text)
-        .style(Style::default().fg(Theme::STATUS_BAR_FG))
+        .style(Style::default().fg(Theme::status_bar_fg()))
         .block(Block::default().borders(Borders::TOP));
 
     f.render_widget(paragraph, area);
@@ -443,12 +443,12 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
         .split(area);
 
     let key_style = Style::default()
-        .fg(Theme::FUNCTION_BAR_FG)
-        .bg(Theme::FUNCTION_BAR_BG)
+        .fg(Theme::function_bar_fg())
+        .bg(Theme::function_bar_bg())
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default()
-        .fg(Theme::FUNCTION_BAR_FG)
-        .bg(Theme::FUNCTION_BAR_BG);
+        .fg(Theme::function_bar_fg())
+        .bg(Theme::function_bar_bg());
 
     for (i, (key, label)) in keys.iter().enumerate() {
         let line = Line::from(vec![
@@ -472,8 +472,8 @@ pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let paragraph = Paragraph::new(menu_text)
         .style(
             Style::default()
-                .fg(Theme::MENU_BAR_FG)
-                .bg(Theme::MENU_BAR_BG),
+                .fg(Theme::menu_bar_fg())
+                .bg(Theme::menu_bar_bg()),
         )
         .alignment(Alignment::Left);
 

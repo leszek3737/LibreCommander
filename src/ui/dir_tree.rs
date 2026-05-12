@@ -76,9 +76,9 @@ pub fn render_directory_tree(
         let line_style = if row == selected {
             Theme::highlight()
         } else if entry.is_dir {
-            Theme::panel_file(Theme::DIRECTORY)
+            Theme::panel_file(Theme::directory())
         } else {
-            Theme::panel_file(Theme::REGULAR_FILE)
+            Theme::panel_file(Theme::regular_file())
         };
 
         let line = Line::from(vec![

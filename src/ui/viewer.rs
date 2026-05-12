@@ -286,6 +286,11 @@ impl ViewerState {
                 .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
                 .max()
                 .unwrap_or(0);
+            self.search_matches.clear();
+            self.search_matches_by_line.clear();
+            self.current_match = 0;
+            self.search_query = None;
+            self.has_invalid_utf8 = std::str::from_utf8(&self.raw_bytes).is_err();
         }
     }
 
@@ -443,13 +448,13 @@ fn format_line_with_highlight<'a>(
 
         let style = if is_current {
             Style::default()
-                .fg(Theme::SEARCH_MATCH_CURRENT_FG)
-                .bg(Theme::SEARCH_MATCH_CURRENT_BG)
+                .fg(Theme::search_match_current_fg())
+                .bg(Theme::search_match_current_bg())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
-                .fg(Theme::SEARCH_MATCH_FG)
-                .bg(Theme::SEARCH_MATCH_BG)
+                .fg(Theme::search_match_fg())
+                .bg(Theme::search_match_bg())
         };
 
         spans.push(Span::styled(match_text, style));
@@ -494,7 +499,7 @@ fn render_viewer_status(
     );
     let status_style =
         if state.has_invalid_utf8 || (!state.is_hex_mode() && state.originally_binary) {
-            Theme::status_bar().fg(Theme::WARNING)
+            Theme::status_bar().fg(Theme::warning_color())
         } else {
             Theme::status_bar()
         };

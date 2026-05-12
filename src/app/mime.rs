@@ -132,6 +132,9 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
 }
 #[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
+    if let Some(mime) = extension_mime(name) {
+        return mime_to_category(mime);
+    }
     crate::app::file_type::category(name, false, false, false)
 }
 
@@ -254,8 +257,7 @@ fn archive_mime(ext: &str) -> Option<&'static str> {
         "ar" => Some("application/x-unix-archive"),
         "cpio" => Some("application/x-cpio"),
         "jar" | "war" | "ear" => Some("application/java-archive"),
-        "pkg" => Some("application/x-apple-diskimage"),
-        "xar" => Some("application/x-xar"),
+        "pkg" | "xar" => Some("application/x-xar"),
         "ace" => Some("application/x-ace"),
         "arj" => Some("application/x-arj"),
         "lzo" => Some("application/x-lzop"),

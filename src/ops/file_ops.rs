@@ -72,14 +72,10 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
         ensure_destination_absent(dest)?;
     }
     let src_meta = fs::metadata(src)?;
-    let src_perms = src_meta.permissions();
     if overwrite {
-        let temp = reserve_temp_file_for(dest);
+        let temp = reserve_temp_file_for(dest)?;
         let bytes = fs::copy(src, &temp)?;
-        fs::set_permissions(&temp, src_perms)?;
-        let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
-        let atime = filetime::FileTime::from_last_access_time(&src_meta);
-        let _ = filetime::set_file_times(&temp, atime, mtime);
+        apply_metadata(&temp, &src_meta)?;
         if let Err(err) = swap_temp_to_dest(&temp, dest) {
             let _ = fs::remove_file(&temp);
             return Err(err);
@@ -87,10 +83,7 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
         Ok(bytes)
     } else {
         let bytes = fs::copy(src, dest)?;
-        fs::set_permissions(dest, src_perms)?;
-        let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
-        let atime = filetime::FileTime::from_last_access_time(&src_meta);
-        let _ = filetime::set_file_times(dest, atime, mtime);
+        apply_metadata(dest, &src_meta)?;
         Ok(bytes)
     }
 }
@@ -349,7 +342,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     #[cfg(unix)]
     {
         if overwrite {
-            let temp = reserve_temp_file_for(dest);
+            let temp = reserve_temp_file_for(dest)?;
             std::os::unix::fs::symlink(&target, &temp)?;
             if let Err(err) = swap_temp_to_dest(&temp, dest) {
                 let _ = fs::remove_file(&temp);
@@ -750,7 +743,7 @@ fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
 
 fn publish_temp_dir(temp_dest: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     if overwrite {
-        remove_any(dest);
+        remove_any(dest)?;
     }
     fs::create_dir(dest)?;
     let permissions = fs::metadata(temp_dest)?.permissions();
@@ -857,24 +850,31 @@ fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
     Ok(base)
 }
 
-fn remove_any(path: &Path) {
+fn remove_any(path: &Path) -> io::Result<()> {
     if path.is_symlink() {
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(path)
     } else if path.is_dir() {
-        let _ = std::fs::remove_dir_all(path);
+        std::fs::remove_dir_all(path)
     } else {
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(path)
     }
+}
+
+fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
+    let mode = src_meta.permissions();
+    fs::set_permissions(target, mode)?;
+    let atime = filetime::FileTime::from_last_access_time(src_meta);
+    let mtime = filetime::FileTime::from_last_modification_time(src_meta);
+    let _ = filetime::set_file_times(target, atime, mtime);
+    Ok(())
 }
 
 fn swap_temp_to_dest(temp: &Path, dest: &Path) -> io::Result<()> {
     match std::fs::rename(temp, dest) {
         Ok(()) => Ok(()),
-        Err(e)
-            if e.kind() == io::ErrorKind::Other || e.kind() == io::ErrorKind::PermissionDenied =>
-        {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
             if dest.is_dir() {
-                remove_any(dest);
+                remove_any(dest)?;
                 std::fs::rename(temp, dest)
             } else {
                 Err(e)
@@ -884,25 +884,41 @@ fn swap_temp_to_dest(temp: &Path, dest: &Path) -> io::Result<()> {
     }
 }
 
-fn reserve_temp_file_for(dest: &Path) -> PathBuf {
-    let dir = dest.parent().unwrap_or(Path::new("."));
-    let name = dest.file_name().unwrap_or_default();
+fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
+    let dir = dest.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination has no parent directory",
+        )
+    })?;
+    let name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename")
+    })?;
     let pid = std::process::id();
-    let mut counter = 0u64;
-    loop {
+    for counter in 0..1024 {
         let temp = dir.join(format!(
             "{}.{}.{}.tmp",
             name.to_string_lossy(),
             pid,
             counter
         ));
-        if !temp.exists() {
-            return temp;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(_) => return Ok(temp),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
         }
-        counter += 1;
     }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve temporary file (exhausted 1024 attempts)",
+    ))
 }
 
+#[cfg(test)]
 #[allow(dead_code)]
 fn temp_file_path_for(dest: &Path, seq: u64) -> PathBuf {
     let dir = dest.parent().unwrap_or(Path::new("."));

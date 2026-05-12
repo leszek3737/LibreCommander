@@ -5,7 +5,7 @@ use crate::app::types::{CompareMode, FileEntry, PanelState};
 
 /// Cross-filesystem mtime resolution tolerance (e.g. FAT32 has 2s granularity,
 /// network filesystems may lose sub-second precision during sync).
-const MTIME_TOLERANCE: Duration = Duration::from_millis(1);
+const MTIME_TOLERANCE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq)]
 struct EntryMeta {
@@ -221,7 +221,7 @@ mod tests {
                 .name("a.txt")
                 .path("/tmp/a.txt")
                 .size(100)
-                .modified(t + std::time::Duration::from_secs(1))
+                .modified(t + std::time::Duration::from_secs(3))
                 .created(std::time::SystemTime::UNIX_EPOCH)
                 .build(),
         ];

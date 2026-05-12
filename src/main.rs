@@ -118,10 +118,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 
     let mut state = AppState::new();
-    if let Err(e) = app::config::load_setup(&mut state) {
+    let config_raw = match app::config::load_setup(&mut state) {
+        Ok(raw) => raw,
+        Err(e) => {
+            state.status_message = Some(e);
+            None
+        }
+    };
+    if let Some(ref raw) = config_raw
+        && let Err(e) = ui::theme::Theme::apply_from_value(raw)
+    {
         state.status_message = Some(e);
     }
-    ui::theme::Theme::load_from_config();
 
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut running_job: Option<RunningJob> = None;
@@ -1385,7 +1393,7 @@ fn command_execute(state: &mut AppState) {
     state.command_cursor = 0;
     state.history_index = None;
     if !cmd.is_empty() {
-        shell::run_shell_command(state, &cmd, refresh_active);
+        shell::run_shell_command(state, &cmd, false, refresh_active);
     }
 }
 
@@ -2232,7 +2240,7 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
                     tagged: &tagged,
                 };
                 let cmd = user_menu::apply_substitutions(&entry.command, &ctx);
-                shell::run_shell_command(state, &cmd, refresh_active);
+                shell::run_shell_command(state, &cmd, true, refresh_active);
             }
         }
         _ => {}

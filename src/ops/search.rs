@@ -4,9 +4,13 @@
 
 use std::path::Path;
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+#[cfg(test)]
 use std::path::PathBuf;
+
+#[cfg(test)]
+use std::fs::File;
+#[cfg(test)]
+use std::io::{BufRead, BufReader};
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
@@ -41,11 +45,11 @@ impl<T> Default for SearchOutcome<T> {
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
-#[allow(dead_code)]
+#[cfg(test)]
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
-#[allow(dead_code)]
+#[cfg(test)]
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
 /// Inline char buffer that lives on the stack for sizes <= N,
@@ -185,7 +189,11 @@ impl FileSearch {
                 }
             }
 
-            if recursive && file_type.is_dir() && !file_type.is_symlink() {
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if recursive && file_type.is_dir() {
                 Self::search_files_recursive(
                     &entry_path,
                     pattern,
@@ -199,7 +207,7 @@ impl FileSearch {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn search_content(
         path: &Path,
         pattern: &str,
@@ -209,7 +217,7 @@ impl FileSearch {
         Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
@@ -230,7 +238,7 @@ impl FileSearch {
         outcome
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn search_content_recursive(
         path: &Path,
         pattern: &str,
@@ -274,7 +282,7 @@ impl FileSearch {
         );
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn search_content_recursive_inner(
         path: &Path,
@@ -386,7 +394,7 @@ impl FileSearch {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn search_in_file(
         path: &Path,
         pattern: &str,

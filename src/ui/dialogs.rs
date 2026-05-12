@@ -493,7 +493,7 @@ pub fn render_help_dialog(
                 i == scrollbar_pos || (i >= scrollbar_pos && i < scrollbar_pos + thumb_height);
             let symbol = if in_thumb { "█" } else { "░" };
             let cell =
-                ratatui::text::Span::styled(symbol, Style::default().fg(Theme::SCROLLBAR_ACTIVE));
+                ratatui::text::Span::styled(symbol, Style::default().fg(Theme::scrollbar_active()));
             f.render_widget(
                 ratatui::widgets::Paragraph::new(cell),
                 Rect::new(scrollbar_x, y, 1, 1),
@@ -597,7 +597,7 @@ pub fn render_list_picker(
 
     if items.is_empty() {
         let empty = Paragraph::new("(empty)")
-            .style(Style::default().fg(Theme::REGULAR_FILE))
+            .style(Style::default().fg(Theme::regular_file()))
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {
