@@ -76,7 +76,7 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
         let temp = reserve_temp_file_for(dest)?;
         let bytes = fs::copy(src, &temp)?;
         apply_metadata(&temp, &src_meta)?;
-        if let Err(err) = swap_temp_to_dest(&temp, dest) {
+        if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
             let _ = fs::remove_file(&temp);
             return Err(err);
         }
@@ -344,7 +344,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
         if overwrite {
             let temp = reserve_temp_file_for(dest)?;
             std::os::unix::fs::symlink(&target, &temp)?;
-            if let Err(err) = swap_temp_to_dest(&temp, dest) {
+            if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
                 let _ = fs::remove_file(&temp);
                 return Err(err);
             }
@@ -869,19 +869,23 @@ fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     Ok(())
 }
 
-fn swap_temp_to_dest(temp: &Path, dest: &Path) -> io::Result<()> {
-    match std::fs::rename(temp, dest) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            if dest.is_dir() {
-                remove_any(dest)?;
-                std::fs::rename(temp, dest)
-            } else {
-                Err(e)
+fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
+    if overwrite {
+        match fs::symlink_metadata(dest) {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::IsADirectory,
+                        "cannot replace a directory with a file",
+                    ));
+                }
+                fs::remove_file(dest)?;
             }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
-        Err(e) => Err(e),
     }
+    std::fs::rename(temp, dest)
 }
 
 fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {

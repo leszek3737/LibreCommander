@@ -119,7 +119,15 @@ impl From<&Settings> for PersistedSetup {
             hotlist: settings
                 .hotlist
                 .iter()
-                .filter_map(|p| p.to_str().map(String::from))
+                .filter_map(|p| {
+                    p.to_str().map(String::from).or_else(|| {
+                        crate::app::debug_log::log(format_args!(
+                            "config: skipping non-UTF-8 hotlist path: {}",
+                            p.display()
+                        ));
+                        None
+                    })
+                })
                 .collect(),
         }
     }

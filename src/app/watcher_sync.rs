@@ -165,18 +165,12 @@ fn event_is_panel_dir(path: &Path, panel: &PanelState) -> bool {
         return true;
     }
 
-    let path_raw = path.to_path_buf();
-    let panel_raw = panel.path.to_path_buf();
+    let panel_canonical = match panel.path.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
 
-    let path_canonical = path.canonicalize().ok();
-    let panel_canonical = panel.path.canonicalize().ok();
-
-    match (path_canonical, panel_canonical) {
-        (Some(p), Some(panel)) => p == panel,
-        (Some(p), None) => p == panel_raw,
-        (None, Some(panel)) => path_raw == panel,
-        (None, None) => false,
-    }
+    path.canonicalize().is_ok_and(|p| p == panel_canonical)
 }
 
 fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {

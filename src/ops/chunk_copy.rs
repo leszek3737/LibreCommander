@@ -121,8 +121,11 @@ fn publish_temp(
     dest_file.flush()?;
     dest_file.get_ref().sync_all()?;
     let perm_result = preserve_permissions(dest, src_metadata);
+    let atime = filetime::FileTime::from_last_access_time(src_metadata);
+    let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
     let _ = fs::remove_file(temp_dest);
     perm_result?;
+    let _ = filetime::set_file_times(dest, atime, mtime);
 
     Ok(())
 }
