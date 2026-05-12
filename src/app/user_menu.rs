@@ -129,7 +129,7 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
     let mut entries: Vec<MenuEntry> = Vec::new();
     let mut warnings: Vec<MenuWarning> = Vec::new();
     let mut lines = content.lines().enumerate().peekable();
-    let mut pending_condition: Option<String> = None;
+    let mut pending_condition: Option<ConditionParseResult> = None;
     let mut pending_condition_line: usize = 0;
 
     while let Some((line_idx, line)) = lines.next() {
@@ -164,7 +164,7 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
         // Collect indented body lines until a blank line or non-indented line.
         let mut body_lines: Vec<String> = Vec::new();
         // Collect trailing condition lines that follow the body.
-        let mut condition: Option<String> = pending_condition.take();
+        let mut condition: Option<ConditionParseResult> = pending_condition.take();
         let mut condition_line = pending_condition_line;
 
         while let Some((_, next)) = lines.peek() {
@@ -195,7 +195,7 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
         }
 
         let compiled_condition = match condition {
-            Some(s) => match Regex::new(&s) {
+            Some(ConditionParseResult::Pattern(s)) => match Regex::new(&s) {
                 Ok(re) => Some(re),
                 Err(err) => {
                     warnings.push(MenuWarning {
@@ -205,6 +205,13 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                     continue;
                 }
             },
+            Some(ConditionParseResult::Unsupported) => {
+                warnings.push(MenuWarning {
+                    line: condition_line,
+                    message: "Unsupported condition type, entry skipped".into(),
+                });
+                continue;
+            }
             None => None,
         };
 
@@ -219,10 +226,17 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
     ParsedMenu { entries, warnings }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConditionParseResult {
+    Pattern(String),
+    Unsupported,
+}
+
 /// Parse a condition line of the form `+ f <regex>`.
-/// Returns `Some(regex_string)` for filename-regex conditions,
-/// `None` for unsupported condition types.
-fn parse_condition(line: &str) -> Option<String> {
+/// Returns `Some(Pattern(regex_string))` for filename-regex conditions,
+/// `Some(Unsupported)` for unrecognized condition types,
+/// `None` if the line is empty or has no condition type.
+fn parse_condition(line: &str) -> Option<ConditionParseResult> {
     // Strip leading `+` and whitespace.
     let rest = line.trim_start_matches('+').trim();
     let mut parts = rest.splitn(2, char::is_whitespace);
@@ -230,8 +244,10 @@ fn parse_condition(line: &str) -> Option<String> {
         Some("f") => parts
             .next()
             .map(|r| r.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        _ => None,
+            .filter(|s| !s.is_empty())
+            .map(ConditionParseResult::Pattern),
+        Some(_) => Some(ConditionParseResult::Unsupported),
+        None => None,
     }
 }
 

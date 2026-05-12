@@ -25,7 +25,7 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
-            if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
+            if let Err(err) = publish_temp(&temp_dest, dest, progress_tx, cancel, overwrite) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
             }
@@ -83,6 +83,7 @@ fn copy_to_temp(
 fn publish_temp(
     temp_dest: &Path,
     dest: &Path,
+    progress_tx: &std::sync::mpsc::Sender<u64>,
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<()> {
@@ -115,10 +116,13 @@ fn publish_temp(
         }
 
         dest_file.write_all(&buffer[..bytes_read])?;
+        let _ = progress_tx.send(bytes_read as u64);
     }
 
     dest_file.flush()?;
     dest_file.get_ref().sync_all()?;
+    let temp_meta = fs::metadata(temp_dest)?;
+    preserve_permissions(dest, &temp_meta)?;
     fs::remove_file(temp_dest)
 }
 

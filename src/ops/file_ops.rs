@@ -68,16 +68,31 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
 #[allow(dead_code)]
 pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     reject_same_file(src, dest)?;
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
     let src_meta = fs::metadata(src)?;
     let src_perms = src_meta.permissions();
-    let bytes = fs::copy(src, dest)?;
-    fs::set_permissions(dest, src_perms)?;
-    let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
-    let atime = filetime::FileTime::from_last_access_time(&src_meta);
-    // Best-effort: some filesystems don't support timestamps
-    let _ = filetime::set_file_times(dest, atime, mtime);
-    Ok(bytes)
+    if overwrite {
+        let temp = reserve_temp_file_for(dest);
+        let bytes = fs::copy(src, &temp)?;
+        fs::set_permissions(&temp, src_perms)?;
+        let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
+        let atime = filetime::FileTime::from_last_access_time(&src_meta);
+        let _ = filetime::set_file_times(&temp, atime, mtime);
+        if let Err(err) = swap_temp_to_dest(&temp, dest) {
+            let _ = fs::remove_file(&temp);
+            return Err(err);
+        }
+        Ok(bytes)
+    } else {
+        let bytes = fs::copy(src, dest)?;
+        fs::set_permissions(dest, src_perms)?;
+        let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
+        let atime = filetime::FileTime::from_last_access_time(&src_meta);
+        let _ = filetime::set_file_times(dest, atime, mtime);
+        Ok(bytes)
+    }
 }
 
 pub fn copy_file_with_progress(
@@ -89,7 +104,9 @@ pub fn copy_file_with_progress(
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
     reject_same_file(src, dest)?;
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
 
     chunk_copy::copy_with_progress(src, dest, progress_tx, cancel, overwrite)
 }
@@ -110,12 +127,14 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Resul
             "cannot copy directory into its descendant",
         ));
     }
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
     let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, overwrite, 0);
     match result {
         Ok(bytes) => {
-            if let Err(err) = publish_temp_dir(&temp_dest, dest) {
+            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite) {
                 let _ = fs::remove_dir_all(&temp_dest);
                 return Err(err);
             }
@@ -150,7 +169,9 @@ pub fn copy_dir_recursive_with_progress(
             "cannot copy directory into its descendant",
         ));
     }
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
     let temp_dest = reserve_temp_dir_for(dest)?;
     let result = copy_dir_recursive_with_progress_inner(
         src,
@@ -168,7 +189,7 @@ pub fn copy_dir_recursive_with_progress(
                 let _ = fs::remove_dir_all(&temp_dest);
                 return Err(err);
             }
-            if let Err(err) = publish_temp_dir(&temp_dest, dest) {
+            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite) {
                 let _ = fs::remove_dir_all(&temp_dest);
                 return Err(err);
             }
@@ -320,16 +341,32 @@ fn copy_dir_recursive_with_progress_inner(
 }
 
 pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
 
     let target = fs::read_link(src)?;
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&target, dest)?;
+    {
+        if overwrite {
+            let temp = reserve_temp_file_for(dest);
+            std::os::unix::fs::symlink(&target, &temp)?;
+            if let Err(err) = swap_temp_to_dest(&temp, dest) {
+                let _ = fs::remove_file(&temp);
+                return Err(err);
+            }
+        } else {
+            std::os::unix::fs::symlink(&target, dest)?;
+        }
+    }
     #[cfg(not(unix))]
-    return Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "symlinks not supported on this platform",
-    ));
+    {
+        let _ = (target, dest, overwrite);
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "symlinks not supported on this platform",
+        ));
+    }
     Ok(())
 }
 
@@ -352,7 +389,9 @@ pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
             "cannot move directory into its descendant",
         ));
     }
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
 
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
@@ -422,7 +461,9 @@ pub fn move_entry_with_progress(
             "cannot move directory into its descendant",
         ));
     }
-    prepare_dest(dest, overwrite)?;
+    if !overwrite {
+        ensure_destination_absent(dest)?;
+    }
 
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
@@ -681,25 +722,6 @@ fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     }
 }
 
-fn prepare_dest(dest: &Path, overwrite: bool) -> io::Result<()> {
-    if !overwrite {
-        ensure_destination_absent(dest)?;
-        return Ok(());
-    }
-    let Ok(meta) = fs::symlink_metadata(dest) else {
-        return Ok(());
-    };
-    let ft = meta.file_type();
-    if ft.is_symlink() {
-        fs::remove_file(dest)?;
-    } else if ft.is_dir() {
-        fs::remove_dir_all(dest)?;
-    } else {
-        fs::remove_file(dest)?;
-    }
-    Ok(())
-}
-
 fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     let mut name = dest
         .file_name()
@@ -726,7 +748,10 @@ fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-fn publish_temp_dir(temp_dest: &Path, dest: &Path) -> io::Result<()> {
+fn publish_temp_dir(temp_dest: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
+    if overwrite {
+        remove_any(dest);
+    }
     fs::create_dir(dest)?;
     let permissions = fs::metadata(temp_dest)?.permissions();
     let result =
@@ -830,6 +855,59 @@ fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<PathBuf> {
     }
 
     Ok(base)
+}
+
+fn remove_any(path: &Path) {
+    if path.is_symlink() {
+        let _ = std::fs::remove_file(path);
+    } else if path.is_dir() {
+        let _ = std::fs::remove_dir_all(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn swap_temp_to_dest(temp: &Path, dest: &Path) -> io::Result<()> {
+    match std::fs::rename(temp, dest) {
+        Ok(()) => Ok(()),
+        Err(e)
+            if e.kind() == io::ErrorKind::Other || e.kind() == io::ErrorKind::PermissionDenied =>
+        {
+            if dest.is_dir() {
+                remove_any(dest);
+                std::fs::rename(temp, dest)
+            } else {
+                Err(e)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn reserve_temp_file_for(dest: &Path) -> PathBuf {
+    let dir = dest.parent().unwrap_or(Path::new("."));
+    let name = dest.file_name().unwrap_or_default();
+    let pid = std::process::id();
+    let mut counter = 0u64;
+    loop {
+        let temp = dir.join(format!(
+            "{}.{}.{}.tmp",
+            name.to_string_lossy(),
+            pid,
+            counter
+        ));
+        if !temp.exists() {
+            return temp;
+        }
+        counter += 1;
+    }
+}
+
+#[allow(dead_code)]
+fn temp_file_path_for(dest: &Path, seq: u64) -> PathBuf {
+    let dir = dest.parent().unwrap_or(Path::new("."));
+    let name = dest.file_name().unwrap_or_default();
+    dir.join(format!("{}.{}.tmp", name.to_string_lossy(), seq))
 }
 
 #[cfg(test)]

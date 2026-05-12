@@ -44,7 +44,8 @@ pub fn expand_path(input: &str) -> PathBuf {
 
     if let Some(rest) = stripped_tilde(trimmed) {
         if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
+            let expanded_rest = expand_env_vars(rest);
+            return home.join(expanded_rest);
         }
         return PathBuf::from(trimmed);
     }

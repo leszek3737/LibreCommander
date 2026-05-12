@@ -13,10 +13,33 @@ pub(crate) fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
     child != parent && child.starts_with(parent)
 }
 
+fn dir_size(path: &Path) -> u64 {
+    let mut total: u64 = 0;
+    let entries = match std::fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    for entry in entries.flatten() {
+        let meta = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if meta.is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size(&entry.path()));
+        } else {
+            total = total.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+        }
+    }
+    total
+}
+
 pub(crate) fn path_size(path: &Path) -> u64 {
     match path.symlink_metadata() {
         Ok(meta) if meta.file_type().is_symlink() => 0,
-        Ok(meta) if meta.is_dir() => 0,
+        Ok(meta) if meta.is_dir() => dir_size(path),
         Ok(meta) => meta.len(),
         Err(_) => 0,
     }

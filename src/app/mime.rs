@@ -65,6 +65,7 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             | "text/csv"
             | "text/tab-separated-values"
             | "text/x-rst" => FileCategory::Document,
+            "text/x-asciidoc" => FileCategory::Document,
             "text/xml" | "text/yaml" | "text/config" => FileCategory::Config,
             _ => FileCategory::Code,
         };
@@ -112,7 +113,12 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             | "application/vnd.android.package-archive"
             | "application/x-unix-archive"
             | "application/x-cpio"
-            | "application/java-archive" => FileCategory::Archive,
+            | "application/java-archive"
+            | "application/x-xar"
+            | "application/x-ace"
+            | "application/x-arj"
+            | "application/x-lzop"
+            | "application/x-brotli" => FileCategory::Archive,
             "application/vnd.rn-realmedia" => FileCategory::Video,
             "application/x-plist" => FileCategory::Config,
             "application/postscript" => FileCategory::Image,
@@ -126,9 +132,7 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
 }
 #[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
-    extension_mime(name)
-        .map(mime_to_category)
-        .unwrap_or(FileCategory::Other)
+    crate::app::file_type::category(name, false, false, false)
 }
 
 #[must_use]
@@ -176,6 +180,7 @@ fn image_mime(ext: &str) -> Option<&'static str> {
         "nef" => Some("image/x-nikon-nef"),
         "arw" => Some("image/x-sony-arw"),
         "dng" => Some("image/x-adobe-dng"),
+        "orf" => Some("image/x-olympus-orf"),
         "psd" => Some("image/vnd.adobe.photoshop"),
         "xcf" => Some("image/x-xcf"),
         "ai" | "eps" => Some("application/postscript"),
@@ -220,6 +225,9 @@ fn audio_mime(ext: &str) -> Option<&'static str> {
         "aiff" | "aif" => Some("audio/aiff"),
         "mid" | "midi" => Some("audio/midi"),
         "amr" => Some("audio/amr"),
+        "alac" => Some("audio/mp4"),
+        "ape" => Some("audio/ape"),
+        "mpc" => Some("audio/musepack"),
         "au" => Some("audio/basic"),
         _ => None,
     }
@@ -246,6 +254,12 @@ fn archive_mime(ext: &str) -> Option<&'static str> {
         "ar" => Some("application/x-unix-archive"),
         "cpio" => Some("application/x-cpio"),
         "jar" | "war" | "ear" => Some("application/java-archive"),
+        "pkg" => Some("application/x-apple-diskimage"),
+        "xar" => Some("application/x-xar"),
+        "ace" => Some("application/x-ace"),
+        "arj" => Some("application/x-arj"),
+        "lzo" => Some("application/x-lzop"),
+        "br" => Some("application/x-brotli"),
         "z" => Some("application/gzip"),
         _ => None,
     }
@@ -275,6 +289,7 @@ fn document_mime(ext: &str) -> Option<&'static str> {
         "tex" => Some("application/x-tex"),
         "txt" | "log" => Some("text/plain"),
         "rst" => Some("text/x-rst"),
+        "adoc" => Some("text/x-asciidoc"),
         _ => None,
     }
 }
@@ -290,6 +305,8 @@ fn config_mime(ext: &str) -> Option<&'static str> {
         "ini" | "conf" | "cfg" => Some("text/config"),
         "plist" => Some("application/x-plist"),
         "lock" => Some("application/json"),
+        "config" | "cnf" | "env" | "properties" | "desktop" | "gitignore" | "gitattributes"
+        | "gitmodules" | "dockerignore" | "editorconfig" => Some("text/config"),
         _ => None,
     }
 }
@@ -334,6 +351,10 @@ fn code_mime(ext: &str) -> Option<&'static str> {
         "scss" | "sass" | "less" => Some("text/x-scss"),
         "vue" => Some("text/x-vue"),
         "svelte" => Some("text/x-svelte"),
+        "m" | "mm" => Some("text/x-objective-c"),
+        "fs" | "fsx" => Some("text/x-fsharp"),
+        "vb" => Some("text/x-vb"),
+        "v" | "sv" => Some("text/x-verilog"),
         _ => None,
     }
 }

@@ -728,7 +728,12 @@ impl PanelState {
     }
 
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
-        self.entries.iter().filter(|e| e.selected).collect()
+        let source = if self.unfiltered_entries.is_empty() {
+            &self.entries
+        } else {
+            &self.unfiltered_entries
+        };
+        source.iter().filter(|e| e.selected).collect()
     }
 
     pub fn clear_selection(&mut self) {

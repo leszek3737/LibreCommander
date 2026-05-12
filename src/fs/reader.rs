@@ -76,7 +76,15 @@ pub fn read_directory(
     let mut errors = Vec::new();
 
     if path != Path::new("/") {
-        let parent_path = path.parent().unwrap_or(path);
+        let parent_buf;
+        let parent_path = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let parent_path = match parent_path {
+            Some(p) => p,
+            None => {
+                parent_buf = path.join("..");
+                &parent_buf
+            }
+        };
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_path.to_path_buf(),

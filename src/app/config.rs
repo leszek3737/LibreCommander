@@ -119,7 +119,7 @@ impl From<&Settings> for PersistedSetup {
             hotlist: settings
                 .hotlist
                 .iter()
-                .map(|p| p.display().to_string())
+                .filter_map(|p| p.to_str().map(String::from))
                 .collect(),
         }
     }
@@ -147,7 +147,7 @@ impl From<PersistedSetup> for Settings {
 
 fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
     PersistedPanel {
-        path: Some(panel.path.display().to_string()),
+        path: panel.path.to_str().map(String::from),
         listing_mode: panel.listing_mode,
         sort_mode: panel.sort_mode,
         filter: panel.filter.clone().unwrap_or_default(),

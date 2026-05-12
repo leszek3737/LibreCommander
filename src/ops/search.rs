@@ -4,11 +4,8 @@
 
 use std::path::Path;
 
-#[cfg(test)]
 use std::fs::File;
-#[cfg(test)]
 use std::io::{BufRead, BufReader};
-#[cfg(test)]
 use std::path::PathBuf;
 
 use crate::app::types::FileEntry;
@@ -44,11 +41,11 @@ impl<T> Default for SearchOutcome<T> {
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
 
-#[cfg(test)]
+#[allow(dead_code)]
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
-#[cfg(test)]
+#[allow(dead_code)]
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
-#[cfg(test)]
+#[allow(dead_code)]
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
 /// Inline char buffer that lives on the stack for sizes <= N,
@@ -202,7 +199,7 @@ impl FileSearch {
         }
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_content(
         path: &Path,
         pattern: &str,
@@ -212,7 +209,7 @@ impl FileSearch {
         Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
@@ -233,7 +230,7 @@ impl FileSearch {
         outcome
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_content_recursive(
         path: &Path,
         pattern: &str,
@@ -277,7 +274,7 @@ impl FileSearch {
         );
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     fn search_content_recursive_inner(
         path: &Path,
@@ -347,7 +344,11 @@ impl FileSearch {
 
             *item_count += 1;
 
-            if file_type.is_dir() && !file_type.is_symlink() {
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_dir() {
                 if recursive {
                     Self::search_content_recursive_inner(
                         &entry_path,
@@ -385,7 +386,7 @@ impl FileSearch {
         }
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_in_file(
         path: &Path,
         pattern: &str,

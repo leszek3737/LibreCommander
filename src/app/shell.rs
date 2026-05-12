@@ -87,8 +87,19 @@ pub fn run_shell_command(
         return;
     }
     let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
-    let status = Command::new("sh")
-        .arg("-c")
+    let (shell, flag) = if cfg!(windows) {
+        (
+            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
+            "/C",
+        )
+    } else {
+        (
+            std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()),
+            "-c",
+        )
+    };
+    let status = Command::new(&shell)
+        .arg(flag)
         .arg(cmd)
         .current_dir(&state.active_panel().path)
         .stdin(Stdio::inherit())
