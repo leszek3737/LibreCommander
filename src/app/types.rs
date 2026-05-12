@@ -801,6 +801,22 @@ impl PanelState {
             self.scroll_offset = self.cursor.saturating_sub(visible_height) + 1;
         }
     }
+
+    pub fn set_cursor(&mut self, idx: usize) {
+        if self.entries.is_empty() {
+            self.cursor = 0;
+            self.scroll_offset = 0;
+        } else {
+            self.cursor = idx.min(self.entries.len() - 1);
+        }
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.entries = entries;
+        self.cursor = 0;
+        self.scroll_offset = 0;
+        self.recalculate_selection_stats();
+    }
 }
 
 // ================================================================================
@@ -1704,5 +1720,95 @@ mod tests {
         panel.recalculate_selection_stats();
         assert_eq!(panel.total_size, 5050);
         assert_eq!(panel.selected_size, 5000);
+    }
+
+    #[test]
+    fn test_panel_state_empty_entries_cursor_scroll_zero() {
+        let panel = PanelState::new(PathBuf::from("/test"));
+        assert_eq!(panel.entries.len(), 0);
+        assert_eq!(panel.cursor, 0);
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_panel_state_single_item_cursor() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![create_test_entry("only.txt", false, 10, 0o644, false)];
+
+        assert_eq!(panel.cursor, 0);
+        panel.move_cursor_down(10);
+        assert_eq!(panel.cursor, 0);
+        panel.move_cursor_up();
+        assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, 10, 0o644, false),
+            create_test_entry("b.txt", false, 10, 0o644, false),
+            create_test_entry("c.txt", false, 10, 0o644, false),
+        ];
+        panel.cursor = 2;
+
+        panel.entries.truncate(1);
+
+        let max_index = panel.entries.len().saturating_sub(1);
+        panel.cursor = panel.cursor.min(max_index);
+
+        assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_panel_state_move_cursor_down_clamped_at_last() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![
+            create_test_entry("a.txt", false, 10, 0o644, false),
+            create_test_entry("b.txt", false, 10, 0o644, false),
+        ];
+        panel.cursor = 1;
+
+        panel.move_cursor_down(10);
+        assert_eq!(panel.cursor, 1);
+
+        panel.move_cursor_down(10);
+        assert_eq!(panel.cursor, 1);
+    }
+
+    #[test]
+    fn test_panel_state_move_cursor_up_clamped_at_zero() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = vec![create_test_entry("a.txt", false, 10, 0o644, false)];
+        panel.cursor = 0;
+
+        panel.move_cursor_up();
+        assert_eq!(panel.cursor, 0);
+        panel.move_cursor_up();
+        assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_panel_state_current_entry_empty_returns_none() {
+        let panel = PanelState::new(PathBuf::from("/test"));
+        assert!(panel.current_entry().is_none());
+    }
+
+    #[test]
+    fn test_panel_state_scroll_offset_with_many_entries() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel.entries = (0..100)
+            .map(|i| create_test_entry(&format!("file{i:03}.txt"), false, 10, 0o644, false))
+            .collect();
+        panel.cursor = 99;
+
+        let visible_height = 20;
+        panel.move_cursor_down(visible_height);
+
+        assert_eq!(panel.cursor, 99);
+        assert!(
+            panel.scroll_offset + visible_height > panel.cursor,
+            "cursor must be visible within scroll window"
+        );
     }
 }

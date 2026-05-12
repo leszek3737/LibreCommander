@@ -4,7 +4,8 @@ use lc::app::{config, dir_tree, types::*, user_menu};
 use lc::menu::{MenuAction, menu_action_at};
 use lc::ops;
 
-use super::super::{refresh_active, set_tree_diagnostic_status, with_menu_panel};
+use super::directory_tree::set_tree_diagnostic_status;
+use crate::app::panel_ops::{refresh_active, with_menu_panel};
 
 enum MenuResult {
     NotHandled,

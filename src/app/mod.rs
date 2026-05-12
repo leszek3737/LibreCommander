@@ -5,6 +5,7 @@ pub mod file_type;
 pub mod job_runner;
 pub mod keymap;
 pub mod mime;
+pub mod panel_ops;
 pub mod paths;
 pub mod shell;
 pub mod types;

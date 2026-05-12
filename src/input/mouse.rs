@@ -1,12 +1,14 @@
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::viewer;
 
-use super::super::{dismiss_dialog, refresh_both, refresh_panel};
+use super::dialogs::dismiss_dialog;
+use crate::app::panel_ops::{refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
@@ -199,7 +201,12 @@ fn handle_mouse_menu_dropdown(
         return None;
     }
     let items = MENU_ITEMS[state.menu_selected];
-    let dropdown_width = items.iter().map(|s| s.len()).max().unwrap_or(10) as u16 + 4;
+    let dropdown_width = items
+        .iter()
+        .map(|s| UnicodeWidthStr::width(*s))
+        .max()
+        .unwrap_or(10) as u16
+        + 4;
     let menu_bar_area = Rect::new(0, 0, width, 1);
     let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
 
