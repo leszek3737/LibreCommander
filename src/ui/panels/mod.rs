@@ -16,35 +16,37 @@ use crate::app::types::{
     FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
 };
 
-fn icon_display_width() -> usize {
-    UnicodeWidthStr::width(get_file_icon(&FileCategory::Other))
+struct Suffix {
+    text: String,
+    width: usize,
 }
 
-/// Get color/style for a file category
+fn icon_display_width(category: &FileCategory) -> usize {
+    UnicodeWidthStr::width(get_file_icon(category))
+}
+
 pub fn get_file_color(category: &FileCategory, bold: bool) -> Style {
     let color = Theme::category_color(*category);
     Theme::panel_item(color, bold)
 }
 
-/// Get icon for a file category
 pub fn get_file_icon(category: &FileCategory) -> &'static str {
     match category {
-        FileCategory::Dir => "📁 ",
-        FileCategory::Symlink => "🔗 ",
-        FileCategory::Executable => "⚡ ",
-        FileCategory::Code => "💻 ",
-        FileCategory::Config => "⚙ ",
-        FileCategory::Archive => "📦 ",
-        FileCategory::Image => "🖼 ",
-        FileCategory::Video => "🎬 ",
-        FileCategory::Audio => "🎵 ",
-        FileCategory::Document => "📝 ",
-        FileCategory::Font => "🔤 ",
-        FileCategory::Other => "📄 ",
+        FileCategory::Dir => "📁",
+        FileCategory::Symlink => "🔗",
+        FileCategory::Executable => "⚡",
+        FileCategory::Code => "💻",
+        FileCategory::Config => "⚙",
+        FileCategory::Archive => "📦",
+        FileCategory::Image => "🖼",
+        FileCategory::Video => "🎬",
+        FileCategory::Audio => "🎵",
+        FileCategory::Document => "📝",
+        FileCategory::Font => "🔤",
+        FileCategory::Other => "📄",
     }
 }
 
-/// Format modification time
 pub fn format_time(modified: SystemTime) -> Cow<'static, str> {
     use chrono::{DateTime, Datelike, Timelike};
 
@@ -66,7 +68,33 @@ pub fn format_time(modified: SystemTime) -> Cow<'static, str> {
     Cow::Borrowed("??-??-?? ??:??")
 }
 
-/// Render a single file panel with border
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let full_width = UnicodeWidthStr::width(s);
+    if full_width <= max_width {
+        return s.to_string();
+    }
+    let truncate_to = max_width.saturating_sub(1);
+    let mut result = String::new();
+    let mut taken = 0;
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if taken + cw > truncate_to {
+            break;
+        }
+        result.push(ch);
+        taken += cw;
+    }
+    result.push('…');
+    result
+}
+
+fn truncate_name(name: &str, max_width: usize) -> String {
+    truncate_to_width(name, max_width)
+}
+
 pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
     let border_style = if is_active {
         Theme::border_active()
@@ -159,7 +187,7 @@ fn build_suffix(
     date_str: &str,
     width: usize,
     show_permissions: bool,
-) -> (String, usize) {
+) -> Suffix {
     let size_width = UnicodeWidthStr::width(size_str);
     let date_width = UnicodeWidthStr::width(date_str);
     let size_date_width = size_width + date_width + 2;
@@ -169,47 +197,45 @@ fn build_suffix(
         let perms_width = UnicodeWidthStr::width(perms_str.as_str());
         let full_width = size_date_width + perms_width + 1;
         if 2 + full_width <= width {
-            return (format!(" {size_str} {date_str} {perms_str}"), full_width);
+            return Suffix {
+                text: format!(" {size_str} {date_str} {perms_str}"),
+                width: full_width,
+            };
         }
         if 2 + size_date_width <= width {
-            return (format!(" {size_str} {date_str}"), size_date_width);
+            return Suffix {
+                text: format!(" {size_str} {date_str}"),
+                width: size_date_width,
+            };
         }
         if 2 + size_width < width {
-            return (format!(" {size_str}"), size_width + 1);
+            return Suffix {
+                text: format!(" {size_str}"),
+                width: size_width + 1,
+            };
         }
-        return (String::new(), 0);
+        return Suffix {
+            text: String::new(),
+            width: 0,
+        };
     }
 
     if 2 + size_date_width <= width {
-        (format!(" {size_str} {date_str}"), size_date_width)
-    } else if 2 + size_width <= width {
-        (format!(" {size_str}"), size_width + 1)
-    } else {
-        (String::new(), 0)
-    }
-}
-
-fn truncate_name(name: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let name_width = UnicodeWidthStr::width(name);
-    if name_width <= max_width {
-        return name.to_string();
-    }
-    let truncate_to = max_width.saturating_sub(1);
-    let mut result = String::new();
-    let mut taken = 0;
-    for ch in name.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if taken + cw > truncate_to {
-            break;
+        Suffix {
+            text: format!(" {size_str} {date_str}"),
+            width: size_date_width,
         }
-        result.push(ch);
-        taken += cw;
+    } else if 2 + size_width <= width {
+        Suffix {
+            text: format!(" {size_str}"),
+            width: size_width + 1,
+        }
+    } else {
+        Suffix {
+            text: String::new(),
+            width: 0,
+        }
     }
-    result.push('…');
-    result
 }
 
 fn format_entry_line(
@@ -224,47 +250,37 @@ fn format_entry_line(
     }
 
     let icon = get_file_icon(category);
-    let icon_width = icon_display_width();
-    let size_str = format!("{:>10}", format_size(entry.len()));
+    let icon_width = icon_display_width(category);
+    let size_str = if entry.is_dir() {
+        String::from("     <DIR>")
+    } else {
+        format!("{:>10}", format_size(entry.len()))
+    };
     let date_str = format_time(entry.mtime());
-    let (suffix, suffix_width) = build_suffix(entry, &size_str, &date_str, width, show_permissions);
+    let suffix = build_suffix(entry, &size_str, &date_str, width, show_permissions);
 
-    let available_name_width = width.saturating_sub(1 + suffix_width);
+    let available_name_width = width.saturating_sub(1 + suffix.width);
     if available_name_width == 0 {
         return format!("{marker}");
     }
 
-    let name_with_icon = format!("{icon}{}", entry.name);
-    let name_width = icon_width + UnicodeWidthStr::width(entry.name.as_str());
-    let name = if name_width <= available_name_width {
-        name_with_icon
-    } else if available_name_width <= icon_width {
-        let mut result = String::new();
-        let mut taken = 0;
-        for ch in icon.chars() {
-            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if taken + cw > available_name_width {
-                break;
-            }
-            result.push(ch);
-            taken += cw;
-        }
-        result
+    let name_with_icon = format!("{icon} {}", entry.name);
+    let name_width = icon_width + 1 + UnicodeWidthStr::width(entry.name.as_str());
+    let (name, name_actual_width) = if name_width <= available_name_width {
+        (name_with_icon, name_width)
+    } else if available_name_width <= icon_width + 1 {
+        let truncated = truncate_to_width(icon, available_name_width);
+        let w = UnicodeWidthStr::width(truncated.as_str());
+        (truncated, w)
     } else {
-        let truncated = truncate_name(&entry.name, available_name_width.saturating_sub(icon_width));
-        format!("{icon}{truncated}")
+        let name_budget = available_name_width.saturating_sub(icon_width + 1);
+        let truncated = truncate_to_width(&entry.name, name_budget);
+        let w = icon_width + 1 + UnicodeWidthStr::width(truncated.as_str());
+        (format!("{icon} {truncated}"), w)
     };
 
-    let name_actual_width = if name_width <= available_name_width {
-        name_width
-    } else if available_name_width <= icon_width {
-        UnicodeWidthStr::width(name.as_str())
-    } else {
-        icon_width + UnicodeWidthStr::width(name.get(icon.len()..).unwrap_or(""))
-    };
     let padding = available_name_width.saturating_sub(name_actual_width);
-
-    format!("{marker}{name}{}{suffix}", " ".repeat(padding))
+    format!("{marker}{name}{}{}", " ".repeat(padding), suffix.text)
 }
 
 fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> String {
@@ -279,7 +295,7 @@ fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> Str
 fn format_brief_entry_line(entry: &FileEntry, width: usize, category: &FileCategory) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     let icon = get_file_icon(category);
-    let icon_width = icon_display_width();
+    let icon_width = icon_display_width(category) + 1;
     let available = width.saturating_sub(1);
     if available == 0 {
         return format!("{marker}");
@@ -290,16 +306,15 @@ fn format_brief_entry_line(entry: &FileEntry, width: usize, category: &FileCateg
     let name_width = UnicodeWidthStr::width(entry.name.as_str());
     let name_available = available - icon_width;
     if name_available >= name_width {
-        return format!("{marker}{icon}{}", entry.name);
+        return format!("{marker}{icon} {}", entry.name);
     }
     if name_available == 0 {
         return format!("{marker}{icon}");
     }
     let truncated = truncate_name(&entry.name, name_available);
-    format!("{marker}{icon}{truncated}")
+    format!("{marker}{icon} {truncated}")
 }
 
-/// Render scrollbar indicator
 pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
     if panel.entries.is_empty() {
         return;
@@ -310,8 +325,15 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     let max_scroll = total_entries.saturating_sub(height);
     let scroll_offset = panel.scroll_offset.min(max_scroll);
 
+    let thumb_height = if total_entries <= height {
+        1
+    } else {
+        ((height * height) / total_entries).max(1).min(height)
+    };
+
     let thumb_pos = if max_scroll > 0 && height > 1 {
-        scroll_offset * (height - 1) / max_scroll
+        let track = height.saturating_sub(thumb_height);
+        (scroll_offset * track) / max_scroll
     } else {
         0
     };
@@ -319,7 +341,8 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     let mut scrollbar = String::with_capacity(height * 4);
     for i in 0..height {
         let is_last = i == height - 1;
-        if i == thumb_pos && total_entries > height {
+        let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
+        if in_thumb {
             scrollbar.push_str(if is_last { "█" } else { "█\n" });
         } else {
             scrollbar.push_str(if is_last { "│" } else { "│\n" });
@@ -339,9 +362,6 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     f.render_widget(paragraph, area);
 }
 
-/// Compute compact panel status summary string.
-/// Format: "  5/100  5%  Sel: 3 [1.2 MB]"
-/// Returns (summary_string, summary_display_width).
 pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
     let total = panel.entries.len();
     if total == 0 {
@@ -352,15 +372,16 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
     let pct = pos * 100 / total;
 
     let mut summary = String::new();
-    let _ = write!(summary, " {}/{} {}%", pos, total, pct);
+    write!(summary, " {}/{} {}%", pos, total, pct).ok();
 
     if panel.selected_count > 0 {
-        let _ = write!(
+        write!(
             summary,
             " Sel: {} [{}]",
             panel.selected_count,
             format_size(panel.selected_size)
-        );
+        )
+        .ok();
     }
 
     summary.push(' ');
@@ -368,7 +389,6 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
     (summary, width)
 }
 
-/// Render status bar showing current file info
 pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let available = area.width as usize;
 
@@ -390,29 +410,10 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
             let name_budget = remaining.saturating_sub(meta_width);
 
             if name_budget >= 3 {
-                let mut truncated = String::new();
-                let mut taken = 0;
-                for ch in entry.name.chars() {
-                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if taken + cw > name_budget.saturating_sub(1) {
-                        break;
-                    }
-                    truncated.push(ch);
-                    taken += cw;
-                }
-                format!("{truncated}…{meta}")
+                let truncated = truncate_to_width(&entry.name, name_budget);
+                format!("{truncated}{meta}")
             } else if remaining > 0 {
-                let mut truncated = String::new();
-                let mut taken = 0;
-                for ch in full_info.chars() {
-                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if taken + cw > remaining {
-                        break;
-                    }
-                    truncated.push(ch);
-                    taken += cw;
-                }
-                truncated
+                truncate_to_width(&full_info, remaining)
             } else {
                 String::new()
             }
@@ -430,7 +431,6 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     f.render_widget(paragraph, area);
 }
 
-/// Render function bar (F-keys)
 pub fn render_function_bar(f: &mut Frame, area: Rect) {
     const CONSTRAINTS: [Constraint; 10] = [Constraint::Percentage(10); 10];
 
@@ -472,7 +472,6 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
     }
 }
 
-/// Render menu bar at top
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let menu_text = "   Left   File   Command   Options   Right   ";
     let text_width = UnicodeWidthStr::width(menu_text) as u16;

@@ -116,6 +116,7 @@ impl ViewerState {
         })
     }
 
+    #[must_use]
     pub fn is_hex_mode(&self) -> bool {
         matches!(self.view_mode, ViewMode::Hex)
     }
@@ -124,14 +125,17 @@ impl ViewerState {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
     }
 
+    #[must_use]
     fn is_visual_scroll(&self) -> bool {
         self.wrap_lines && !self.is_hex_mode() && !self.visual_heights.is_empty()
     }
 
+    #[must_use]
     fn total_visual_rows(&self) -> usize {
         self.visual_heights.iter().sum()
     }
 
+    #[must_use]
     fn visual_row_to_logical(&self, visual_row: usize) -> (usize, usize) {
         let mut acc = 0usize;
         for (i, &h) in self.visual_heights.iter().enumerate() {
@@ -143,18 +147,24 @@ impl ViewerState {
         (self.content.len().saturating_sub(1), 0)
     }
 
+    #[must_use]
     fn logical_to_visual_row(&self, logical_line: usize) -> usize {
         self.visual_heights.iter().take(logical_line).sum()
     }
 
-    fn max_scroll(&self) -> usize {
+    fn total_rows(&self) -> usize {
         if self.is_hex_mode() {
-            self.raw_bytes.len().div_ceil(16).saturating_sub(1)
+            self.raw_bytes.len().div_ceil(HEX_BYTES_PER_LINE)
         } else if self.is_visual_scroll() {
-            self.total_visual_rows().saturating_sub(1)
+            self.total_visual_rows()
         } else {
-            self.line_count.saturating_sub(1)
+            self.line_count
         }
+    }
+
+    #[must_use]
+    fn max_scroll(&self) -> usize {
+        self.total_rows().saturating_sub(1)
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
@@ -177,20 +187,20 @@ impl ViewerState {
     }
 
     pub fn go_to_bottom(&mut self, page_height: usize) {
-        let total = if self.is_hex_mode() {
-            self.raw_bytes.len().div_ceil(16)
-        } else if self.is_visual_scroll() {
-            self.total_visual_rows()
-        } else {
-            self.line_count
-        };
-        self.scroll_offset = total.saturating_sub(page_height).min(self.max_scroll());
+        self.scroll_offset = self
+            .total_rows()
+            .saturating_sub(page_height)
+            .min(self.max_scroll());
+    }
+
+    fn clear_search_results(&mut self) {
+        self.search_matches.clear();
+        self.search_matches_by_line.clear();
     }
 
     pub fn search(&mut self, query: &str, page_height: usize) {
         self.search_query = Some(query.to_string());
-        self.search_matches.clear();
-        self.search_matches_by_line.clear();
+        self.clear_search_results();
         self.current_match = 0;
 
         if query.is_empty() || self.is_hex_mode() {
@@ -331,8 +341,7 @@ impl ViewerState {
                 .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
                 .max()
                 .unwrap_or(0);
-            self.search_matches.clear();
-            self.search_matches_by_line.clear();
+            self.clear_search_results();
             self.current_match = 0;
             self.search_query = None;
             self.has_invalid_utf8 = std::str::from_utf8(&self.raw_bytes).is_err();
@@ -413,11 +422,11 @@ fn build_lowercase_mapping(original: &str, lower: &mut String, byte_map: &mut Ve
     lower.clear();
     byte_map.clear();
     for (orig_byte_idx, ch) in original.char_indices() {
-        let lower_ch: String = ch.to_lowercase().collect();
-        for _ in 0..lower_ch.len() {
+        let len_before = lower.len();
+        lower.extend(ch.to_lowercase());
+        for _ in len_before..lower.len() {
             byte_map.push(orig_byte_idx);
         }
-        lower.push_str(&lower_ch);
     }
 }
 
@@ -464,6 +473,7 @@ fn is_text_application_mime(mime: &str) -> bool {
             | "application/sql"
             | "application/x-httpd-php"
             | "application/x-sh"
+            | "application/rtf"
     )
 }
 
@@ -489,7 +499,6 @@ fn is_known_binary_mime(mime: &str) -> bool {
                 | "application/zstd"
                 | "application/pdf"
                 | "application/msword"
-                | "application/rtf"
                 | "application/epub+zip"
                 | "application/wasm"
                 | "application/x-mach-binary"
@@ -711,7 +720,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     };
 
     let bytes = &state.raw_bytes;
-    let bytes_per_line = 16;
+    let bytes_per_line = HEX_BYTES_PER_LINE;
     let total_lines = bytes.len().div_ceil(bytes_per_line);
 
     let start_line = state.scroll_offset.min(total_lines.saturating_sub(1));
@@ -743,7 +752,9 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
     render_viewer_status(f, inner_area, state, "Hex", &position_text);
 }
 
-pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
+#[cfg(test)]
+#[must_use]
+fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
     let mut buf = String::with_capacity(128);
     format_hex_line_to_buffer(offset, bytes, &mut buf);
     buf
@@ -751,7 +762,7 @@ pub fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
 
 const HEX_BYTES_PER_LINE: usize = 16;
 const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
-const HEX_LINE_WIDTH: usize = 78;
+const HEX_LINE_WIDTH: usize = 10 + HEX_PART_WIDTH + 2 + HEX_BYTES_PER_LINE + 1;
 
 fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
     use std::fmt::Write;
