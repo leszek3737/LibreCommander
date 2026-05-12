@@ -14,8 +14,15 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn file_mode(_meta: &fs::Metadata) -> u32 {
-    0o100644
+pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
+    let type_bits = if meta.is_dir() {
+        0o040000
+    } else if meta.is_symlink() {
+        0o120000
+    } else {
+        0o100000
+    };
+    type_bits | 0o644
 }
 
 #[cfg(unix)]

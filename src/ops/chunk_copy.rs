@@ -25,6 +25,10 @@ pub fn copy_with_progress(
 
     match result {
         Ok(total_written) => {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = fs::remove_file(&temp_dest);
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+            }
             if let Err(err) = publish_temp(&temp_dest, dest, &metadata, cancel, overwrite) {
                 let _ = fs::remove_file(&temp_dest);
                 return Err(err);
@@ -87,6 +91,10 @@ fn publish_temp(
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        let _ = fs::remove_file(temp_dest);
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+    }
     if overwrite {
         fs::rename(temp_dest, dest)?;
         return Ok(());

@@ -24,6 +24,9 @@ pub struct RunningJob {
 impl Drop for RunningJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 

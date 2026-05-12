@@ -526,19 +526,40 @@ fn batch_delete(
     let mut errors: Vec<String> = Vec::new();
     let mut success_count: usize = 0;
     let mut canceled = false;
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    let total = paths.len();
-    let sizes = helpers::path_sizes(paths);
+    let start_time = Instant::now();
+
+    // Canonicalize, sort shallowest-first, filter out descendants of already-selected dirs.
+    // Paths that fail canonicalization (e.g. nonexistent) are kept as-is.
+    let mut canonical_ok: Vec<PathBuf> = Vec::new();
+    let mut canonical_fail: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        match std::fs::canonicalize(p) {
+            Ok(c) => canonical_ok.push(c),
+            Err(_) => canonical_fail.push(p.clone()),
+        }
+    }
+    canonical_ok.sort_by_key(|b| b.components().count());
+    let mut filtered: Vec<PathBuf> = Vec::new();
+    for path in canonical_ok {
+        if !filtered.iter().any(|existing| path.starts_with(existing)) {
+            filtered.push(path);
+        }
+    }
+    canonical_fail.sort();
+    canonical_fail.dedup();
+    filtered.append(&mut canonical_fail);
+
+    let total = filtered.len();
+    let sizes = helpers::path_sizes(&filtered);
     let bytes_total = helpers::sum_sizes(&sizes);
     let mut bytes_done = 0_u64;
-    let start_time = Instant::now();
 
     report_progress(
         progress,
         ProgressSnapshot {
             completed: 0,
             total,
-            current: helpers::next_path(paths, 0),
+            current: helpers::next_path(&filtered, 0),
             bytes_done,
             bytes_total,
             current_file_bytes: 0,
@@ -546,24 +567,7 @@ fn batch_delete(
             start_time,
         },
     );
-    for (idx, path) in paths.iter().enumerate() {
-        if !seen.insert(path.clone()) {
-            bytes_done = bytes_done.saturating_add(sizes[idx]);
-            report_progress(
-                progress,
-                ProgressSnapshot {
-                    completed: idx + 1,
-                    total,
-                    current: helpers::next_path(paths, idx + 1),
-                    bytes_done,
-                    bytes_total,
-                    current_file_bytes: 0,
-                    current_file_total: 0,
-                    start_time,
-                },
-            );
-            continue;
-        }
+    for (idx, path) in filtered.iter().enumerate() {
         if is_canceled(&cancel) {
             canceled = true;
             break;
@@ -605,7 +609,7 @@ fn batch_delete(
             ProgressSnapshot {
                 completed: idx + 1,
                 total,
-                current: helpers::next_path(paths, idx + 1),
+                current: helpers::next_path(&filtered, idx + 1),
                 bytes_done,
                 bytes_total,
                 current_file_bytes: 0,
