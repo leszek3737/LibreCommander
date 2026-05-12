@@ -167,7 +167,6 @@ impl Watcher {
     }
 }
 
-#[allow(clippy::print_stderr)]
 fn make_handler(
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
