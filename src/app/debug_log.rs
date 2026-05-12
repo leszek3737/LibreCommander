@@ -71,6 +71,8 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct TestCacheHome {
         _dir: tempfile::TempDir,
     }
@@ -97,6 +99,7 @@ mod tests {
 
     #[test]
     fn log_writes_to_file() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _cache_home = TestCacheHome::new();
         let path = log_path();
         reset_for_test();
@@ -117,6 +120,7 @@ mod tests {
 
     #[test]
     fn log_returns_when_mutex_contended() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();
         let _guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
 

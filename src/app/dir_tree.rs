@@ -103,7 +103,11 @@ fn build_tree_recursive(
                 continue;
             }
         };
-        let is_dir = metadata.is_dir();
+        let is_dir = if metadata.is_symlink() {
+            path.metadata().map(|m| m.is_dir()).unwrap_or(false)
+        } else {
+            metadata.is_dir()
+        };
         let expanded = is_dir && current_depth < max_expand_depth;
 
         children.push(TreeEntry {
