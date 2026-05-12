@@ -1,6 +1,9 @@
 use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
+const MENU_TITLE_PADDING: usize = 2;
+const MENU_TITLE_SEPARATOR: usize = 1;
+
 pub const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
 
 pub const MENU_ITEMS: [&[&str]; 5] = [
@@ -8,7 +11,7 @@ pub const MENU_ITEMS: [&[&str]; 5] = [
         "Listing mode...",
         "Sort order...",
         "Filter...",
-        "Encoding...",
+        "Refresh panel",
     ],
     &[
         "User menu",
@@ -42,11 +45,12 @@ pub const MENU_ITEMS: [&[&str]; 5] = [
         "Listing mode...",
         "Sort order...",
         "Filter...",
-        "Encoding...",
+        "Refresh panel",
     ],
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MenuAction {
     ToggleListingMode,
     CycleSortOrder,
@@ -122,6 +126,15 @@ const MENU_ACTIONS: [&[MenuAction]; 5] = [
     &LEFT_RIGHT_MENU_ACTIONS,
 ];
 
+const _: () = {
+    assert!(MENU_ITEMS.len() == MENU_ACTIONS.len());
+    assert!(MENU_ITEMS.len() == MENU_TITLES.len());
+    assert!(LEFT_RIGHT_MENU_ACTIONS.len() == MENU_ITEMS[0].len());
+    assert!(FILE_MENU_ACTIONS.len() == MENU_ITEMS[1].len());
+    assert!(COMMAND_MENU_ACTIONS.len() == MENU_ITEMS[2].len());
+    assert!(OPTIONS_MENU_ACTIONS.len() == MENU_ITEMS[3].len());
+};
+
 pub fn menu_action_at(menu: usize, item: usize) -> Option<MenuAction> {
     MENU_ACTIONS
         .get(menu)
@@ -156,13 +169,13 @@ pub fn menu_bar_start_x(width: u16) -> u16 {
 }
 
 pub fn menu_title_width(title: &str) -> u16 {
-    UnicodeWidthStr::width(title) as u16 + 2
+    UnicodeWidthStr::width(title) as u16 + MENU_TITLE_PADDING as u16
 }
 
 pub fn menu_title_x(width: u16, index: usize) -> u16 {
     let mut x = menu_bar_start_x(width);
     for title in MENU_TITLES.iter().take(index) {
-        x = x.saturating_add(menu_title_width(title) + 1);
+        x = x.saturating_add(menu_title_width(title) + MENU_TITLE_SEPARATOR as u16);
     }
     x
 }

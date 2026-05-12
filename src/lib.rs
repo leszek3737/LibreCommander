@@ -3,8 +3,8 @@
 //! Built with Ratatui + Crossterm. Single binary, no runtime dependencies.
 //!
 //! Modules remain `pub` because the binary crate (`main.rs`) accesses them
-//! directly via `use lc::{app, fs, menu, ops, ui}` — they are separate crates
-//! so `pub(crate)` would break all 172+ module-path references.
+//! directly via `use lc::{app, fs, menu, ui}`. Sub-modules in `input/` also
+//! use `lc::ops` — so `pub(crate)` would break module-path references.
 
 pub mod app;
 pub mod fs;

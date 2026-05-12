@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::theme::Theme;
 
 use ratatui::{
@@ -11,41 +13,41 @@ use ratatui::{
 };
 
 #[derive(Debug, Clone)]
-pub enum DialogKind {
+pub enum DialogKind<'a> {
     Confirm {
-        title: String,
-        message: String,
+        title: Cow<'a, str>,
+        message: Cow<'a, str>,
         selection: usize,
         files: Option<Vec<String>>,
     },
     Input {
-        title: String,
-        prompt: String,
-        value: String,
+        title: Cow<'a, str>,
+        prompt: Cow<'a, str>,
+        value: Cow<'a, str>,
         cursor_pos: usize,
     },
     Error {
-        title: String,
-        message: String,
+        title: Cow<'a, str>,
+        message: Cow<'a, str>,
     },
     Help {
-        title: String,
-        message: String,
+        title: Cow<'a, str>,
+        message: Cow<'a, str>,
         scroll_offset: usize,
     },
     Progress {
-        title: String,
-        message: String,
+        title: Cow<'a, str>,
+        message: Cow<'a, str>,
         percent: f32,
     },
     Properties {
-        name: String,
-        size: String,
-        mtime: String,
-        permissions: String,
-        owner: String,
-        group: String,
-        file_type: String,
+        name: Cow<'a, str>,
+        size: Cow<'a, str>,
+        mtime: Cow<'a, str>,
+        permissions: Cow<'a, str>,
+        owner: Cow<'a, str>,
+        group: Cow<'a, str>,
+        file_type: Cow<'a, str>,
     },
     OverwriteConfirm {
         selection: usize,
@@ -53,7 +55,7 @@ pub enum DialogKind {
     },
 }
 
-pub fn render_dialog(f: &mut Frame, dialog: &DialogKind) {
+pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
     let rect = f.area();
     let dialog_area = centered_rect(50, 40, rect);
 
@@ -187,7 +189,7 @@ pub fn render_confirm_dialog(
     title: &str,
     message: &str,
     selection: usize,
-    files: &[String],
+    files: &[impl AsRef<str>],
 ) {
     let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(area);
@@ -221,12 +223,12 @@ pub fn render_confirm_dialog(
         let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
         if files.len() <= show_count {
             for name in files {
-                let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
+                let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
                 lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
             }
         } else {
             for name in files.iter().take(show_count.saturating_sub(1)) {
-                let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
+                let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
                 lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
             }
             let remaining = files.len() - show_count + 1;
@@ -255,7 +257,12 @@ pub fn render_confirm_dialog(
     f.render_widget(btn_paragraph, chunks[2]);
 }
 
-pub fn render_overwrite_dialog(f: &mut Frame, area: Rect, selection: usize, files: &[String]) {
+pub fn render_overwrite_dialog(
+    f: &mut Frame,
+    area: Rect,
+    selection: usize,
+    files: &[impl AsRef<str>],
+) {
     let block = dialog_block("Overwrite?", Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -288,12 +295,12 @@ pub fn render_overwrite_dialog(f: &mut Frame, area: Rect, selection: usize, file
     let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
     if files.len() <= show_count {
         for name in files {
-            let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
+            let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
             lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
         }
     } else {
         for name in files.iter().take(show_count.saturating_sub(1)) {
-            let display = truncate_path(name, inner.width.saturating_sub(2) as usize);
+            let display = truncate_path(name.as_ref(), inner.width.saturating_sub(2) as usize);
             lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
         }
         let remaining = files.len() - show_count + 1;
@@ -572,10 +579,10 @@ pub fn render_properties_dialog(
     f.render_widget(paragraph, inner);
 }
 
-pub fn render_list_picker(
+pub fn render_list_picker<T: AsRef<str>>(
     f: &mut Frame,
     title: &str,
-    items: &[String],
+    items: &[T],
     selected: usize,
     hint: &str,
 ) {
@@ -611,7 +618,7 @@ pub fn render_list_picker(
         let end_idx = (start_idx + visible_height).min(items.len());
         let list_items: Vec<ListItem> = items[start_idx..end_idx]
             .iter()
-            .map(|s| ListItem::new(s.as_str()))
+            .map(|s| ListItem::new(s.as_ref()))
             .collect();
         let list = List::new(list_items)
             .highlight_style(Theme::highlight_bold())

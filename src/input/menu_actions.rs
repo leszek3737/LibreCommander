@@ -118,6 +118,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
         | MenuAction::DirectoryHotlist
         | MenuAction::SaveCurrentPathToHotlist
         | MenuAction::SaveSetup => MenuResult::NotHandled,
+        _ => MenuResult::NotHandled,
     }
 }
 
@@ -207,6 +208,7 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
         | MenuAction::ToggleHiddenFiles
         | MenuAction::TogglePermissions
         | MenuAction::SaveSetup => MenuResult::NotHandled,
+        _ => MenuResult::NotHandled,
     }
 }
 
@@ -269,6 +271,7 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult 
         | MenuAction::ToggleHiddenFiles
         | MenuAction::TogglePermissions
         | MenuAction::SaveSetup => MenuResult::NotHandled,
+        _ => MenuResult::NotHandled,
     }
 }
 
@@ -316,6 +319,7 @@ fn execute_misc_action(action: &MenuAction, state: &mut AppState) -> Option<KeyC
         | MenuAction::ResetPanelFilter
         | MenuAction::ToggleHiddenFiles
         | MenuAction::TogglePermissions => None,
+        _ => None,
     }
 }
 

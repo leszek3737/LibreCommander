@@ -16,13 +16,13 @@ pub(crate) fn render_ui(
     state: &AppState,
     viewer_state: &Option<viewer::ViewerState>,
 ) {
-    if state.mode == AppMode::Viewing {
-        if let Some(vs) = viewer_state {
-            if vs.is_hex_mode() {
-                viewer::render_hex_view(f, f.area(), vs);
-            } else {
-                viewer::render_viewer(f, f.area(), vs);
-            }
+    if state.mode == AppMode::Viewing
+        && let Some(vs) = viewer_state
+    {
+        if vs.is_hex_mode() {
+            viewer::render_hex_view(f, f.area(), vs);
+        } else {
+            viewer::render_viewer(f, f.area(), vs);
         }
         return;
     }
@@ -85,7 +85,8 @@ pub(crate) fn render_ui(
         let (before, after) = state.command_line.split_at(state.command_cursor);
         format!("$ {before}_{after}").into()
     } else if state.mode == AppMode::Search {
-        format!("Search: {}_", state.search_query).into()
+        let (before, after) = state.search_query.split_at(state.search_cursor);
+        format!("Search: {before}_{after}").into()
     } else if let Some(ref msg) = state.status_message {
         Cow::Borrowed(msg.as_str())
     } else {
@@ -123,12 +124,18 @@ fn render_overlays(f: &mut Frame, state: &AppState, menu_bar_area: Rect) {
 fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind) {
     match kind {
         PickerKind::History => {
-            let items: Vec<String> = state.command_history.iter().rev().cloned().collect();
+            let items: Vec<&str> = state
+                .command_history
+                .iter()
+                .rev()
+                .map(|s| s.as_str())
+                .collect();
+            let selected = state.picker_selected.min(items.len().saturating_sub(1));
             dialogs::render_list_picker(
                 f,
                 "Command History",
                 &items,
-                state.picker_selected,
+                selected,
                 "Enter: select  Esc: cancel",
             );
         }
@@ -138,22 +145,25 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect();
+            let selected = state.picker_selected.min(items.len().saturating_sub(1));
             dialogs::render_list_picker(
                 f,
                 "Directory Hotlist",
                 &items,
-                state.picker_selected,
+                selected,
                 "Enter: cd  a: add current  d: delete  Esc: close",
             );
         }
         PickerKind::CompareMode => {
             static COMPARE_MODES: std::sync::LazyLock<[String; 3]> =
                 std::sync::LazyLock::new(|| ["Quick".into(), "Size".into(), "Thorough".into()]);
+            let items = &COMPARE_MODES[..];
+            let selected = state.picker_selected.min(items.len().saturating_sub(1));
             dialogs::render_list_picker(
                 f,
                 "Compare Mode",
-                &COMPARE_MODES[..],
-                state.picker_selected,
+                items,
+                selected,
                 "Enter: select  Esc: cancel",
             );
         }
@@ -163,22 +173,26 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
                 .iter()
                 .map(|e| format!("{}  {}", e.hotkey, e.title))
                 .collect();
+            let selected = state.picker_selected.min(items.len().saturating_sub(1));
             dialogs::render_list_picker(
                 f,
                 "User Menu",
                 &items,
-                state.picker_selected,
+                selected,
                 "Enter: run  Esc: cancel",
             );
         }
     }
 }
 
-fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialogs::DialogKind {
+fn to_ui_dialog<'a>(
+    dialog_kind: &'a app::types::DialogKind,
+    state: &'a AppState,
+) -> dialogs::DialogKind<'a> {
     match dialog_kind {
         app::types::DialogKind::Confirm(cd) => dialogs::DialogKind::Confirm {
-            title: cd.title.clone(),
-            message: cd.message.clone(),
+            title: Cow::Borrowed(&cd.title),
+            message: Cow::Borrowed(&cd.message),
             selection: state.dialog_selection,
             files: cd
                 .files
@@ -186,26 +200,26 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
                 .map(|fps| fps.iter().map(|p| p.display().to_string()).collect()),
         },
         app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
-            title: "Input".to_string(),
-            prompt: prompt.clone(),
-            value: state.dialog_input.clone(),
+            title: Cow::Borrowed("Input"),
+            prompt: Cow::Borrowed(prompt),
+            value: Cow::Borrowed(&state.dialog_input),
             cursor_pos: state.dialog_cursor_pos,
         },
         app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
-            title: "Error".to_string(),
-            message: msg.clone(),
+            title: Cow::Borrowed("Error"),
+            message: Cow::Borrowed(msg),
         },
         app::types::DialogKind::Help {
             message,
             scroll_offset,
         } => dialogs::DialogKind::Help {
-            title: "Help".to_string(),
-            message: message.clone(),
+            title: Cow::Borrowed("Help"),
+            message: Cow::Borrowed(message),
             scroll_offset: *scroll_offset,
         },
         app::types::DialogKind::Progress(msg, pct) => dialogs::DialogKind::Progress {
-            title: "Progress".to_string(),
-            message: msg.clone(),
+            title: Cow::Borrowed("Progress"),
+            message: Cow::Borrowed(msg),
             percent: *pct * 100.0,
         },
         app::types::DialogKind::CopyMove {
@@ -225,8 +239,8 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
                 dest.display(),
             );
             dialogs::DialogKind::Confirm {
-                title: format!("{action} Confirm"),
-                message: msg,
+                title: Cow::Owned(format!("{action} Confirm")),
+                message: Cow::Owned(msg),
                 selection: state.dialog_selection,
                 files: Some(source.iter().map(|p| p.display().to_string()).collect()),
             }
@@ -241,9 +255,9 @@ fn to_ui_dialog(dialog_kind: &app::types::DialogKind, state: &AppState) -> dialo
     }
 }
 
-fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind {
-    let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) =
-        if let app::types::DialogKind::Properties {
+fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind<'_> {
+    let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) = match dialog_kind {
+        app::types::DialogKind::Properties {
             name,
             size,
             mtime,
@@ -252,21 +266,23 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
             group,
             is_dir,
             is_symlink,
-        } = dialog_kind
-        {
-            (
-                name,
-                size,
-                mtime,
-                permissions,
-                owner,
-                group,
-                is_dir,
-                is_symlink,
-            )
-        } else {
-            unreachable!()
-        };
+        } => (
+            name,
+            size,
+            mtime,
+            permissions,
+            owner,
+            group,
+            is_dir,
+            is_symlink,
+        ),
+        _ => {
+            return dialogs::DialogKind::Error {
+                title: Cow::Borrowed("Internal Error"),
+                message: Cow::Borrowed("Expected Properties dialog"),
+            };
+        }
+    };
     let file_type = if *is_symlink {
         "Symlink"
     } else if *is_dir {
@@ -286,12 +302,12 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
         "Unknown".to_string()
     };
     dialogs::DialogKind::Properties {
-        name: name.clone(),
-        size: app::types::FileEntry::format_size(*size),
-        mtime: mtime_str,
-        permissions: app::types::FileEntry::display_permissions_raw(*permissions),
-        owner: owner.clone(),
-        group: group.clone(),
-        file_type: file_type.to_string(),
+        name: Cow::Borrowed(name),
+        size: Cow::Owned(app::types::FileEntry::format_size(*size)),
+        mtime: Cow::Owned(mtime_str),
+        permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(*permissions)),
+        owner: Cow::Borrowed(owner),
+        group: Cow::Borrowed(group),
+        file_type: Cow::Borrowed(file_type),
     }
 }
