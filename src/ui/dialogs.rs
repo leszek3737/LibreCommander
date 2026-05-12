@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::path::{MAIN_SEPARATOR, Path};
 
 use super::theme::Theme;
 
@@ -177,17 +178,25 @@ fn truncate_path(path: &str, max_width: usize) -> String {
     if total_width <= max_width {
         return path.to_string();
     }
-    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
-    let file_width = unicode_width::UnicodeWidthStr::width(file);
+    let p = Path::new(path);
+    let file = p
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = p
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file_width = unicode_width::UnicodeWidthStr::width(file.as_str());
     if file_width >= max_width {
-        return truncate_suffix(file, max_width);
+        return truncate_suffix(file.as_str(), max_width);
     }
     if dir.is_empty() {
         return truncate_suffix(path, max_width);
     }
     let budget = max_width - file_width - 1;
-    let dir_part = truncate_suffix(dir, budget);
-    format!("{dir_part}/{file}")
+    let dir_part = truncate_suffix(dir.as_str(), budget);
+    format!("{dir_part}{MAIN_SEPARATOR}{file}")
 }
 
 fn render_file_list(f: &mut Frame, area: Rect, files: &[impl AsRef<str>], max_name_width: usize) {
