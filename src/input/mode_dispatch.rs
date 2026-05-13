@@ -164,16 +164,30 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
 ) {
     let previous_discriminant = std::mem::discriminant(&state.mode);
-    if let Some(action_key) = super::menu_actions::execute_menu_action(state) {
+    if let Some((key, modifiers, for_menu_panel)) = super::menu_actions::execute_menu_action(state)
+    {
         state.mode = AppMode::Normal;
-        handle_normal_mode(
-            state,
-            viewer_state,
-            action_key,
-            KeyModifiers::NONE,
-            terminal_height,
-            terminal,
-        );
+        if for_menu_panel {
+            panel_ops::with_menu_panel(state, |state| {
+                handle_normal_mode(
+                    state,
+                    viewer_state,
+                    key,
+                    modifiers,
+                    terminal_height,
+                    terminal,
+                );
+            });
+        } else {
+            handle_normal_mode(
+                state,
+                viewer_state,
+                key,
+                modifiers,
+                terminal_height,
+                terminal,
+            );
+        }
     } else if std::mem::discriminant(&state.mode) == previous_discriminant {
         state.mode = AppMode::Normal;
     }

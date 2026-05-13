@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use lc::app::{config, dir_tree, types::*, user_menu};
 use lc::menu::{MenuAction, menu_action_at};
@@ -11,27 +11,31 @@ enum MenuResult {
     NotHandled,
     Handled,
     EmitKey(KeyCode),
+    EmitKeyForMenuPanel(KeyCode, KeyModifiers),
 }
 
-pub fn execute_menu_action(state: &mut AppState) -> Option<KeyCode> {
+pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifiers, bool)> {
     let action = menu_action_at(state.menu_selected, state.menu_item_selected)?;
 
     match execute_panel_action(&action, state) {
         MenuResult::NotHandled => {}
         MenuResult::Handled => return None,
-        MenuResult::EmitKey(kc) => return Some(kc),
+        MenuResult::EmitKey(kc) => return Some((kc, KeyModifiers::NONE, false)),
+        MenuResult::EmitKeyForMenuPanel(kc, mods) => return Some((kc, mods, true)),
     }
     match execute_navigation_action(&action, state) {
         MenuResult::NotHandled => {}
         MenuResult::Handled => return None,
-        MenuResult::EmitKey(kc) => return Some(kc),
+        MenuResult::EmitKey(kc) => return Some((kc, KeyModifiers::NONE, false)),
+        MenuResult::EmitKeyForMenuPanel(kc, mods) => return Some((kc, mods, true)),
     }
     match execute_file_action(&action, state) {
         MenuResult::NotHandled => {}
         MenuResult::Handled => return None,
-        MenuResult::EmitKey(kc) => return Some(kc),
+        MenuResult::EmitKey(kc) => return Some((kc, KeyModifiers::NONE, false)),
+        MenuResult::EmitKeyForMenuPanel(kc, mods) => return Some((kc, mods, true)),
     }
-    execute_misc_action(&action, state)
+    execute_misc_action(&action, state).map(|kc| (kc, KeyModifiers::NONE, false))
 }
 
 fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
@@ -68,35 +72,29 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
             MenuResult::Handled
         }
         MenuAction::RefreshPanel => {
-            with_menu_panel(state, refresh_active);
-            MenuResult::Handled
+            MenuResult::EmitKeyForMenuPanel(KeyCode::Char('r'), KeyModifiers::CONTROL)
         }
         MenuAction::ResetPanelFilter => {
-            let panel = state.active_panel_mut();
-            panel.filter = None;
-            refresh_active(state);
-            state.status_message = Some("Panel filter reset".to_string());
+            with_menu_panel(state, |state| {
+                let panel = state.active_panel_mut();
+                panel.filter = None;
+                refresh_active(state);
+                state.status_message = Some("Panel filter reset".to_string());
+            });
             MenuResult::Handled
         }
         MenuAction::ToggleHiddenFiles => {
-            let p = state.active_panel_mut();
-            p.show_hidden = !p.show_hidden;
-            p.cursor = 0;
-            p.scroll_offset = 0;
-            refresh_active(state);
-            state.status_message = Some(format!(
-                "Panel options: hidden={}",
-                state.active_panel().show_hidden
-            ));
-            MenuResult::Handled
+            MenuResult::EmitKeyForMenuPanel(KeyCode::Char('h'), KeyModifiers::CONTROL)
         }
         MenuAction::TogglePermissions => {
-            let panel = state.active_panel_mut();
-            panel.show_permissions = !panel.show_permissions;
-            state.status_message = Some(format!(
-                "Permissions: {}",
-                if panel.show_permissions { "ON" } else { "OFF" }
-            ));
+            with_menu_panel(state, |state| {
+                let panel = state.active_panel_mut();
+                panel.show_permissions = !panel.show_permissions;
+                state.status_message = Some(format!(
+                    "Permissions: {}",
+                    if panel.show_permissions { "ON" } else { "OFF" }
+                ));
+            });
             MenuResult::Handled
         }
         MenuAction::OpenUserMenu
@@ -125,15 +123,17 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
 fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
     match action {
         MenuAction::DirectoryTree => {
-            let path = state.active_panel().path.clone();
-            let show_hidden = state.active_panel().show_hidden;
-            let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
-            state.tree_root = path;
-            state.tree_entries = tree.entries;
-            state.tree_selected = 0;
-            state.tree_scroll = 0;
-            state.mode = AppMode::DirectoryTree;
-            set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
+            with_menu_panel(state, |state| {
+                let path = state.active_panel().path.clone();
+                let show_hidden = state.active_panel().show_hidden;
+                let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
+                state.tree_root = path;
+                state.tree_entries = tree.entries;
+                state.tree_selected = 0;
+                state.tree_scroll = 0;
+                state.mode = AppMode::DirectoryTree;
+                set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
+            });
             MenuResult::Handled
         }
         MenuAction::FindFile => {
@@ -177,17 +177,19 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
             MenuResult::Handled
         }
         MenuAction::SaveCurrentPathToHotlist => {
-            if !state
-                .directory_hotlist
-                .iter()
-                .any(|p| p == &state.active_panel().path)
-            {
-                state
+            with_menu_panel(state, |state| {
+                if !state
                     .directory_hotlist
-                    .push(state.active_panel().path.clone());
-            }
-            state.status_message =
-                Some("Path added to hotlist (run Save Setup to persist)".to_string());
+                    .iter()
+                    .any(|p| p == &state.active_panel().path)
+                {
+                    state
+                        .directory_hotlist
+                        .push(state.active_panel().path.clone());
+                }
+                state.status_message =
+                    Some("Path added to hotlist (run Save Setup to persist)".to_string());
+            });
             MenuResult::Handled
         }
         MenuAction::ToggleListingMode
@@ -221,36 +223,40 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult 
         MenuAction::MakeDirectory => MenuResult::EmitKey(KeyCode::F(7)),
         MenuAction::Delete => MenuResult::EmitKey(KeyCode::F(8)),
         MenuAction::Rename => {
-            let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
-            if let Some(name) = entry_name
-                && name != ".."
-            {
-                state.dialog_input = name.clone();
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(DialogKind::Input {
-                    prompt: "Rename to:".to_string(),
-                    default_text: name,
-                    action: InputAction::Rename,
-                });
-            }
+            with_menu_panel(state, |state| {
+                let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
+                if let Some(name) = entry_name
+                    && name != ".."
+                {
+                    state.dialog_input = name.clone();
+                    state.dialog_cursor_pos = state.dialog_input.chars().count();
+                    state.mode = AppMode::Dialog(DialogKind::Input {
+                        prompt: "Rename to:".to_string(),
+                        default_text: name,
+                        action: InputAction::Rename,
+                    });
+                }
+            });
             MenuResult::Handled
         }
         MenuAction::Chmod => {
-            let entry_info = state
-                .active_panel()
-                .current_entry()
-                .map(|e| (e.name.clone(), e.mode_bits()));
-            if let Some((name, permissions)) = entry_info
-                && name != ".."
-            {
-                state.dialog_input = format!("{:o}", permissions & 0o7777);
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(DialogKind::Input {
-                    prompt: "Chmod (octal):".to_string(),
-                    default_text: state.dialog_input.clone(),
-                    action: InputAction::Chmod,
-                });
-            }
+            with_menu_panel(state, |state| {
+                let entry_info = state
+                    .active_panel()
+                    .current_entry()
+                    .map(|e| (e.name.clone(), e.mode_bits()));
+                if let Some((name, permissions)) = entry_info
+                    && name != ".."
+                {
+                    state.dialog_input = format!("{:o}", permissions & 0o7777);
+                    state.dialog_cursor_pos = state.dialog_input.chars().count();
+                    state.mode = AppMode::Dialog(DialogKind::Input {
+                        prompt: "Chmod (octal):".to_string(),
+                        default_text: state.dialog_input.clone(),
+                        action: InputAction::Chmod,
+                    });
+                }
+            });
             MenuResult::Handled
         }
         MenuAction::ToggleListingMode
