@@ -363,7 +363,7 @@ fn handle_input_action(
                 }
                 _ => return false,
             }
-            let mode = parse_octal_mode(&input).unwrap();
+            let mode = parse_octal_mode(&input).unwrap_or(0);
             if let Some(entry) = state.active_panel().current_entry()
                 && let Err(err) = ops::chmod(&entry.path, mode)
             {
