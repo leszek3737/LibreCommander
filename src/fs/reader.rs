@@ -13,7 +13,7 @@ use crate::app::types::PanelState;
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
-/// 1024 covers typical multi-user systems; entries are evicted FIFO when exceeded.
+/// 1024 covers typical multi-user systems; entries are evicted arbitrarily when exceeded.
 const CACHE_MAX_SIZE: usize = 1024;
 
 #[cfg(test)]
@@ -122,7 +122,7 @@ fn ensure_path_index(panel: &mut PanelState) {
     // on every call. The guard below catches the common fast path (no dupes);
     // when dupes exist the rebuild is still correct — last entry with a given
     // path wins, matching the HashMap insert order.
-    if panel.path_index.len() == panel.unfiltered_entries.len() {
+    if !panel.path_index.is_empty() {
         return;
     }
     panel.path_index.clear();
@@ -132,8 +132,7 @@ fn ensure_path_index(panel: &mut PanelState) {
 }
 
 pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
-    let raw_entries: Vec<_> = fs::read_dir(path)?.collect();
-    let mut entries = Vec::with_capacity(raw_entries.len() + 1);
+    let mut entries = Vec::new();
     let mut errors = Vec::new();
 
     if path != Path::new("/") {
@@ -164,7 +163,7 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
         });
     }
 
-    for result in raw_entries {
+    for result in fs::read_dir(path)? {
         let entry = match result {
             Ok(entry) => entry,
             Err(e) => {

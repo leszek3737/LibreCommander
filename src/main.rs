@@ -585,6 +585,7 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode) {
             let panel = state.active_panel_mut();
             if panel.unfiltered_entries.is_empty() {
                 panel.unfiltered_entries = panel.entries.clone();
+                panel.path_index.clear();
             }
             state.mode = AppMode::Search;
             state.search_query.clear();

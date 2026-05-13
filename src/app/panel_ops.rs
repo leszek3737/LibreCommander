@@ -56,6 +56,7 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 panel.show_hidden,
             );
             panel.unfiltered_entries = new_unfiltered;
+            panel.path_index.clear();
             panel.entries = new_filtered;
             restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();

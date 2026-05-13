@@ -59,6 +59,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
                 let panel = state.active_panel_mut();
                 if panel.unfiltered_entries.is_empty() {
                     panel.unfiltered_entries = panel.entries.clone();
+                    panel.path_index.clear();
                 }
                 panel.filter = Some(filter_query);
                 panel.cursor = 0;
