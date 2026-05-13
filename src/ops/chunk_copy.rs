@@ -27,6 +27,9 @@ pub fn copy_with_progress(
         let target = fs::read_link(src)?;
         #[cfg(unix)]
         {
+            if overwrite {
+                let _ = fs::remove_file(dest);
+            }
             symlink(&target, dest)?;
         }
         #[cfg(not(unix))]
@@ -37,7 +40,7 @@ pub fn copy_with_progress(
                 "symlinks not supported on this platform",
             ));
         }
-        return Ok(metadata.len());
+        return Ok(0);
     }
 
     let src_file = File::open(src)?;
@@ -129,28 +132,35 @@ fn publish_temp(
 
     let mut src = BufReader::new(File::open(temp_dest)?);
     let dest_file = OpenOptions::new().write(true).create_new(true).open(dest)?;
-    preserve_permissions(dest, src_metadata)?;
-    let mut dest_file = BufWriter::new(dest_file);
-    let mut buffer = [0_u8; BUFFER_SIZE];
+    let result = (|| -> io::Result<()> {
+        preserve_permissions(dest, src_metadata)?;
+        let mut dest_file = BufWriter::new(dest_file);
+        let mut buffer = [0_u8; BUFFER_SIZE];
 
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            drop(dest_file);
-            let _ = fs::remove_file(dest);
-            let _ = fs::remove_file(temp_dest);
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                drop(dest_file);
+                let _ = fs::remove_file(dest);
+                let _ = fs::remove_file(temp_dest);
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
+            }
+
+            let bytes_read = src.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            dest_file.write_all(&buffer[..bytes_read])?;
         }
 
-        let bytes_read = src.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        dest_file.write_all(&buffer[..bytes_read])?;
+        dest_file.flush()?;
+        dest_file.get_ref().sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(dest);
     }
-
-    dest_file.flush()?;
-    dest_file.get_ref().sync_all()?;
+    result?;
     let atime = filetime::FileTime::from_last_access_time(src_metadata);
     let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
     let _ = fs::remove_file(temp_dest);
