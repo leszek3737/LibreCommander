@@ -316,7 +316,10 @@ fn handle_input_action(
         InputAction::CreateDirectory => {
             match validate_path_name(&input) {
                 ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => return false,
+                ValidationResult::EmptyInput => {
+                    state.status_message = Some("Directory name cannot be empty".to_string());
+                    return false;
+                }
                 ValidationResult::InvalidPath(p) => {
                     state.status_message = Some(format!("Invalid path: '..' not allowed in '{p}'"));
                     return false;
@@ -326,14 +329,15 @@ fn handle_input_action(
             let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
             if let Err(err) = ops::create_directory(&target) {
                 state.status_message = Some(format!("Create directory failed: {err}"));
-            } else {
-                refresh_active(state);
             }
         }
         InputAction::Rename => {
             match validate_path_name(&input) {
                 ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => return false,
+                ValidationResult::EmptyInput => {
+                    state.status_message = Some("New name cannot be empty".to_string());
+                    return false;
+                }
                 ValidationResult::InvalidPath(p) => {
                     state.status_message = Some(format!("Invalid name: '..' not allowed in '{p}'"));
                     return false;
@@ -349,14 +353,17 @@ fn handle_input_action(
         InputAction::Chmod => {
             match validate_octal(&input) {
                 ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => return false,
+                ValidationResult::EmptyInput => {
+                    state.status_message = Some("Octal mode cannot be empty".to_string());
+                    return false;
+                }
                 ValidationResult::InvalidOctal(o) => {
                     state.status_message = Some(format!("Invalid octal mode '{o}'"));
                     return false;
                 }
                 _ => return false,
             }
-            let mode = parse_octal_mode(&input).unwrap_or(0);
+            let mode = parse_octal_mode(&input).unwrap();
             if let Some(entry) = state.active_panel().current_entry()
                 && let Err(err) = ops::chmod(&entry.path, mode)
             {
