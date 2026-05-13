@@ -201,7 +201,7 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
-    let Ok(mut entry) = reader::get_single_entry(path) else {
+    let Ok(mut entry) = reader::get_file_info(path) else {
         return false;
     };
 

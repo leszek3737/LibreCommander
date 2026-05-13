@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
+
 pub enum WatchEvent {
     Created(PathBuf),
     Deleted(PathBuf),
@@ -30,17 +32,20 @@ pub struct Watcher {
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    pending_from: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Watcher {
     pub fn new(event_tx: Sender<WatchEvent>) -> io::Result<Self> {
         let paused = Arc::new(AtomicBool::new(false));
         let debounce_state = Arc::new(Mutex::new(HashMap::new()));
+        let pending_from = Arc::new(Mutex::new(None));
         let primary = RecommendedWatcher::new(
             make_handler(
                 event_tx.clone(),
                 Arc::clone(&paused),
                 Arc::clone(&debounce_state),
+                Arc::clone(&pending_from),
             ),
             Config::default(),
         )
@@ -53,6 +58,7 @@ impl Watcher {
             event_tx,
             paused,
             debounce_state,
+            pending_from,
         })
     }
 
@@ -63,6 +69,7 @@ impl Watcher {
                     self.event_tx.clone(),
                     Arc::clone(&self.paused),
                     Arc::clone(&self.debounce_state),
+                    Arc::clone(&self.pending_from),
                 ),
                 Config::default(),
             )
@@ -75,6 +82,9 @@ impl Watcher {
     }
 
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
+        // Canonicalize first: callers may pass relative paths or symlinks,
+        // and the `watchers` map keys are canonical. We must resolve before
+        // the contains_key check to avoid duplicate entries for the same dir.
         let path = path.canonicalize().map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -141,17 +151,9 @@ impl Watcher {
     }
 
     fn remove_watched_dir_state(&mut self, path: &Path) {
-        let removed = self
-            .watchers
-            .keys()
-            .find(|watched| {
-                watched.as_path() == path || path_points_to_missing_watch(path, watched)
-            })
-            .cloned();
-
-        if let Some(path) = removed {
-            self.watchers.remove(&path);
-        }
+        self.watchers.retain(|watched, _| {
+            watched.as_path() != path && !path_points_to_missing_watch(path, watched)
+        });
     }
 
     pub fn watched_dirs(&self) -> Vec<PathBuf> {
@@ -160,6 +162,14 @@ impl Watcher {
 
     pub fn pause(&self) {
         self.paused.store(true, Ordering::Relaxed);
+        let mut pending = self.pending_from.lock().unwrap_or_else(|e| {
+            debug_log!("pending_from mutex poisoned, recovering: {e}");
+            e.into_inner()
+        });
+        if pending.is_some() {
+            debug_log!("watcher paused: clearing stale pending_from");
+        }
+        *pending = None;
     }
 
     pub fn resume(&self) {
@@ -171,8 +181,8 @@ fn make_handler(
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    pending_from: Arc<Mutex<Option<PathBuf>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
-    let pending_from: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     move |result| {
         if paused.load(Ordering::Relaxed) {
             return;
@@ -220,23 +230,33 @@ fn should_emit(
         debug_log!("watcher mutex poisoned, recovering: {e}");
         e.into_inner()
     });
+    debounce
+        .retain(|_, instant| now.duration_since(*instant) < DEBOUNCE_DURATION.saturating_mul(2));
     if skip_debounce {
         for p in paths {
-            debounce.insert(p.to_path_buf(), now);
+            debounce_upsert(&mut debounce, p, now);
         }
         return true;
     }
     let suppressed = paths.iter().any(|p| {
         debounce
             .get(*p)
-            .is_some_and(|last| now.duration_since(*last) < Duration::from_millis(300))
+            .is_some_and(|last| now.duration_since(*last) < DEBOUNCE_DURATION)
     });
     if !suppressed {
         for p in paths {
-            debounce.insert(p.to_path_buf(), now);
+            debounce_upsert(&mut debounce, p, now);
         }
     }
     !suppressed
+}
+
+fn debounce_upsert(map: &mut HashMap<PathBuf, Instant>, path: &Path, instant: Instant) {
+    if let Some(ts) = map.get_mut(path) {
+        *ts = instant;
+    } else {
+        map.insert(path.to_path_buf(), instant);
+    }
 }
 
 fn lock_pending(
@@ -304,6 +324,9 @@ fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
 fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<WatchEvent> {
     paths.into_iter().map(map).collect()
 }
+
+// Named helper for readability — avoids repeating `.into_iter().map(..).collect()`
+// at each of the 6 call sites in `convert_event`.
 
 fn notify_to_io(err: &notify::Error) -> io::Error {
     io::Error::other(err.to_string())

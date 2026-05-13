@@ -12,6 +12,8 @@ use std::time::SystemTime;
 use crate::app::types::PanelState;
 use crate::fs::cha::Cha;
 
+/// Maximum number of uid/gid name mappings to keep per cache.
+/// 1024 covers typical multi-user systems; entries are evicted arbitrarily when exceeded.
 const CACHE_MAX_SIZE: usize = 1024;
 
 #[cfg(test)]
@@ -35,11 +37,15 @@ thread_local! {
 fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
     UID_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.uid_to_name.len() >= CACHE_MAX_SIZE {
-            cache.uid_to_name.clear();
+        if cache.uid_to_name.len() >= CACHE_MAX_SIZE
+            && let Some(oldest) = cache.uid_to_name.keys().next().copied()
+        {
+            cache.uid_to_name.remove(&oldest);
         }
-        if cache.gid_to_name.len() >= CACHE_MAX_SIZE {
-            cache.gid_to_name.clear();
+        if cache.gid_to_name.len() >= CACHE_MAX_SIZE
+            && let Some(oldest) = cache.gid_to_name.keys().next().copied()
+        {
+            cache.gid_to_name.remove(&oldest);
         }
         let owner = cache
             .uid_to_name
@@ -68,78 +74,19 @@ fn lookup_owner_group(_uid: u32, _gid: u32) -> (String, String) {
     (String::new(), String::new())
 }
 
-pub fn read_directory(
-    path: &Path,
-    show_hidden: bool,
-) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
-    let mut entries = Vec::new();
-    let mut errors = Vec::new();
-
-    if path != Path::new("/") {
-        let parent_buf;
-        let parent_path = path.parent().filter(|p| !p.as_os_str().is_empty());
-        let parent_path = match parent_path {
-            Some(p) => p,
-            None => {
-                parent_buf = path.join("..");
-                &parent_buf
-            }
-        };
-        entries.push(FileEntry {
-            name: "..".to_string(),
-            path: parent_path.to_path_buf(),
-            cha: Cha::dummy_dir(),
-            owner: String::new(),
-            group: String::new(),
-            selected: false,
-            mime_type: None,
-        });
-    }
-
-    for entry in fs::read_dir(path)? {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                errors.push(io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to read directory entry in '{}': {}",
-                        path.display(),
-                        e
-                    ),
-                ));
-                continue;
-            }
-        };
-        let entry_path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().to_string();
-
-        let is_hidden = file_name.starts_with('.');
-
-        if !show_hidden && is_hidden {
-            continue;
-        }
-
-        match get_file_info(&entry_path) {
-            Ok(file_entry) => entries.push(file_entry),
-            Err(e) => errors.push(io::Error::new(
-                e.kind(),
-                format!("Failed to read '{}': {}", entry_path.display(), e),
-            )),
-        }
-    }
-
-    Ok((entries, errors))
+fn is_parent_entry(entry: &FileEntry) -> bool {
+    entry.name == ".."
 }
 
-pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
-    let metadata = fs::symlink_metadata(path)?;
-    let file_name = path
-        .file_name()
+fn file_name_from_path(path: &Path) -> String {
+    path.file_name()
         .unwrap_or_default()
         .to_string_lossy()
-        .to_string();
+        .to_string()
+}
 
+fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
+    let metadata = fs::symlink_metadata(path)?;
     let is_symlink = metadata.is_symlink();
     let target_meta = if is_symlink {
         fs::metadata(path).ok()
@@ -158,7 +105,7 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     let (owner, group) = lookup_owner_group(uid, gid);
 
     Ok(FileEntry {
-        name: file_name,
+        name: file_name.to_string(),
         path: path.to_path_buf(),
         cha,
         owner,
@@ -168,12 +115,91 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     })
 }
 
-pub fn get_single_entry(path: &Path) -> io::Result<FileEntry> {
-    get_file_info(path)
+fn ensure_path_index(panel: &mut PanelState) {
+    // If duplicate paths exist in `unfiltered_entries`, HashMap deduplicates
+    // them (last-write-wins), so `path_index.len()` may be smaller than
+    // `unfiltered_entries.len()`. This causes a harmless but wasteful rebuild
+    // on every call. The guard below catches the common fast path (no dupes);
+    // when dupes exist the rebuild is still correct — last entry with a given
+    // path wins, matching the HashMap insert order.
+    if !panel.path_index.is_empty() {
+        return;
+    }
+    panel.path_index.clear();
+    for (i, entry) in panel.unfiltered_entries.iter().enumerate() {
+        panel.path_index.insert(entry.path.clone(), i);
+    }
+}
+
+pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
+    let mut entries = Vec::new();
+    let mut errors = Vec::new();
+
+    if path != Path::new("/") {
+        let parent_buf;
+        let parent_path = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let parent_path = match parent_path {
+            Some(p) => p,
+            None => {
+                parent_buf = path.join("..");
+                &parent_buf
+            }
+        };
+        let (owner, group) = fs::symlink_metadata(parent_path)
+            .ok()
+            .map(|meta| {
+                let cha = Cha::new(&meta);
+                lookup_owner_group(cha.uid, cha.gid)
+            })
+            .unwrap_or_default();
+        entries.push(FileEntry {
+            name: "..".to_string(),
+            path: parent_path.to_path_buf(),
+            cha: Cha::dummy_dir(),
+            owner,
+            group,
+            selected: false,
+            mime_type: None,
+        });
+    }
+
+    for result in fs::read_dir(path)? {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(e) => {
+                errors.push(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to read directory entry in '{}': {}",
+                        path.display(),
+                        e
+                    ),
+                ));
+                continue;
+            }
+        };
+        let entry_path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        match build_file_entry(&entry_path, &file_name) {
+            Ok(file_entry) => entries.push(file_entry),
+            Err(e) => errors.push(io::Error::new(
+                e.kind(),
+                format!("Failed to read '{}': {}", entry_path.display(), e),
+            )),
+        }
+    }
+
+    Ok((entries, errors))
+}
+
+pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
+    let file_name = file_name_from_path(path);
+    build_file_entry(path, &file_name)
 }
 
 pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
-    if entry.name == ".." {
+    if is_parent_entry(&entry) {
         return;
     }
 
@@ -181,30 +207,34 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
         return;
     }
 
-    if let Some(existing) = panel
-        .unfiltered_entries
-        .iter_mut()
-        .find(|e| e.path == entry.path)
-    {
-        entry.selected = existing.selected;
-        *existing = entry;
+    ensure_path_index(panel);
+
+    if let Some(&idx) = panel.path_index.get(&entry.path) {
+        if let Some(existing) = panel.unfiltered_entries.get_mut(idx) {
+            entry.selected = existing.selected;
+            *existing = entry;
+        }
     } else {
+        let new_idx = panel.unfiltered_entries.len();
         panel.unfiltered_entries.push(entry);
+        panel
+            .path_index
+            .insert(panel.unfiltered_entries[new_idx].path.clone(), new_idx);
     }
 }
 
 pub fn remove_entry(panel: &mut PanelState, path: &Path) {
-    if path.file_name().is_some_and(|name| name == "..") {
-        return;
-    }
-
     if panel.unfiltered_entries.is_empty() {
         return;
     }
 
     panel
         .unfiltered_entries
-        .retain(|entry| entry.name == ".." || entry.path != path);
+        .retain(|e| is_parent_entry(e) || e.path != path);
+
+    if panel.path_index.len() != panel.unfiltered_entries.len() {
+        panel.path_index.clear();
+    }
 }
 
 pub fn format_date(time: SystemTime) -> String {
@@ -214,15 +244,21 @@ pub fn format_date(time: SystemTime) -> String {
     let now = Local::now();
     let duration = now - datetime;
 
-    if duration.num_days() < 365 {
+    if duration.num_days() <= 365 {
         datetime.format("%b %d %H:%M").to_string()
     } else {
         datetime.format("%b %d  %Y").to_string()
     }
 }
 
+#[cfg(unix)]
 pub fn is_executable(mode: u32) -> bool {
     (mode & 0o100) != 0 || (mode & 0o010) != 0 || (mode & 0o001) != 0
+}
+
+#[cfg(not(unix))]
+pub fn is_executable(_mode: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -408,7 +444,7 @@ mod tests {
         File::create(temp_dir.join("file2.txt")).unwrap();
         fs::create_dir(temp_dir.join("subdir")).unwrap();
 
-        let (entries, errors) = read_directory(&temp_dir, false).unwrap();
+        let (entries, errors) = read_directory(&temp_dir).unwrap();
         assert!(errors.is_empty());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&".."));
@@ -428,13 +464,10 @@ mod tests {
         File::create(temp_dir.join("visible.txt")).unwrap();
         File::create(temp_dir.join(".hidden")).unwrap();
 
-        let (entries_no_hidden, errors) = read_directory(&temp_dir, false).unwrap();
+        let (entries, errors) = read_directory(&temp_dir).unwrap();
         assert!(errors.is_empty());
-        assert!(!entries_no_hidden.iter().any(|e| e.name == ".hidden"));
-
-        let (entries_with_hidden, errors) = read_directory(&temp_dir, true).unwrap();
-        assert!(errors.is_empty());
-        assert!(entries_with_hidden.iter().any(|e| e.name == ".hidden"));
+        assert!(entries.iter().any(|e| e.name == ".hidden"));
+        assert!(entries.iter().any(|e| e.name == "visible.txt"));
 
         fs::remove_dir_all(&temp_dir).unwrap();
     }
@@ -490,7 +523,7 @@ mod tests {
         let link = temp_dir.join("link.txt");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let (entries, errors) = read_directory(&temp_dir, false).unwrap();
+        let (entries, errors) = read_directory(&temp_dir).unwrap();
         assert!(errors.is_empty());
         if let Some(link_entry) = entries.iter().find(|e| e.name == "link.txt") {
             assert!(link_entry.is_symlink());
@@ -510,7 +543,7 @@ mod tests {
                 .as_nanos()
         ));
 
-        let err = read_directory(&missing, false).unwrap_err();
+        let err = read_directory(&missing).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 

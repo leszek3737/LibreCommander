@@ -86,7 +86,6 @@ bitflags::bitflags! {
     pub struct ChaKind: u8 {
         const FOLLOW = 0b0000_0001;
         const HIDDEN = 0b0000_0010;
-        const SYSTEM = 0b0000_0100;
         const DUMMY      = 0b0000_1000;
         const DIR_TARGET = 0b0001_0000;
     }
@@ -163,8 +162,8 @@ impl ChaMode {
         self.typ() == ChaType::Fifo
     }
 
-    pub fn permissions(&self) -> u16 {
-        (self.0 & 0o7777) as u16
+    pub fn permissions(&self) -> u32 {
+        self.0 & 0o7777
     }
 
     pub fn is_executable(&self) -> bool {
@@ -209,21 +208,41 @@ impl Cha {
         link_meta: &fs::Metadata,
         target_meta: Option<&fs::Metadata>,
     ) -> Self {
-        let mut cha = if let Some(target) = target_meta {
-            let mut c = Self::new(target);
-            c.kind.insert(ChaKind::FOLLOW);
+        let link_mode = ChaMode::new(0o120000 | (file_mode(link_meta) & 0o7777));
+
+        if let Some(target) = target_meta {
+            let mut kind = ChaKind::FOLLOW;
             if target.is_dir() {
-                c.kind.insert(ChaKind::DIR_TARGET);
+                kind.insert(ChaKind::DIR_TARGET);
             }
-            c
+            Self {
+                kind,
+                mode: link_mode,
+                len: target.len(),
+                mtime: target.modified().ok(),
+                btime: target.created().ok(),
+                ctime: change_time(target),
+                atime: target.accessed().ok(),
+                uid: metadata_uid(target),
+                gid: metadata_gid(target),
+                dev: metadata_dev(target),
+                nlink: metadata_nlink(target),
+            }
         } else {
-            Self::new(link_meta)
-        };
-        cha.mode = ChaMode::new(0o120000 | (file_mode(link_meta) & 0o7777));
-        if target_meta.is_none() {
-            cha.mode = ChaMode::new(cha.mode.mode_u32() & !0o111);
+            Self {
+                kind: ChaKind::empty(),
+                mode: ChaMode::new(link_mode.mode_u32() & !0o111),
+                len: 0,
+                mtime: link_meta.modified().ok(),
+                btime: link_meta.created().ok(),
+                ctime: change_time(link_meta),
+                atime: link_meta.accessed().ok(),
+                uid: metadata_uid(link_meta),
+                gid: metadata_gid(link_meta),
+                dev: metadata_dev(link_meta),
+                nlink: metadata_nlink(link_meta),
+            }
         }
-        cha
     }
 
     pub fn dummy_dir() -> Self {
@@ -246,38 +265,47 @@ impl Cha {
         self.mode.is_dir() || (self.mode.is_link() && self.kind.contains(ChaKind::DIR_TARGET))
     }
 
+    #[inline]
     pub fn is_file(&self) -> bool {
         self.mode.is_file()
     }
 
+    #[inline]
     pub fn is_link(&self) -> bool {
         self.mode.is_link()
     }
 
+    #[inline]
     pub fn is_block(&self) -> bool {
         self.mode.is_block()
     }
 
+    #[inline]
     pub fn is_char(&self) -> bool {
         self.mode.is_char()
     }
 
+    #[inline]
     pub fn is_socket(&self) -> bool {
         self.mode.is_socket()
     }
 
+    #[inline]
     pub fn is_fifo(&self) -> bool {
         self.mode.is_fifo()
     }
 
+    #[inline]
     pub fn is_orphan(&self) -> bool {
         self.is_link() && !self.kind.contains(ChaKind::FOLLOW)
     }
 
+    #[inline]
     pub fn is_hidden(&self) -> bool {
         self.kind.contains(ChaKind::HIDDEN)
     }
 
+    #[inline]
     pub fn is_executable(&self) -> bool {
         self.mode.is_executable()
     }
@@ -297,6 +325,10 @@ impl Cha {
 
     pub fn atime(&self) -> Option<SystemTime> {
         self.atime
+    }
+
+    pub fn ctime(&self) -> Option<SystemTime> {
+        self.ctime
     }
 
     pub fn dev(&self) -> u64 {
@@ -479,7 +511,7 @@ mod tests {
         assert!(cha.kind.contains(ChaKind::FOLLOW));
         assert!(!cha.is_orphan());
         assert_eq!(cha.len, 5);
-        assert_eq!(u32::from(cha.mode.permissions()), link_meta.mode() & 0o7777);
+        assert_eq!(cha.mode.permissions(), link_meta.mode() & 0o7777);
     }
 
     #[test]
@@ -496,10 +528,7 @@ mod tests {
         assert!(cha.is_orphan());
         assert!(!cha.kind.contains(ChaKind::FOLLOW));
         assert!(!cha.is_executable());
-        assert_eq!(
-            u32::from(cha.mode.permissions()),
-            link_meta.mode() & 0o7777 & !0o111
-        );
+        assert_eq!(cha.mode.permissions(), link_meta.mode() & 0o7777 & !0o111);
     }
 
     #[test]

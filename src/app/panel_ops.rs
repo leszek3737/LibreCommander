@@ -42,7 +42,7 @@ pub fn sync_watcher_job_state(
 }
 
 pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
-    match reader::read_directory(&panel.path, panel.show_hidden) {
+    match reader::read_directory(&panel.path) {
         Ok((entries, errors)) => {
             update_panel_read_errors(panel, &errors);
             let current_name = current_panel_entry_name(panel);
@@ -53,8 +53,10 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 panel.filter.as_deref(),
                 panel.sort_mode,
                 panel.sort_options,
+                panel.show_hidden,
             );
             panel.unfiltered_entries = new_unfiltered;
+            panel.path_index.clear();
             panel.entries = new_filtered;
             restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();
@@ -110,12 +112,15 @@ pub fn filtered_sorted_entries(
     filter: Option<&str>,
     sort_mode: SortMode,
     sort_options: SortOptions,
+    show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
         .filter(|e| {
             if e.name == ".." {
                 true
+            } else if !show_hidden && e.cha.is_hidden() {
+                false
             } else if let Some(filter) = filter {
                 ops::FileSearch::matches_pattern(&e.name, filter, false)
             } else {
