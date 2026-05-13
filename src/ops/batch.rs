@@ -518,6 +518,32 @@ where
 }
 
 #[allow(clippy::needless_pass_by_value)]
+fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut canonical_ok: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut canonical_fail: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        match std::fs::canonicalize(p) {
+            Ok(c) => canonical_ok.push((c, p.clone())),
+            Err(_) => canonical_fail.push(p.clone()),
+        }
+    }
+    canonical_ok.sort_by_key(|(c, _)| c.components().count());
+    let mut filtered: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (canonical, original) in canonical_ok {
+        if !filtered
+            .iter()
+            .any(|(existing, _)| canonical.starts_with(existing))
+        {
+            filtered.push((canonical, original));
+        }
+    }
+    canonical_fail.sort();
+    canonical_fail.dedup();
+    filtered.extend(canonical_fail.into_iter().map(|p| (p.clone(), p)));
+    filtered.into_iter().map(|(_, o)| o).collect()
+}
+
+#[allow(clippy::needless_pass_by_value)]
 fn batch_delete(
     paths: &[PathBuf],
     progress: &mut impl FnMut(BatchProgress),
@@ -528,26 +554,7 @@ fn batch_delete(
     let mut canceled = false;
     let start_time = Instant::now();
 
-    // Canonicalize, sort shallowest-first, filter out descendants of already-selected dirs.
-    // Paths that fail canonicalization (e.g. nonexistent) are kept as-is.
-    let mut canonical_ok: Vec<PathBuf> = Vec::new();
-    let mut canonical_fail: Vec<PathBuf> = Vec::new();
-    for p in paths {
-        match std::fs::canonicalize(p) {
-            Ok(c) => canonical_ok.push(c),
-            Err(_) => canonical_fail.push(p.clone()),
-        }
-    }
-    canonical_ok.sort_by_key(|b| b.components().count());
-    let mut filtered: Vec<PathBuf> = Vec::new();
-    for path in canonical_ok {
-        if !filtered.iter().any(|existing| path.starts_with(existing)) {
-            filtered.push(path);
-        }
-    }
-    canonical_fail.sort();
-    canonical_fail.dedup();
-    filtered.append(&mut canonical_fail);
+    let filtered = dedup_paths(paths);
 
     let total = filtered.len();
     let sizes = helpers::path_sizes(&filtered);
@@ -998,5 +1005,68 @@ mod tests {
             action_label: "Unknown",
         };
         assert_eq!(report.format_summary(), "Unknown failed: e: x");
+    }
+
+    #[test]
+    fn dedup_paths_removes_symlink_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = make_file(dir.path(), "real.txt", b"content");
+        let link = dir.path().join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        let paths = vec![real.clone(), link];
+        let result = dedup_paths(&paths);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], real);
+    }
+
+    #[test]
+    fn dedup_paths_preserves_originals() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = make_file(dir.path(), "a.txt", b"a");
+        let b = make_file(dir.path(), "b.txt", b"b");
+
+        let result = dedup_paths(&[a.clone(), b.clone()]);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&a));
+        assert!(result.contains(&b));
+    }
+
+    #[test]
+    fn dedup_paths_canonical_failure_keeps_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = make_file(dir.path(), "exists.txt", b"x");
+        let missing = dir.path().join("no_such_file_xyz.txt");
+
+        let result = dedup_paths(&[real.clone(), missing.clone()]);
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&real));
+        assert!(result.contains(&missing));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_delete_symlink_preserves_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = make_file(dir.path(), "target.txt", b"keep me");
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let action = PendingAction::Delete {
+            paths: vec![link.clone()],
+        };
+        let report = execute_batch(action);
+
+        assert_eq!(report.success_count, 1);
+        assert!(report.errors.is_empty());
+        assert!(!link.exists());
+        assert!(target.exists());
+        assert_eq!(fs::read(&target).unwrap(), b"keep me");
     }
 }

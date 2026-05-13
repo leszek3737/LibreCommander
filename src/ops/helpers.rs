@@ -12,7 +12,7 @@ pub(crate) fn action_label(action: &PendingAction) -> &'static str {
     }
 }
 
-pub(crate) fn path_contains_canonical(parent: &Path, child: &Path) -> bool {
+pub(crate) fn path_starts_with(parent: &Path, child: &Path) -> bool {
     child != parent && child.starts_with(parent)
 }
 

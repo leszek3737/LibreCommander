@@ -5,6 +5,9 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+
 const BUFFER_SIZE: usize = 64 * 1024;
 
 pub fn copy_with_progress(
@@ -18,7 +21,25 @@ pub fn copy_with_progress(
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
     }
 
-    let metadata = fs::metadata(src)?;
+    let metadata = fs::symlink_metadata(src)?;
+
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(src)?;
+        #[cfg(unix)]
+        {
+            symlink(&target, dest)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (target, dest);
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "symlinks not supported on this platform",
+            ));
+        }
+        return Ok(metadata.len());
+    }
+
     let src_file = File::open(src)?;
     let temp_dest = temp_path_for(dest);
     let result = copy_to_temp(src_file, &temp_dest, &metadata, progress_tx, cancel);
@@ -107,7 +128,9 @@ fn publish_temp(
     }
 
     let mut src = BufReader::new(File::open(temp_dest)?);
-    let mut dest_file = BufWriter::new(OpenOptions::new().write(true).create_new(true).open(dest)?);
+    let dest_file = OpenOptions::new().write(true).create_new(true).open(dest)?;
+    preserve_permissions(dest, src_metadata)?;
+    let mut dest_file = BufWriter::new(dest_file);
     let mut buffer = [0_u8; BUFFER_SIZE];
 
     loop {
@@ -128,11 +151,9 @@ fn publish_temp(
 
     dest_file.flush()?;
     dest_file.get_ref().sync_all()?;
-    let perm_result = preserve_permissions(dest, src_metadata);
     let atime = filetime::FileTime::from_last_access_time(src_metadata);
     let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
     let _ = fs::remove_file(temp_dest);
-    perm_result?;
     let _ = filetime::set_file_times(dest, atime, mtime);
 
     Ok(())
@@ -144,8 +165,19 @@ fn temp_path_for(dest: &Path) -> std::path::PathBuf {
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| OsString::from("copy"));
     let tid = std::thread::current().id();
-    name.push(format!(".lc-copy-{}-{:?}.tmp", std::process::id(), tid));
+    name.push(format!(
+        ".lc-copy-{}-{}.tmp",
+        std::process::id(),
+        hash_thread_id(tid)
+    ));
     dest.with_file_name(name)
+}
+
+fn hash_thread_id(tid: std::thread::ThreadId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tid.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(unix)]
@@ -266,6 +298,27 @@ mod tests {
 
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(!dest.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copies_symlink_preserving_target() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let target = dir.path().join("target.txt");
+        let src = dir.path().join("src_link");
+        let dest = dir.path().join("dest_link");
+        fs::write(&target, b"link target content").expect("write target");
+        std::os::unix::fs::symlink(&target, &src).expect("create source symlink");
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy symlink");
+
+        assert_eq!(
+            fs::read_link(&dest).expect("read dest link"),
+            fs::read_link(&src).expect("read src link")
+        );
     }
 
     #[test]

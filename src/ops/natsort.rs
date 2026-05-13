@@ -86,6 +86,13 @@ pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
                     continue;
                 }
 
+                if ll.is_ascii_digit() {
+                    return Ordering::Greater;
+                }
+                if rr.is_ascii_digit() {
+                    return Ordering::Less;
+                }
+
                 if insensitive {
                     return_unless_equal!(ll.to_ascii_lowercase().cmp(&rr.to_ascii_lowercase()));
                 } else {
@@ -195,10 +202,6 @@ mod tests {
             "1.011.02",
         ];
         let words = [
-            "1-02",
-            "1-2",
-            "1-20",
-            "10-20",
             "fred",
             "jane",
             "pic   7",
@@ -224,6 +227,10 @@ mod tests {
             "x2-y08",
             "x2-y7",
             "x8-y8",
+            "1-02",
+            "1-2",
+            "1-20",
+            "10-20",
         ];
 
         sorted(&dates);
@@ -345,6 +352,10 @@ mod tests {
             (b"v2rc14", b"v2rc2"),
             (b"1", b"10"),
             (b"abc", b"abcd"),
+            (b"a", b"1"),
+            (b"abc", b"123"),
+            (b"1", b"a"),
+            (b"a1", b"1a"),
         ];
         for (a, b) in pairs {
             let direct = natsort(a, b, true);
