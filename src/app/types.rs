@@ -326,6 +326,16 @@ pub struct AppState {
     // Mouse support fields
     pub last_click_time: Option<std::time::Instant>,
     pub last_click_position: Option<(u16, u16)>, // (column, row)
+    // Drag-and-drop state
+    pub drag_active: bool,
+    pub drag_source_pane: ActivePanel,
+    pub drag_source_path: PathBuf,
+    pub drag_source_name: String,
+    pub drag_current_row: u16,
+    pub drag_current_col: u16,
+    // Scroll acceleration
+    pub scroll_accel: u8,
+    pub last_scroll_time: Option<std::time::Instant>,
 }
 
 // ============================================================================
@@ -859,6 +869,14 @@ impl AppState {
             last_click_time: None,
             last_click_position: None,
             pending_action: None,
+            drag_active: false,
+            drag_source_pane: ActivePanel::Left,
+            drag_source_path: PathBuf::new(),
+            drag_source_name: String::new(),
+            drag_current_row: 0,
+            drag_current_col: 0,
+            scroll_accel: 0,
+            last_scroll_time: None,
         }
     }
 

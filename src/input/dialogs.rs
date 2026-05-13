@@ -16,10 +16,66 @@ pub(crate) fn parse_octal_mode(input: &str) -> Option<u32> {
     if mode <= 0o7777 { Some(mode) } else { None }
 }
 
+enum ValidationResult {
+    Valid,
+    EmptyInput,
+    InvalidPath(String),
+    InvalidOctal(String),
+}
+
+fn validate_non_empty(input: &str) -> ValidationResult {
+    if input.trim().is_empty() {
+        ValidationResult::EmptyInput
+    } else {
+        ValidationResult::Valid
+    }
+}
+
+fn contains_parent_dir(input: &str) -> bool {
+    std::path::Path::new(input)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+fn validate_path_name(input: &str) -> ValidationResult {
+    match validate_non_empty(input) {
+        ValidationResult::Valid => {}
+        other => return other,
+    }
+    if contains_parent_dir(input) {
+        ValidationResult::InvalidPath(input.to_string())
+    } else {
+        ValidationResult::Valid
+    }
+}
+
+fn validate_octal(input: &str) -> ValidationResult {
+    match validate_non_empty(input) {
+        ValidationResult::Valid => {}
+        other => return other,
+    }
+    if parse_octal_mode(input).is_some() {
+        ValidationResult::Valid
+    } else {
+        ValidationResult::InvalidOctal(input.to_string())
+    }
+}
+
 fn dismiss_dialog_and_restore(state: &mut AppState) {
     state.mode = AppMode::Normal;
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
+    }
+}
+
+fn finish_confirmed_action(state: &mut AppState) {
+    state.dialog_selection = 0;
+    if state.status_message.is_some() {
+        state.mode = AppMode::Normal;
+        refresh_both(state);
+        if let Some(panel) = state.menu_restore_panel.take() {
+            set_active_panel(state, panel);
+        }
     }
 }
 
@@ -117,14 +173,7 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
                 return;
             }
             start_confirmed_action(state, running_job);
-            state.dialog_selection = 0;
-            if state.status_message.is_some() {
-                state.mode = AppMode::Normal;
-                refresh_both(state);
-                if let Some(panel) = state.menu_restore_panel.take() {
-                    set_active_panel(state, panel);
-                }
-            }
+            finish_confirmed_action(state);
         } else {
             dismiss_dialog(state);
             refresh_both(state);
@@ -170,14 +219,7 @@ fn handle_overwrite_dialog(
         _ => return,
     }
     start_confirmed_action(state, running_job);
-    state.dialog_selection = 0;
-    if state.status_message.is_some() {
-        state.mode = AppMode::Normal;
-        refresh_both(state);
-        if let Some(panel) = state.menu_restore_panel.take() {
-            set_active_panel(state, panel);
-        }
-    }
+    finish_confirmed_action(state);
 }
 
 fn set_pending_overwrite(state: &mut AppState) {
@@ -271,42 +313,61 @@ fn handle_input_action(
             state.dialog_cursor_pos = 0;
             return true;
         }
-        InputAction::CreateDirectory if !input.trim().is_empty() => {
-            if std::path::Path::new(&input)
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                state.status_message = Some("Invalid path: '..' not allowed".to_string());
-            } else {
-                let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
-                if let Err(err) = ops::create_directory(&target) {
-                    state.status_message = Some(format!("Create directory failed: {err}"));
-                } else {
-                    refresh_active(state);
+        InputAction::CreateDirectory => {
+            match validate_path_name(&input) {
+                ValidationResult::Valid => {}
+                ValidationResult::EmptyInput => {
+                    state.status_message = Some("Directory name cannot be empty".to_string());
+                    return false;
                 }
+                ValidationResult::InvalidPath(p) => {
+                    state.status_message = Some(format!("Invalid path: '..' not allowed in '{p}'"));
+                    return false;
+                }
+                _ => return false,
+            }
+            let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
+            if let Err(err) = ops::create_directory(&target) {
+                state.status_message = Some(format!("Create directory failed: {err}"));
             }
         }
-        InputAction::Rename if !input.is_empty() => {
-            if std::path::Path::new(&input)
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                state.status_message = Some("Invalid name: '..' not allowed".to_string());
-            } else if let Some(entry) = state.active_panel().current_entry()
+        InputAction::Rename => {
+            match validate_path_name(&input) {
+                ValidationResult::Valid => {}
+                ValidationResult::EmptyInput => {
+                    state.status_message = Some("New name cannot be empty".to_string());
+                    return false;
+                }
+                ValidationResult::InvalidPath(p) => {
+                    state.status_message = Some(format!("Invalid name: '..' not allowed in '{p}'"));
+                    return false;
+                }
+                _ => return false,
+            }
+            if let Some(entry) = state.active_panel().current_entry()
                 && let Err(err) = ops::rename_entry(&entry.path, &input)
             {
                 state.status_message = Some(format!("Rename failed: {err}"));
             }
         }
-        InputAction::Chmod if !input.is_empty() => {
-            if let Some(mode) = parse_octal_mode(&input) {
-                if let Some(entry) = state.active_panel().current_entry()
-                    && let Err(err) = ops::chmod(&entry.path, mode)
-                {
-                    state.status_message = Some(format!("Chmod failed: {err}"));
+        InputAction::Chmod => {
+            match validate_octal(&input) {
+                ValidationResult::Valid => {}
+                ValidationResult::EmptyInput => {
+                    state.status_message = Some("Octal mode cannot be empty".to_string());
+                    return false;
                 }
-            } else {
-                state.status_message = Some(format!("Invalid octal mode '{input}'"));
+                ValidationResult::InvalidOctal(o) => {
+                    state.status_message = Some(format!("Invalid octal mode '{o}'"));
+                    return false;
+                }
+                _ => return false,
+            }
+            let mode = parse_octal_mode(&input).unwrap_or(0);
+            if let Some(entry) = state.active_panel().current_entry()
+                && let Err(err) = ops::chmod(&entry.path, mode)
+            {
+                state.status_message = Some(format!("Chmod failed: {err}"));
             }
         }
         InputAction::Filter => {
@@ -319,7 +380,6 @@ fn handle_input_action(
         }
         InputAction::QuickCd => handle_quick_cd(state, &input),
         InputAction::FindFile => handle_find_file(state, &input, terminal_height),
-        _ => {}
     }
     state.mode = AppMode::Normal;
     state.dialog_input.clear();
@@ -331,7 +391,7 @@ fn handle_input_action(
     false
 }
 
-fn handle_dialog_text_edit(state: &mut AppState, key: KeyCode) {
+fn apply_text_edit(state: &mut AppState, key: KeyCode) {
     match key {
         KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
             state.dialog_cursor_pos -= 1;
@@ -389,6 +449,11 @@ fn handle_dialog_text_edit(state: &mut AppState, key: KeyCode) {
     }
 }
 
+#[cfg(test)]
+fn handle_dialog_text_edit(state: &mut AppState, key: KeyCode) {
+    apply_text_edit(state, key);
+}
+
 fn handle_input_dialog(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -412,7 +477,7 @@ fn handle_input_dialog(
             false
         }
         _ => {
-            handle_dialog_text_edit(state, key);
+            apply_text_edit(state, key);
             false
         }
     }
@@ -489,14 +554,7 @@ fn handle_copymove_dialog(
             return;
         }
         start_confirmed_action(state, running_job);
-        state.dialog_selection = 0;
-        if state.status_message.is_some() {
-            state.mode = AppMode::Normal;
-            refresh_both(state);
-            if let Some(panel) = state.menu_restore_panel.take() {
-                set_active_panel(state, panel);
-            }
-        }
+        finish_confirmed_action(state);
     } else {
         dismiss_dialog(state);
     }
