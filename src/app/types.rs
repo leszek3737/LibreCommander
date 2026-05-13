@@ -155,6 +155,7 @@ pub struct PanelState {
     pub history: Vec<PathBuf>,
     pub unfiltered_entries: Vec<FileEntry>,
     pub unfiltered_dirty: bool,
+    pub path_index: HashMap<PathBuf, usize>,
 }
 
 // ============================================================================
@@ -398,7 +399,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn is_dir(mut self, v: bool) -> Self {
-        let perms = self.cha.mode.permissions() as u32;
+        let perms = self.cha.mode.permissions();
         if v {
             self.cha.mode = ChaMode::new(0o040000 | perms);
         } else if self.cha.is_dir() {
@@ -407,7 +408,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn is_symlink(mut self, v: bool) -> Self {
-        let perms = self.cha.mode.permissions() as u32;
+        let perms = self.cha.mode.permissions();
         if v {
             self.cha.mode = ChaMode::new(0o120000 | perms);
         } else if self.cha.is_link() {
@@ -661,6 +662,7 @@ impl PanelState {
             history: Vec::new(),
             unfiltered_entries: Vec::new(),
             unfiltered_dirty: true,
+            path_index: HashMap::new(),
         }
     }
 

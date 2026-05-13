@@ -7,7 +7,15 @@ pub fn clean_path(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => match comps.last() {
-                Some(Component::RootDir | Component::Prefix(_)) => {}
+                // RootDir: cannot ascend past root — drop the ParentDir.
+                Some(Component::RootDir) => {}
+                // Prefix (Windows drive letter): ParentDir after prefix is
+                // drive-relative navigation (e.g. `C:..\foo`) and must be
+                // preserved, not silently dropped.
+                #[cfg(windows)]
+                Some(Component::Prefix(_)) => {
+                    comps.push(component);
+                }
                 Some(Component::Normal(_)) => {
                     comps.pop();
                 }
@@ -75,81 +83,84 @@ pub fn resolve_user_path(base: &Path, input: &str) -> PathBuf {
 }
 
 fn expand_env_vars(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
+    // Heuristic: env vars usually expand longer than their $NAME tokens.
+    // input.len() * 2 avoids most reallocations for typical usage while
+    // staying cheap to compute.
+    let mut result = String::with_capacity(input.len().saturating_mul(2));
+    let mut rest = input;
 
-    while i < len {
-        if chars[i] == '$' {
-            if let Some((consumed, replacement)) = expand_brace_var(&chars, i) {
-                result.push_str(&replacement);
-                i += consumed;
-                continue;
-            }
-            if let Some((consumed, replacement)) = expand_dollar_var(&chars, i) {
-                result.push_str(&replacement);
-                i += consumed;
-                continue;
-            }
+    while let Some(pos) = rest.find('$') {
+        result.push_str(&rest[..pos]);
+        // Safe: '$' is ASCII (1 byte), pos + 1 is a valid char boundary.
+        let after = &rest[pos + 1..];
+
+        if let Some((consumed, replacement)) = expand_brace_var(after) {
+            result.push_str(&replacement);
+            rest = &after[consumed..];
+        } else if let Some((consumed, replacement)) = expand_dollar_var(after) {
+            result.push_str(&replacement);
+            rest = &after[consumed..];
+        } else {
+            result.push('$');
+            rest = after;
         }
-        result.push(chars[i]);
-        i += 1;
     }
 
+    result.push_str(rest);
     result
 }
 
-fn expand_brace_var(chars: &[char], i: usize) -> Option<(usize, String)> {
-    if i + 1 >= chars.len() || chars[i + 1] != '{' {
+fn expand_brace_var(after_dollar: &str) -> Option<(usize, String)> {
+    if !after_dollar.starts_with('{') {
         return None;
     }
-    let end = find_brace_close(chars, i + 2)?;
-    if end > i + 2 {
-        let var_name: String = chars[i + 2..end].iter().collect();
-        if let Some(val) = env_var(&var_name) {
-            return Some((end - i + 1, val));
+    let inner = &after_dollar[1..];
+    let close = find_brace_close(inner)?;
+    let total = 1 + close + 1;
+    let var_name = &inner[..close];
+    if !var_name.is_empty() {
+        if let Some(val) = env_var(var_name) {
+            return Some((total, val));
         }
-        let literal: String = chars[i..=end].iter().collect();
-        Some((end - i + 1, literal))
-    } else {
-        Some((end - i + 1, "${}".to_string()))
+        return Some((total, format!("${{{var_name}}}")));
     }
+    Some((total, "${}".to_string()))
 }
 
-fn expand_dollar_var(chars: &[char], i: usize) -> Option<(usize, String)> {
-    if i + 1 >= chars.len() || !is_env_name_start(chars[i + 1]) {
+fn expand_dollar_var(after_dollar: &str) -> Option<(usize, String)> {
+    let first = after_dollar.chars().next()?;
+    if !is_env_name_start(first) {
         return None;
     }
-    let start = i + 1;
-    let mut end = start;
-    while end < chars.len() && is_env_name_char(chars[end]) {
-        end += 1;
-    }
-    let var_name: String = chars[start..end].iter().collect();
-    if let Some(val) = env_var(&var_name) {
-        Some((end - i, val))
+    let var_end = after_dollar
+        .char_indices()
+        .take_while(|&(_, c)| is_env_name_char(c))
+        .last()
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let var_name = &after_dollar[..var_end];
+    if let Some(val) = env_var(var_name) {
+        Some((var_end, val))
     } else {
-        let literal: String = chars[i..end].iter().collect();
-        Some((end - i, literal))
+        Some((var_end, format!("${var_name}")))
     }
 }
 
-fn find_brace_close(chars: &[char], from: usize) -> Option<usize> {
-    let mut depth = 1;
-    let mut i = from;
-    while i < chars.len() {
-        match chars[i] {
+fn find_brace_close(s: &str) -> Option<usize> {
+    let mut depth = 1u32;
+    let mut byte_pos = 0;
+    for c in s.chars() {
+        let c_len = c.len_utf8();
+        match c {
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(i);
+                    return Some(byte_pos);
                 }
             }
             _ => {}
         }
-        i += 1;
+        byte_pos += c_len;
     }
     None
 }
@@ -223,6 +234,19 @@ mod tests {
     fn clean_parentdir_past_prefix() {
         let input = Path::new("../a");
         assert_eq!(clean_path(input), PathBuf::from("../a"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn clean_parentdir_after_prefix_preserved() {
+        assert_eq!(
+            clean_path(Path::new(r"C:..\foo")),
+            PathBuf::from(r"C:..\foo")
+        );
+        assert_eq!(
+            clean_path(Path::new(r"C:..\..\foo")),
+            PathBuf::from(r"C:..\..\foo")
+        );
     }
 
     #[test]
@@ -370,5 +394,58 @@ mod tests {
     #[test]
     fn env_var_dollar_at_end() {
         assert_eq!(expand_path("end$"), PathBuf::from("end$"));
+    }
+
+    #[test]
+    fn find_brace_close_simple() {
+        assert_eq!(find_brace_close("FOO}rest"), Some(3));
+    }
+
+    #[test]
+    fn find_brace_close_empty_var() {
+        assert_eq!(find_brace_close("}rest"), Some(0));
+    }
+
+    #[test]
+    fn find_brace_close_nested() {
+        assert_eq!(find_brace_close("FOO${BAR}}rest"), Some(9));
+    }
+
+    #[test]
+    fn find_brace_close_balanced_inner() {
+        assert_eq!(find_brace_close("a{b}c}rest"), Some(5));
+    }
+
+    #[test]
+    fn find_brace_close_no_close() {
+        assert_eq!(find_brace_close("FOO${BAR"), None);
+    }
+
+    #[test]
+    fn find_brace_close_unbalanced_inner() {
+        assert_eq!(find_brace_close("a{b{c}rest"), None);
+    }
+
+    #[test]
+    fn expand_nested_braces_unknown() {
+        assert_eq!(
+            expand_path("${FOO${BAR}}/path"),
+            PathBuf::from("${FOO${BAR}}/path")
+        );
+    }
+
+    #[test]
+    fn expand_brace_unicode_varname() {
+        let var_name = format!("LC_TEST_UNI_{}", std::process::id());
+        let input = format!("${{{var_name}}}/日本語");
+        assert_eq!(expand_path(&input), PathBuf::from(&input));
+    }
+
+    #[test]
+    fn expand_dollar_unicode_after() {
+        let result = expand_env_vars("$HOME/日本語");
+        if let Ok(home) = std::env::var("HOME") {
+            assert_eq!(result, format!("{home}/日本語"));
+        }
     }
 }

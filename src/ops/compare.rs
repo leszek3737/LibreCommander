@@ -400,6 +400,7 @@ mod tests {
             history: vec![],
             unfiltered_entries: vec![],
             unfiltered_dirty: true,
+            path_index: HashMap::new(),
         };
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
@@ -419,6 +420,7 @@ mod tests {
             history: vec![],
             unfiltered_entries: vec![],
             unfiltered_dirty: true,
+            path_index: HashMap::new(),
         };
 
         let report = CompareReport {

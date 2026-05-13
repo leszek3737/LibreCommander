@@ -685,6 +685,7 @@ pub(crate) fn apply_search_filter(panel: &mut PanelState) {
         panel.filter.as_deref(),
         panel.sort_mode,
         panel.sort_options,
+        panel.show_hidden,
     );
     panel.cursor = 0;
     panel.scroll_offset = 0;
