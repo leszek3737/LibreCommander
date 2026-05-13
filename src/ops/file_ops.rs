@@ -1,5 +1,5 @@
 use crate::ops::chunk_copy;
-use crate::ops::helpers::path_contains_canonical;
+use crate::ops::helpers::path_starts_with;
 
 use std::fs;
 use std::io;
@@ -114,7 +114,7 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Resul
             "cannot copy directory into itself",
         ));
     }
-    if path_contains_canonical(&src_root, &dest_root) {
+    if path_starts_with(&src_root, &dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -156,7 +156,7 @@ pub fn copy_dir_recursive_with_progress(
             "cannot copy directory into itself",
         ));
     }
-    if path_contains_canonical(&src_root, &dest_root) {
+    if path_starts_with(&src_root, &dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -217,7 +217,7 @@ fn copy_dir_recursive_inner(
             "cannot copy directory into itself",
         ));
     }
-    if depth == 0 && path_contains_canonical(src_root, dest_root) {
+    if depth == 0 && path_starts_with(src_root, dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -283,7 +283,7 @@ fn copy_dir_recursive_with_progress_inner(
             "cannot copy directory into itself",
         ));
     }
-    if depth == 0 && path_contains_canonical(src_root, dest_root) {
+    if depth == 0 && path_starts_with(src_root, dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -565,7 +565,7 @@ fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) ->
             format!("cannot canonicalize {}: {e}", path.display()),
         )
     })?;
-    if canonical != root && !path_contains_canonical(root, &canonical) {
+    if canonical != root && !path_starts_with(root, &canonical) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "refusing to delete path outside requested directory",
@@ -701,7 +701,7 @@ fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
         .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize parent: {e}")))?;
     let canonical_child = canonicalize_with_nearest_existing_parent(child)
         .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize child: {e}")))?;
-    Ok(path_contains_canonical(&canonical_parent, &canonical_child))
+    Ok(path_starts_with(&canonical_parent, &canonical_child))
 }
 
 fn ensure_destination_absent(dest: &Path) -> io::Result<()> {

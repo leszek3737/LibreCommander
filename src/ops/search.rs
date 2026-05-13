@@ -2,14 +2,9 @@
 //!
 //! Full file search by name pattern or content.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-use std::path::PathBuf;
-
-#[cfg(test)]
 use std::fs::File;
-#[cfg(test)]
 use std::io::{BufRead, BufReader};
 
 use crate::app::types::FileEntry;
@@ -45,11 +40,8 @@ impl<T> Default for SearchOutcome<T> {
 pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
 
-#[cfg(test)]
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
-#[cfg(test)]
 pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
-#[cfg(test)]
 pub const MAX_CONTENT_RESULTS: usize = 1000;
 
 /// Inline char buffer that lives on the stack for sizes <= N,
@@ -128,7 +120,9 @@ impl FileSearch {
         item_count: &mut usize,
     ) {
         if depth >= MAX_SEARCH_DEPTH {
-            outcome.truncated = Some(TruncationReason::DepthLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::DepthLimit);
+            }
             return;
         }
         if !path.is_dir() {
@@ -150,7 +144,9 @@ impl FileSearch {
 
         for entry in entries {
             if *item_count >= MAX_SEARCH_ITEMS {
-                outcome.truncated = Some(TruncationReason::ItemLimit);
+                if outcome.truncated.is_none() {
+                    outcome.truncated = Some(TruncationReason::ItemLimit);
+                }
                 return;
             }
 
@@ -207,7 +203,7 @@ impl FileSearch {
         }
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_content(
         path: &Path,
         pattern: &str,
@@ -217,7 +213,7 @@ impl FileSearch {
         Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
@@ -238,7 +234,7 @@ impl FileSearch {
         outcome
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_content_recursive(
         path: &Path,
         pattern: &str,
@@ -252,15 +248,21 @@ impl FileSearch {
             return;
         }
         if depth >= MAX_SEARCH_DEPTH {
-            outcome.truncated = Some(TruncationReason::DepthLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::DepthLimit);
+            }
             return;
         }
         if *item_count >= MAX_SEARCH_ITEMS {
-            outcome.truncated = Some(TruncationReason::ItemLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::ItemLimit);
+            }
             return;
         }
         if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-            outcome.truncated = Some(TruncationReason::ContentResultLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::ContentResultLimit);
+            }
             return;
         }
 
@@ -282,8 +284,9 @@ impl FileSearch {
         );
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     fn search_content_recursive_inner(
         path: &Path,
         pattern: &str,
@@ -298,15 +301,21 @@ impl FileSearch {
             return;
         }
         if depth >= MAX_SEARCH_DEPTH {
-            outcome.truncated = Some(TruncationReason::DepthLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::DepthLimit);
+            }
             return;
         }
         if *item_count >= MAX_SEARCH_ITEMS {
-            outcome.truncated = Some(TruncationReason::ItemLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::ItemLimit);
+            }
             return;
         }
         if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-            outcome.truncated = Some(TruncationReason::ContentResultLimit);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::ContentResultLimit);
+            }
             return;
         }
 
@@ -322,11 +331,13 @@ impl FileSearch {
 
         for entry in entries {
             if *item_count >= MAX_SEARCH_ITEMS || outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                outcome.truncated = if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                    Some(TruncationReason::ContentResultLimit)
-                } else {
-                    Some(TruncationReason::ItemLimit)
-                };
+                if outcome.truncated.is_none() {
+                    outcome.truncated = if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                        Some(TruncationReason::ContentResultLimit)
+                    } else {
+                        Some(TruncationReason::ItemLimit)
+                    };
+                }
                 return;
             }
             let entry = match entry {
@@ -394,7 +405,7 @@ impl FileSearch {
         }
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     fn search_in_file(
         path: &Path,
         pattern: &str,
@@ -407,7 +418,9 @@ impl FileSearch {
             return;
         }
         if file_len > MAX_CONTENT_FILE_BYTES {
-            outcome.truncated = Some(TruncationReason::FileTooLarge);
+            if outcome.truncated.is_none() {
+                outcome.truncated = Some(TruncationReason::FileTooLarge);
+            }
             return;
         }
 
@@ -425,7 +438,9 @@ impl FileSearch {
 
         for (line_no, line) in reader.split(b'\n').enumerate() {
             if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                outcome.truncated = Some(TruncationReason::ContentResultLimit);
+                if outcome.truncated.is_none() {
+                    outcome.truncated = Some(TruncationReason::ContentResultLimit);
+                }
                 return;
             }
             let line = match line {
@@ -438,15 +453,19 @@ impl FileSearch {
                 }
             };
             if line.contains(&0) {
-                outcome.truncated = Some(TruncationReason::BinaryFile);
+                if outcome.truncated.is_none() {
+                    outcome.truncated = Some(TruncationReason::BinaryFile);
+                }
                 return;
             }
             if line.len() > MAX_CONTENT_LINE_BYTES {
-                outcome.truncated = Some(TruncationReason::LineTooLong);
+                if outcome.truncated.is_none() {
+                    outcome.truncated = Some(TruncationReason::LineTooLong);
+                }
                 continue;
             }
             let line_text = match String::from_utf8(line) {
-                Ok(line_text) => line_text,
+                Ok(s) => s.strip_suffix('\r').map(str::to_owned).unwrap_or(s),
                 Err(_) => continue,
             };
             let match_found = if case_sensitive {
@@ -895,6 +914,90 @@ mod tests {
 
         let results = FileSearch::search_files(&dir.join("root"), "target.txt", true, false);
         assert!(results.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_strips_crlf() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_crlf_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("crlf.txt"), b"hello world\r\nfoo bar\r\n").unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "world", false, false);
+
+        assert_eq!(outcome.matches.len(), 1);
+        assert!(!outcome.matches[0].2.contains('\r'));
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.truncated, None);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_preserves_first_truncation_reason() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_truncation_guard_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let large = File::create(dir.join("aaa_large.txt")).unwrap();
+        large.set_len(MAX_CONTENT_FILE_BYTES + 1).unwrap();
+
+        fs::write(dir.join("bbb_binary.bin"), b"needle\0needle\n").unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert!(outcome.matches.is_empty());
+        let reason = outcome.truncated.unwrap();
+        assert!(reason == TruncationReason::FileTooLarge || reason == TruncationReason::BinaryFile,);
+        assert_ne!(outcome.truncated, None);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_truncation_not_overwritten_by_later_trigger() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_truncation_guard2_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let large = File::create(dir.join("aaa_large.txt")).unwrap();
+        large.set_len(MAX_CONTENT_FILE_BYTES + 1).unwrap();
+
+        for i in 0..MAX_CONTENT_RESULTS + 1 {
+            fs::write(dir.join(format!("bbb_match_{i}.txt")), "needle\n").unwrap();
+        }
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert!(outcome.truncated.is_some());
+        assert_ne!(
+            outcome.truncated,
+            Some(TruncationReason::ContentResultLimit)
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
