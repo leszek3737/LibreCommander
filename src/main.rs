@@ -187,15 +187,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 }
 
-fn clear_search_state(state: &mut AppState) {
-    state.mode = AppMode::Normal;
-    state.search_query.clear();
-    state.search_cursor = 0;
-    let panel = state.active_panel_mut();
-    panel.filter = None;
-    panel_ops::refresh_active(state);
-}
-
 fn dispatch_event(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -227,7 +218,7 @@ fn dispatch_event(
                     input::dialogs::handle_dialog(state, viewer_state, running_job, key.code, size);
                 }
                 AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
-                    clear_search_state(state);
+                    input::mode_dispatch::clear_search_state(state);
                     input::mode_dispatch::handle_normal_mode(
                         state,
                         viewer_state,
@@ -275,7 +266,7 @@ fn dispatch_event(
                     input::mouse::MouseOutcome::Consumed => {}
                     input::mouse::MouseOutcome::NormalKey(key) => {
                         if matches!(state.mode, AppMode::Search) {
-                            clear_search_state(state);
+                            input::mode_dispatch::clear_search_state(state);
                         }
                         input::mode_dispatch::handle_normal_mode(
                             state,
