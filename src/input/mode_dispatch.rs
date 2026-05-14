@@ -137,14 +137,19 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
         KeyCode::Backspace => {
             state.search_query.pop();
             state.search_cursor = state.search_query.len();
-            let filter_query = if state.search_query.is_empty() {
-                None
+            if state.search_query.is_empty() {
+                state.mode = AppMode::Normal;
+                let panel = state.active_panel_mut();
+                panel.filter = None;
+                panel.cursor = 0;
+                panel.scroll_offset = 0;
+                panel_ops::refresh_active(state);
             } else {
-                Some(state.search_query.clone())
-            };
-            let panel = state.active_panel_mut();
-            panel.filter = filter_query;
-            apply_search_filter(panel);
+                let filter_query = Some(state.search_query.clone());
+                let panel = state.active_panel_mut();
+                panel.filter = filter_query;
+                apply_search_filter(panel);
+            }
         }
         KeyCode::Char(c) => {
             state.search_query.push(c);
