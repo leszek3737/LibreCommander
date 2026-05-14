@@ -12,6 +12,15 @@ use crate::{
     handle_ctrl_keys, handle_enter_key, handle_function_keys, handle_navigation_keys,
 };
 
+pub(crate) fn clear_search_state(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    state.search_query.clear();
+    state.search_cursor = 0;
+    let panel = state.active_panel_mut();
+    panel.filter = None;
+    panel_ops::refresh_active(state);
+}
+
 pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -117,14 +126,7 @@ pub(crate) fn handle_viewer_mode(
 pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_height: u16) {
     match key {
         KeyCode::Esc => {
-            state.mode = AppMode::Normal;
-            state.search_query.clear();
-            state.search_cursor = 0;
-            let panel = state.active_panel_mut();
-            panel.filter = None;
-            panel.cursor = 0;
-            panel.scroll_offset = 0;
-            panel_ops::refresh_active(state);
+            clear_search_state(state);
         }
         KeyCode::Enter => {
             state.mode = AppMode::Normal;
@@ -137,14 +139,14 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
         KeyCode::Backspace => {
             state.search_query.pop();
             state.search_cursor = state.search_query.len();
-            let filter_query = if state.search_query.is_empty() {
-                None
+            if state.search_query.is_empty() {
+                clear_search_state(state);
             } else {
-                Some(state.search_query.clone())
-            };
-            let panel = state.active_panel_mut();
-            panel.filter = filter_query;
-            apply_search_filter(panel);
+                let filter_query = Some(state.search_query.clone());
+                let panel = state.active_panel_mut();
+                panel.filter = filter_query;
+                apply_search_filter(panel);
+            }
         }
         KeyCode::Char(c) => {
             state.search_query.push(c);

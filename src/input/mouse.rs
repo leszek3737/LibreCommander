@@ -76,7 +76,7 @@ fn handle_mouse_scroll(
 ) {
     use crossterm::event::MouseEventKind;
 
-    if !matches!(state.mode, AppMode::Normal) {
+    if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return;
     }
     let panel_start_row = 1u16;
@@ -231,7 +231,7 @@ fn handle_mouse_function_bar(
     width: u16,
     height: u16,
 ) -> Option<MouseOutcome> {
-    if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal) {
+    if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return None;
     }
     if width == 0 {
@@ -263,7 +263,7 @@ fn handle_mouse_panels(
 ) {
     use std::time::Duration;
 
-    if !matches!(state.mode, AppMode::Normal) {
+    if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return;
     }
 
@@ -319,6 +319,9 @@ fn handle_mouse_panels(
         let is_dir = entry.is_dir();
         let path = entry.path.clone();
         if is_dir {
+            if matches!(state.mode, AppMode::Search) {
+                super::mode_dispatch::clear_search_state(state);
+            }
             let panel_mut = state.active_panel_mut();
             panel_mut.history.push(panel_mut.path.clone());
             panel_mut.path = path;

@@ -217,6 +217,17 @@ fn dispatch_event(
                 AppMode::Dialog(_) => {
                     input::dialogs::handle_dialog(state, viewer_state, running_job, key.code, size);
                 }
+                AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
+                    input::mode_dispatch::clear_search_state(state);
+                    input::mode_dispatch::handle_normal_mode(
+                        state,
+                        viewer_state,
+                        key.code,
+                        key.modifiers,
+                        size.height,
+                        terminal,
+                    );
+                }
                 AppMode::Search => {
                     input::mode_dispatch::handle_search_mode(state, key.code, size.height);
                 }
@@ -254,6 +265,9 @@ fn dispatch_event(
                 match outcome {
                     input::mouse::MouseOutcome::Consumed => {}
                     input::mouse::MouseOutcome::NormalKey(key) => {
+                        if matches!(state.mode, AppMode::Search) {
+                            input::mode_dispatch::clear_search_state(state);
+                        }
                         input::mode_dispatch::handle_normal_mode(
                             state,
                             viewer_state,
