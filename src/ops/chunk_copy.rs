@@ -358,7 +358,7 @@ mod tests {
         let src = dir.path().join("src.bin");
         let dest = dir.path().join("dest.bin");
 
-        let content: Vec<u8> = (0..1_048_576).map(|i| (i % 251) as u8).collect();
+        let content: Vec<u8> = (0..50_000_000).map(|i| (i % 251) as u8).collect();
         fs::write(&src, &content).expect("write source file");
 
         let (progress_tx, progress_rx) = mpsc::channel();
@@ -370,8 +370,9 @@ mod tests {
             copy_with_progress(&src, &dest_clone, &progress_tx, &cancel_clone, false)
         });
 
-        progress_rx.recv().expect("first progress tick");
-        cancel.store(true, Ordering::Relaxed);
+        for _ in progress_rx.iter() {
+            cancel.store(true, Ordering::Relaxed);
+        }
 
         let result = handle.join().expect("thread joins");
         assert!(result.is_err(), "copy should be canceled");
