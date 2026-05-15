@@ -15,6 +15,14 @@ use crate::ui::theme::Theme;
 
 const HELP_TEXT: &str = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
 
+const INDENT_BUF: &str =
+    "                                                                                ";
+
+fn indent_for_depth(depth: usize) -> &'static str {
+    let needed = depth * 2;
+    &INDENT_BUF[..needed.min(INDENT_BUF.len())]
+}
+
 fn truncate_name(name: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -148,8 +156,8 @@ pub fn render_directory_tree(
             break;
         }
 
-        let indent = "  ".repeat(entry.depth);
-        let indent_width = UnicodeWidthStr::width(indent.as_str());
+        let indent = indent_for_depth(entry.depth);
+        let indent_width = UnicodeWidthStr::width(indent);
         let prefix = if entry.is_dir {
             if entry.expanded { "- " } else { "+ " }
         } else {

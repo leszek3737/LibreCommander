@@ -134,7 +134,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut watcher = match fs::watcher::Watcher::new(watch_tx) {
         Ok(w) => Some(w),
         Err(err) => {
-            state.status_message = Some(format!("watcher disabled: {err}"));
+            let msg = format!("watcher disabled: {err}");
+            state.status_message = match state.status_message.take() {
+                Some(prev) => Some(format!("{prev}; {msg}")),
+                None => Some(msg),
+            };
             None
         }
     };
@@ -187,13 +191,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 }
 
-fn dispatch_event(
+fn dispatch_event<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     running_job: &mut Option<RunningJob>,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<B>,
     event: &Event,
-) -> io::Result<bool> {
+) -> Result<bool, B::Error> {
     match event {
         Event::Key(key) => {
             let size = terminal.size()?;

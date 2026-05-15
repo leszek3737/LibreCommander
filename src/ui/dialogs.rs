@@ -58,7 +58,6 @@ pub enum DialogKind<'a> {
     },
     Properties {
         info: PropertiesInfo,
-        scroll_offset: usize,
     },
     OverwriteConfirm {
         selection: usize,
@@ -119,11 +118,8 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
         } => {
             render_progress_dialog(f, dialog_area, title, message, *percent);
         }
-        DialogKind::Properties {
-            info,
-            scroll_offset,
-        } => {
-            render_properties_dialog(f, dialog_area, info, *scroll_offset);
+        DialogKind::Properties { info } => {
+            render_properties_dialog(f, dialog_area, info);
         }
         DialogKind::OverwriteConfirm { selection, files } => {
             render_overwrite_dialog(f, dialog_area, *selection, files);
@@ -470,18 +466,7 @@ pub fn render_help_dialog(
     let content_area = help_dialog_content_rect(area);
     let max_lines = content_area.height as usize;
     let all_lines: Vec<&str> = message.lines().collect();
-    let total_lines = if content_area.width > 0 {
-        let cw = content_area.width as usize;
-        all_lines
-            .iter()
-            .map(|l| {
-                let w = unicode_width::UnicodeWidthStr::width(*l);
-                w.max(1).div_ceil(cw)
-            })
-            .sum()
-    } else {
-        all_lines.len()
-    };
+    let total_lines = all_lines.len();
 
     let clamped_offset = scroll_offset.min(total_lines.saturating_sub(max_lines));
     let visible_lines: Vec<Line> = all_lines
@@ -583,12 +568,7 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
     f.render_widget(hint, chunks[2]);
 }
 
-pub fn render_properties_dialog(
-    f: &mut Frame,
-    area: Rect,
-    info: &PropertiesInfo,
-    _scroll_offset: usize,
-) {
+pub fn render_properties_dialog(f: &mut Frame, area: Rect, info: &PropertiesInfo) {
     let display_name = truncate_path(&info.name, 30);
     let title = format!("Properties — {display_name}");
     let block = dialog_block(&title, Theme::warning_dialog());
@@ -992,7 +972,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = centered_rect(50, 40, f.area());
-                render_properties_dialog(f, area, &info, 0);
+                render_properties_dialog(f, area, &info);
             })
             .unwrap();
 

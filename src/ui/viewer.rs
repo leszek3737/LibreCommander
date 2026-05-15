@@ -234,38 +234,7 @@ impl ViewerState {
         }
 
         if self.is_hex_mode() {
-            let bytes_per_line = HEX_BYTES_PER_LINE;
-            let total_lines = self.raw_bytes.len().div_ceil(bytes_per_line);
-            let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
-            let mut hex_buf = String::with_capacity(128);
-            for line_idx in 0..total_lines {
-                let offset = line_idx * bytes_per_line;
-                let slice_len = (self.raw_bytes.len() - offset).min(bytes_per_line);
-                let slice = &self.raw_bytes[offset..offset + slice_len];
-                hex_buf.clear();
-                format_hex_line_to_buffer(offset, slice, &mut hex_buf);
-                let lower_hex: String = hex_buf.chars().flat_map(|c| c.to_lowercase()).collect();
-                let offset_prefix_len = format!("{offset:08x}: ").len();
-                let mut search_start = offset_prefix_len;
-                while let Some(pos) = lower_hex[search_start..].find(&lower_query) {
-                    let match_start = search_start + pos;
-                    let match_end = match_start + lower_query.len();
-                    let global_idx = self.search_matches.len();
-                    self.search_matches
-                        .push((line_idx, match_start, lower_query.len()));
-                    self.search_matches_by_line.push(SearchLineMatch {
-                        line: line_idx,
-                        global_idx,
-                        start_byte: match_start,
-                        end_byte: match_end,
-                    });
-                    search_start = match_end;
-                }
-            }
-            if !self.search_matches.is_empty() {
-                self.current_match = Some(0);
-                self.scroll_offset = self.search_matches[0].0.min(self.max_scroll());
-            }
+            self.search_hex(query);
             return;
         }
 
@@ -326,6 +295,82 @@ impl ViewerState {
             self.current_match = Some(0);
             self.scroll_to_current_match(page_height);
         }
+    }
+
+    fn search_hex(&mut self, query: &str) {
+        let bpl = HEX_BYTES_PER_LINE;
+        let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
+        let query_bytes = Self::parse_hex_query(&lower_query);
+
+        if let Some(ref needle) = query_bytes {
+            let mut pos = 0;
+            let mut visited_lines = std::collections::HashSet::new();
+            while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
+                let abs_offset = pos + idx;
+                let line_idx = abs_offset / bpl;
+                let byte_in_line = abs_offset % bpl;
+
+                let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
+                let match_len = needle.len().min(bpl - byte_in_line);
+
+                if visited_lines.insert(line_idx) {
+                    let global_idx = self.search_matches.len();
+                    self.search_matches
+                        .push((line_idx, hex_col, match_len * 3 - 1));
+                    self.search_matches_by_line.push(SearchLineMatch {
+                        line: line_idx,
+                        global_idx,
+                        start_byte: hex_col,
+                        end_byte: hex_col + match_len * 3 - 1,
+                    });
+                }
+
+                pos = abs_offset + 1;
+            }
+        } else {
+            let mut hex_buf = String::with_capacity(128);
+            let total_lines = self.raw_bytes.len().div_ceil(bpl);
+            let prefix_len = 10;
+            for line_idx in 0..total_lines {
+                let offset = line_idx * bpl;
+                let slice_len = (self.raw_bytes.len() - offset).min(bpl);
+                let slice = &self.raw_bytes[offset..offset + slice_len];
+                hex_buf.clear();
+                format_hex_offset_and_bytes(offset, slice, &mut hex_buf);
+                let mut search_start = prefix_len;
+                while let Some(pos) = hex_buf[search_start..].find(&lower_query) {
+                    let match_start = search_start + pos;
+                    let match_end = match_start + lower_query.len();
+                    let global_idx = self.search_matches.len();
+                    self.search_matches
+                        .push((line_idx, match_start, lower_query.len()));
+                    self.search_matches_by_line.push(SearchLineMatch {
+                        line: line_idx,
+                        global_idx,
+                        start_byte: match_start,
+                        end_byte: match_end,
+                    });
+                    search_start = match_end;
+                }
+            }
+        }
+
+        if !self.search_matches.is_empty() {
+            self.current_match = Some(0);
+            self.scroll_offset = self.search_matches[0].0.min(self.max_scroll());
+        }
+    }
+
+    fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
+        let cleaned: String = query.chars().filter(|c| !c.is_whitespace()).collect();
+        if cleaned.len() < 2 || !cleaned.len().is_multiple_of(2) {
+            return None;
+        }
+        let lower: String = cleaned.chars().flat_map(|c| c.to_lowercase()).collect();
+        (0..lower.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&lower[i..i + 2], 16).ok())
+            .collect()
     }
 
     fn scroll_to_current_match(&mut self, page_height: usize) {
@@ -895,6 +940,37 @@ fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
         buf.push(c);
     }
     buf.push('|');
+}
+
+fn format_hex_offset_and_bytes(offset: usize, bytes: &[u8], buf: &mut String) {
+    use std::fmt::Write;
+    buf.clear();
+    let _ = write!(buf, "{offset:08x}: ");
+    for (i, b) in bytes.iter().enumerate() {
+        if i == 8 {
+            buf.push(' ');
+        }
+        let _ = write!(buf, "{b:02x} ");
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    if needle.len() == 1 {
+        return haystack.iter().position(|&b| b == needle[0]);
+    }
+    let first = needle[0];
+    let end = haystack.len() - needle.len() + 1;
+    let mut i = 0;
+    while i < end {
+        if haystack[i] == first && &haystack[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]

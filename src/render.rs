@@ -319,6 +319,5 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
             group: group.clone(),
             file_type: file_type.to_string(),
         },
-        scroll_offset: 0,
     }
 }
