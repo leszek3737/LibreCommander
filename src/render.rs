@@ -284,7 +284,10 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
         is_symlink,
     } = dialog_kind
     else {
-        unreachable!("properties_to_ui_dialog called with non-Properties variant");
+        return dialogs::DialogKind::Error {
+            title: "Error".into(),
+            message: "Internal error: properties dialog expected".into(),
+        };
     };
     let file_type = if *is_symlink {
         "Symlink"

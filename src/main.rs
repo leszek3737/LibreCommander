@@ -151,7 +151,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     panel_ops::refresh_panel(&mut state.right_panel, 0);
     watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
 
-    state.terminal_size = terminal.size().ok().map(|s| (s.width, s.height));
+    state.terminal_size = Some(terminal.size().map(|s| (s.width, s.height))?);
     let mut dirty = true;
 
     loop {
@@ -182,7 +182,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
             let event = event::read()?;
-            state.terminal_size = terminal.size().ok().map(|s| (s.width, s.height));
+            state.terminal_size = Some(terminal.size().map(|s| (s.width, s.height))?);
             dirty = dispatch_event(
                 &mut state,
                 &mut viewer_state,
@@ -505,26 +505,17 @@ fn confirm_delete(state: &mut AppState) {
     );
 }
 
-fn shift_move_cursor(panel: &mut PanelState, direction: i8, visible: usize) {
-    if direction == -1 {
-        if panel.cursor > 0 {
-            panel.toggle_selection_at(panel.cursor);
-            panel.cursor -= 1;
-            if panel.cursor < panel.scroll_offset {
-                panel.scroll_offset = panel.cursor;
-            }
-        }
-    } else {
-        let len = panel.entries.len();
-        if len > 0 {
-            panel.toggle_selection_at(panel.cursor);
-            if panel.cursor < len - 1 {
-                panel.cursor += 1;
-                if panel.cursor >= panel.scroll_offset + visible {
-                    panel.scroll_offset = panel.cursor.saturating_sub(visible) + 1;
-                }
-            }
-        }
+fn shift_move_cursor_up(panel: &mut PanelState) {
+    if panel.cursor > 0 {
+        panel.toggle_selection_at(panel.cursor);
+        panel.move_cursor_up();
+    }
+}
+
+fn shift_move_cursor_down(panel: &mut PanelState, visible: usize) {
+    if !panel.entries.is_empty() {
+        panel.toggle_selection_at(panel.cursor);
+        panel.move_cursor_down(visible);
     }
 }
 
@@ -536,10 +527,10 @@ pub(crate) fn handle_navigation_keys(
 ) {
     match key {
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
-            shift_move_cursor(state.active_panel_mut(), -1, visible);
+            shift_move_cursor_up(state.active_panel_mut());
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
-            shift_move_cursor(state.active_panel_mut(), 1, visible);
+            shift_move_cursor_down(state.active_panel_mut(), visible);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             let panel = state.active_panel_mut();

@@ -1953,6 +1953,10 @@ fn progress_dialog_nan_percent_handled() {
     let buf = terminal.backend().buffer();
     let text = buffer_to_string(buf);
     assert!(!text.is_empty());
+    assert!(
+        !text.contains("NaN"),
+        "progress dialog should not render 'NaN' as percentage, got:\n{text}"
+    );
 }
 
 #[test]
