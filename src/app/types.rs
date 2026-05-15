@@ -402,8 +402,10 @@ impl FileEntryBuilder {
         let perms = self.cha.mode.permissions();
         if v {
             self.cha.mode = ChaMode::new(0o040000 | perms);
+            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         } else if self.cha.is_dir() {
             self.cha.mode = ChaMode::new(0o100000 | perms);
+            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         }
         self
     }
@@ -411,8 +413,10 @@ impl FileEntryBuilder {
         let perms = self.cha.mode.permissions();
         if v {
             self.cha.mode = ChaMode::new(0o120000 | perms);
+            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         } else if self.cha.is_link() {
             self.cha.mode = ChaMode::new(0o100000 | perms);
+            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         }
         self
     }
@@ -622,7 +626,10 @@ impl FileEntry {
     pub fn display_modified(&self) -> String {
         use std::time::UNIX_EPOCH;
 
-        if let Ok(duration) = self.mtime().duration_since(UNIX_EPOCH) {
+        let Some(mtime) = self.cha.mtime else {
+            return "Unknown".to_string();
+        };
+        if let Ok(duration) = mtime.duration_since(UNIX_EPOCH) {
             i64::try_from(duration.as_secs())
                 .ok()
                 .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
@@ -1832,5 +1839,70 @@ mod tests {
             panel.scroll_offset + visible_height > panel.cursor,
             "cursor must be visible within scroll window"
         );
+    }
+
+    #[test]
+    fn file_entry_builder_clears_dir_target_follow_when_type_changes() {
+        let dir_entry = FileEntry::builder()
+            .name("d")
+            .path(PathBuf::from("d"))
+            .is_dir(true)
+            .build();
+        let mut cha = dir_entry.cha;
+        cha.kind.insert(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
+        assert!(cha.kind.contains(ChaKind::DIR_TARGET));
+        assert!(cha.kind.contains(ChaKind::FOLLOW));
+
+        let cleared = FileEntry::builder()
+            .name("d")
+            .path(PathBuf::from("d"))
+            .cha(cha)
+            .is_dir(false)
+            .build();
+        assert!(!cleared.cha.kind.contains(ChaKind::DIR_TARGET));
+        assert!(!cleared.cha.kind.contains(ChaKind::FOLLOW));
+
+        let link_entry = FileEntry::builder()
+            .name("l")
+            .path(PathBuf::from("l"))
+            .is_symlink(true)
+            .build();
+        let mut cha = link_entry.cha;
+        cha.kind.insert(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
+        assert!(cha.kind.contains(ChaKind::DIR_TARGET));
+        assert!(cha.kind.contains(ChaKind::FOLLOW));
+
+        let cleared = FileEntry::builder()
+            .name("l")
+            .path(PathBuf::from("l"))
+            .cha(cha)
+            .is_symlink(false)
+            .build();
+        assert!(!cleared.cha.kind.contains(ChaKind::DIR_TARGET));
+        assert!(!cleared.cha.kind.contains(ChaKind::FOLLOW));
+    }
+
+    #[test]
+    fn mtime_none_displays_unknown_and_sorts_after_known() {
+        let no_mtime = FileEntry::builder()
+            .name("unknown.txt")
+            .path(PathBuf::from("unknown.txt"))
+            .build();
+        assert_eq!(no_mtime.display_modified(), "Unknown");
+
+        let with_mtime = FileEntry::builder()
+            .name("known.txt")
+            .path(PathBuf::from("known.txt"))
+            .modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+            .build();
+
+        let mut entries = vec![no_mtime, with_mtime];
+        crate::ops::sorting::sort_entries(
+            &mut entries,
+            SortMode::ModTimeDesc,
+            SortOptions::default(),
+        );
+        assert_eq!(entries[0].name, "known.txt");
+        assert_eq!(entries[1].name, "unknown.txt");
     }
 }

@@ -134,6 +134,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
             state.search_cursor = 0;
             let panel = state.active_panel_mut();
             panel.unfiltered_entries.clear();
+            panel.filter = None;
             panel_ops::refresh_active(state);
         }
         KeyCode::Backspace => {

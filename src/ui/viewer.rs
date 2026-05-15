@@ -1439,4 +1439,27 @@ mod tests {
             assert_eq!(back + sub, row, "roundtrip failed for visual row {row}");
         }
     }
+
+    #[test]
+    fn search_deduplicates_matches_after_multi_char_lowercase() {
+        let content = "Straße\nmessage\n";
+        let file = create_test_file(content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        state.search("ss", 20);
+
+        assert!(
+            !state.search_matches.is_empty(),
+            "expected at least one match"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for m in &state.search_matches {
+            assert!(seen.insert(*m), "duplicate match tuple: {:?}", m);
+        }
+        assert!(
+            state.search_matches.len() <= 4,
+            "expected at most 4 matches, got {}",
+            state.search_matches.len()
+        );
+    }
 }

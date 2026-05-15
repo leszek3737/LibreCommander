@@ -476,4 +476,61 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn natsort_unicode_case_insensitive_matches_key_order() {
+        let names = ["café", "CAFÉ", "Café", "cafe", "CAFE"];
+        let mut via_natsort = names.to_vec();
+        via_natsort.sort_by(|a, b| natsort(a.as_bytes(), b.as_bytes(), true));
+
+        let mut via_key = names.to_vec();
+        via_key.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+
+        assert_eq!(
+            via_natsort, via_key,
+            "natsort and natsort_key must agree for Unicode input"
+        );
+
+        assert_ne!(
+            natsort_key("café".as_bytes(), true),
+            natsort_key("CAFÉ".as_bytes(), true),
+            "case-insensitive is ASCII-only: café ≠ CAFÉ (non-ASCII bytes unchanged)"
+        );
+        assert_eq!(
+            natsort_key("cafe".as_bytes(), true),
+            natsort_key("CAFE".as_bytes(), true),
+            "case-insensitive folds ASCII: cafe == CAFE"
+        );
+
+        let cafe_pos: Vec<usize> = via_key
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| **s == "cafe" || **s == "CAFE")
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            cafe_pos.windows(2).all(|w| w[1] - w[0] == 1),
+            "cafe variants must be adjacent: {:?}",
+            via_key,
+        );
+
+        let intl = ["Straße", "STRASSE", "straße", "Żółć", "żółć", "ŻÓŁĆ"];
+        for a in &intl {
+            for b in &intl {
+                assert_eq!(
+                    natsort(a.as_bytes(), b.as_bytes(), true),
+                    natsort_key(a.as_bytes(), true).cmp(&natsort_key(b.as_bytes(), true)),
+                    "natsort vs natsort_key mismatch for {:?} vs {:?}",
+                    a,
+                    b,
+                );
+            }
+        }
+
+        assert_ne!(
+            natsort_key("żółć".as_bytes(), true),
+            natsort_key("ŻÓŁĆ".as_bytes(), true),
+            "case-insensitive is ASCII-only: ŻÓŁĆ bytes differ from żółć"
+        );
+    }
 }

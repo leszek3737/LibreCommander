@@ -89,7 +89,7 @@ fn confirm_enter_without_pending_action_dismisses_dialog() {
 }
 
 #[test]
-fn search_enter_keeps_current_filter() {
+fn search_enter_clears_filter_and_refreshes_from_disk() {
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("alpha.txt"), b"alpha").unwrap();
     std::fs::write(temp_dir.path().join("beta.txt"), b"beta").unwrap();
@@ -111,7 +111,7 @@ fn search_enter_keeps_current_filter() {
 
     assert_eq!(state.mode, AppMode::Normal);
     assert_eq!(state.search_query, "");
-    assert_eq!(state.left_panel.filter.as_deref(), Some("alpha"));
+    assert_eq!(state.left_panel.filter.as_deref(), None);
     assert!(
         state
             .left_panel
@@ -124,8 +124,43 @@ fn search_enter_keeps_current_filter() {
             .left_panel
             .entries
             .iter()
-            .all(|entry| entry.name == ".." || entry.name.contains("alpha"))
+            .any(|entry| entry.name == "beta.txt")
     );
+}
+
+#[test]
+fn search_enter_clears_filter_and_restores_unfiltered_entries() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("alpha.txt"), b"alpha").unwrap();
+    std::fs::write(temp_dir.path().join("beta.txt"), b"beta").unwrap();
+
+    let mut state = AppState {
+        mode: AppMode::Search,
+        search_query: "alpha".to_string(),
+        search_cursor: 5,
+        ..Default::default()
+    };
+    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
+    state.left_panel.unfiltered_entries = vec![
+        TestEntry::new("alpha.txt").size(1).build(),
+        TestEntry::new("beta.txt").size(2).build(),
+    ];
+    state.left_panel.filter = Some("alpha".to_string());
+
+    handle_search_mode(&mut state, KeyCode::Enter, 24);
+
+    assert_eq!(state.mode, AppMode::Normal);
+    assert_eq!(state.search_query, "");
+    assert!(state.left_panel.filter.is_none());
+    let names: Vec<&str> = state
+        .left_panel
+        .entries
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert!(names.contains(&"alpha.txt"), "alpha.txt missing: {names:?}");
+    assert!(names.contains(&"beta.txt"), "beta.txt missing: {names:?}");
 }
 
 #[test]
