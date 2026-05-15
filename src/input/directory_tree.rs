@@ -7,7 +7,8 @@ use crate::app::panel_ops::refresh_active;
 
 pub(crate) fn handle_directory_tree(
     state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
+    _viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     terminal_height: u16,
 ) {
@@ -63,11 +64,9 @@ pub(crate) fn handle_directory_tree(
                 }
             } else if is_file {
                 let path = state.tree_entries[selected].path.clone();
-                if let Ok(vs) = viewer::ViewerState::open(&path) {
-                    *viewer_state = Some(vs);
-                    state.prev_mode = Some(state.mode.clone());
-                    state.mode = AppMode::Viewing;
-                }
+                *viewer_loader = Some(viewer::ViewerState::open_background(path));
+                state.prev_mode = Some(state.mode.clone());
+                state.mode = AppMode::Viewing;
             }
         }
         KeyCode::Char('c') => {
@@ -154,7 +153,7 @@ mod tests {
             tree_entries: make_tree_entries(10),
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::Esc, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Esc, 24);
         assert_eq!(state.mode, AppMode::Normal);
     }
 
@@ -166,7 +165,7 @@ mod tests {
             tree_selected: 0,
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::Up, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Up, 24);
         assert_eq!(state.tree_selected, 0);
     }
 
@@ -178,7 +177,7 @@ mod tests {
             tree_selected: 0,
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::Down, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
         assert_eq!(state.tree_selected, 1);
     }
 
@@ -190,7 +189,7 @@ mod tests {
             tree_selected: 4,
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::Down, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
         assert_eq!(state.tree_selected, 4);
     }
 
@@ -203,7 +202,7 @@ mod tests {
             tree_scroll: 20,
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::Home, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Home, 24);
         assert_eq!(state.tree_selected, 0);
         assert_eq!(state.tree_scroll, 0);
     }
@@ -216,7 +215,7 @@ mod tests {
             tree_selected: 0,
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::End, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::End, 24);
         assert_eq!(state.tree_selected, 49);
     }
 
@@ -227,11 +226,11 @@ mod tests {
             tree_entries: vec![],
             ..Default::default()
         };
-        handle_directory_tree(&mut state, &mut None, KeyCode::Down, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
         assert_eq!(state.tree_selected, 0);
-        handle_directory_tree(&mut state, &mut None, KeyCode::End, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::End, 24);
         assert_eq!(state.tree_selected, 0);
-        handle_directory_tree(&mut state, &mut None, KeyCode::Enter, 24);
+        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Enter, 24);
     }
 
     #[test]

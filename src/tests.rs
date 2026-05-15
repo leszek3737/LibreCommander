@@ -182,7 +182,14 @@ fn menu_toggle_hidden_files_refreshes_active_panel() {
     state.menu_selected = 3;
     state.menu_item_selected = 0;
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert_eq!(state.mode, AppMode::Normal);
     assert!(state.left_panel.show_hidden);
@@ -204,7 +211,14 @@ fn menu_rename_opens_input_dialog_with_current_name() {
     state.menu_selected = 1;
     state.menu_item_selected = 7;
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert_eq!(state.dialog_input, "old.txt");
     assert!(matches!(
@@ -278,7 +292,14 @@ fn menu_history_opens_picker() {
     let mut state = state;
     state.command_history.push_back("ls -la".to_string());
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::History));
     assert_eq!(state.picker_selected, 0);
@@ -296,7 +317,14 @@ fn menu_hotlist_opens_picker() {
     };
     state.directory_hotlist.push(tmp.path().to_path_buf());
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
     assert_eq!(state.picker_selected, 0);
@@ -313,6 +341,7 @@ fn shift_down_toggles_current_then_moves() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Down,
         KeyModifiers::SHIFT,
@@ -338,6 +367,7 @@ fn shift_up_toggles_current_then_moves() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Up,
         KeyModifiers::SHIFT,
@@ -367,6 +397,7 @@ fn shift_selection_preserves_unrelated_entries() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::Down,
         KeyModifiers::SHIFT,
         24,
@@ -392,6 +423,7 @@ fn shift_arrow_then_shift_arrow_toggles_two() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::Down,
         KeyModifiers::SHIFT,
         24,
@@ -399,6 +431,7 @@ fn shift_arrow_then_shift_arrow_toggles_two() {
     );
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Down,
         KeyModifiers::SHIFT,
@@ -516,7 +549,7 @@ fn directory_tree_page_down_uses_terminal_height() {
         ..Default::default()
     };
 
-    directory_tree::handle_directory_tree(&mut state, &mut None, KeyCode::PageDown, 12);
+    directory_tree::handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::PageDown, 12);
 
     assert_eq!(state.tree_selected, 9);
     assert_eq!(state.tree_scroll, 9);
@@ -539,7 +572,7 @@ fn directory_tree_page_up_uses_terminal_height() {
         ..Default::default()
     };
 
-    directory_tree::handle_directory_tree(&mut state, &mut None, KeyCode::PageUp, 12);
+    directory_tree::handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::PageUp, 12);
 
     assert_eq!(state.tree_selected, 16);
     assert_eq!(state.tree_scroll, 16);
@@ -786,7 +819,14 @@ fn user_menu_file_menu_no_menu_file_shows_error() {
     };
     state.left_panel.path = tmp.path().to_path_buf();
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert!(matches!(
         state.mode,
@@ -816,7 +856,14 @@ fn user_menu_file_menu_with_entries_opens_picker() {
     };
     state.left_panel.path = tmp.path().to_path_buf();
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::UserMenu));
     assert_eq!(state.picker_selected, 0);
@@ -845,6 +892,7 @@ fn f2_loads_user_menu_file_with_entries() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::F(2),
         KeyModifiers::NONE,
         24,
@@ -865,6 +913,7 @@ fn f2_no_user_menu_file_shows_error() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::F(2),
         KeyModifiers::NONE,
@@ -991,6 +1040,7 @@ fn ctrl_alt_s_starts_search_mode() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::Char('s'),
         KeyModifiers::CONTROL | KeyModifiers::ALT,
         24,
@@ -1013,6 +1063,7 @@ fn ctrl_alt_h_toggles_hidden() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Char('h'),
         KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -1037,6 +1088,7 @@ fn ctrl_alt_r_refreshes() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Char('r'),
         KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -1066,6 +1118,7 @@ fn ctrl_alt_u_swaps_panels() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::Char('u'),
         KeyModifiers::CONTROL | KeyModifiers::ALT,
         24,
@@ -1089,6 +1142,7 @@ fn alt_j_does_not_start_search_mode() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::Char('j'),
         KeyModifiers::ALT,
         24,
@@ -1108,6 +1162,7 @@ fn alt_k_does_not_move_cursor() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Char('k'),
         KeyModifiers::ALT,
@@ -1131,6 +1186,7 @@ fn shift_j_falls_through_to_navigation_down() {
     handle_normal_mode(
         &mut state,
         &mut None,
+        &mut None,
         KeyCode::Char('j'),
         KeyModifiers::SHIFT,
         24,
@@ -1152,6 +1208,7 @@ fn shift_k_falls_through_to_navigation_up() {
 
     handle_normal_mode(
         &mut state,
+        &mut None,
         &mut None,
         KeyCode::Char('k'),
         KeyModifiers::SHIFT,
@@ -1182,7 +1239,7 @@ fn dialog_overlay_renders_error_text() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -1203,7 +1260,7 @@ fn menu_dropdown_renders_over_panels() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -1224,7 +1281,7 @@ fn list_picker_overlay_renders_title() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -1246,7 +1303,7 @@ fn help_dialog_renders_help_text() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -1380,6 +1437,7 @@ fn dispatch_resize_event_returns_true() {
     let result = super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut job,
         &mut terminal,
         &Event::Resize(80, 24),
@@ -1401,6 +1459,7 @@ fn dispatch_unhandled_event_returns_false() {
     let result = super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut job,
         &mut terminal,
         &Event::FocusGained,
@@ -1448,7 +1507,14 @@ fn dispatch_mouse_click_moves_cursor() {
     let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
 
-    let result = super::dispatch_event(&mut state, &mut viewer, &mut job, &mut terminal, &event);
+    let result = super::dispatch_event(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        &mut job,
+        &mut terminal,
+        &event,
+    );
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -1481,7 +1547,14 @@ fn menu_toggle_hidden_files_reverse_refreshes_active_panel() {
     state.menu_selected = 3;
     state.menu_item_selected = 0;
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert!(!state.left_panel.show_hidden);
 }
@@ -1500,7 +1573,14 @@ fn menu_rename_confirms_and_renames_file() {
     state.menu_selected = 1;
     state.menu_item_selected = 7;
 
-    handle_menu_mode(&mut state, &mut None, KeyCode::Enter, 24, &mut terminal);
+    handle_menu_mode(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        24,
+        &mut terminal,
+    );
 
     assert!(matches!(
         state.mode,
@@ -1630,7 +1710,13 @@ fn f7_opens_create_directory_dialog() {
     let mut state = AppState::default();
     let mut viewer = None;
     let mut terminal = test_terminal();
-    handle_function_keys(&mut state, &mut viewer, KeyCode::F(7), &mut terminal);
+    handle_function_keys(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        KeyCode::F(7),
+        &mut terminal,
+    );
     assert!(matches!(
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Input {
@@ -1646,7 +1732,13 @@ fn f9_enters_menu_mode() {
     let mut state = AppState::default();
     let mut viewer = None;
     let mut terminal = test_terminal();
-    handle_function_keys(&mut state, &mut viewer, KeyCode::F(9), &mut terminal);
+    handle_function_keys(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        KeyCode::F(9),
+        &mut terminal,
+    );
     assert!(matches!(state.mode, AppMode::Menu));
     assert_eq!(state.menu_item_selected, 0);
 }
@@ -1656,7 +1748,13 @@ fn f10_sets_should_quit() {
     let mut state = AppState::default();
     let mut viewer = None;
     let mut terminal = test_terminal();
-    handle_function_keys(&mut state, &mut viewer, KeyCode::F(10), &mut terminal);
+    handle_function_keys(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        KeyCode::F(10),
+        &mut terminal,
+    );
     assert!(state.should_quit);
 }
 
@@ -1685,7 +1783,7 @@ fn run_selected_menu_action_fallback_to_normal() {
     let mut state = AppState::default();
     state.mode = AppMode::Menu;
     state.menu_item_selected = 99;
-    run_selected_menu_action(&mut state, &mut None, 24, &mut test_terminal());
+    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
     assert!(matches!(state.mode, AppMode::Normal));
 }
 
@@ -1944,7 +2042,7 @@ fn progress_dialog_nan_percent_handled() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let text = buffer_to_string(buf);
@@ -1965,7 +2063,7 @@ fn dialog_with_long_title_does_not_overflow() {
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let text = buffer_to_string(buf);
@@ -1981,7 +2079,7 @@ fn dialog_overlay_centered() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
     let buf = terminal.backend().buffer().clone();
     assert!(buf.cell((20, 7)).is_some());
@@ -1994,7 +2092,7 @@ fn menu_bar_rendered_at_top() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let cell = buf.cell((39, 0)).unwrap();
@@ -2007,7 +2105,7 @@ fn status_bar_at_bottom() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state))
+        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let cell = buf.cell((2, 23)).unwrap();

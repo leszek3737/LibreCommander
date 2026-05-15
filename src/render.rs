@@ -23,16 +23,21 @@ pub(crate) fn render_ui(
     f: &mut Frame,
     state: &AppState,
     viewer_state: &Option<viewer::ViewerState>,
+    viewer_loader: &Option<viewer::ViewerLoader>,
 ) {
-    if state.mode == AppMode::Viewing
-        && let Some(vs) = viewer_state
-    {
-        if vs.is_hex_mode() {
-            viewer::render_hex_view(f, f.area(), vs);
-        } else {
-            viewer::render_viewer(f, f.area(), vs);
+    if state.mode == AppMode::Viewing {
+        if let Some(vs) = viewer_state {
+            if vs.is_hex_mode() {
+                viewer::render_hex_view(f, f.area(), vs);
+            } else {
+                viewer::render_viewer(f, f.area(), vs);
+            }
+            return;
         }
-        return;
+        if let Some(loader) = viewer_loader {
+            viewer::render_loading(f, f.area(), &loader.path);
+            return;
+        }
     }
 
     if state.mode == AppMode::DirectoryTree {
@@ -99,7 +104,7 @@ pub(crate) fn render_ui(
         Cow::Borrowed(msg.as_str())
     } else {
         let ap = state.active_panel();
-        format!("{}", ap.path.display()).into()
+        ap.path.to_string_lossy()
     };
     let cmd_paragraph = ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar());
     f.render_widget(cmd_paragraph, main_layout[3]);

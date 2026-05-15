@@ -24,6 +24,7 @@ pub(crate) fn clear_search_state(state: &mut AppState) {
 pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     modifiers: KeyModifiers,
     terminal_height: u16,
@@ -32,7 +33,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     let visible = panel_ops::panel_visible_height(terminal_height);
     match key {
         KeyCode::F(_) => {
-            handle_function_keys(state, viewer_state, key, terminal);
+            handle_function_keys(state, viewer_state, viewer_loader, key, terminal);
         }
         KeyCode::Up
         | KeyCode::Down
@@ -82,9 +83,18 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
 pub(crate) fn handle_viewer_mode(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     terminal_size: Size,
 ) {
+    if viewer_loader.is_some() {
+        if matches!(key, KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q')) {
+            viewer_loader.take();
+            state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+            *viewer_state = None;
+        }
+        return;
+    }
     if let Some(vs) = viewer_state.as_mut() {
         let page_height = terminal_size.height.saturating_sub(VIEWER_CHROME_HEIGHT) as usize;
         let content_width = terminal_size.width as usize;
@@ -164,6 +174,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
 pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
@@ -176,6 +187,7 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
                 handle_normal_mode(
                     state,
                     viewer_state,
+                    viewer_loader,
                     key,
                     modifiers,
                     terminal_height,
@@ -186,6 +198,7 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
             handle_normal_mode(
                 state,
                 viewer_state,
+                viewer_loader,
                 key,
                 modifiers,
                 terminal_height,
@@ -200,6 +213,7 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
 pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
@@ -237,7 +251,13 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
             state.menu_item_selected = (state.menu_item_selected + 1) % max_items;
         }
         KeyCode::Enter => {
-            run_selected_menu_action(state, viewer_state, terminal_height, terminal);
+            run_selected_menu_action(
+                state,
+                viewer_state,
+                viewer_loader,
+                terminal_height,
+                terminal,
+            );
         }
         _ => {}
     }

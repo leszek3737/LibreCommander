@@ -8,6 +8,9 @@ use ratatui::{
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
 
 use crate::app::types::{ViewMode, format_size};
 
@@ -44,6 +47,43 @@ pub struct ViewerState {
     visual_offsets: Vec<usize>,
     cached_content_width: usize,
     file_truncated: bool,
+}
+
+pub struct ViewerLoader {
+    pub receiver: mpsc::Receiver<io::Result<ViewerState>>,
+    pub cancel: Arc<AtomicBool>,
+    pub path: PathBuf,
+    _handle: Option<JoinHandle<()>>,
+}
+
+impl ViewerLoader {
+    pub fn start(path: PathBuf) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        let owned_path = path.clone();
+        let handle = thread::spawn(move || {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            let result = ViewerState::open(&owned_path);
+            if !cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(result);
+            }
+        });
+        Self {
+            receiver: rx,
+            cancel,
+            path,
+            _handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for ViewerLoader {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 impl ViewerState {
@@ -120,6 +160,10 @@ impl ViewerState {
         })
     }
 
+    pub fn open_background(path: PathBuf) -> ViewerLoader {
+        ViewerLoader::start(path)
+    }
+
     #[must_use]
     pub fn is_hex_mode(&self) -> bool {
         matches!(self.view_mode, ViewMode::Hex)
@@ -141,7 +185,8 @@ impl ViewerState {
 
     #[must_use]
     fn visual_row_to_logical(&self, visual_row: usize) -> (usize, usize) {
-        if self.visual_heights.len() <= 24 {
+        const LINEAR_SEARCH_THRESHOLD: usize = 24;
+        if self.visual_heights.len() <= LINEAR_SEARCH_THRESHOLD {
             let mut acc = 0usize;
             for (i, &h) in self.visual_heights.iter().enumerate() {
                 if acc + h > visual_row {
@@ -304,7 +349,6 @@ impl ViewerState {
 
         if let Some(ref needle) = query_bytes {
             let mut pos = 0;
-            let mut visited_lines = std::collections::HashSet::new();
             while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
                 let abs_offset = pos + idx;
                 let line_idx = abs_offset / bpl;
@@ -313,45 +357,59 @@ impl ViewerState {
                 let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
                 let match_len = needle.len().min(bpl - byte_in_line);
 
-                if visited_lines.insert(line_idx) {
-                    let global_idx = self.search_matches.len();
-                    self.search_matches
-                        .push((line_idx, hex_col, match_len * 3 - 1));
-                    self.search_matches_by_line.push(SearchLineMatch {
-                        line: line_idx,
-                        global_idx,
-                        start_byte: hex_col,
-                        end_byte: hex_col + match_len * 3 - 1,
-                    });
-                }
+                let global_idx = self.search_matches.len();
+                self.search_matches
+                    .push((line_idx, hex_col, match_len * 3 - 1));
+                self.search_matches_by_line.push(SearchLineMatch {
+                    line: line_idx,
+                    global_idx,
+                    start_byte: hex_col,
+                    end_byte: hex_col + match_len * 3 - 1,
+                });
 
                 pos = abs_offset + 1;
             }
         } else {
-            let mut hex_buf = String::with_capacity(128);
-            let total_lines = self.raw_bytes.len().div_ceil(bpl);
-            let prefix_len = 10;
-            for line_idx in 0..total_lines {
-                let offset = line_idx * bpl;
-                let slice_len = (self.raw_bytes.len() - offset).min(bpl);
-                let slice = &self.raw_bytes[offset..offset + slice_len];
-                hex_buf.clear();
-                format_hex_offset_and_bytes(offset, slice, &mut hex_buf);
-                let mut search_start = prefix_len;
-                while let Some(pos) = hex_buf[search_start..].find(&lower_query) {
-                    let match_start = search_start + pos;
-                    let match_end = match_start + lower_query.len();
-                    let global_idx = self.search_matches.len();
-                    self.search_matches
-                        .push((line_idx, match_start, lower_query.len()));
-                    self.search_matches_by_line.push(SearchLineMatch {
-                        line: line_idx,
-                        global_idx,
-                        start_byte: match_start,
-                        end_byte: match_end,
-                    });
-                    search_start = match_end;
+            let lossy = String::from_utf8_lossy(&self.raw_bytes);
+            let mut lower_buf = String::with_capacity(lossy.len());
+            let mut byte_map: Vec<usize> = Vec::with_capacity(lossy.len());
+            for (byte_pos, ch) in lossy.char_indices() {
+                for lc in ch.to_lowercase() {
+                    for _ in 0..lc.len_utf8() {
+                        byte_map.push(byte_pos);
+                    }
+                    lower_buf.push(lc);
                 }
+            }
+            let mut search_start = 0;
+            while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
+                let abs_pos = search_start + pos;
+                let advance = lower_buf[abs_pos..]
+                    .chars()
+                    .next()
+                    .map_or(1, |c| c.len_utf8());
+                search_start = abs_pos + advance;
+
+                let orig_byte = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
+                let line_idx = orig_byte / bpl;
+                let byte_in_line = orig_byte % bpl;
+                let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
+                let match_byte_len = lower_query
+                    .len()
+                    .min(self.raw_bytes.len().saturating_sub(orig_byte));
+                if match_byte_len == 0 {
+                    continue;
+                }
+                let match_hex_len = match_byte_len * 3 - 1;
+
+                let global_idx = self.search_matches.len();
+                self.search_matches.push((line_idx, hex_col, match_hex_len));
+                self.search_matches_by_line.push(SearchLineMatch {
+                    line: line_idx,
+                    global_idx,
+                    start_byte: hex_col,
+                    end_byte: hex_col + match_hex_len,
+                });
             }
         }
 
@@ -942,18 +1000,6 @@ fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
     buf.push('|');
 }
 
-fn format_hex_offset_and_bytes(offset: usize, bytes: &[u8], buf: &mut String) {
-    use std::fmt::Write;
-    buf.clear();
-    let _ = write!(buf, "{offset:08x}: ");
-    for (i, b) in bytes.iter().enumerate() {
-        if i == 8 {
-            buf.push(' ');
-        }
-        let _ = write!(buf, "{b:02x} ");
-    }
-}
-
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
@@ -971,6 +1017,41 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
+    let spinner_chars = ['|', '/', '-', '\\'];
+    let idx = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 200;
+    let spinner = spinner_chars[idx as usize % spinner_chars.len()];
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let msg = format!("{spinner} Loading {name}...");
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Theme::panel_bg());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let text_width = unicode_width::UnicodeWidthStr::width(msg.as_str()) as u16;
+    let x = inner.x + inner.width.saturating_sub(text_width) / 2;
+    let y = inner.y + inner.height.saturating_sub(1) / 2;
+    f.render_widget(
+        Paragraph::new(msg).style(Style::default().add_modifier(Modifier::BOLD)),
+        Rect::new(
+            x.min(inner.right().saturating_sub(text_width)),
+            y.min(inner.bottom().saturating_sub(1)),
+            text_width.min(inner.width),
+            1,
+        ),
+    );
 }
 
 #[cfg(test)]
