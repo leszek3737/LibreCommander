@@ -406,7 +406,7 @@ mod tests {
         let src = dir.path().join("src.bin");
         let dest = dir.path().join("dest.bin");
 
-        let new_content: Vec<u8> = (0..1_048_576).map(|i| (i % 251) as u8).collect();
+        let new_content: Vec<u8> = (0..50_000_000).map(|i| (i % 251) as u8).collect();
         let old_content = b"original dest content";
         fs::write(&src, &new_content).expect("write source file");
         fs::write(&dest, old_content).expect("write dest file");
@@ -420,8 +420,9 @@ mod tests {
             copy_with_progress(&src, &dest2, &progress_tx, &cancel_clone, true)
         });
 
-        progress_rx.recv().expect("first progress tick");
-        cancel.store(true, Ordering::Relaxed);
+        for _ in progress_rx.iter() {
+            cancel.store(true, Ordering::Relaxed);
+        }
 
         let result = handle.join().expect("thread joins");
         assert!(result.is_err(), "copy should be canceled");
