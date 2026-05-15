@@ -402,6 +402,7 @@ impl FileEntryBuilder {
         let perms = self.cha.mode.permissions();
         if v {
             self.cha.mode = ChaMode::new(0o040000 | perms);
+            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         } else if self.cha.is_dir() {
             self.cha.mode = ChaMode::new(0o100000 | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
@@ -412,6 +413,7 @@ impl FileEntryBuilder {
         let perms = self.cha.mode.permissions();
         if v {
             self.cha.mode = ChaMode::new(0o120000 | perms);
+            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         } else if self.cha.is_link() {
             self.cha.mode = ChaMode::new(0o100000 | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
