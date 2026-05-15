@@ -21,7 +21,8 @@ pub enum MouseOutcome {
 
 pub fn handle_mouse_event(
     state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
+    _viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     running_job: &mut Option<RunningJob>,
     mouse_event: crossterm::event::MouseEvent,
     terminal_size: ratatui::layout::Size,
@@ -62,7 +63,7 @@ pub fn handle_mouse_event(
         return Some(outcome);
     }
 
-    handle_mouse_panels(state, viewer_state, col, row, width, height);
+    handle_mouse_panels(state, _viewer_state, viewer_loader, col, row, width, height);
     None
 }
 
@@ -255,7 +256,8 @@ fn handle_mouse_function_bar(
 
 fn handle_mouse_panels(
     state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
+    _viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     col: u16,
     row: u16,
     width: u16,
@@ -329,11 +331,9 @@ fn handle_mouse_panels(
             panel_mut.scroll_offset = 0;
             refresh_panel(panel_mut, panel_height as usize);
         } else {
-            if let Ok(vs) = viewer::ViewerState::open(&path) {
-                *viewer_state = Some(vs);
-                state.prev_mode = Some(state.mode.clone());
-                state.mode = AppMode::Viewing;
-            }
+            *viewer_loader = Some(viewer::ViewerState::open_background(path));
+            state.prev_mode = Some(state.mode.clone());
+            state.mode = AppMode::Viewing;
         }
     } else {
         state.last_click_time = Some(now);

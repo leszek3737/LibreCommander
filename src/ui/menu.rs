@@ -10,13 +10,10 @@ use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, me
 use crate::ui::theme::Theme;
 
 const MIN_DROPDOWN_ITEM_WIDTH: usize = 10;
+const MENU_VERTICAL_OFFSET: u16 = 4;
+const MENU_DROPDOWN_OFFSET: u16 = 2;
 
-pub fn render_menu_dropdown(
-    f: &mut Frame,
-    menu_bar_area: Rect,
-    selected_menu: usize,
-    selected_item: usize,
-) {
+fn render_menu_title_bar(f: &mut Frame, menu_bar_area: Rect, selected_menu: usize) {
     for (i, title) in MENU_TITLES.iter().enumerate() {
         let title_width = menu_title_width(title);
         let style = if i == selected_menu {
@@ -34,21 +31,28 @@ pub fn render_menu_dropdown(
         );
         f.render_widget(p, area);
     }
+}
 
-    let active_menu = selected_menu.min(MENU_ITEMS.len().saturating_sub(1));
+fn render_menu_dropdown(
+    f: &mut Frame,
+    menu_bar_area: Rect,
+    active_menu: usize,
+    selected_item: usize,
+) {
     let items = MENU_ITEMS[active_menu];
     let dropdown_width = items
         .iter()
         .map(|s| UnicodeWidthStr::width(*s))
         .max()
         .unwrap_or(MIN_DROPDOWN_ITEM_WIDTH) as u16
-        + 4;
+        + MENU_VERTICAL_OFFSET;
     let dropdown_y = menu_bar_area.y + 1;
     let max_visible = f.area().height.saturating_sub(dropdown_y);
     if max_visible < 2 {
         return;
     }
-    let dropdown_height = ((items.len().min(u16::MAX as usize - 2)) as u16 + 2).min(max_visible);
+    let dropdown_height =
+        ((items.len().min(u16::MAX as usize - 2)) as u16 + MENU_DROPDOWN_OFFSET).min(max_visible);
     let dropdown_x = menu_dropdown_x(menu_bar_area, active_menu, dropdown_width);
     let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);
 
@@ -88,6 +92,19 @@ pub fn render_menu_dropdown(
     }
 }
 
+pub fn render_menu_bar(
+    f: &mut Frame,
+    menu_bar_area: Rect,
+    selected_menu: usize,
+    selected_item: usize,
+) {
+    let selected_menu = selected_menu.min(MENU_ITEMS.len().saturating_sub(1));
+    render_menu_title_bar(f, menu_bar_area, selected_menu);
+    if !MENU_ITEMS[selected_menu].is_empty() {
+        render_menu_dropdown(f, menu_bar_area, selected_menu, selected_item);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend};
@@ -100,7 +117,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 80, 1);
-                render_menu_dropdown(f, menu_bar, menu, item);
+                render_menu_bar(f, menu_bar, menu, item);
             })
             .unwrap();
     }
@@ -141,7 +158,7 @@ mod tests {
         let completed = terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 30, 1);
-                render_menu_dropdown(f, menu_bar, 1, 8);
+                render_menu_bar(f, menu_bar, 1, 8);
             })
             .unwrap();
         let buf = completed.buffer;
@@ -178,7 +195,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 20, 1);
-                render_menu_dropdown(f, menu_bar, 1, 5);
+                render_menu_bar(f, menu_bar, 1, 5);
             })
             .unwrap();
     }

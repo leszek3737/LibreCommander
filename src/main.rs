@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use crossterm::{
     cursor::{Hide, Show},
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+        MouseEvent,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -99,6 +102,34 @@ fn main() -> io::Result<()> {
     result
 }
 
+fn poll_viewer_loader(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
+) -> bool {
+    let Some(loader) = viewer_loader.as_ref() else {
+        return false;
+    };
+    match loader.receiver.try_recv() {
+        Ok(Ok(vs)) => {
+            *viewer_state = Some(vs);
+            *viewer_loader = None;
+        }
+        Ok(Err(e)) => {
+            state.status_message = Some(format!("Failed to open file: {e}"));
+            state.mode = AppMode::Normal;
+            *viewer_loader = None;
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            state.status_message = Some("Viewer load failed: thread panicked".to_string());
+            state.mode = AppMode::Normal;
+            *viewer_loader = None;
+        }
+    }
+    true
+}
+
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     let terminal_state_file = terminal_state_file_path();
 
@@ -128,9 +159,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         state.status_message = Some(e);
     }
 
-    // TODO: Consider unifying running_job and watcher into a single background-task
-    // manager to reduce duplicated polling/refresh logic (see poll_running_job).
     let mut viewer_state: Option<viewer::ViewerState> = None;
+    let mut viewer_loader: Option<viewer::ViewerLoader> = None;
     let mut running_job: Option<RunningJob> = None;
     let (watch_tx, watch_rx) = mpsc::channel();
     let mut watcher = match fs::watcher::Watcher::new(watch_tx) {
@@ -151,44 +181,44 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     panel_ops::refresh_panel(&mut state.right_panel, 0);
     watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
 
-    state.terminal_size = Some(terminal.size().map(|s| (s.width, s.height))?);
     let mut dirty = true;
 
     loop {
+        panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
         watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
         if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
             dirty = true;
         }
 
-        let had_job = running_job.is_some();
         if poll_running_job(&mut state, &mut running_job, panel_ops::refresh_both) {
+            let resumed = panel_ops::sync_watcher_job_state(
+                &watcher,
+                running_job.is_some(),
+                &mut watcher_paused,
+            );
+            if resumed {
+                panel_ops::refresh_both(&mut state);
+            }
             dirty = true;
         }
 
-        // Single sync_watcher_job_state call per tick. Skip a second
-        // refresh_both when finish_running_job already called it above.
-        let job_finished = had_job && running_job.is_none();
-        let resumed =
-            panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-        if resumed && !job_finished {
-            panel_ops::refresh_both(&mut state);
+        if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader) {
             dirty = true;
         }
 
         if dirty {
-            terminal.draw(|f| render::render_ui(f, &state, &viewer_state))?;
+            terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))?;
             dirty = false;
         }
 
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
-            let event = event::read()?;
-            state.terminal_size = Some(terminal.size().map(|s| (s.width, s.height))?);
             dirty = dispatch_event(
                 &mut state,
                 &mut viewer_state,
+                &mut viewer_loader,
                 &mut running_job,
                 terminal,
-                &event,
+                &event::read()?,
             )?;
         }
 
@@ -201,108 +231,161 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 fn dispatch_event<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     running_job: &mut Option<RunningJob>,
     terminal: &mut Terminal<B>,
     event: &Event,
-) -> io::Result<bool> {
-    let Some((width, height)) = state.terminal_size else {
-        return Ok(false);
-    };
-    let size = ratatui::layout::Size { width, height };
+) -> Result<bool, B::Error> {
     match event {
-        Event::Key(key) => match &state.mode {
-            AppMode::Normal => {
-                input::mode_dispatch::handle_normal_mode(
-                    state,
-                    viewer_state,
-                    key.code,
-                    key.modifiers,
-                    height,
-                    terminal,
-                );
-            }
-            AppMode::Viewing => {
-                input::mode_dispatch::handle_viewer_mode(state, viewer_state, key.code, size);
-            }
-            AppMode::CommandLine => {
-                input::command_line::handle_command_line(state, *key);
-            }
-            AppMode::Dialog(_) => {
-                input::dialogs::handle_dialog(state, viewer_state, running_job, key.code, size);
-            }
-            AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
-                input::mode_dispatch::clear_search_state(state);
-                input::mode_dispatch::handle_normal_mode(
-                    state,
-                    viewer_state,
-                    key.code,
-                    key.modifiers,
-                    height,
-                    terminal,
-                );
-            }
-            AppMode::Search => {
-                input::mode_dispatch::handle_search_mode(state, key.code, height);
-            }
-            AppMode::Menu => {
-                input::mode_dispatch::handle_menu_mode(
-                    state,
-                    viewer_state,
-                    key.code,
-                    height,
-                    terminal,
-                );
-            }
-            AppMode::ListPicker(_) => {
-                input::pickers::handle_list_picker(state, key.code);
-            }
-            AppMode::DirectoryTree => {
-                input::directory_tree::handle_directory_tree(state, viewer_state, key.code, height);
-            }
-        },
-        Event::Mouse(mouse_event) => {
-            if let Some(outcome) = input::mouse::handle_mouse_event(
+        Event::Key(key) => dispatch_key_event(
+            state,
+            viewer_state,
+            viewer_loader,
+            running_job,
+            terminal,
+            key,
+        ),
+        Event::Mouse(mouse_event) => dispatch_mouse_event(
+            state,
+            viewer_state,
+            viewer_loader,
+            running_job,
+            mouse_event,
+            terminal,
+        ),
+        Event::Resize(_, _) => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+fn dispatch_key_event<B: ratatui::backend::Backend>(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    running_job: &mut Option<RunningJob>,
+    terminal: &mut Terminal<B>,
+    key: &KeyEvent,
+) -> Result<bool, B::Error> {
+    let size = terminal.size()?;
+    match &state.mode {
+        AppMode::Normal => {
+            input::mode_dispatch::handle_normal_mode(
                 state,
                 viewer_state,
-                running_job,
-                *mouse_event,
+                viewer_loader,
+                key.code,
+                key.modifiers,
+                size.height,
+                terminal,
+            );
+        }
+        AppMode::Viewing => {
+            input::mode_dispatch::handle_viewer_mode(
+                state,
+                viewer_state,
+                viewer_loader,
+                key.code,
                 size,
-            ) {
-                match outcome {
-                    input::mouse::MouseOutcome::Consumed => {}
-                    input::mouse::MouseOutcome::NormalKey(key) => {
-                        if matches!(state.mode, AppMode::Search) {
-                            input::mode_dispatch::clear_search_state(state);
-                        }
-                        input::mode_dispatch::handle_normal_mode(
-                            state,
-                            viewer_state,
-                            key,
-                            KeyModifiers::NONE,
-                            height,
-                            terminal,
-                        );
-                    }
-                    input::mouse::MouseOutcome::MenuAction => {
-                        input::mode_dispatch::run_selected_menu_action(
-                            state,
-                            viewer_state,
-                            height,
-                            terminal,
-                        );
-                    }
+            );
+        }
+        AppMode::CommandLine => {
+            input::command_line::handle_command_line(state, *key);
+        }
+        AppMode::Dialog(_) => {
+            input::dialogs::handle_dialog(state, viewer_state, running_job, key.code, size);
+        }
+        AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
+            input::mode_dispatch::clear_search_state(state);
+            input::mode_dispatch::handle_normal_mode(
+                state,
+                viewer_state,
+                viewer_loader,
+                key.code,
+                key.modifiers,
+                size.height,
+                terminal,
+            );
+        }
+        AppMode::Search => {
+            input::mode_dispatch::handle_search_mode(state, key.code, size.height);
+        }
+        AppMode::Menu => {
+            input::mode_dispatch::handle_menu_mode(
+                state,
+                viewer_state,
+                viewer_loader,
+                key.code,
+                size.height,
+                terminal,
+            );
+        }
+        AppMode::ListPicker(_) => {
+            input::pickers::handle_list_picker(state, key.code);
+        }
+        AppMode::DirectoryTree => {
+            input::directory_tree::handle_directory_tree(
+                state,
+                viewer_state,
+                viewer_loader,
+                key.code,
+                size.height,
+            );
+        }
+    }
+    Ok(true)
+}
+
+fn dispatch_mouse_event<B: ratatui::backend::Backend>(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    running_job: &mut Option<RunningJob>,
+    mouse_event: &MouseEvent,
+    terminal: &mut Terminal<B>,
+) -> Result<bool, B::Error> {
+    let size = terminal.size()?;
+    if let Some(outcome) = input::mouse::handle_mouse_event(
+        state,
+        viewer_state,
+        viewer_loader,
+        running_job,
+        *mouse_event,
+        size,
+    ) {
+        match outcome {
+            input::mouse::MouseOutcome::Consumed => {}
+            input::mouse::MouseOutcome::NormalKey(key) => {
+                if matches!(state.mode, AppMode::Search) {
+                    input::mode_dispatch::clear_search_state(state);
                 }
+                input::mode_dispatch::handle_normal_mode(
+                    state,
+                    viewer_state,
+                    viewer_loader,
+                    key,
+                    KeyModifiers::NONE,
+                    size.height,
+                    terminal,
+                );
+            }
+            input::mouse::MouseOutcome::MenuAction => {
+                input::mode_dispatch::run_selected_menu_action(
+                    state,
+                    viewer_state,
+                    viewer_loader,
+                    size.height,
+                    terminal,
+                );
             }
         }
-        Event::Resize(_, _) => return Ok(true),
-        _ => return Ok(false),
     }
     Ok(true)
 }
 
 pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
     state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
+    _viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     terminal: &mut ratatui::Terminal<B>,
 ) {
@@ -319,9 +402,9 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
         KeyCode::F(3) => {
             if let Some(entry) = state.active_panel().current_entry()
                 && !entry.is_dir()
-                && let Ok(vs) = viewer::ViewerState::open(&entry.path)
             {
-                *viewer_state = Some(vs);
+                let path = entry.path.clone();
+                *viewer_loader = Some(viewer::ViewerState::open_background(path));
                 state.mode = AppMode::Viewing;
             }
         }
@@ -329,10 +412,22 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             launch_editor(state, terminal);
         }
         KeyCode::F(5) => {
-            confirm_transfer(state, "Copy Confirm", "Copy", false);
+            confirm_file_transfer(state, "Copy Confirm", "Copy", |sources, dest| {
+                app::types::PendingAction::Copy {
+                    sources,
+                    dest,
+                    overwrite: false,
+                }
+            });
         }
         KeyCode::F(6) => {
-            confirm_transfer(state, "Move Confirm", "Move", true);
+            confirm_file_transfer(state, "Move Confirm", "Move", |sources, dest| {
+                app::types::PendingAction::Move {
+                    sources,
+                    dest,
+                    overwrite: false,
+                }
+            });
         }
         KeyCode::F(7) => {
             state.mode = AppMode::Dialog(app::types::DialogKind::Input {
@@ -357,7 +452,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
     }
 }
 
-pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
+fn launch_editor<B: ratatui::backend::Backend>(
     state: &mut AppState,
     terminal: &mut ratatui::Terminal<B>,
 ) {
@@ -368,14 +463,7 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
     if let Some((is_dir, path)) = entry_info
         && !is_dir
     {
-        let editor = match std::env::var("EDITOR") {
-            Ok(v) => v,
-            Err(std::env::VarError::NotPresent) => "vi".to_string(),
-            Err(std::env::VarError::NotUnicode(_)) => {
-                lc::debug_log!("EDITOR env var contains non-unicode value, using vi");
-                "vi".to_string()
-            }
-        };
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         if let Err(e) = suspend_terminal_stdout() {
             state.status_message = Some(format!("Terminal suspend failed: {e}"));
             return;
@@ -421,38 +509,6 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
     }
 }
 
-fn confirm_transfer(state: &mut AppState, label: &str, verb: &str, is_move: bool) {
-    confirm_file_transfer(state, label, verb, move |sources, dest| {
-        if is_move {
-            app::types::PendingAction::Move {
-                sources,
-                dest,
-                overwrite: false,
-            }
-        } else {
-            app::types::PendingAction::Copy {
-                sources,
-                dest,
-                overwrite: false,
-            }
-        }
-    });
-}
-
-fn open_confirm_dialog(
-    state: &mut AppState,
-    label: &str,
-    msg: &str,
-    file_names: Vec<PathBuf>,
-    pending_action: app::types::PendingAction,
-) {
-    state.dialog_selection = 0;
-    state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
-        app::types::ConfirmDetails::with_files(label, msg, file_names),
-    ));
-    state.pending_action = Some(pending_action);
-}
-
 fn confirm_file_transfer(
     state: &mut AppState,
     label: &str,
@@ -475,13 +531,11 @@ fn confirm_file_transfer(
             dest_dir.display()
         )
     };
-    open_confirm_dialog(
-        state,
-        label,
-        &msg,
-        file_names,
-        make_pending(paths, dest_dir),
-    );
+    state.dialog_selection = 0;
+    state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
+        app::types::ConfirmDetails::with_files(label, &msg, file_names),
+    ));
+    state.pending_action = Some(make_pending(paths, dest_dir));
 }
 
 fn confirm_delete(state: &mut AppState) {
@@ -496,27 +550,11 @@ fn confirm_delete(state: &mut AppState) {
     } else {
         format!("Delete {} entries?", paths.len())
     };
-    open_confirm_dialog(
-        state,
-        "Delete Confirm",
-        &msg,
-        file_names,
-        app::types::PendingAction::Delete { paths },
-    );
-}
-
-fn shift_move_cursor_up(panel: &mut PanelState) {
-    if panel.cursor > 0 {
-        panel.toggle_selection_at(panel.cursor);
-        panel.move_cursor_up();
-    }
-}
-
-fn shift_move_cursor_down(panel: &mut PanelState, visible: usize) {
-    if !panel.entries.is_empty() {
-        panel.toggle_selection_at(panel.cursor);
-        panel.move_cursor_down(visible);
-    }
+    state.dialog_selection = 0;
+    state.mode = AppMode::Dialog(app::types::DialogKind::Confirm(
+        app::types::ConfirmDetails::with_files("Delete Confirm", &msg, file_names),
+    ));
+    state.pending_action = Some(app::types::PendingAction::Delete { paths });
 }
 
 pub(crate) fn handle_navigation_keys(
@@ -527,10 +565,27 @@ pub(crate) fn handle_navigation_keys(
 ) {
     match key {
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
-            shift_move_cursor_up(state.active_panel_mut());
+            let panel = state.active_panel_mut();
+            if panel.cursor > 0 {
+                panel.toggle_selection_at(panel.cursor);
+                panel.cursor -= 1;
+                if panel.cursor < panel.scroll_offset {
+                    panel.scroll_offset = panel.cursor;
+                }
+            }
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
-            shift_move_cursor_down(state.active_panel_mut(), visible);
+            let panel = state.active_panel_mut();
+            let len = panel.entries.len();
+            if len > 0 {
+                panel.toggle_selection_at(panel.cursor);
+                if panel.cursor < len - 1 {
+                    panel.cursor += 1;
+                    if panel.cursor >= panel.scroll_offset + visible {
+                        panel.scroll_offset = panel.cursor.saturating_sub(visible) + 1;
+                    }
+                }
+            }
         }
         KeyCode::Up | KeyCode::Char('k') => {
             let panel = state.active_panel_mut();

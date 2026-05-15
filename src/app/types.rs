@@ -334,7 +334,6 @@ pub struct AppState {
     pub drag_source_name: String,
     pub drag_current_row: u16,
     pub drag_current_col: u16,
-    pub terminal_size: Option<(u16, u16)>,
     // Scroll acceleration
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
@@ -885,7 +884,6 @@ impl AppState {
             drag_source_name: String::new(),
             drag_current_row: 0,
             drag_current_col: 0,
-            terminal_size: None,
             scroll_accel: 0,
             last_scroll_time: None,
         }

@@ -14,6 +14,9 @@ use ratatui::{
     },
 };
 
+const DIALOG_WIDTH_PERCENT: u16 = 50;
+const DIALOG_HEIGHT_PERCENT: u16 = 40;
+
 #[derive(Debug, Clone)]
 pub struct PropertiesInfo {
     pub name: String,
@@ -68,7 +71,7 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
     }
 
     let rect = f.area();
-    let dialog_area = centered_rect(50, 40, rect);
+    let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, rect);
 
     f.render_widget(Clear, dialog_area);
     let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
@@ -124,15 +127,21 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
     }
 }
 
-pub fn help_visible_height(area: Rect) -> usize {
-    let dialog_area = centered_rect(50, 40, area);
-    let block = Block::default().borders(Borders::ALL);
+fn help_dialog_content_rect(dialog_area: Rect) -> Rect {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick);
     let inner = block.inner(dialog_area);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(inner);
-    chunks[0].height as usize
+    chunks[0]
+}
+
+pub fn help_visible_height(area: Rect) -> usize {
+    let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, area);
+    help_dialog_content_rect(dialog_area).height as usize
 }
 
 fn dialog_block(title: &str, style: Style) -> Block<'_> {
@@ -220,12 +229,12 @@ fn render_file_list(f: &mut Frame, area: Rect, files: &[impl AsRef<str>], max_na
     f.render_widget(file_paragraph, area);
 }
 
-pub fn render_confirm_dialog(
+fn render_confirmation_dialog_inner(
     f: &mut Frame,
     area: Rect,
     title: &str,
     message: &str,
-    selection: usize,
+    buttons: &[(Style, &str)],
     files: &[impl AsRef<str>],
 ) {
     let block = dialog_block(title, Theme::dialog());
@@ -259,23 +268,45 @@ pub fn render_confirm_dialog(
         render_file_list(f, chunks[1], files, max_name_width);
     }
 
-    let yes_style = if selection == 0 {
-        Theme::highlight_bold()
-    } else {
-        Theme::dialog()
-    };
-    let no_style = if selection == 1 {
-        Theme::highlight_bold()
-    } else {
-        Theme::dialog()
-    };
-    let buttons = Line::from(vec![
-        ratatui::text::Span::styled("[ Yes ]", yes_style),
-        ratatui::text::Span::raw("  "),
-        ratatui::text::Span::styled("[ No ]", no_style),
-    ]);
-    let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
+    let mut spans: Vec<ratatui::text::Span> = Vec::new();
+    for (i, (style, label)) in buttons.iter().enumerate() {
+        if i > 0 {
+            spans.push(ratatui::text::Span::raw("  "));
+        }
+        spans.push(ratatui::text::Span::styled(*label, *style));
+    }
+    let btn_line = Line::from(spans);
+    let btn_paragraph = Paragraph::new(btn_line).alignment(Alignment::Center);
     f.render_widget(btn_paragraph, chunks[2]);
+}
+
+pub fn render_confirm_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: &str,
+    selection: usize,
+    files: &[impl AsRef<str>],
+) {
+    let buttons = [
+        (
+            if selection == 0 {
+                Theme::highlight_bold()
+            } else {
+                Theme::dialog()
+            },
+            "[ Yes ]",
+        ),
+        (
+            if selection == 1 {
+                Theme::highlight_bold()
+            } else {
+                Theme::dialog()
+            },
+            "[ No ]",
+        ),
+    ];
+    render_confirmation_dialog_inner(f, area, title, message, &buttons, files);
 }
 
 pub fn render_overwrite_dialog(
@@ -288,35 +319,11 @@ pub fn render_overwrite_dialog(
         return;
     }
 
-    let block = dialog_block("Overwrite?", Theme::dialog());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let msg = if files.len() == 1 {
         "File already exists at destination:".to_string()
     } else {
         format!("{} files already exist at destination:", files.len())
     };
-
-    let max_rows = inner.height.saturating_sub(5).max(3);
-    let file_rows = (files.len() as u16 + 1).min(max_rows);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(2),
-            Constraint::Length(file_rows),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    let msg_paragraph = Paragraph::new(msg)
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Center);
-    f.render_widget(msg_paragraph, chunks[0]);
-
-    let max_name_width = inner.width.saturating_sub(2) as usize;
-    render_file_list(f, chunks[1], files, max_name_width);
 
     let btn_style = |idx: usize| -> Style {
         if selection == idx {
@@ -325,17 +332,15 @@ pub fn render_overwrite_dialog(
             Theme::dialog()
         }
     };
-    let buttons = Line::from(vec![
-        ratatui::text::Span::styled("[ Overwrite All ]", btn_style(0)),
-        ratatui::text::Span::raw("  "),
-        ratatui::text::Span::styled("[ Cancel ]", btn_style(1)),
-    ]);
-    let btn_paragraph = Paragraph::new(buttons).alignment(Alignment::Center);
-    f.render_widget(btn_paragraph, chunks[2]);
+    let buttons = [
+        (btn_style(0), "[ Overwrite All ]"),
+        (btn_style(1), "[ Cancel ]"),
+    ];
+    render_confirmation_dialog_inner(f, area, "Overwrite?", &msg, &buttons, files);
 }
 
 pub fn input_dialog_rect(area: Rect) -> Rect {
-    centered_rect(50, 40, area)
+    centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, area)
 }
 
 pub fn render_input_dialog(
@@ -365,6 +370,11 @@ pub fn render_input_dialog(
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain);
+    let input_block = if value.is_empty() {
+        input_block.border_style(Theme::warning())
+    } else {
+        input_block
+    };
     let input_inner = input_block.inner(chunks[1]);
 
     let visible_width = input_inner.width as usize;
@@ -389,11 +399,7 @@ pub fn render_input_dialog(
     }
 
     let cursor_display = cum_widths[clamped_cursor];
-    let scroll_display = if cursor_display >= visible_width {
-        cursor_display.saturating_sub(visible_width.saturating_sub(1))
-    } else {
-        0
-    };
+    let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
 
     let start_idx = if scroll_display == 0 {
         0
@@ -457,12 +463,8 @@ pub fn render_help_dialog(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(inner);
-
-    let max_lines = chunks[0].height as usize;
+    let content_area = help_dialog_content_rect(area);
+    let max_lines = content_area.height as usize;
     let all_lines: Vec<&str> = message.lines().collect();
     let total_lines = all_lines.len();
 
@@ -474,16 +476,16 @@ pub fn render_help_dialog(
         .map(|l| Line::from(*l))
         .collect();
 
-    let has_scrollbar = total_lines > max_lines && chunks[0].width > 1;
+    let has_scrollbar = total_lines > max_lines && content_area.width > 1;
     let message_area = if has_scrollbar {
         Rect::new(
-            chunks[0].x,
-            chunks[0].y,
-            chunks[0].width.saturating_sub(1),
-            chunks[0].height,
+            content_area.x,
+            content_area.y,
+            content_area.width.saturating_sub(1),
+            content_area.height,
         )
     } else {
-        chunks[0]
+        content_area
     };
 
     let message_paragraph = Paragraph::new(visible_lines)
@@ -494,10 +496,10 @@ pub fn render_help_dialog(
 
     if has_scrollbar {
         let scrollbar_area = Rect::new(
-            chunks[0].x + chunks[0].width.saturating_sub(1),
-            chunks[0].y,
+            content_area.x + content_area.width.saturating_sub(1),
+            content_area.y,
             1,
-            chunks[0].height,
+            content_area.height,
         );
         let mut scrollbar_state = ScrollbarState::new(total_lines)
             .viewport_content_length(max_lines)
@@ -515,11 +517,19 @@ pub fn render_help_dialog(
         );
     }
 
+    let button_area = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
+    );
     let ok_btn = Paragraph::new("[ Press any key to exit, Arrows/PgUp/PgDn to scroll ]")
         .style(Theme::highlight_bold())
         .alignment(Alignment::Center);
-    f.render_widget(ok_btn, chunks[1]);
+    f.render_widget(ok_btn, button_area);
 }
+
+const CANCELING_PREFIX: &str = "Canceling:";
 
 pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &str, percent: f32) {
     let block = dialog_block(title, Theme::dialog());
@@ -547,7 +557,12 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
 
-    let hint = Paragraph::new("Esc: cancel after current item")
+    let hint_text = if message.starts_with(CANCELING_PREFIX) {
+        "Canceled"
+    } else {
+        "Esc: cancel after current item"
+    };
+    let hint = Paragraph::new(hint_text)
         .style(Theme::warning())
         .alignment(Alignment::Center);
     f.render_widget(hint, chunks[2]);
@@ -665,6 +680,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
     #[test]
     fn test_centered_rect_basic() {
@@ -773,12 +789,11 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                let files: &[String] = &[];
                 render_dialog(
                     f,
                     &DialogKind::OverwriteConfirm {
                         selection: 0,
-                        files,
+                        files: &[],
                     },
                 );
             })
@@ -803,5 +818,173 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Item 19"));
         assert!(!rendered.contains("Item 0"));
+    }
+
+    #[test]
+    fn test_render_confirmation_dialog_inner() {
+        let backend = TestBackend::new(60, 25);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = centered_rect(50, 40, f.area());
+                render_confirmation_dialog_inner(
+                    f,
+                    area,
+                    "Confirm",
+                    "Are you sure?",
+                    &[
+                        (Theme::highlight_bold(), "[ Yes ]"),
+                        (Theme::dialog(), "[ No ]"),
+                    ],
+                    &["file1.txt", "file2.txt"] as &[&str],
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let rendered = buf.content().iter().map(|c| c.symbol()).collect::<String>();
+        assert!(rendered.contains("Confirm"), "title should be rendered");
+        assert!(
+            rendered.contains("Are you sure?"),
+            "message should be rendered"
+        );
+        assert!(
+            rendered.contains("[ Yes ]"),
+            "yes button should be rendered"
+        );
+        assert!(rendered.contains("[ No ]"), "no button should be rendered");
+        assert!(
+            rendered.contains("file1.txt"),
+            "file list should show first file"
+        );
+        assert!(
+            rendered.contains("file2.txt"),
+            "file list should show second file"
+        );
+    }
+
+    #[test]
+    fn test_render_confirmation_dialog_inner_empty_title_no_files() {
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = centered_rect(50, 40, f.area());
+                render_confirmation_dialog_inner(
+                    f,
+                    area,
+                    "",
+                    "msg",
+                    &[(Theme::dialog(), "[ OK ]")],
+                    &[] as &[&str],
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let rendered = buf.content().iter().map(|c| c.symbol()).collect::<String>();
+        assert!(
+            rendered.contains("msg"),
+            "message should render with empty title"
+        );
+        assert!(rendered.contains("[ OK ]"), "single button should render");
+    }
+
+    #[test]
+    fn test_help_dialog_content_rect() {
+        let rect = help_dialog_content_rect(Rect::new(0, 0, 40, 20));
+        assert_eq!(rect.x, 1, "x should be 1 after border");
+        assert_eq!(rect.y, 1, "y should be 1 after border");
+        assert_eq!(rect.width, 38, "width should be inner width of dialog");
+        assert_eq!(rect.height, 17, "height accounts for border and bottom bar");
+
+        let rect2 = help_dialog_content_rect(Rect::new(0, 0, 80, 40));
+        assert_eq!(rect2.x, 1);
+        assert_eq!(rect2.y, 1);
+        assert_eq!(rect2.width, 78);
+        assert_eq!(rect2.height, 37);
+    }
+
+    #[test]
+    fn test_help_dialog_content_rect_small_terminal() {
+        let rect = help_dialog_content_rect(Rect::new(0, 0, 8, 6));
+        assert_eq!(rect.x, 1);
+        assert_eq!(rect.y, 1);
+        assert_eq!(rect.width, 6);
+        assert_eq!(rect.height, 3);
+
+        let rect2 = help_dialog_content_rect(Rect::new(0, 0, 3, 3));
+        assert_eq!(rect2.x, 1);
+        assert_eq!(rect2.y, 1);
+        assert_eq!(rect2.width, 1);
+        assert_eq!(rect2.height, 1);
+    }
+
+    #[test]
+    fn test_input_dialog_empty_value_has_warning_border() {
+        let backend = TestBackend::new(60, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = centered_rect(50, 40, f.area());
+                render_input_dialog(f, area, "Input", "Enter value:", "", 0);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let area = centered_rect(50, 40, Rect::new(0, 0, 60, 12));
+        let inner = Block::default().borders(Borders::ALL).inner(area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+
+        let input_area = chunks[1];
+        let top_left = buf[(input_area.x, input_area.y)].clone();
+        let warning_color = Theme::warning().fg.unwrap_or(Color::Yellow);
+        assert_eq!(
+            top_left.fg, warning_color,
+            "empty value input border should have warning color"
+        );
+    }
+
+    #[test]
+    fn test_properties_dialog_renders_content() {
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let info = PropertiesInfo {
+            name: "/very/long/path/to/some/file.txt".into(),
+            size: "1.2 MB".into(),
+            mtime: "2024-01-15 10:30".into(),
+            permissions: "rw-r--r--".into(),
+            owner: "user".into(),
+            group: "staff".into(),
+            file_type: "Regular File".into(),
+        };
+
+        terminal
+            .draw(|f| {
+                let area = centered_rect(50, 40, f.area());
+                render_properties_dialog(f, area, &info);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let rendered = buf.content().iter().map(|c| c.symbol()).collect::<String>();
+        assert!(
+            rendered.contains("Name:"),
+            "properties dialog should show file name label"
+        );
+        assert!(
+            rendered.contains("Press Enter or Esc to close"),
+            "properties dialog should show close hint"
+        );
     }
 }

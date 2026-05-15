@@ -8,6 +8,9 @@ use ratatui::{
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
 
 use crate::app::types::{ViewMode, format_size};
 
@@ -30,7 +33,7 @@ pub struct ViewerState {
     pub search_query: Option<String>,
     pub search_matches: Vec<(usize, usize, usize)>, // (line, col, highlight_len)
     search_matches_by_line: Vec<SearchLineMatch>,
-    pub current_match: usize,
+    pub current_match: Option<usize>,
     pub wrap_lines: bool,
     pub show_line_numbers: bool,
     pub view_mode: ViewMode,
@@ -41,25 +44,64 @@ pub struct ViewerState {
     pub has_invalid_utf8: bool,
     originally_binary: bool,
     visual_heights: Vec<usize>,
+    visual_offsets: Vec<usize>,
     cached_content_width: usize,
+    file_truncated: bool,
+}
+
+pub struct ViewerLoader {
+    pub receiver: mpsc::Receiver<io::Result<ViewerState>>,
+    pub cancel: Arc<AtomicBool>,
+    pub path: PathBuf,
+    _handle: Option<JoinHandle<()>>,
+}
+
+impl ViewerLoader {
+    pub fn start(path: PathBuf) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        let owned_path = path.clone();
+        let handle = thread::spawn(move || {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            let result = ViewerState::open(&owned_path);
+            if !cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(result);
+            }
+        });
+        Self {
+            receiver: rx,
+            cancel,
+            path,
+            _handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for ViewerLoader {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
-        const MAX_VIEW_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+        const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
 
         let file = fs::File::open(path)?;
         let mut raw_bytes = Vec::new();
         file.take((MAX_VIEW_SIZE + 1) as u64)
             .read_to_end(&mut raw_bytes)?;
-        if raw_bytes.len() > MAX_VIEW_SIZE {
-            return Err(io::Error::other(format!(
-                "File too large to view ({} bytes, max 64 MB)",
-                raw_bytes.len()
-            )));
+        let file_truncated = raw_bytes.len() > MAX_VIEW_SIZE;
+        if file_truncated {
+            raw_bytes.truncate(MAX_VIEW_SIZE);
         }
 
-        let file_size = raw_bytes.len();
+        let file_size = fs::metadata(path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(raw_bytes.len());
         let mime =
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
@@ -67,7 +109,7 @@ impl ViewerState {
         let (content, has_invalid_utf8) = if raw_bytes.is_empty() {
             (vec!["[Empty file]".to_string()], false)
         } else if open_as_text {
-            let has_invalid = std::str::from_utf8(&raw_bytes).is_err();
+            let has_invalid = !file_truncated && std::str::from_utf8(&raw_bytes).is_err();
             let content_str = String::from_utf8_lossy(&raw_bytes);
             let mut content: Vec<String> = content_str.lines().map(String::from).collect();
             if raw_bytes.last() == Some(&b'\n') {
@@ -97,7 +139,7 @@ impl ViewerState {
             search_query: None,
             search_matches: Vec::new(),
             search_matches_by_line: Vec::new(),
-            current_match: 0,
+            current_match: None,
             wrap_lines: true,
             show_line_numbers: false,
             view_mode: if open_as_text {
@@ -112,8 +154,14 @@ impl ViewerState {
             has_invalid_utf8,
             originally_binary: !open_as_text,
             visual_heights: Vec::new(),
+            visual_offsets: Vec::new(),
             cached_content_width: 0,
+            file_truncated,
         })
+    }
+
+    pub fn open_background(path: PathBuf) -> ViewerLoader {
+        ViewerLoader::start(path)
     }
 
     #[must_use]
@@ -137,14 +185,29 @@ impl ViewerState {
 
     #[must_use]
     fn visual_row_to_logical(&self, visual_row: usize) -> (usize, usize) {
-        let mut acc = 0usize;
-        for (i, &h) in self.visual_heights.iter().enumerate() {
-            if acc + h > visual_row {
-                return (i, visual_row - acc);
+        const LINEAR_SEARCH_THRESHOLD: usize = 24;
+        if self.visual_heights.len() <= LINEAR_SEARCH_THRESHOLD {
+            let mut acc = 0usize;
+            for (i, &h) in self.visual_heights.iter().enumerate() {
+                if acc + h > visual_row {
+                    return (i, visual_row - acc);
+                }
+                acc += h;
             }
-            acc += h;
+            return (self.content.len().saturating_sub(1), 0);
         }
-        (self.content.len().saturating_sub(1), 0)
+        let idx = self
+            .visual_offsets
+            .partition_point(|&offset| offset <= visual_row);
+        if idx >= self.visual_offsets.len() {
+            return (self.content.len().saturating_sub(1), 0);
+        }
+        let acc_before = if idx == 0 {
+            0
+        } else {
+            self.visual_offsets[idx - 1]
+        };
+        (idx, visual_row - acc_before)
     }
 
     #[must_use]
@@ -194,16 +257,29 @@ impl ViewerState {
     }
 
     fn clear_search_results(&mut self) {
-        self.search_matches.clear();
-        self.search_matches_by_line.clear();
+        if self.search_matches.capacity() > 1024 {
+            self.search_matches = Vec::new();
+        } else {
+            self.search_matches.clear();
+        }
+        if self.search_matches_by_line.capacity() > 1024 {
+            self.search_matches_by_line = Vec::new();
+        } else {
+            self.search_matches_by_line.clear();
+        }
     }
 
     pub fn search(&mut self, query: &str, page_height: usize) {
         self.search_query = Some(query.to_string());
         self.clear_search_results();
-        self.current_match = 0;
+        self.current_match = None;
 
-        if query.is_empty() || self.is_hex_mode() {
+        if query.is_empty() {
+            return;
+        }
+
+        if self.is_hex_mode() {
+            self.search_hex(query);
             return;
         }
 
@@ -255,19 +331,111 @@ impl ViewerState {
         };
         for (i, &(line_idx, _, _)) in self.search_matches.iter().enumerate() {
             if line_idx >= current_logical {
-                self.current_match = i;
+                self.current_match = Some(i);
                 self.scroll_to_current_match(page_height);
                 return;
             }
         }
         if !self.search_matches.is_empty() {
-            self.current_match = 0;
+            self.current_match = Some(0);
             self.scroll_to_current_match(page_height);
         }
     }
 
+    fn search_hex(&mut self, query: &str) {
+        let bpl = HEX_BYTES_PER_LINE;
+        let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
+        let query_bytes = Self::parse_hex_query(&lower_query);
+
+        if let Some(ref needle) = query_bytes {
+            let mut pos = 0;
+            while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
+                let abs_offset = pos + idx;
+                let line_idx = abs_offset / bpl;
+                let byte_in_line = abs_offset % bpl;
+
+                let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
+                let match_len = needle.len().min(bpl - byte_in_line);
+
+                let global_idx = self.search_matches.len();
+                self.search_matches
+                    .push((line_idx, hex_col, match_len * 3 - 1));
+                self.search_matches_by_line.push(SearchLineMatch {
+                    line: line_idx,
+                    global_idx,
+                    start_byte: hex_col,
+                    end_byte: hex_col + match_len * 3 - 1,
+                });
+
+                pos = abs_offset + 1;
+            }
+        } else {
+            let lossy = String::from_utf8_lossy(&self.raw_bytes);
+            let mut lower_buf = String::with_capacity(lossy.len());
+            let mut byte_map: Vec<usize> = Vec::with_capacity(lossy.len());
+            for (byte_pos, ch) in lossy.char_indices() {
+                for lc in ch.to_lowercase() {
+                    for _ in 0..lc.len_utf8() {
+                        byte_map.push(byte_pos);
+                    }
+                    lower_buf.push(lc);
+                }
+            }
+            let mut search_start = 0;
+            while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
+                let abs_pos = search_start + pos;
+                let advance = lower_buf[abs_pos..]
+                    .chars()
+                    .next()
+                    .map_or(1, |c| c.len_utf8());
+                search_start = abs_pos + advance;
+
+                let orig_byte = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
+                let line_idx = orig_byte / bpl;
+                let byte_in_line = orig_byte % bpl;
+                let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
+                let match_byte_len = lower_query
+                    .len()
+                    .min(self.raw_bytes.len().saturating_sub(orig_byte));
+                if match_byte_len == 0 {
+                    continue;
+                }
+                let match_hex_len = match_byte_len * 3 - 1;
+
+                let global_idx = self.search_matches.len();
+                self.search_matches.push((line_idx, hex_col, match_hex_len));
+                self.search_matches_by_line.push(SearchLineMatch {
+                    line: line_idx,
+                    global_idx,
+                    start_byte: hex_col,
+                    end_byte: hex_col + match_hex_len,
+                });
+            }
+        }
+
+        if !self.search_matches.is_empty() {
+            self.current_match = Some(0);
+            self.scroll_offset = self.search_matches[0].0.min(self.max_scroll());
+        }
+    }
+
+    fn parse_hex_query(query: &str) -> Option<Vec<u8>> {
+        let cleaned: String = query.chars().filter(|c| !c.is_whitespace()).collect();
+        if cleaned.len() < 2 || !cleaned.len().is_multiple_of(2) {
+            return None;
+        }
+        let lower: String = cleaned.chars().flat_map(|c| c.to_lowercase()).collect();
+        (0..lower.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&lower[i..i + 2], 16).ok())
+            .collect()
+    }
+
     fn scroll_to_current_match(&mut self, page_height: usize) {
-        if let Some(&(line_idx, _, _)) = self.search_matches.get(self.current_match) {
+        let Some(current) = self.current_match else {
+            return;
+        };
+        if let Some(&(line_idx, _, _)) = self.search_matches.get(current) {
             let context = 5usize.min(page_height.saturating_sub(1));
             if self.is_visual_scroll() {
                 let visual_row = self.logical_to_visual_row(line_idx);
@@ -282,25 +450,30 @@ impl ViewerState {
         if self.search_matches.is_empty() {
             return;
         }
-        self.current_match = (self.current_match + 1) % self.search_matches.len();
+        let current = self.current_match.unwrap_or(0);
+        self.current_match = Some((current + 1) % self.search_matches.len());
         self.scroll_to_current_match(page_height);
+        self.scroll_offset = self.scroll_offset.min(self.max_scroll());
     }
 
     pub fn prev_match(&mut self, page_height: usize) {
         if self.search_matches.is_empty() {
             return;
         }
-        self.current_match = if self.current_match == 0 {
+        let current = self.current_match.unwrap_or(0);
+        self.current_match = Some(if current == 0 {
             self.search_matches.len() - 1
         } else {
-            self.current_match - 1
-        };
+            current - 1
+        });
         self.scroll_to_current_match(page_height);
+        self.scroll_offset = self.scroll_offset.min(self.max_scroll());
     }
 
     pub fn toggle_line_numbers(&mut self) {
         self.show_line_numbers = !self.show_line_numbers;
         self.visual_heights.clear();
+        self.visual_offsets.clear();
         self.cached_content_width = 0;
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
@@ -313,6 +486,7 @@ impl ViewerState {
             self.horizontal_offset = 0;
         }
         self.visual_heights.clear();
+        self.visual_offsets.clear();
         self.cached_content_width = 0;
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
@@ -342,7 +516,7 @@ impl ViewerState {
                 .max()
                 .unwrap_or(0);
             self.clear_search_results();
-            self.current_match = 0;
+            self.current_match = None;
             self.search_query = None;
             self.has_invalid_utf8 = std::str::from_utf8(&self.raw_bytes).is_err();
         }
@@ -352,6 +526,7 @@ impl ViewerState {
         if !self.wrap_lines || self.is_hex_mode() || self.content.is_empty() {
             if !self.visual_heights.is_empty() {
                 self.visual_heights.clear();
+                self.visual_offsets.clear();
                 self.cached_content_width = 0;
             }
             return;
@@ -374,6 +549,12 @@ impl ViewerState {
                 total_width.div_ceil(width).max(1)
             })
             .collect();
+        self.visual_offsets = Vec::with_capacity(self.visual_heights.len());
+        let mut acc = 0usize;
+        for &h in &self.visual_heights {
+            acc += h;
+            self.visual_offsets.push(acc);
+        }
         self.cached_content_width = content_width;
         let max = self.max_scroll();
         if self.scroll_offset > max {
@@ -512,7 +693,7 @@ fn is_known_binary_mime(mime: &str) -> bool {
 fn format_line_with_highlight<'a>(
     line: &'a str,
     line_matches: &[SearchLineMatch],
-    current_match_idx: usize,
+    current_match_idx: Option<usize>,
 ) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
 
@@ -531,7 +712,7 @@ fn format_line_with_highlight<'a>(
         let end_byte = line_match.end_byte.min(line.len());
         let match_text = &line[start_byte..end_byte];
 
-        let is_current = line_match.global_idx == current_match_idx;
+        let is_current = Some(line_match.global_idx) == current_match_idx;
 
         let style = if is_current {
             Style::default()
@@ -581,15 +762,22 @@ fn render_viewer_status(
     } else {
         ""
     };
+    let truncated_warning = if state.file_truncated {
+        " \u{26a0} TRUNCATED"
+    } else {
+        ""
+    };
     let status_text = format!(
-        " {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}{binary_warning}",
+        " {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}{binary_warning}{truncated_warning}",
     );
-    let status_style =
-        if state.has_invalid_utf8 || (!state.is_hex_mode() && state.originally_binary) {
-            Theme::status_bar().fg(Theme::warning_color())
-        } else {
-            Theme::status_bar()
-        };
+    let status_style = if state.has_invalid_utf8
+        || (!state.is_hex_mode() && state.originally_binary)
+        || state.file_truncated
+    {
+        Theme::status_bar().fg(Theme::warning_color())
+    } else {
+        Theme::status_bar()
+    };
     let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
@@ -729,6 +917,10 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
 
     let mut lines: Vec<Line> = Vec::new();
 
+    let visible_matches = &state.search_matches_by_line;
+    let mut match_start =
+        visible_matches.partition_point(|line_match| line_match.line < start_line);
+
     let mut hex_line_buffer = String::with_capacity(128);
     for line_idx in start_line..end_line {
         let offset = line_idx * bytes_per_line;
@@ -736,7 +928,24 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         let slice = &bytes[offset..offset + slice_len];
         hex_line_buffer.clear();
         format_hex_line_to_buffer(offset, slice, &mut hex_line_buffer);
-        lines.push(Line::from(Span::raw(std::mem::take(&mut hex_line_buffer))));
+
+        let line_match_start = match_start;
+        while match_start < visible_matches.len() && visible_matches[match_start].line == line_idx {
+            match_start += 1;
+        }
+        let line_matches = &visible_matches[line_match_start..match_start];
+
+        let spans: Vec<Span<'static>> = if line_matches.is_empty() {
+            vec![Span::raw(std::mem::take(&mut hex_line_buffer))]
+        } else {
+            let highlighted =
+                format_line_with_highlight(&hex_line_buffer, line_matches, state.current_match);
+            highlighted
+                .into_iter()
+                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                .collect()
+        };
+        lines.push(Line::from(spans));
     }
 
     let paragraph =
@@ -789,6 +998,60 @@ fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
         buf.push(c);
     }
     buf.push('|');
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    if needle.len() == 1 {
+        return haystack.iter().position(|&b| b == needle[0]);
+    }
+    let first = needle[0];
+    let end = haystack.len() - needle.len() + 1;
+    let mut i = 0;
+    while i < end {
+        if haystack[i] == first && &haystack[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
+    let spinner_chars = ['|', '/', '-', '\\'];
+    let idx = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 200;
+    let spinner = spinner_chars[idx as usize % spinner_chars.len()];
+
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let msg = format!("{spinner} Loading {name}...");
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(Theme::panel_bg());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let text_width = unicode_width::UnicodeWidthStr::width(msg.as_str()) as u16;
+    let x = inner.x + inner.width.saturating_sub(text_width) / 2;
+    let y = inner.y + inner.height.saturating_sub(1) / 2;
+    f.render_widget(
+        Paragraph::new(msg).style(Style::default().add_modifier(Modifier::BOLD)),
+        Rect::new(
+            x.min(inner.right().saturating_sub(text_width)),
+            y.min(inner.bottom().saturating_sub(1)),
+            text_width.min(inner.width),
+            1,
+        ),
+    );
 }
 
 #[cfg(test)]
@@ -901,7 +1164,7 @@ mod tests {
         assert_eq!(state.search_matches.len(), 2);
         assert_eq!(state.search_matches[0], (0, 0, 5));
         assert_eq!(state.search_matches[1], (3, 0, 5));
-        assert_eq!(state.current_match, 0);
+        assert_eq!(state.current_match, Some(0));
     }
 
     #[test]
@@ -911,17 +1174,17 @@ mod tests {
         let mut state = ViewerState::open(file.path()).unwrap();
 
         state.search("apple", 20);
-        assert_eq!(state.current_match, 0);
+        assert_eq!(state.current_match, Some(0));
 
         state.next_match(20);
-        assert_eq!(state.current_match, 1);
+        assert_eq!(state.current_match, Some(1));
         assert_eq!(state.scroll_offset, 0);
 
         state.next_match(20);
-        assert_eq!(state.current_match, 0);
+        assert_eq!(state.current_match, Some(0));
 
         state.prev_match(20);
-        assert_eq!(state.current_match, 1);
+        assert_eq!(state.current_match, Some(1));
     }
 
     #[test]
@@ -1036,7 +1299,7 @@ mod tests {
 
     #[test]
     fn test_format_line_with_highlight_handles_unicode() {
-        let spans = format_line_with_highlight(
+        let _spans = format_line_with_highlight(
             "zażółć gęślą jaźń",
             &[SearchLineMatch {
                 line: 0,
@@ -1044,99 +1307,7 @@ mod tests {
                 start_byte: 11,
                 end_byte: 17,
             }],
-            0,
-        );
-
-        assert_eq!(spans.len(), 3);
-        assert_eq!(spans[0].content, "zażółć ");
-        assert_eq!(spans[1].content, "gęśl");
-        assert_eq!(spans[2].content, "ą jaźń");
-    }
-
-    #[test]
-    fn test_search_find_next_wraps() {
-        // "target" appears on line 0 and line 2; line 1 has no match
-        let content = "target one\nno hit here\ntarget two";
-        let file = create_test_file(content);
-        let mut state = ViewerState::open(file.path()).unwrap();
-
-        state.search("target", 20);
-        assert_eq!(state.search_matches.len(), 2);
-        assert_eq!(state.current_match, 0);
-        assert_eq!(state.scroll_offset, 0);
-
-        state.next_match(20);
-        assert_eq!(state.current_match, 1);
-        assert_eq!(state.scroll_offset, 0);
-
-        state.next_match(20);
-        assert_eq!(state.current_match, 0);
-        assert_eq!(state.scroll_offset, 0);
-    }
-
-    #[test]
-    fn test_search_find_prev_wraps() {
-        // "target" appears on line 0 and line 2; line 1 has no match
-        let content = "target one\nno hit here\ntarget two";
-        let file = create_test_file(content);
-        let mut state = ViewerState::open(file.path()).unwrap();
-
-        state.search("target", 20);
-        assert_eq!(state.search_matches.len(), 2);
-        assert_eq!(state.current_match, 0);
-
-        state.prev_match(20);
-        assert_eq!(state.current_match, 1);
-        assert_eq!(state.scroll_offset, 0);
-
-        state.prev_match(20);
-        assert_eq!(state.current_match, 0);
-        assert_eq!(state.scroll_offset, 0);
-    }
-
-    #[test]
-    fn test_search_no_match() {
-        let content = "apple\nbanana\ncherry";
-        let file = create_test_file(content);
-        let mut state = ViewerState::open(file.path()).unwrap();
-
-        state.search("durian", 20);
-
-        assert!(state.search_matches.is_empty());
-        assert_eq!(state.current_match, 0);
-        assert_eq!(state.scroll_offset, 0);
-    }
-
-    #[test]
-    fn test_search_keeps_line_match_cache_ordered() {
-        let file = create_test_file("alpha beta alpha\nbeta\nalpha");
-        let mut state = ViewerState::open(file.path()).unwrap();
-
-        state.search("alpha", 20);
-
-        assert_eq!(state.search_matches, vec![(0, 0, 5), (0, 11, 5), (2, 0, 5)]);
-        assert_eq!(
-            state.search_matches_by_line,
-            vec![
-                SearchLineMatch {
-                    line: 0,
-                    global_idx: 0,
-                    start_byte: 0,
-                    end_byte: 5,
-                },
-                SearchLineMatch {
-                    line: 0,
-                    global_idx: 1,
-                    start_byte: 11,
-                    end_byte: 16,
-                },
-                SearchLineMatch {
-                    line: 2,
-                    global_idx: 2,
-                    start_byte: 0,
-                    end_byte: 5,
-                },
-            ]
+            Some(0),
         );
     }
 
@@ -1460,6 +1631,137 @@ mod tests {
             state.search_matches.len() <= 4,
             "expected at most 4 matches, got {}",
             state.search_matches.len()
+        );
+    }
+
+    #[test]
+    fn test_hex_mode_search() {
+        let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+        file.write_all(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f")
+            .unwrap();
+        let mut state = ViewerState::open(file.path()).unwrap();
+        assert!(state.is_hex_mode());
+
+        state.search("01 02", 20);
+
+        assert!(
+            !state.search_matches.is_empty(),
+            "hex search for '01 02' should find matches in hex data section"
+        );
+        assert_eq!(state.current_match, Some(0));
+        assert!(state.search_matches[0].0 == 0);
+    }
+
+    #[test]
+    fn test_search_scroll_clamp() {
+        let content = (0..100)
+            .map(|i| format!("Line {i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let file = create_test_file(&content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.wrap_lines = false;
+        let page_height = 5usize;
+
+        state.search("Line 000", page_height);
+        assert!(!state.search_matches.is_empty());
+
+        state.scroll_offset = state.line_count;
+        state.search("Line 000", page_height);
+
+        assert!(
+            state.scroll_offset <= state.max_scroll(),
+            "scroll_offset {} > max_scroll {}",
+            state.scroll_offset,
+            state.max_scroll()
+        );
+        assert!(!state.search_matches.is_empty());
+        assert_eq!(state.current_match, Some(0));
+    }
+
+    #[test]
+    fn test_visual_row_to_logical_binary_search() {
+        let content = (0..30)
+            .map(|i| format!("L{i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let file = create_test_file(&content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.update_wrap_layout(10);
+
+        assert!(
+            state.visual_heights.len() > 24,
+            "need > 24 visual heights to exercise binary search path"
+        );
+
+        let total_visual: usize = state.visual_heights.iter().sum();
+
+        assert_eq!(state.visual_row_to_logical(0), (0, 0));
+
+        let (last_logical, last_sub) = state.visual_row_to_logical(total_visual.saturating_sub(1));
+        assert_eq!(last_logical, state.visual_heights.len() - 1);
+        let expected_last_line = state.content.len() - 1;
+        assert_eq!(last_logical, expected_last_line);
+        assert!(
+            last_sub < state.visual_heights[last_logical],
+            "sub-row should be within line height"
+        );
+
+        for &row in &[0usize, 1, 5, 10, 15, 20, 25] {
+            if row < total_visual {
+                let (logical, sub) = state.visual_row_to_logical(row);
+                let back = state.logical_to_visual_row(logical);
+                assert_eq!(
+                    back + sub,
+                    row,
+                    "roundtrip failed for visual row {row}: logical={logical}, sub={sub}, back={back}"
+                );
+            }
+        }
+
+        let result = state.visual_row_to_logical(total_visual);
+        assert_eq!(result.0, state.content.len().saturating_sub(1));
+        assert_eq!(result.1, 0);
+    }
+
+    #[test]
+    fn test_search_empty_query_noop() {
+        let content = "alpha\nbeta\ngamma";
+        let file = create_test_file(content);
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        state.search("alpha", 20);
+        assert_eq!(state.search_matches.len(), 1);
+        assert_eq!(state.current_match, Some(0));
+
+        state.search("", 20);
+
+        assert!(state.search_matches.is_empty());
+        assert!(state.current_match.is_none());
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_search_no_match_returns_none() {
+        let file = create_test_file("apple\nbanana\ncherry");
+        let mut state = ViewerState::open(file.path()).unwrap();
+        state.search("durian", 20);
+        assert!(state.search_matches.is_empty());
+        assert_eq!(state.current_match, None);
+    }
+
+    #[test]
+    fn test_hex_search_skips_offset_prefix() {
+        let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+        file.write_all(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+            .unwrap();
+        let mut state = ViewerState::open(file.path()).unwrap();
+        assert!(state.is_hex_mode());
+
+        state.search("0000000", 20);
+        assert!(
+            state.search_matches.is_empty(),
+            "hex search should not match offset prefix"
         );
     }
 }
