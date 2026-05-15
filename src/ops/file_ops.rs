@@ -622,7 +622,6 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     fs::set_permissions(path, permissions)
 }
 
-#[allow(dead_code)]
 fn validate_copy_targets(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
