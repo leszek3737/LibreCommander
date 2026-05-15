@@ -116,13 +116,12 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
             )
         }),
         // NOTE: natsort uses ASCII-only case folding; regular Name sort uses full Unicode
-        // via str::to_lowercase(). This means NaturalName and Name sorts may disagree on
-        // non-ASCII filenames.
+        // via str::to_lowercase(). NaturalName and Name sorts may disagree on non-ASCII filenames.
+        // Raw bytes serve as deterministic tiebreaker for case-variant names (a1.txt vs A1.txt).
         SortMode::NaturalNameAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
                 natsort::natsort_key(entry.name.as_bytes(), !sensitive),
-                entry.name.as_bytes().to_ascii_lowercase(),
                 entry.name.as_bytes().to_vec(),
             )
         }),
@@ -130,7 +129,6 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
             (
                 entry_group(entry, dir_first),
                 Reverse(natsort::natsort_key(entry.name.as_bytes(), !sensitive)),
-                Reverse(entry.name.as_bytes().to_ascii_lowercase()),
                 Reverse(entry.name.as_bytes().to_vec()),
             )
         }),

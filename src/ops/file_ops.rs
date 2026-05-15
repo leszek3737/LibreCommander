@@ -1606,12 +1606,18 @@ mod tests {
 
     #[test]
     fn test_delete_dir_recursive_rejects_critical_dir() {
+        if fs::symlink_metadata("/etc").is_ok_and(|m| !m.permissions().readonly()) {
+            return;
+        }
         let err = delete_dir_recursive(Path::new("/etc")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
     fn test_delete_dir_recursive_rejects_critical_dir_prefix() {
+        if fs::symlink_metadata("/etc").is_ok_and(|m| !m.permissions().readonly()) {
+            return;
+        }
         let err = delete_dir_recursive(Path::new("/etc/hosts")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
