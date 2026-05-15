@@ -11,6 +11,23 @@ use app::types::{ActivePanel, AppMode, AppState, PickerKind};
 use ui::theme::Theme;
 use ui::{dialogs, panels, viewer};
 
+fn clamp_selection(selected: usize, items_len: usize) -> usize {
+    selected.min(items_len.saturating_sub(1))
+}
+
+fn safe_split_at(s: &str, byte_cursor: usize) -> (&str, &str) {
+    let pos = byte_cursor.min(s.len());
+    if s.is_char_boundary(pos) {
+        s.split_at(pos)
+    } else {
+        let mut p = pos;
+        while p > 0 && !s.is_char_boundary(p) {
+            p -= 1;
+        }
+        s.split_at(p)
+    }
+}
+
 pub(crate) fn render_ui(
     f: &mut Frame,
     state: &AppState,
@@ -82,16 +99,16 @@ pub(crate) fn render_ui(
     panels::render_status_bar(f, main_layout[2], active);
 
     let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
-        let (before, after) = state.command_line.split_at(state.command_cursor);
+        let (before, after) = safe_split_at(&state.command_line, state.command_cursor);
         format!("$ {before}_{after}").into()
     } else if state.mode == AppMode::Search {
-        let (before, after) = state.search_query.split_at(state.search_cursor);
+        let (before, after) = safe_split_at(&state.search_query, state.search_cursor);
         format!("Search: {before}_{after}").into()
     } else if let Some(ref msg) = state.status_message {
         Cow::Borrowed(msg.as_str())
     } else {
         let ap = state.active_panel();
-        format!("{}", ap.path.display()).into()
+        ap.path.to_string_lossy()
     };
     let cmd_paragraph = ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar());
     f.render_widget(cmd_paragraph, main_layout[3]);
@@ -130,7 +147,7 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
                 .rev()
                 .map(|s| s.as_str())
                 .collect();
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = clamp_selection(state.picker_selected, items.len());
             dialogs::render_list_picker(
                 f,
                 "Command History",
@@ -145,7 +162,7 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect();
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = clamp_selection(state.picker_selected, items.len());
             dialogs::render_list_picker(
                 f,
                 "Directory Hotlist",
@@ -158,7 +175,7 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
             static COMPARE_MODES: std::sync::LazyLock<[String; 3]> =
                 std::sync::LazyLock::new(|| ["Quick".into(), "Size".into(), "Thorough".into()]);
             let items = &COMPARE_MODES[..];
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = clamp_selection(state.picker_selected, items.len());
             dialogs::render_list_picker(
                 f,
                 "Compare Mode",
@@ -173,7 +190,7 @@ fn render_list_picker_overlay(f: &mut Frame, state: &AppState, kind: &PickerKind
                 .iter()
                 .map(|e| format!("{}  {}", e.hotkey, e.title))
                 .collect();
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = clamp_selection(state.picker_selected, items.len());
             dialogs::render_list_picker(
                 f,
                 "User Menu",
@@ -235,7 +252,7 @@ fn to_ui_dialog<'a>(
                 source
                     .first()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|| "(current directory)".to_string()),
                 dest.display(),
             );
             dialogs::DialogKind::Confirm {
@@ -249,39 +266,28 @@ fn to_ui_dialog<'a>(
         app::types::DialogKind::OverwriteConfirm { conflicting } => {
             dialogs::DialogKind::OverwriteConfirm {
                 selection: state.dialog_selection,
-                files: conflicting.clone(),
+                files: conflicting.as_slice(),
             }
         }
     }
 }
 
 fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind<'_> {
-    let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) = match dialog_kind {
-        app::types::DialogKind::Properties {
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            is_dir,
-            is_symlink,
-        } => (
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            is_dir,
-            is_symlink,
-        ),
-        _ => {
-            return dialogs::DialogKind::Error {
-                title: Cow::Borrowed("Internal Error"),
-                message: Cow::Borrowed("Expected Properties dialog"),
-            };
-        }
+    let app::types::DialogKind::Properties {
+        name,
+        size,
+        mtime,
+        permissions,
+        owner,
+        group,
+        is_dir,
+        is_symlink,
+    } = dialog_kind
+    else {
+        return dialogs::DialogKind::Error {
+            title: "Error".into(),
+            message: "Internal error: properties dialog expected".into(),
+        };
     };
     let file_type = if *is_symlink {
         "Symlink"
@@ -293,7 +299,7 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
     use chrono::TimeZone;
     let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
         chrono::Local
-            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
+            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(0), 0)
             .single()
             .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
             .format("%Y-%m-%d %H:%M:%S")
@@ -303,12 +309,12 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
     };
     dialogs::DialogKind::Properties {
         info: dialogs::PropertiesInfo {
-            name: name.clone(),
+            name: name.to_string(),
             size: app::types::FileEntry::format_size(*size),
             mtime: mtime_str,
             permissions: app::types::FileEntry::display_permissions_raw(*permissions),
-            owner: owner.clone(),
-            group: group.clone(),
+            owner: owner.to_string(),
+            group: group.to_string(),
             file_type: file_type.to_string(),
         },
     }

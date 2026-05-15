@@ -12,11 +12,19 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
-            state.picker_selected -= 1;
+        KeyCode::Up if len > 0 => {
+            if state.picker_selected > 0 {
+                state.picker_selected -= 1;
+            } else {
+                state.picker_selected = len - 1;
+            }
         }
-        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
-            state.picker_selected += 1;
+        KeyCode::Down if len > 0 => {
+            if state.picker_selected + 1 < len {
+                state.picker_selected += 1;
+            } else {
+                state.picker_selected = 0;
+            }
         }
         KeyCode::Enter => {
             let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
@@ -229,17 +237,19 @@ mod tests {
         state.command_history.push_back("cmd1".to_string());
         state.command_history.push_back("cmd2".to_string());
 
-        // Can't go up from 0
+        // Up from top wraps to last
         handle_list_picker(&mut state, KeyCode::Up);
-        assert_eq!(state.picker_selected, 0);
+        assert_eq!(state.picker_selected, 1);
 
         // Can go down
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 1);
+        assert_eq!(state.picker_selected, 0);
 
-        // Can't go past end
-        handle_list_picker(&mut state, KeyCode::Down);
+        // Down from bottom wraps to top
+        handle_list_picker(&mut state, KeyCode::Up);
         assert_eq!(state.picker_selected, 1);
+        handle_list_picker(&mut state, KeyCode::Down);
+        assert_eq!(state.picker_selected, 0);
     }
 
     #[test]

@@ -58,7 +58,7 @@ pub enum DialogKind<'a> {
     },
     OverwriteConfirm {
         selection: usize,
-        files: Vec<String>,
+        files: &'a [String],
     },
 }
 
@@ -773,11 +773,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
+                let files: &[String] = &[];
                 render_dialog(
                     f,
                     &DialogKind::OverwriteConfirm {
                         selection: 0,
-                        files: vec![],
+                        files,
                     },
                 );
             })
