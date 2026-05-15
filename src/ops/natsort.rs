@@ -478,6 +478,126 @@ mod tests {
     }
 
     #[test]
+    fn test_natsort_key_case_sensitive_no_fold() {
+        let names = ["Banana", "apple", "Cherry", "banana"];
+        let mut sensitive = names.to_vec();
+        sensitive.sort_by_cached_key(|s| natsort_key(s.as_bytes(), false));
+        let mut insensitive = names.to_vec();
+        insensitive.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+
+        assert_ne!(
+            sensitive, insensitive,
+            "case-sensitive and case-insensitive orders must differ for mixed case"
+        );
+        assert!(sensitive.contains(&"Banana"));
+        assert!(sensitive.contains(&"banana"));
+        assert_eq!(natsort_key(b"Banana", false), natsort_key(b"Banana", false));
+        assert_ne!(
+            natsort_key(b"Banana", false),
+            natsort_key(b"banana", false),
+            "without ascii_fold, Banana != banana"
+        );
+    }
+
+    #[test]
+    fn test_both_empty_equal() {
+        assert_eq!(natsort(b"", b"", true), Ordering::Equal);
+        assert_eq!(natsort(b"", b"", false), Ordering::Equal);
+        assert_eq!(
+            natsort_key(b"", true).cmp(&natsort_key(b"", true)),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn test_single_char() {
+        assert_eq!(natsort(b"a", b"a", true), Ordering::Equal);
+        assert_eq!(natsort(b"a", b"b", true), Ordering::Less);
+        assert_eq!(natsort(b"b", b"a", true), Ordering::Greater);
+        assert_eq!(natsort(b"1", b"2", true), Ordering::Less);
+        assert_eq!(natsort(b"9", b"1", true), Ordering::Greater);
+        assert_eq!(natsort(b"a", b"1", true), Ordering::Less);
+        assert_eq!(natsort(b"1", b"a", true), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_both_are_zero_zero() {
+        assert_eq!(natsort(b"00", b"00", true), Ordering::Equal);
+        assert_eq!(natsort(b"00", b"00", false), Ordering::Equal);
+        assert_eq!(
+            natsort_key(b"00", true).cmp(&natsort_key(b"00", true)),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn test_mixed_case_digits_with_fold() {
+        assert_eq!(natsort(b"a1b", b"A1B", true), Ordering::Equal);
+        assert_eq!(
+            natsort_key(b"a1b", true),
+            natsort_key(b"A1B", true),
+            "case folding must normalise ASCII letters in mixed digit strings"
+        );
+        assert_ne!(
+            natsort_key(b"a1b", false),
+            natsort_key(b"A1B", false),
+            "without case folding, a1b != A1B"
+        );
+    }
+
+    #[test]
+    fn test_long_digit_sequences() {
+        assert_eq!(natsort(b"file9", b"file10", true), Ordering::Less);
+        assert_eq!(natsort(b"file10", b"file9", true), Ordering::Greater);
+        assert_eq!(natsort(b"file99", b"file100", true), Ordering::Less);
+        assert_eq!(natsort(b"file100", b"file99", true), Ordering::Greater);
+
+        let files = ["file99", "file100", "file9", "file10"];
+        let mut sorted = files.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted, ["file9", "file10", "file99", "file100"]);
+    }
+
+    #[test]
+    fn test_nat_key_segment_text_case_sensitive_direct() {
+        let foo = NatKeySegment::Text(b"Foo".to_vec());
+        let foo_lower = NatKeySegment::Text(b"foo".to_vec());
+        assert_ne!(
+            foo, foo_lower,
+            "Text segments are compared bytewise, no case folding"
+        );
+        let bar = NatKeySegment::Text(b"Bar".to_vec());
+        let bar_lower = NatKeySegment::Text(b"bar".to_vec());
+        assert_ne!(bar, bar_lower);
+        assert!(bar < foo);
+    }
+
+    #[test]
+    fn test_transitive_ordering() {
+        let a = natsort_key(b"file1", true);
+        let b = natsort_key(b"file2", true);
+        let c = natsort_key(b"file10", true);
+        assert!(a < b, "file1 < file2");
+        assert!(b < c, "file2 < file10");
+        assert!(a < c, "transitive: file1 < file10");
+
+        let mut items = vec![
+            natsort_key(b"file10", true),
+            natsort_key(b"file1", true),
+            natsort_key(b"file2", true),
+        ];
+        items.sort();
+        assert_eq!(
+            items,
+            vec![
+                natsort_key(b"file1", true),
+                natsort_key(b"file2", true),
+                natsort_key(b"file10", true),
+            ]
+        );
+    }
+
+    #[test]
     fn natsort_unicode_case_insensitive_matches_key_order() {
         let names = ["café", "CAFÉ", "Café", "cafe", "CAFE"];
         let mut via_natsort = names.to_vec();

@@ -56,8 +56,8 @@ pub struct PersistedSetup {
     pub active_panel: String,
     #[serde(default = "default_true")]
     pub dir_first: bool,
-    #[serde(default)]
-    pub sort_sensitive: bool,
+    #[serde(default, alias = "sort_sensitive")]
+    pub sensitive: bool,
     #[serde(default)]
     pub left: PersistedPanel,
     #[serde(default)]
@@ -70,7 +70,7 @@ pub struct PersistedSetup {
 pub struct Settings {
     pub active_panel: ActivePanel,
     pub dir_first: bool,
-    pub sort_sensitive: bool,
+    pub sensitive: bool,
     pub left: PersistedPanel,
     pub right: PersistedPanel,
     pub hotlist: Vec<PathBuf>,
@@ -81,7 +81,7 @@ impl Settings {
         Self {
             active_panel: state.active_panel,
             dir_first: state.left_panel.sort_options.dir_first,
-            sort_sensitive: state.left_panel.sort_options.sort_sensitive,
+            sensitive: state.left_panel.sort_options.sensitive,
             left: panel_to_persisted(&state.left_panel),
             right: panel_to_persisted(&state.right_panel),
             hotlist: state.directory_hotlist.clone(),
@@ -94,7 +94,7 @@ impl Settings {
         state.active_panel = self.active_panel;
         let sort_opts = SortOptions {
             dir_first: self.dir_first,
-            sort_sensitive: self.sort_sensitive,
+            sensitive: self.sensitive,
         };
         state.left_panel.sort_options = sort_opts;
         state.right_panel.sort_options = sort_opts;
@@ -113,7 +113,7 @@ impl From<&Settings> for PersistedSetup {
             }
             .to_string(),
             dir_first: settings.dir_first,
-            sort_sensitive: settings.sort_sensitive,
+            sensitive: settings.sensitive,
             left: settings.left.clone(),
             right: settings.right.clone(),
             hotlist: settings
@@ -141,7 +141,7 @@ impl From<PersistedSetup> for Settings {
                 _ => ActivePanel::Left,
             },
             dir_first: setup.dir_first,
-            sort_sensitive: setup.sort_sensitive,
+            sensitive: setup.sensitive,
             left: setup.left,
             right: setup.right,
             hotlist: setup
@@ -279,10 +279,7 @@ mod tests {
 
         assert_eq!(settings.active_panel, ActivePanel::Right);
         assert_eq!(settings.dir_first, state.left_panel.sort_options.dir_first);
-        assert_eq!(
-            settings.sort_sensitive,
-            state.left_panel.sort_options.sort_sensitive
-        );
+        assert_eq!(settings.sensitive, state.left_panel.sort_options.sensitive);
         assert_eq!(settings.left.path, tmp_dir.to_str().map(String::from));
         assert_eq!(settings.left.listing_mode, ListingMode::Brief);
         assert_eq!(settings.left.sort_mode, SortMode::SizeDesc);
@@ -298,7 +295,7 @@ mod tests {
         let settings = Settings {
             active_panel: ActivePanel::Right,
             dir_first: true,
-            sort_sensitive: false,
+            sensitive: false,
             left: PersistedPanel {
                 path: tmp_dir.to_str().map(String::from),
                 listing_mode: ListingMode::Brief,
@@ -314,9 +311,9 @@ mod tests {
 
         assert_eq!(state.active_panel, ActivePanel::Right);
         assert!(state.left_panel.sort_options.dir_first);
-        assert!(!state.left_panel.sort_options.sort_sensitive);
+        assert!(!state.left_panel.sort_options.sensitive);
         assert!(state.right_panel.sort_options.dir_first);
-        assert!(!state.right_panel.sort_options.sort_sensitive);
+        assert!(!state.right_panel.sort_options.sensitive);
         assert_eq!(
             state.left_panel.path,
             tmp_dir.canonicalize().unwrap_or(tmp_dir)
@@ -333,7 +330,7 @@ mod tests {
         let setup = PersistedSetup {
             active_panel: "right".to_string(),
             dir_first: true,
-            sort_sensitive: false,
+            sensitive: false,
             left: PersistedPanel {
                 path: Some("/tmp".to_string()),
                 listing_mode: ListingMode::Brief,
@@ -350,14 +347,14 @@ mod tests {
 
         assert_eq!(settings.active_panel, ActivePanel::Right);
         assert!(settings.dir_first);
-        assert!(!settings.sort_sensitive);
+        assert!(!settings.sensitive);
         assert_eq!(
             settings.hotlist,
             vec![PathBuf::from("/tmp"), PathBuf::from("/usr")]
         );
         assert_eq!(persisted.active_panel, setup.active_panel);
         assert_eq!(persisted.dir_first, setup.dir_first);
-        assert_eq!(persisted.sort_sensitive, setup.sort_sensitive);
+        assert_eq!(persisted.sensitive, setup.sensitive);
         assert_eq!(persisted.left, setup.left);
         assert_eq!(persisted.right, setup.right);
         assert_eq!(persisted.hotlist, setup.hotlist);

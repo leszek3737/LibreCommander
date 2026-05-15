@@ -1027,4 +1027,284 @@ mod tests {
 
         let _ = fs::remove_dir_all(dir);
     }
+
+    // ── SmallCharBuf ──────────────────────────────────────────────
+
+    #[test]
+    fn small_char_buf_small_inline() {
+        let mut buf = SmallCharBuf::<4>::new(3);
+        buf[0] = 'a';
+        buf[1] = 'b';
+        buf[2] = 'c';
+        assert_eq!(buf[0], 'a');
+        assert_eq!(buf[1], 'b');
+        assert_eq!(buf[2], 'c');
+    }
+
+    #[test]
+    fn small_char_buf_large_heap() {
+        let mut buf = SmallCharBuf::<4>::new(10);
+        buf[0] = 'x';
+        buf[5] = 'y';
+        buf[9] = 'z';
+        assert_eq!(buf[0], 'x');
+        assert_eq!(buf[5], 'y');
+        assert_eq!(buf[9], 'z');
+    }
+
+    #[test]
+    fn small_char_buf_exactly_n_uses_inline() {
+        let mut buf = SmallCharBuf::<4>::new(4);
+        buf[0] = 'p';
+        buf[3] = 'q';
+        assert_eq!(buf[0], 'p');
+        assert_eq!(buf[3], 'q');
+    }
+
+    // ── wildcard edge cases ───────────────────────────────────────
+
+    #[test]
+    fn wildcard_star_crosses_slash_in_dp() {
+        // The DP treats / as a regular char; filenames never contain /,
+        // so this is academic but documents the matching behaviour.
+        assert!(FileSearch::matches_pattern("a/b", "*/b", true));
+        assert!(!FileSearch::matches_pattern("a/b/c", "*.txt", true));
+    }
+
+    #[test]
+    fn wildcard_question_matches_exactly_one_char() {
+        assert!(FileSearch::matches_pattern("ab", "a?", true));
+        assert!(!FileSearch::matches_pattern("abc", "a?", true));
+        assert!(!FileSearch::matches_pattern("a", "a?", true));
+        assert!(FileSearch::matches_pattern("a", "?", true));
+        assert!(!FileSearch::matches_pattern("", "?", true));
+        assert!(FileSearch::matches_pattern("abc", "???", true));
+    }
+
+    #[test]
+    fn wildcard_mixed_star_and_question() {
+        assert!(FileSearch::matches_pattern(
+            "file001.txt",
+            "file???.txt",
+            true
+        ));
+        assert!(!FileSearch::matches_pattern(
+            "file1.txt",
+            "file???.txt",
+            true
+        ));
+        assert!(FileSearch::matches_pattern(
+            "file001.txt",
+            "file*.txt",
+            true
+        ));
+    }
+
+    // ── case-insensitive content ──────────────────────────────────
+
+    #[test]
+    fn search_content_case_insensitive_match() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_case_insensitive_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("hello.txt"), "Hello World\n").unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "hello", false, false);
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].1, 1);
+        assert!(outcome.errors.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ── case-sensitive content ────────────────────────────────────
+
+    #[test]
+    fn search_content_case_sensitive_no_match() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_case_sensitive_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("hello.txt"), "Hello World\n").unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "hello", false, true);
+        assert!(outcome.matches.is_empty());
+        assert!(outcome.errors.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ── depth limit ───────────────────────────────────────────────
+
+    #[test]
+    fn search_files_respects_depth_limit() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_deep_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut deep = dir.clone();
+        for i in 0..MAX_SEARCH_DEPTH + 2 {
+            deep = deep.join(format!("d{i}"));
+            fs::create_dir_all(&deep).unwrap();
+        }
+        fs::write(deep.join("deep.txt"), "found").unwrap();
+
+        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", true, false);
+        assert!(!outcome.matches.iter().any(|e| e.name == "deep.txt"));
+        assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_content_respects_depth_limit() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_content_depth_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut deep = dir.clone();
+        for i in 0..MAX_SEARCH_DEPTH + 2 {
+            deep = deep.join(format!("d{i}"));
+            fs::create_dir_all(&deep).unwrap();
+        }
+        fs::write(deep.join("deep.txt"), "needle\n").unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", true, false);
+        assert!(outcome.matches.is_empty());
+        assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ── symlink file ──────────────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn search_files_includes_symlinked_file_in_results() {
+        // matches_pattern runs before the is_symlink check; symlink files
+        // appear in search results (only symlink *directories* are skipped
+        // for recursion).
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_symlink_file_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("real.txt"), "x").unwrap();
+        symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+
+        let results = FileSearch::search_files(&dir, "*.txt", false, false);
+        assert_eq!(results.len(), 2);
+        let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"real.txt"));
+        assert!(names.contains(&"link.txt"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_content_skips_symlinked_file() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_content_symlink_file_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        fs::write(dir.join("real.txt"), "needle\n").unwrap();
+        symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+
+        let results = FileSearch::search_content(&dir, "needle", false, false);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.ends_with("real.txt"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ── empty directory ───────────────────────────────────────────
+
+    #[test]
+    fn search_files_empty_directory() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_empty_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", true, false);
+        assert!(outcome.matches.is_empty());
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.truncated, None);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn search_content_empty_directory() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "lc_search_content_empty_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", true, false);
+        assert!(outcome.matches.is_empty());
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.truncated, None);
+
+        let _ = fs::remove_dir_all(dir);
+    }
 }

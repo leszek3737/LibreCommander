@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::app::types::PendingAction;
 use crate::debug_log;
 
+/// Return a human-readable label for the pending action type.
+#[inline]
 pub(crate) fn action_label(action: &PendingAction) -> &'static str {
     match action {
         PendingAction::Copy { .. } => "Copy",
@@ -12,16 +14,20 @@ pub(crate) fn action_label(action: &PendingAction) -> &'static str {
     }
 }
 
+/// Returns `true` if `child` is a proper descendant of `parent`.
+///
+/// Note: an empty `parent` matches any non-equal child because
+/// every path starts with the empty component sequence.
 pub(crate) fn path_starts_with(parent: &Path, child: &Path) -> bool {
     child != parent && child.starts_with(parent)
 }
 
-const MAX_DIR_DEPTH: u32 = 256;
+const MAX_RECURSION_DEPTH: u32 = 256;
 
 fn dir_size_rec(path: &Path, depth: u32) -> io::Result<u64> {
-    if depth >= MAX_DIR_DEPTH {
+    if depth >= MAX_RECURSION_DEPTH {
         debug_log!(
-            "dir_size: depth limit ({MAX_DIR_DEPTH}) reached at {}",
+            "dir_size: depth limit ({MAX_RECURSION_DEPTH}) reached at {}",
             path.display()
         );
         return Ok(0);
@@ -35,21 +41,34 @@ fn dir_size_rec(path: &Path, depth: u32) -> io::Result<u64> {
         }
     };
     for entry in entries.flatten() {
-        let meta = match entry.file_type() {
+        let ft = match entry.file_type() {
             Ok(ft) => ft,
-            Err(_) => continue,
+            Err(e) => {
+                debug_log!(
+                    "dir_size: file_type failed for {}: {e}",
+                    entry.path().display()
+                );
+                continue;
+            }
         };
-        if meta.is_symlink() {
+        if ft.is_symlink() {
             continue;
         }
-        if meta.is_dir() {
+        if ft.is_dir() {
             let child = dir_size_rec(&entry.path(), depth + 1).unwrap_or_else(|e| {
                 debug_log!("dir_size: subdir failed {}: {e}", entry.path().display());
                 0
             });
             total = total.saturating_add(child);
         } else {
-            total = total.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
+            let size = entry.metadata().map(|m| m.len()).unwrap_or_else(|e| {
+                debug_log!(
+                    "dir_size: metadata failed for {}: {e}",
+                    entry.path().display()
+                );
+                0
+            });
+            total = total.saturating_add(size);
         }
     }
     Ok(total)
@@ -62,13 +81,14 @@ fn dir_size_rec(path: &Path, depth: u32) -> io::Result<u64> {
 /// abort the entire scan.
 ///
 /// Symlinks are intentionally skipped to avoid cycles.
-fn dir_size(path: &Path) -> io::Result<u64> {
+pub(crate) fn dir_size(path: &Path) -> io::Result<u64> {
     dir_size_rec(path, 0)
 }
 
 /// Compute the size of a single path (file or directory).
 ///
-/// Symlinks report size 0 to avoid cycles.
+/// Symlinks and empty files both report size 0 and are indistinguishable
+/// from the return value alone.
 pub(crate) fn path_size(path: &Path) -> io::Result<u64> {
     match path.symlink_metadata() {
         Ok(meta) if meta.file_type().is_symlink() => Ok(0),
@@ -97,12 +117,122 @@ pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
         .collect()
 }
 
+/// Saturating sum of a slice of file sizes.
 pub(crate) fn sum_sizes(sizes: &[u64]) -> u64 {
     sizes
         .iter()
         .fold(0, |total, size| total.saturating_add(*size))
 }
 
+/// Borrow the path at `idx` from a slice, returning `None` when out of bounds.
 pub(crate) fn next_path(paths: &[PathBuf], idx: usize) -> Option<&Path> {
     paths.get(idx).map(PathBuf::as_path)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn test_dir_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("size_dir");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("small.txt"), b"abc").unwrap();
+        fs::write(dir.join("medium.txt"), b"abcdefghij").unwrap();
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("nested.txt"), b"12345").unwrap();
+
+        let size = dir_size(&dir).unwrap();
+        assert_eq!(size, 18);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dir_size_does_not_follow_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("size_dir");
+        let linked = tmp.path().join("linked_dir");
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir(&linked).unwrap();
+        fs::write(dir.join("local.txt"), b"abc").unwrap();
+        fs::write(linked.join("outside.txt"), b"outside").unwrap();
+        symlink(&linked, dir.join("symlink_dir")).unwrap();
+
+        let size = dir_size(&dir).unwrap();
+        assert_eq!(size, 3);
+    }
+
+    #[test]
+    fn test_dir_size_nonexistent() {
+        let result = dir_size(Path::new("/tmp/lc_nonexistent_dir_xyz_12345"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_path_starts_with() {
+        let parent = Path::new("/foo/bar");
+        let child = Path::new("/foo/bar/baz");
+        assert!(path_starts_with(parent, child));
+        assert!(!path_starts_with(parent, parent));
+        assert!(path_starts_with(Path::new(""), child));
+    }
+
+    #[test]
+    fn test_action_label() {
+        let copy = PendingAction::Copy {
+            sources: vec![],
+            dest: PathBuf::new(),
+            overwrite: false,
+        };
+        assert_eq!(action_label(&copy), "Copy");
+
+        let mv = PendingAction::Move {
+            sources: vec![],
+            dest: PathBuf::new(),
+            overwrite: false,
+        };
+        assert_eq!(action_label(&mv), "Move");
+
+        let del = PendingAction::Delete { paths: vec![] };
+        assert_eq!(action_label(&del), "Delete");
+    }
+
+    #[test]
+    fn test_path_size_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("data.txt");
+        fs::write(&file, b"hello").unwrap();
+        assert_eq!(path_size(&file).unwrap(), 5);
+    }
+
+    #[test]
+    fn test_path_size_dir_calls_dir_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sizedir");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("f.txt"), b"xyz").unwrap();
+        assert_eq!(path_size(&dir).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_sum_sizes() {
+        assert_eq!(sum_sizes(&[]), 0);
+        assert_eq!(sum_sizes(&[1, 2, 3]), 6);
+        assert_eq!(sum_sizes(&[u64::MAX, 1]), u64::MAX);
+    }
+
+    #[test]
+    fn test_next_path() {
+        let paths: Vec<PathBuf> = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        assert_eq!(next_path(&paths, 0), Some(Path::new("/a")));
+        assert_eq!(next_path(&paths, 1), Some(Path::new("/b")));
+        assert_eq!(next_path(&paths, 2), None);
+        assert_eq!(next_path(&[], 0), None);
+    }
 }

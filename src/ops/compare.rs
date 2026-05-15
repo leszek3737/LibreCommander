@@ -25,11 +25,12 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
         CompareMode::Quick => true,
         CompareMode::Size => left.size == right.size,
         CompareMode::Thorough => {
-            // Conservative: unavailable mtime → always different (can't verify equality)
             left.size == right.size
-                && left
-                    .mtime
-                    .is_some_and(|l| right.mtime.is_some_and(|r| mtime_matches(l, r)))
+                && match (left.mtime, right.mtime) {
+                    (Some(l), Some(r)) => mtime_matches(l, r),
+                    (None, None) => true,
+                    _ => false,
+                }
         }
     }
 }
@@ -378,6 +379,120 @@ mod tests {
         assert_eq!(report.differing, 0);
         assert!(report.left_marks.is_empty());
         assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn thorough_both_mtime_none_same_size_match() {
+        let left = vec![entry("a.txt", 100)];
+        let right = vec![entry("a.txt", 100)];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn thorough_one_mtime_none_other_present_differ() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+        let left = vec![entry("a.txt", 100)];
+        let right = vec![
+            FileEntry::builder()
+                .name("a.txt")
+                .path("/tmp/a.txt")
+                .size(100)
+                .modified(t)
+                .created(std::time::SystemTime::UNIX_EPOCH)
+                .build(),
+        ];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("a.txt"));
+        assert!(report.right_marks.contains("a.txt"));
+    }
+
+    #[test]
+    fn thorough_mtime_within_tolerance_matches() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+        let make = |delta: u64| {
+            FileEntry::builder()
+                .name("a.txt")
+                .path("/tmp/a.txt")
+                .size(100)
+                .modified(t + std::time::Duration::from_secs(delta))
+                .created(std::time::SystemTime::UNIX_EPOCH)
+                .build()
+        };
+        let left = vec![make(0)];
+        let right = vec![make(2)];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn thorough_mtime_outside_tolerance_differs() {
+        let t = std::time::SystemTime::UNIX_EPOCH;
+        let make = |delta: u64| {
+            FileEntry::builder()
+                .name("a.txt")
+                .path("/tmp/a.txt")
+                .size(100)
+                .modified(t + std::time::Duration::from_secs(delta))
+                .created(std::time::SystemTime::UNIX_EPOCH)
+                .build()
+        };
+        let left = vec![make(0)];
+        let right = vec![make(3)];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("a.txt"));
+        assert!(report.right_marks.contains("a.txt"));
+    }
+
+    #[test]
+    fn type_mismatch_dir_vs_file_differs_in_thorough() {
+        let left = vec![dir_entry("src")];
+        let right = vec![entry("src", 0)];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("src"));
+        assert!(report.right_marks.contains("src"));
+    }
+
+    #[test]
+    fn empty_panels_zero_diffs() {
+        let empty: Vec<FileEntry> = vec![];
+
+        let report = compare_entries(&empty, &empty, CompareMode::Thorough);
+
+        assert_eq!(report.unique_left, 0);
+        assert_eq!(report.unique_right, 0);
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn mixed_same_name_different_size_counts_differing() {
+        let left = vec![entry("data.bin", 512)];
+        let right = vec![entry("data.bin", 1024)];
+
+        let report = compare_entries(&left, &right, CompareMode::Size);
+
+        assert_eq!(report.differing, 1);
+        assert_eq!(report.unique_left, 0);
+        assert_eq!(report.unique_right, 0);
+        assert!(report.left_marks.contains("data.bin"));
+        assert!(report.right_marks.contains("data.bin"));
     }
 
     #[test]

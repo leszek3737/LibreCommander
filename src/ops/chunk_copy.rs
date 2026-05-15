@@ -209,6 +209,7 @@ fn preserve_permissions(_dest: &Path, _metadata: &fs::Metadata) -> io::Result<()
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
 
@@ -349,5 +350,144 @@ mod tests {
         assert_eq!(fs::read(&dest).expect("read dest file"), b"new content");
         assert_eq!(progress_rx.try_iter().collect::<Vec<_>>(), vec![11]);
         assert!(!temp_path_for(&dest).exists());
+    }
+
+    #[test]
+    fn cancel_mid_copy_large_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.bin");
+        let dest = dir.path().join("dest.bin");
+
+        let content: Vec<u8> = (0..1_048_576).map(|i| (i % 251) as u8).collect();
+        fs::write(&src, &content).expect("write source file");
+
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel);
+
+        let dest_clone = dest.clone();
+        let handle = std::thread::spawn(move || {
+            copy_with_progress(&src, &dest_clone, &progress_tx, &cancel_clone, false)
+        });
+
+        progress_rx.recv().expect("first progress tick");
+        cancel.store(true, Ordering::Relaxed);
+
+        let result = handle.join().expect("thread joins");
+        assert!(result.is_err(), "copy should be canceled");
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists(), "dest file must not exist after cancel");
+    }
+
+    #[test]
+    fn empty_file_copy_creates_existing_empty_dest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.txt");
+        let dest = dir.path().join("dest.txt");
+        fs::write(&src, b"").expect("write empty source file");
+
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        let copied =
+            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy empty file");
+
+        assert_eq!(copied, 0);
+        assert!(dest.exists(), "dest must exist");
+        assert_eq!(fs::read(&dest).expect("read dest file"), b"");
+        let progress: Vec<u64> = progress_rx.try_iter().collect();
+        assert!(progress.is_empty(), "no progress for empty file");
+    }
+
+    #[test]
+    fn overwrite_cancel_midway_preserves_original_dest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.bin");
+        let dest = dir.path().join("dest.bin");
+
+        let new_content: Vec<u8> = (0..1_048_576).map(|i| (i % 251) as u8).collect();
+        let old_content = b"original dest content";
+        fs::write(&src, &new_content).expect("write source file");
+        fs::write(&dest, old_content).expect("write dest file");
+
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel);
+
+        let dest2 = dest.clone();
+        let handle = std::thread::spawn(move || {
+            copy_with_progress(&src, &dest2, &progress_tx, &cancel_clone, true)
+        });
+
+        progress_rx.recv().expect("first progress tick");
+        cancel.store(true, Ordering::Relaxed);
+
+        let result = handle.join().expect("thread joins");
+        assert!(result.is_err(), "copy should be canceled");
+
+        assert!(dest.exists(), "dest must still exist");
+        assert_eq!(
+            fs::read(&dest).expect("read dest file"),
+            old_content,
+            "original dest content preserved"
+        );
+    }
+
+    #[test]
+    fn copies_file_preserving_mtime() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.txt");
+        let dest = dir.path().join("dest.txt");
+        let content = b"timestamps test";
+        fs::write(&src, content).expect("write source file");
+
+        let set_mtime = FileTime::from_unix_time(1_700_000_000, 0);
+        filetime::set_file_mtime(&src, set_mtime).expect("set source mtime");
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy file");
+
+        let dest_meta = fs::metadata(&dest).expect("dest metadata");
+        let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
+
+        assert_eq!(
+            dest_mtime.unix_seconds(),
+            set_mtime.unix_seconds(),
+            "mtime preserved"
+        );
+        assert_eq!(
+            dest_mtime.nanoseconds(),
+            set_mtime.nanoseconds(),
+            "mtime nanoseconds preserved"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copies_file_preserving_unix_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let src = dir.path().join("src.sh");
+        let dest = dir.path().join("dest.sh");
+        let content = b"#!/bin/sh\necho hello\n";
+        fs::write(&src, content).expect("write source file");
+
+        let mode = 0o755u32;
+        fs::set_permissions(&src, fs::Permissions::from_mode(mode)).expect("set source perms");
+
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+
+        copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy file");
+
+        let dest_meta = fs::metadata(&dest).expect("dest metadata");
+        assert_eq!(
+            dest_meta.permissions().mode() & 0o777,
+            mode,
+            "permissions preserved"
+        );
     }
 }
