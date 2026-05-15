@@ -6,11 +6,11 @@ use ratatui::{
 };
 
 fn safe_split_at(s: &str, mut byte_idx: usize) -> (&str, &str) {
+    byte_idx = byte_idx.min(s.len());
     while byte_idx > 0 && !s.is_char_boundary(byte_idx) {
         byte_idx -= 1;
     }
-    let end = s.len().min(byte_idx);
-    s.split_at(end)
+    s.split_at(byte_idx)
 }
 
 use lc::{app, ui};
