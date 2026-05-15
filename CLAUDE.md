@@ -3,7 +3,7 @@ Read AGENTS.md before proceeding.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **LibreCommander** (2369 symbols, 6603 relationships, 211 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **LibreCommander** (2388 symbols, 6769 relationships, 212 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

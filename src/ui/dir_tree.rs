@@ -8,13 +8,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::dir_tree::TreeEntry;
 use crate::ui::theme::Theme;
-
-const INDENT_STR: &str =
-    "                                                                                ";
 
 const HELP_TEXT: &str = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
 
@@ -45,7 +42,7 @@ fn render_tree_scrollbar(
     f: &mut Frame,
     area: Rect,
     total_entries: usize,
-    scroll_offset: usize,
+    mut scroll_offset: usize,
     visible_height: usize,
 ) {
     if total_entries == 0 || area.height == 0 {
@@ -54,7 +51,7 @@ fn render_tree_scrollbar(
 
     let height = area.height as usize;
     let max_scroll = total_entries.saturating_sub(visible_height);
-    let scroll_offset = scroll_offset.min(max_scroll);
+    scroll_offset = scroll_offset.min(max_scroll);
 
     let thumb_height = if total_entries <= height {
         1
@@ -108,7 +105,7 @@ pub fn render_directory_tree(
         return;
     }
 
-    let selected = selected.min(entries.len() - 1);
+    let selected = selected.min(entries.len().saturating_sub(1));
 
     let visible_height = inner.height.saturating_sub(1) as usize;
 
@@ -151,7 +148,8 @@ pub fn render_directory_tree(
             break;
         }
 
-        let indent_len = (entry.depth * 2).min(INDENT_STR.len());
+        let indent = "  ".repeat(entry.depth);
+        let indent_width = UnicodeWidthStr::width(indent.as_str());
         let prefix = if entry.is_dir {
             if entry.expanded { "- " } else { "+ " }
         } else {
@@ -160,7 +158,7 @@ pub fn render_directory_tree(
 
         let prefix_width = UnicodeWidthStr::width(prefix);
         let available = (content_width as usize)
-            .saturating_sub(indent_len)
+            .saturating_sub(indent_width)
             .saturating_sub(prefix_width);
         let display_name = truncate_name(entry.name.as_str(), available);
 
@@ -173,7 +171,7 @@ pub fn render_directory_tree(
         };
 
         let line = Line::from(vec![
-            Span::styled(&INDENT_STR[..indent_len], line_style),
+            Span::styled(indent, line_style),
             Span::styled(prefix, line_style),
             Span::styled(display_name, line_style),
         ]);
@@ -191,22 +189,8 @@ pub fn render_directory_tree(
         let help_para = Paragraph::new(HELP_TEXT).style(Theme::warning());
         f.render_widget(help_para, bottom_area);
     } else if avail > 1 {
-        let target = avail.saturating_sub(1);
-        let mut cut = 0;
-        let mut w = 0;
-        for (i, ch) in HELP_TEXT.char_indices() {
-            let cw = ch.width().unwrap_or(0);
-            if w + cw > target {
-                break;
-            }
-            w += cw;
-            cut = i + ch.len_utf8();
-        }
-        let line = Line::from(vec![
-            Span::styled(&HELP_TEXT[..cut], Theme::warning()),
-            Span::styled("…", Theme::warning()),
-        ]);
-        let help_para = Paragraph::new(line);
+        let truncated = truncate_name(HELP_TEXT, avail);
+        let help_para = Paragraph::new(truncated).style(Theme::warning());
         f.render_widget(help_para, bottom_area);
     }
 }

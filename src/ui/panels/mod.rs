@@ -202,22 +202,6 @@ fn build_suffix(
                 width: full_width,
             };
         }
-        if 2 + size_date_width <= width {
-            return Suffix {
-                text: format!(" {size_str} {date_str}"),
-                width: size_date_width,
-            };
-        }
-        if 2 + size_width < width {
-            return Suffix {
-                text: format!(" {size_str}"),
-                width: size_width + 1,
-            };
-        }
-        return Suffix {
-            text: String::new(),
-            width: 0,
-        };
     }
 
     if 2 + size_date_width <= width {
@@ -422,7 +406,9 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
         String::new()
     };
 
-    let full_text = format!("{info_line}{right_info}");
+    let info_line_width = UnicodeWidthStr::width(info_line.as_str());
+    let padding = remaining.saturating_sub(info_line_width);
+    let full_text = format!("{info_line}{}{right_info}", " ".repeat(padding));
 
     let paragraph = Paragraph::new(full_text)
         .style(Style::default().fg(Theme::status_bar_fg()))

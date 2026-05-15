@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use ratatui::style::Modifier;
 use ratatui::style::{Color, Style};
@@ -48,7 +48,8 @@ pub struct ThemeConfig {
     pub regular_file: Option<String>,
 }
 
-struct ThemeColors {
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct ColorPalette {
     panel_bg: Color,
     status_bar_bg: Color,
     menu_bar_bg: Color,
@@ -88,7 +89,7 @@ struct ThemeColors {
     regular_file: Color,
 }
 
-const DEFAULT_COLORS: ThemeColors = ThemeColors {
+const DEFAULT_COLORS: ColorPalette = ColorPalette {
     panel_bg: Color::Rgb(0, 0, 128),
     status_bar_bg: Color::Rgb(0, 0, 128),
     menu_bar_bg: Color::Rgb(0, 0, 128),
@@ -128,7 +129,7 @@ const DEFAULT_COLORS: ThemeColors = ThemeColors {
     regular_file: Color::White,
 };
 
-static THEME_COLORS: OnceLock<ThemeColors> = OnceLock::new();
+static THEME_COLORS: RwLock<ColorPalette> = RwLock::new(DEFAULT_COLORS);
 
 fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
@@ -136,13 +137,13 @@ fn parse_color(s: &str) -> Option<Color> {
         return None;
     }
     if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
+        if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
             let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
             let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
             return Some(Color::Rgb(r, g, b));
         }
-        if hex.len() == 3 {
+        if hex.len() == 3 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
             let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
             let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
@@ -206,7 +207,7 @@ macro_rules! resolve_color {
     };
 }
 
-impl ThemeColors {
+impl ColorPalette {
     fn from_config(cfg: &ThemeConfig) -> Self {
         resolve_color!(
             cfg,
@@ -340,14 +341,15 @@ impl Theme {
         };
         let cfg: ThemeConfig = ThemeConfig::deserialize(theme_val.clone())
             .map_err(|e| format!("Failed to parse [theme] section: {e}"))?;
-        let colors = ThemeColors::from_config(&cfg);
+        let colors = ColorPalette::from_config(&cfg);
         THEME_COLORS
-            .set(colors)
-            .map_err(|_| "Theme already loaded".to_string())
+            .write()
+            .map(|mut g| *g = colors)
+            .map_err(|_| "Theme lock poisoned".to_string())
     }
 
-    fn colors() -> &'static ThemeColors {
-        THEME_COLORS.get().unwrap_or(&DEFAULT_COLORS)
+    fn colors() -> ColorPalette {
+        THEME_COLORS.read().map_or(DEFAULT_COLORS, |g| *g)
     }
 
     theme_color_accessor!(
@@ -628,7 +630,7 @@ mod tests {
             directory: Some("cyan".to_string()),
             ..Default::default()
         };
-        let colors = ThemeColors::from_config(&cfg);
+        let colors = ColorPalette::from_config(&cfg);
         assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(colors.directory, Color::Cyan);
         assert_eq!(colors.error, DEFAULT_COLORS.error);
