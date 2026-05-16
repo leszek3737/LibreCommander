@@ -85,15 +85,15 @@ pub struct FileEntry {
 pub struct SortOptions {
     #[serde(default = "default_true")]
     pub dir_first: bool,
-    #[serde(default)]
-    pub sort_sensitive: bool,
+    #[serde(default, alias = "sort_sensitive")]
+    pub sensitive: bool,
 }
 
 impl Default for SortOptions {
     fn default() -> Self {
         Self {
             dir_first: true,
-            sort_sensitive: false,
+            sensitive: false,
         }
     }
 }

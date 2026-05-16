@@ -17,6 +17,7 @@ pub struct BatchReport {
 }
 
 impl BatchReport {
+    #[inline]
     pub fn format_summary(&self) -> String {
         let verb = match self.action_label {
             "Copy" => "Copied",
@@ -66,7 +67,7 @@ pub struct BatchProgress {
 }
 
 impl BatchProgress {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(completed: usize, total: usize, current: Option<PathBuf>) -> Self {
         Self {
             completed,
@@ -126,13 +127,13 @@ impl BatchProgress {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn execute_batch(action: PendingAction) -> BatchReport {
     let label = helpers::action_label(&action);
     execute_batch_with_progress(action, |_| {}, None, label)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn execute_batch_with_progress(
     action: PendingAction,
     progress: impl FnMut(BatchProgress),
@@ -182,6 +183,7 @@ struct ProgressSnapshot<'a> {
     start_time: Instant,
 }
 
+#[inline]
 #[allow(clippy::needless_pass_by_value)]
 fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressSnapshot<'_>) {
     progress(BatchProgress {
@@ -517,10 +519,12 @@ where
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut canonical_ok: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut canonical_fail: Vec<PathBuf> = Vec::new();
+    // NOTE: canonicalize() calls the filesystem per path; could be slow for large
+    // batches on network/removable drives. Pre-checking path existence first, or
+    // batching canonicalize calls, would be possible optimizations.
     for p in paths {
         match std::fs::canonicalize(p) {
             Ok(c) => canonical_ok.push((c, p.clone())),
@@ -842,6 +846,144 @@ mod tests {
                 && p.current_file_bytes == 7
                 && p.current_file_total == 7
         }));
+    }
+
+    #[test]
+    fn batch_copy_cancel_before_start_copies_nothing() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let f1 = make_file(src_dir.path(), "a.txt", b"data");
+        let f2 = make_file(src_dir.path(), "b.txt", b"more");
+        let cancel = Arc::new(AtomicBool::new(true));
+        let action = PendingAction::Copy {
+            sources: vec![f1, f2],
+            dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
+        };
+        let report = execute_batch_with_progress(action, |_| {}, Some(cancel), "Copy");
+        assert!(report.canceled);
+        assert_eq!(report.success_count, 0);
+        assert!(!dest_dir.path().join("a.txt").exists());
+        assert!(!dest_dir.path().join("b.txt").exists());
+    }
+
+    #[test]
+    fn batch_delete_cancel_before_start_deletes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = make_file(dir.path(), "a.txt", b"data");
+        let f2 = make_file(dir.path(), "b.txt", b"more");
+        let cancel = Arc::new(AtomicBool::new(true));
+        let action = PendingAction::Delete {
+            paths: vec![f1.clone(), f2.clone()],
+        };
+        let report = execute_batch_with_progress(action, |_| {}, Some(cancel), "Delete");
+        assert!(report.canceled);
+        assert!(f1.exists());
+        assert!(f2.exists());
+    }
+
+    #[test]
+    fn dedup_paths_parent_removes_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("parent");
+        fs::create_dir(&parent).unwrap();
+        let child = parent.join("child.txt");
+        fs::write(&child, b"x").unwrap();
+        let result = dedup_paths(&[child, parent.clone()]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], parent);
+    }
+
+    #[test]
+    fn empty_sources_batch_copy_returns_empty() {
+        let dest_dir = tempfile::tempdir().unwrap();
+        let action = PendingAction::Copy {
+            sources: vec![],
+            dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
+        };
+        let report = execute_batch(action);
+        assert_eq!(report.success_count, 0);
+        assert!(report.errors.is_empty());
+        assert!(!report.canceled);
+    }
+
+    #[test]
+    fn empty_sources_batch_delete_returns_empty() {
+        let action = PendingAction::Delete { paths: vec![] };
+        let report = execute_batch(action);
+        assert_eq!(report.success_count, 0);
+        assert!(report.errors.is_empty());
+        assert!(!report.canceled);
+    }
+
+    #[test]
+    fn empty_sources_batch_move_returns_empty() {
+        let dest_dir = tempfile::tempdir().unwrap();
+        let action = PendingAction::Move {
+            sources: vec![],
+            dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
+        };
+        let report = execute_batch(action);
+        assert_eq!(report.success_count, 0);
+        assert!(report.errors.is_empty());
+        assert!(!report.canceled);
+    }
+
+    #[test]
+    fn batch_copy_nonexistent_source_reports_error() {
+        let dest_dir = tempfile::tempdir().unwrap();
+        let action = PendingAction::Copy {
+            sources: vec![PathBuf::from("/tmp/lc_nonexistent_copy_test_xyz")],
+            dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
+        };
+        let report = execute_batch(action);
+        assert_eq!(report.success_count, 0);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!report.canceled);
+    }
+
+    #[test]
+    fn batch_move_nonexistent_source_reports_error() {
+        let dest_dir = tempfile::tempdir().unwrap();
+        let action = PendingAction::Move {
+            sources: vec![PathBuf::from("/tmp/lc_nonexistent_move_test_xyz")],
+            dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
+        };
+        let report = execute_batch(action);
+        assert_eq!(report.success_count, 0);
+        assert_eq!(report.errors.len(), 1);
+        assert!(!report.canceled);
+    }
+
+    #[test]
+    fn batch_copy_small_files_progress_invariants() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let f1 = make_file(src_dir.path(), "a.txt", b"hello");
+        let f2 = make_file(src_dir.path(), "b.txt", b"world");
+        let action = PendingAction::Copy {
+            sources: vec![f1, f2],
+            dest: dest_dir.path().to_path_buf(),
+            overwrite: false,
+        };
+        let mut updates = Vec::new();
+        let report = execute_batch_with_byte_progress(action, |p| updates.push(p), None, "Copy");
+        assert_eq!(report.success_count, 2);
+        assert!(updates.iter().all(|p| p.bytes_done <= p.bytes_total));
+        assert!(
+            updates
+                .iter()
+                .all(|p| p.current_file_bytes <= p.current_file_total)
+        );
+        assert!(
+            updates
+                .windows(2)
+                .all(|pair| pair[0].bytes_done <= pair[1].bytes_done)
+        );
     }
 
     #[test]

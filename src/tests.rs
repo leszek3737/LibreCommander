@@ -741,7 +741,7 @@ fn hotlist_persistence_roundtrip() {
     let setup = PersistedSetup {
         active_panel: String::new(),
         dir_first: true,
-        sort_sensitive: false,
+        sensitive: false,
         left: PersistedPanel {
             path: Some("/tmp".to_string()),
             show_hidden: false,
