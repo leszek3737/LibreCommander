@@ -19,6 +19,10 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
             state.picker_selected += 1;
         }
         KeyCode::Enter => {
+            if state.picker_selected >= len {
+                state.mode = AppMode::Normal;
+                return;
+            }
             let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
             if let Some(cmd) = state.command_history.get(idx).cloned() {
                 state.command_cursor = cmd.len();
@@ -53,6 +57,8 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
                 } else {
                     state.status_message = Some("Hotlist entry no longer exists".to_string());
                 }
+                state.mode = AppMode::Normal;
+            } else {
                 state.mode = AppMode::Normal;
             }
         }
@@ -251,7 +257,7 @@ mod tests {
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Enter);
-        assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
+        assert_eq!(state.mode, AppMode::Normal);
     }
 
     #[test]

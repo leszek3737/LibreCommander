@@ -8,9 +8,12 @@ use lc::menu::{menu_item_count, menu_total_count};
 use lc::ui::viewer;
 
 use crate::{
-    HORIZONTAL_SCROLL_STEP, VIEWER_CHROME_HEIGHT, apply_search_filter, handle_alt_keys,
-    handle_ctrl_keys, handle_enter_key, handle_function_keys, handle_navigation_keys,
+    apply_search_filter, handle_alt_keys, handle_ctrl_keys, handle_enter_key, handle_function_keys,
+    handle_navigation_keys,
 };
+
+const VIEWER_CHROME_HEIGHT: u16 = 3;
+const HORIZONTAL_SCROLL_STEP: usize = 4;
 
 pub(crate) fn clear_search_state(state: &mut AppState) {
     state.mode = AppMode::Normal;
@@ -18,6 +21,23 @@ pub(crate) fn clear_search_state(state: &mut AppState) {
     state.search_cursor = 0;
     let panel = state.active_panel_mut();
     panel.filter = None;
+    panel_ops::refresh_active(state);
+}
+
+pub(crate) fn initiate_search(state: &mut AppState, prev_mode: AppMode, c: char) {
+    state.prev_mode = Some(prev_mode);
+    state.search_query.push(c);
+    state.search_cursor = state.search_query.len();
+    let filter_query = state.search_query.clone();
+    state.mode = AppMode::Search;
+    let panel = state.active_panel_mut();
+    if panel.unfiltered_entries.is_empty() {
+        panel.unfiltered_entries = panel.entries.clone();
+        panel.path_index.clear();
+    }
+    panel.filter = Some(filter_query);
+    panel.cursor = 0;
+    panel.scroll_offset = 0;
     panel_ops::refresh_active(state);
 }
 
@@ -62,19 +82,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
             if let KeyCode::Char(c) = key
                 && modifiers.is_empty()
             {
-                state.search_query.push(c);
-                state.search_cursor = state.search_query.len();
-                state.mode = AppMode::Search;
-                let filter_query = state.search_query.clone();
-                let panel = state.active_panel_mut();
-                if panel.unfiltered_entries.is_empty() {
-                    panel.unfiltered_entries = panel.entries.clone();
-                    panel.path_index.clear();
-                }
-                panel.filter = Some(filter_query);
-                panel.cursor = 0;
-                panel.scroll_offset = 0;
-                panel_ops::refresh_active(state);
+                initiate_search(state, AppMode::Normal, c);
             }
         }
     }
@@ -139,13 +147,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
             clear_search_state(state);
         }
         KeyCode::Enter => {
-            state.mode = AppMode::Normal;
-            state.search_query.clear();
-            state.search_cursor = 0;
-            let panel = state.active_panel_mut();
-            panel.unfiltered_entries.clear();
-            panel.filter = None;
-            panel_ops::refresh_active(state);
+            clear_search_state(state);
         }
         KeyCode::Backspace => {
             state.search_query.pop();
@@ -226,7 +228,7 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
 
     match key {
         KeyCode::Esc | KeyCode::F(9 | 10) => {
-            state.mode = AppMode::Normal;
+            state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
         }
         KeyCode::Left => {
             state.menu_selected = if state.menu_selected == 0 {

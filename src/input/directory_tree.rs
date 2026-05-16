@@ -4,7 +4,9 @@ use lc::app::{dir_tree, types::*};
 use lc::ui::{DIR_TREE_OVERHEAD_ROWS, viewer};
 
 use crate::app::panel_ops::refresh_active;
+use crate::input::mode_dispatch;
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_directory_tree(
     state: &mut AppState,
     _viewer_state: &mut Option<viewer::ViewerState>,
@@ -70,24 +72,30 @@ pub(crate) fn handle_directory_tree(
             }
         }
         KeyCode::Char('c') => {
-            if let Some(entry) = state.tree_entries.get(state.tree_selected) {
-                let target = if entry.is_dir {
-                    entry.path.clone()
-                } else {
-                    entry
-                        .path
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default()
-                };
-                if !target.as_os_str().is_empty() && target.is_dir() {
-                    state.active_panel_mut().path = target;
-                    state.active_panel_mut().cursor = 0;
-                    state.active_panel_mut().scroll_offset = 0;
-                    refresh_active(state);
-                    state.mode = AppMode::Normal;
-                }
+            let (entry_is_dir, entry_path) = match state.tree_entries.get(state.tree_selected) {
+                Some(e) => (e.is_dir, e.path.clone()),
+                None => return,
+            };
+            let target = if entry_is_dir {
+                entry_path
+            } else {
+                entry_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or(entry_path)
+            };
+            if target.is_dir() {
+                state.active_panel_mut().path = target;
+                state.active_panel_mut().cursor = 0;
+                state.active_panel_mut().scroll_offset = 0;
+                state.tree_selected = 0;
+                state.tree_scroll = 0;
+                refresh_active(state);
+                state.mode = AppMode::Normal;
             }
+        }
+        KeyCode::Char(c) if c != 'c' && c != 'j' && c != 'k' => {
+            mode_dispatch::initiate_search(state, AppMode::DirectoryTree, c);
         }
         _ => {}
     }
@@ -105,7 +113,9 @@ pub(crate) fn handle_directory_tree(
 }
 
 pub(crate) fn directory_tree_visible_height(terminal_height: u16) -> usize {
-    terminal_height.saturating_sub(DIR_TREE_OVERHEAD_ROWS) as usize
+    terminal_height
+        .saturating_sub(DIR_TREE_OVERHEAD_ROWS)
+        .max(1) as usize
 }
 
 pub(crate) fn set_tree_diagnostic_status(
@@ -113,20 +123,15 @@ pub(crate) fn set_tree_diagnostic_status(
     diagnostics: &[dir_tree::TreeDiagnostic],
 ) {
     if diagnostics.is_empty() {
+        *status_message = None;
         return;
     }
 
-    let first = &diagnostics[0];
-    *status_message = Some(format!(
-        "Directory tree warning: {}: {}{}",
-        first.path.display(),
-        first.message,
-        if diagnostics.len() > 1 {
-            format!(", {} more", diagnostics.len() - 1)
-        } else {
-            String::new()
-        }
-    ));
+    let items: Vec<String> = diagnostics
+        .iter()
+        .map(|d| format!("{}: {}", d.path.display(), d.message))
+        .collect();
+    *status_message = Some(format!("Directory tree warnings: [{}]", items.join("] [")));
 }
 
 #[cfg(test)]
@@ -142,6 +147,7 @@ mod tests {
                 is_dir: false,
                 expanded: false,
                 name: format!("entry-{i}"),
+                read_error: false,
             })
             .collect()
     }
@@ -237,14 +243,14 @@ mod tests {
     fn directory_tree_visible_height_calc() {
         assert_eq!(directory_tree_visible_height(24), 21);
         assert_eq!(directory_tree_visible_height(10), 7);
-        assert_eq!(directory_tree_visible_height(0), 0);
+        assert_eq!(directory_tree_visible_height(0), 1);
     }
 
     #[test]
     fn set_tree_diagnostic_status_empty() {
         let mut msg = Some("old".to_string());
         set_tree_diagnostic_status(&mut msg, &[]);
-        assert_eq!(msg, Some("old".to_string()));
+        assert_eq!(msg, None);
     }
 
     #[test]
@@ -279,6 +285,6 @@ mod tests {
         assert!(msg.is_some(), "expected Some");
         let msg = msg.as_deref().unwrap_or("");
         assert!(msg.contains("err1"));
-        assert!(msg.contains("1 more"));
+        assert!(msg.contains("err2"));
     }
 }

@@ -32,6 +32,7 @@ fn command_execute(state: &mut AppState) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
@@ -44,17 +45,27 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('u') => {
-                state.command_line.clear();
+                state.command_line.drain(..state.command_cursor);
                 state.command_cursor = 0;
-                state.history_index = None;
                 return;
             }
             KeyCode::Char('w') => {
                 command_delete_word_backward(state);
                 return;
             }
-            _ => {}
+            KeyCode::Char('c') => {
+                state.mode = AppMode::Normal;
+                state.command_line.clear();
+                state.command_cursor = 0;
+                state.history_index = None;
+                return;
+            }
+            _ => return,
         }
+    }
+
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        return;
     }
 
     match key.code {
@@ -219,13 +230,13 @@ mod tests {
     }
 
     #[test]
-    fn cmd_ctrl_u_clears_line() {
+    fn cmd_ctrl_u_kills_to_beginning() {
         let mut state = make_cmd_state("hello world", 5);
         handle_command_line(
             &mut state,
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line, "");
+        assert_eq!(state.command_line, " world");
         assert_eq!(state.command_cursor, 0);
     }
 

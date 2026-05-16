@@ -11,6 +11,8 @@ use lc::ui::{dialogs, viewer};
 
 use crate::app::panel_ops::{panel_visible_height, refresh_active, refresh_both, set_active_panel};
 
+const MAX_DIALOG_INPUT_BYTES: usize = 4096;
+
 pub(crate) fn parse_octal_mode(input: &str) -> Option<u32> {
     let mode = u32::from_str_radix(input.trim(), 8).ok()?;
     if mode <= 0o7777 { Some(mode) } else { None }
@@ -41,6 +43,9 @@ fn validate_path_name(input: &str) -> ValidationResult {
     match validate_non_empty(input) {
         ValidationResult::Valid => {}
         other => return other,
+    }
+    if input.contains('/') || input.contains('\\') {
+        return ValidationResult::InvalidPath(format!("Name contains path separator: {input}"));
     }
     if contains_parent_dir(input) {
         ValidationResult::InvalidPath(input.to_string())
@@ -149,23 +154,29 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
     }
 }
 
-fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
-    let confirmed = match key {
+fn confirm_dialog_key(state: &mut AppState, key: KeyCode) -> Option<bool> {
+    match key {
         KeyCode::Char('y' | 'Y') => Some(true),
         KeyCode::Char('n' | 'N') => Some(false),
         KeyCode::Enter => Some(state.dialog_selection == 0),
         KeyCode::Esc => {
             dismiss_dialog(state);
-            return;
+            None
         }
         KeyCode::Left | KeyCode::Right => {
             state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
-            return;
+            None
         }
-        _ => return,
+        _ => None,
+    }
+}
+
+fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
+    let Some(confirmed) = confirm_dialog_key(state, key) else {
+        return;
     };
 
-    if confirmed == Some(true) {
+    if confirmed {
         if state.pending_action.is_some() {
             if let Some(conflicting) = check_overwrite_conflict(state) {
                 state.dialog_selection = 0;
@@ -291,6 +302,8 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
         if !state.directory_hotlist.iter().any(|p| p == &expanded) {
             state.directory_hotlist.push(expanded);
         }
+    } else if expanded.exists() {
+        state.status_message = Some(format!("Not a directory: {input}"));
     } else {
         state.status_message = Some(format!("Directory not found: {input}"));
     }
@@ -424,6 +437,9 @@ fn apply_text_edit(state: &mut AppState, key: KeyCode) {
             }
         }
         KeyCode::Char(c) => {
+            if state.dialog_input.len() >= MAX_DIALOG_INPUT_BYTES {
+                return;
+            }
             let byte_pos = state
                 .dialog_input
                 .char_indices()
@@ -447,11 +463,6 @@ fn apply_text_edit(state: &mut AppState, key: KeyCode) {
         }
         _ => {}
     }
-}
-
-#[cfg(test)]
-fn handle_dialog_text_edit(state: &mut AppState, key: KeyCode) {
-    apply_text_edit(state, key);
 }
 
 fn handle_input_dialog(
@@ -509,22 +520,11 @@ fn handle_copymove_dialog(
     running_job: &mut Option<RunningJob>,
     key: KeyCode,
 ) {
-    let confirmed = match key {
-        KeyCode::Char('y' | 'Y') => Some(true),
-        KeyCode::Char('n' | 'N') => Some(false),
-        KeyCode::Enter => Some(state.dialog_selection == 0),
-        KeyCode::Esc => {
-            dismiss_dialog(state);
-            return;
-        }
-        KeyCode::Left | KeyCode::Right => {
-            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
-            return;
-        }
-        _ => return,
+    let Some(confirmed) = confirm_dialog_key(state, key) else {
+        return;
     };
 
-    if confirmed == Some(true) {
+    if confirmed {
         let action = if let AppMode::Dialog(DialogKind::CopyMove {
             source,
             dest,
@@ -614,10 +614,7 @@ pub(crate) fn handle_dialog(
             _ => false,
         };
         if should_exit {
-            state.mode = AppMode::Normal;
-            if let Some(panel) = state.menu_restore_panel.take() {
-                set_active_panel(state, panel);
-            }
+            dismiss_dialog_and_restore(state);
         }
         return;
     }
@@ -679,7 +676,7 @@ mod tests {
     #[test]
     fn text_edit_insert_char() {
         let mut state = make_input_state("hello", 5);
-        handle_dialog_text_edit(&mut state, KeyCode::Char('!'));
+        apply_text_edit(&mut state, KeyCode::Char('!'));
         assert_eq!(state.dialog_input, "hello!");
         assert_eq!(state.dialog_cursor_pos, 6);
     }
@@ -687,7 +684,7 @@ mod tests {
     #[test]
     fn text_edit_insert_middle() {
         let mut state = make_input_state("helo", 2);
-        handle_dialog_text_edit(&mut state, KeyCode::Char('l'));
+        apply_text_edit(&mut state, KeyCode::Char('l'));
         assert_eq!(state.dialog_input, "hello");
         assert_eq!(state.dialog_cursor_pos, 3);
     }
@@ -695,7 +692,7 @@ mod tests {
     #[test]
     fn text_edit_backspace() {
         let mut state = make_input_state("hello", 5);
-        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        apply_text_edit(&mut state, KeyCode::Backspace);
         assert_eq!(state.dialog_input, "hell");
         assert_eq!(state.dialog_cursor_pos, 4);
     }
@@ -703,7 +700,7 @@ mod tests {
     #[test]
     fn text_edit_backspace_at_start() {
         let mut state = make_input_state("hello", 0);
-        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        apply_text_edit(&mut state, KeyCode::Backspace);
         assert_eq!(state.dialog_input, "hello");
         assert_eq!(state.dialog_cursor_pos, 0);
     }
@@ -711,7 +708,7 @@ mod tests {
     #[test]
     fn text_edit_delete() {
         let mut state = make_input_state("hello", 0);
-        handle_dialog_text_edit(&mut state, KeyCode::Delete);
+        apply_text_edit(&mut state, KeyCode::Delete);
         assert_eq!(state.dialog_input, "ello");
         assert_eq!(state.dialog_cursor_pos, 0);
     }
@@ -719,7 +716,7 @@ mod tests {
     #[test]
     fn text_edit_delete_at_end() {
         let mut state = make_input_state("hello", 5);
-        handle_dialog_text_edit(&mut state, KeyCode::Delete);
+        apply_text_edit(&mut state, KeyCode::Delete);
         assert_eq!(state.dialog_input, "hello");
         assert_eq!(state.dialog_cursor_pos, 5);
     }
@@ -727,25 +724,25 @@ mod tests {
     #[test]
     fn text_edit_left_right() {
         let mut state = make_input_state("hello", 3);
-        handle_dialog_text_edit(&mut state, KeyCode::Left);
+        apply_text_edit(&mut state, KeyCode::Left);
         assert_eq!(state.dialog_cursor_pos, 2);
-        handle_dialog_text_edit(&mut state, KeyCode::Right);
+        apply_text_edit(&mut state, KeyCode::Right);
         assert_eq!(state.dialog_cursor_pos, 3);
     }
 
     #[test]
     fn text_edit_home_end() {
         let mut state = make_input_state("hello", 3);
-        handle_dialog_text_edit(&mut state, KeyCode::Home);
+        apply_text_edit(&mut state, KeyCode::Home);
         assert_eq!(state.dialog_cursor_pos, 0);
-        handle_dialog_text_edit(&mut state, KeyCode::End);
+        apply_text_edit(&mut state, KeyCode::End);
         assert_eq!(state.dialog_cursor_pos, 5);
     }
 
     #[test]
     fn text_edit_multibyte_insert() {
         let mut state = make_input_state("hello", 5);
-        handle_dialog_text_edit(&mut state, KeyCode::Char('ą'));
+        apply_text_edit(&mut state, KeyCode::Char('ą'));
         assert_eq!(state.dialog_input, "helloą");
         assert_eq!(state.dialog_cursor_pos, 6);
     }
@@ -753,7 +750,7 @@ mod tests {
     #[test]
     fn text_edit_multibyte_backspace() {
         let mut state = make_input_state("helloą", 6);
-        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        apply_text_edit(&mut state, KeyCode::Backspace);
         assert_eq!(state.dialog_input, "hello");
         assert_eq!(state.dialog_cursor_pos, 5);
     }
@@ -761,7 +758,7 @@ mod tests {
     #[test]
     fn text_edit_emoji_insert() {
         let mut state = make_input_state("test", 4);
-        handle_dialog_text_edit(&mut state, KeyCode::Char('🎉'));
+        apply_text_edit(&mut state, KeyCode::Char('🎉'));
         assert_eq!(state.dialog_input, "test🎉");
         assert_eq!(state.dialog_cursor_pos, 5);
     }
@@ -769,7 +766,7 @@ mod tests {
     #[test]
     fn text_edit_emoji_backspace() {
         let mut state = make_input_state("test🎉", 5);
-        handle_dialog_text_edit(&mut state, KeyCode::Backspace);
+        apply_text_edit(&mut state, KeyCode::Backspace);
         assert_eq!(state.dialog_input, "test");
         assert_eq!(state.dialog_cursor_pos, 4);
     }

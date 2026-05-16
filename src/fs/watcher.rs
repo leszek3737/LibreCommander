@@ -33,6 +33,7 @@ pub struct Watcher {
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
+    path_cache: HashMap<PathBuf, PathBuf>,
 }
 
 impl Watcher {
@@ -59,6 +60,7 @@ impl Watcher {
             paused,
             debounce_state,
             pending_from,
+            path_cache: HashMap::new(),
         })
     }
 
@@ -82,19 +84,19 @@ impl Watcher {
     }
 
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
-        // Canonicalize first: callers may pass relative paths or symlinks,
-        // and the `watchers` map keys are canonical. We must resolve before
-        // the contains_key check to avoid duplicate entries for the same dir.
+        let original = path.to_path_buf();
         let path = path.canonicalize().map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("cannot canonicalize {}: {e}", path.display()),
+                format!("cannot canonicalize {}: {e}", original.display()),
             )
         })?;
 
         if self.watchers.contains_key(&path) {
             return Ok(());
         }
+
+        self.path_cache.insert(original, path.clone());
 
         match self.primary.watch(&path, RecursiveMode::NonRecursive) {
             Ok(()) => {
@@ -117,43 +119,50 @@ impl Watcher {
     }
 
     pub fn unwatch(&mut self, path: &Path) -> io::Result<()> {
-        let path = match path.canonicalize() {
-            Ok(path) => path,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                self.remove_watched_dir_state(path);
-                return Ok(());
-            }
-            Err(err) => {
-                return Err(io::Error::new(
-                    err.kind(),
-                    format!("cannot canonicalize {}: {err}", path.display()),
-                ));
+        let path = if let Some(canonical) = self.path_cache.get(path) {
+            canonical.clone()
+        } else {
+            match path.canonicalize() {
+                Ok(path) => {
+                    self.path_cache.insert(path.clone(), path.clone());
+                    path
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    self.remove_watched_dir_state(path);
+                    return Ok(());
+                }
+                Err(err) => {
+                    return Err(io::Error::new(
+                        err.kind(),
+                        format!("cannot canonicalize {}: {err}", path.display()),
+                    ));
+                }
             }
         };
 
-        let result = match self.watchers.get(&path) {
+        match self.watchers.get(&path) {
             Some(WhichWatcher::Primary) => {
-                self.primary.unwatch(&path).map_err(|e| notify_to_io(&e))
+                let _ = self.primary.unwatch(&path);
             }
-            Some(WhichWatcher::Fallback) => self
-                .fallback
-                .as_mut()
-                .ok_or_else(|| io::Error::other("fallback watcher not initialized"))?
-                .unwatch(&path)
-                .map_err(|e| notify_to_io(&e)),
-            None => Ok(()),
-        };
-
-        if result.is_ok() {
-            self.watchers.remove(&path);
+            Some(WhichWatcher::Fallback) => {
+                if let Some(fb) = self.fallback.as_mut() {
+                    let _ = fb.unwatch(&path);
+                }
+            }
+            None => {}
         }
-        result
+
+        self.watchers.remove(&path);
+        self.path_cache.retain(|_, v| v != &path);
+        Ok(())
     }
 
     fn remove_watched_dir_state(&mut self, path: &Path) {
         self.watchers.retain(|watched, _| {
             watched.as_path() != path && !path_points_to_missing_watch(path, watched)
         });
+        self.path_cache
+            .retain(|_, v| self.watchers.contains_key(v.as_path()));
     }
 
     pub fn watched_dirs(&self) -> Vec<PathBuf> {
@@ -161,11 +170,8 @@ impl Watcher {
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
-        let mut pending = self.pending_from.lock().unwrap_or_else(|e| {
-            debug_log!("pending_from mutex poisoned, recovering: {e}");
-            e.into_inner()
-        });
+        self.paused.store(true, Ordering::Release);
+        let mut pending = lock_or_recover(&self.pending_from, "pending_from");
         if pending.is_some() {
             debug_log!("watcher paused: clearing stale pending_from");
         }
@@ -173,7 +179,7 @@ impl Watcher {
     }
 
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
+        self.paused.store(false, Ordering::Release);
     }
 }
 
@@ -184,7 +190,7 @@ fn make_handler(
     pending_from: Arc<Mutex<Option<PathBuf>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
-        if paused.load(Ordering::Relaxed) {
+        if paused.load(Ordering::Acquire) {
             return;
         }
 
@@ -203,7 +209,9 @@ fn make_handler(
                 }
                 WatchEvent::Renamed { from, to } => {
                     should_emit(&debounce_state, &[from.as_path(), to.as_path()], true);
-                    let _ = event_tx.send(watch_event);
+                    if let Err(e) = event_tx.send(watch_event) {
+                        debug_log!("watcher send failed: {e}");
+                    }
                     continue;
                 }
             };
@@ -215,7 +223,9 @@ fn make_handler(
                 continue;
             }
 
-            let _ = event_tx.send(watch_event);
+            if let Err(e) = event_tx.send(watch_event) {
+                debug_log!("watcher send failed: {e}");
+            }
         }
     }
 }
@@ -226,10 +236,7 @@ fn should_emit(
     skip_debounce: bool,
 ) -> bool {
     let now = Instant::now();
-    let mut debounce = debounce_state.lock().unwrap_or_else(|e| {
-        debug_log!("watcher mutex poisoned, recovering: {e}");
-        e.into_inner()
-    });
+    let mut debounce = lock_or_recover(debounce_state, "watcher");
     debounce
         .retain(|_, instant| now.duration_since(*instant) < DEBOUNCE_DURATION.saturating_mul(2));
     if skip_debounce {
@@ -259,13 +266,17 @@ fn debounce_upsert(map: &mut HashMap<PathBuf, Instant>, path: &Path, instant: In
     }
 }
 
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
+    mutex.lock().unwrap_or_else(|e| {
+        debug_log!("{label} mutex poisoned, recovering: {e}");
+        e.into_inner()
+    })
+}
+
 fn lock_pending(
     pending_from: &Mutex<Option<PathBuf>>,
 ) -> std::sync::MutexGuard<'_, Option<PathBuf>> {
-    pending_from.lock().unwrap_or_else(|e| {
-        debug_log!("pending_from mutex poisoned, recovering: {e}");
-        e.into_inner()
-    })
+    lock_or_recover(pending_from, "pending_from")
 }
 
 fn convert_event_with_rename_pairing(
