@@ -1,5 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, TryLockError};
 
 use chrono::Local;
@@ -33,20 +34,14 @@ fn log_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("lc_debug.log"))
 }
 
+static CHECK_COUNTER: AtomicU32 = AtomicU32::new(0);
+const CHECK_INTERVAL: u32 = 256;
+
 fn ensure_log_file() -> std::io::Result<std::fs::File> {
     let path = log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-
-    let should_truncate = match std::fs::metadata(&path) {
-        Ok(meta) => meta.len() > MAX_LOG_SIZE,
-        Err(_) => false,
-    };
-    if should_truncate {
-        let _ = std::fs::File::create(&path);
-    }
-
     OpenOptions::new().create(true).append(true).open(&path)
 }
 
@@ -62,12 +57,10 @@ pub fn log(args: std::fmt::Arguments<'_>) {
     let mut guard = match LOG_FILE.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::Poisoned(err)) => err.into_inner(),
-        Err(TryLockError::WouldBlock) => {
-            stderr_fallback(&format!("[lc:debug_log:lock_busy] {args}"));
-            return;
-        }
+        Err(TryLockError::WouldBlock) => return,
     };
-    if guard.is_none() {
+    let freshly_opened = guard.is_none();
+    if freshly_opened {
         match ensure_log_file() {
             Ok(file) => *guard = Some(file),
             Err(e) => {
@@ -76,15 +69,21 @@ pub fn log(args: std::fmt::Arguments<'_>) {
             }
         }
     }
-    let path = log_path();
-    if guard.is_some() && std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_SIZE) {
-        *guard = None;
-        let _ = std::fs::File::create(&path);
-        match ensure_log_file() {
-            Ok(f) => *guard = Some(f),
-            Err(e) => {
-                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
-                return;
+    let need_size_check = freshly_opened
+        || CHECK_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(CHECK_INTERVAL);
+    if need_size_check {
+        let path = log_path();
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_SIZE) {
+            *guard = None;
+            let _ = std::fs::File::create(&path);
+            match ensure_log_file() {
+                Ok(f) => *guard = Some(f),
+                Err(e) => {
+                    stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                    return;
+                }
             }
         }
     }

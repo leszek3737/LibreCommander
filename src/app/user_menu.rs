@@ -211,9 +211,9 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
             Some(ConditionParseResult::Unsupported) => {
                 warnings.push(MenuWarning {
                     line: condition_line,
-                    message: "Unsupported condition type, entry skipped".into(),
+                    message: "Unsupported condition type, ignored".into(),
                 });
-                continue;
+                None
             }
             None => None,
         };
@@ -596,6 +596,29 @@ mod tests {
             parsed.warnings[0]
                 .message
                 .starts_with("Invalid filename regex `[invalid`:")
+        );
+    }
+
+    #[test]
+    fn test_parse_unsupported_condition_keeps_entry_without_condition() {
+        let src = "+ d /tmp\nT  Test\n\tcmd\n";
+        let entries = parse_menu(src);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hotkey, 'T');
+        assert!(entries[0].condition.is_none());
+    }
+
+    #[test]
+    fn test_parse_unsupported_condition_reports_warning() {
+        let src = "+ d /tmp\nT  Test\n\tcmd\n\nB  Build\n\tcargo build\n";
+        let parsed = parse_menu_with_warnings(src);
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].hotkey, 'T');
+        assert!(parsed.entries[0].condition.is_none());
+        assert_eq!(parsed.warnings.len(), 1);
+        assert_eq!(
+            parsed.warnings[0].message,
+            "Unsupported condition type, ignored"
         );
     }
 
