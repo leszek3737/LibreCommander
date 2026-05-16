@@ -63,7 +63,7 @@ pub fn expand_path(input: &str) -> PathBuf {
     }
 
     if trimmed == "~" {
-        return dirs::home_dir().unwrap_or_default();
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
 
     if let Some(rest) = stripped_tilde(trimmed) {

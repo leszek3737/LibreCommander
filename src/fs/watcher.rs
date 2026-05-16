@@ -140,24 +140,21 @@ impl Watcher {
             }
         };
 
-        let result = match self.watchers.get(&path) {
+        match self.watchers.get(&path) {
             Some(WhichWatcher::Primary) => {
-                self.primary.unwatch(&path).map_err(|e| notify_to_io(&e))
+                let _ = self.primary.unwatch(&path);
             }
-            Some(WhichWatcher::Fallback) => self
-                .fallback
-                .as_mut()
-                .ok_or_else(|| io::Error::other("fallback watcher not initialized"))?
-                .unwatch(&path)
-                .map_err(|e| notify_to_io(&e)),
-            None => Ok(()),
-        };
-
-        if result.is_ok() {
-            self.watchers.remove(&path);
-            self.path_cache.retain(|_, v| v != &path);
+            Some(WhichWatcher::Fallback) => {
+                if let Some(fb) = self.fallback.as_mut() {
+                    let _ = fb.unwatch(&path);
+                }
+            }
+            None => {}
         }
-        result
+
+        self.watchers.remove(&path);
+        self.path_cache.retain(|_, v| v != &path);
+        Ok(())
     }
 
     fn remove_watched_dir_state(&mut self, path: &Path) {

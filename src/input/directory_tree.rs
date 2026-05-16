@@ -76,20 +76,6 @@ pub(crate) fn handle_directory_tree(
                 Some(e) => (e.is_dir, e.path.clone()),
                 None => return,
             };
-            let selected = state.tree_selected;
-            if entry_is_dir {
-                let show_hidden = state.active_panel().show_hidden;
-                let diagnostics = dir_tree::toggle_expand_with_diagnostics(
-                    &mut state.tree_entries,
-                    selected,
-                    show_hidden,
-                );
-                set_tree_diagnostic_status(&mut state.status_message, &diagnostics);
-                if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty()
-                {
-                    state.tree_selected = state.tree_entries.len() - 1;
-                }
-            }
             let target = if entry_is_dir {
                 entry_path
             } else {

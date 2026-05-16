@@ -123,7 +123,7 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
 }
 
 fn ensure_path_index(panel: &mut PanelState) {
-    if panel.path_index.len() == panel.unfiltered_entries.len() {
+    if !panel.path_index.is_empty() {
         return;
     }
     panel.path_index.clear();
