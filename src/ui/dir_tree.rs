@@ -109,7 +109,15 @@ pub fn render_directory_tree(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if inner.height == 0 || entries.is_empty() {
+    if inner.height == 0 {
+        return;
+    }
+
+    if entries.is_empty() {
+        let placeholder = Paragraph::new("(empty directory)")
+            .style(Theme::warning())
+            .centered();
+        f.render_widget(placeholder, inner);
         return;
     }
 
@@ -158,7 +166,9 @@ pub fn render_directory_tree(
 
         let indent = indent_for_depth(entry.depth);
         let indent_width = UnicodeWidthStr::width(indent);
-        let prefix = if entry.is_dir {
+        let prefix = if entry.is_dir && entry.read_error {
+            "! "
+        } else if entry.is_dir {
             if entry.expanded { "- " } else { "+ " }
         } else {
             "  "
@@ -217,6 +227,7 @@ mod tests {
             is_dir,
             expanded,
             name: name.to_string(),
+            read_error: false,
         }
     }
 

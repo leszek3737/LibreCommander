@@ -337,6 +337,7 @@ pub struct AppState {
     // Scroll acceleration
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
+    pub drag_anchor_index: Option<usize>,
 }
 
 // ============================================================================
@@ -886,6 +887,7 @@ impl AppState {
             drag_current_col: 0,
             scroll_accel: 0,
             last_scroll_time: None,
+            drag_anchor_index: None,
         }
     }
 

@@ -1,7 +1,17 @@
 use std::path::{Component, Path, PathBuf};
 
+const ENV_VAR_EXPANSION_FACTOR: usize = 2;
+
+/// Normalizes a path by resolving `.` and `..` components.
+///
+/// Removes redundant current-directory markers and collapses parent-directory
+/// references where possible. The result never contains `./` sequences and
+/// minimizes `../` segments. Parent-directory references beyond the root are
+/// preserved on Unix; on Windows, `ParentDir` after a drive prefix is kept
+/// (drive-relative navigation).
 pub fn clean_path(path: &Path) -> PathBuf {
-    let mut comps: Vec<Component<'_>> = Vec::new();
+    let est_comps = path.as_os_str().len();
+    let mut comps: Vec<Component<'_>> = Vec::with_capacity(est_comps);
 
     for component in path.components() {
         match component {
@@ -40,6 +50,12 @@ pub fn clean_path(path: &Path) -> PathBuf {
     out
 }
 
+/// Expands a user-supplied path string.
+///
+/// Performs tilde expansion (`~` → home directory, `~/foo` → home/foo),
+/// environment variable substitution (`$VAR`, `${VAR}`), and strips
+/// surrounding whitespace. Returns a `PathBuf`; an empty or
+/// whitespace-only input yields an empty path.
 pub fn expand_path(input: &str) -> PathBuf {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -47,7 +63,7 @@ pub fn expand_path(input: &str) -> PathBuf {
     }
 
     if trimmed == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        return dirs::home_dir().unwrap_or_default();
     }
 
     if let Some(rest) = stripped_tilde(trimmed) {
@@ -73,6 +89,11 @@ fn stripped_tilde(s: &str) -> Option<&str> {
     None
 }
 
+/// Resolves a user-supplied path against a base directory.
+///
+/// If `input` is absolute (root or drive-letter), it is used directly;
+/// otherwise it is joined with `base`. Both branches are normalized
+/// via [`clean_path`].
 pub fn resolve_user_path(base: &Path, input: &str) -> PathBuf {
     let expanded = expand_path(input);
     if expanded.is_absolute() {
@@ -82,11 +103,14 @@ pub fn resolve_user_path(base: &Path, input: &str) -> PathBuf {
     }
 }
 
+/// Replaces `$VAR` and `${VAR}` tokens with their environment values.
+///
+/// Unknown variables are left unchanged (e.g. `$FOO` stays `$FOO`).
+/// Dollar signs not followed by a valid variable name are passed through
+/// as literal `$`. Returns the expanded string; the caller is responsible
+/// for converting to a path.
 fn expand_env_vars(input: &str) -> String {
-    // Heuristic: env vars usually expand longer than their $NAME tokens.
-    // input.len() * 2 avoids most reallocations for typical usage while
-    // staying cheap to compute.
-    let mut result = String::with_capacity(input.len().saturating_mul(2));
+    let mut result = String::with_capacity(input.len().saturating_mul(ENV_VAR_EXPANSION_FACTOR));
     let mut rest = input;
 
     while let Some(pos) = rest.find('$') {

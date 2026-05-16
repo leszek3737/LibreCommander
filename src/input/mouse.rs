@@ -40,13 +40,47 @@ pub fn handle_mouse_event(
         return None;
     }
 
-    let MouseEventKind::Down(button) = mouse_event.kind else {
-        return None;
-    };
-    if button != MouseButton::Left {
+    if matches!(mouse_event.kind, MouseEventKind::Drag(MouseButton::Left)) {
+        handle_mouse_drag(state, col, row, width, height);
         return None;
     }
 
+    if matches!(mouse_event.kind, MouseEventKind::Up(_)) {
+        handle_mouse_up(state);
+        return None;
+    }
+
+    let MouseEventKind::Down(button) = mouse_event.kind else {
+        return None;
+    };
+
+    match button {
+        MouseButton::Left => handle_left_down(
+            state,
+            _viewer_state,
+            viewer_loader,
+            running_job,
+            col,
+            row,
+            width,
+            height,
+        ),
+        MouseButton::Middle => handle_middle_down(state, col, row, width, height),
+        MouseButton::Right => handle_right_down(state, col, row, width, height),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_left_down(
+    state: &mut AppState,
+    _viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    running_job: &mut Option<RunningJob>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) -> Option<MouseOutcome> {
     if let Some(outcome) = handle_mouse_dialog(state, running_job, col, row, width, height) {
         return Some(outcome);
     }
@@ -67,6 +101,54 @@ pub fn handle_mouse_event(
     None
 }
 
+fn handle_middle_down(
+    state: &mut AppState,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) -> Option<MouseOutcome> {
+    let (panel_start_row, panel_end_row) = panel_bounds(height);
+    if row > panel_start_row && row < panel_end_row && !matches!(state.mode, AppMode::Dialog(_)) {
+        if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
+            return Some(MouseOutcome::Consumed);
+        }
+        let mid_col = width / 2;
+        if col < mid_col {
+            state.active_panel = ActivePanel::Left;
+        } else {
+            state.active_panel = ActivePanel::Right;
+        }
+        Some(MouseOutcome::NormalKey(KeyCode::F(5)))
+    } else {
+        Some(MouseOutcome::Consumed)
+    }
+}
+
+fn handle_right_down(
+    state: &mut AppState,
+    _col: u16,
+    row: u16,
+    _width: u16,
+    height: u16,
+) -> Option<MouseOutcome> {
+    if let AppMode::Dialog(_) = state.mode {
+        return Some(MouseOutcome::NormalKey(KeyCode::Esc));
+    }
+    if matches!(state.mode, AppMode::Menu) {
+        return Some(MouseOutcome::NormalKey(KeyCode::Esc));
+    }
+    let (panel_start_row, panel_end_row) = panel_bounds(height);
+    if row > panel_start_row && row < panel_end_row {
+        return Some(MouseOutcome::NormalKey(KeyCode::Esc));
+    }
+    Some(MouseOutcome::Consumed)
+}
+
+fn panel_bounds(height: u16) -> (u16, u16) {
+    (1u16, height.saturating_sub(4))
+}
+
 fn handle_mouse_scroll(
     state: &mut AppState,
     kind: crossterm::event::MouseEventKind,
@@ -77,11 +159,32 @@ fn handle_mouse_scroll(
 ) {
     use crossterm::event::MouseEventKind;
 
+    let delta = match kind {
+        MouseEventKind::ScrollUp => -(SCROLL_LINES as isize),
+        MouseEventKind::ScrollDown => SCROLL_LINES as isize,
+        _ => return,
+    };
+
+    match &mut state.mode {
+        AppMode::Dialog(DialogKind::Help {
+            message,
+            scroll_offset: off,
+        }) => {
+            let visible = crate::ui::dialogs::help_visible_height(Rect::new(0, 0, 80, height));
+            let total_lines = message.lines().count();
+            *off = apply_scroll_delta(*off, delta, visible, total_lines);
+            return;
+        }
+        AppMode::Dialog(DialogKind::Error(_)) => {
+            return;
+        }
+        _ => {}
+    }
+
     if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return;
     }
-    let panel_start_row = 1u16;
-    let panel_end_row = height.saturating_sub(4);
+    let (panel_start_row, panel_end_row) = panel_bounds(height);
     if row < panel_start_row || row > panel_end_row {
         return;
     }
@@ -112,6 +215,18 @@ fn handle_mouse_scroll(
     }
 }
 
+fn apply_scroll_delta(current: usize, delta: isize, visible: usize, total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    if delta < 0 {
+        current.saturating_sub(delta.unsigned_abs())
+    } else {
+        let max_scroll = total.saturating_sub(visible);
+        (current + delta as usize).min(max_scroll)
+    }
+}
+
 fn handle_mouse_dialog(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
@@ -120,8 +235,8 @@ fn handle_mouse_dialog(
     width: u16,
     height: u16,
 ) -> Option<MouseOutcome> {
-    if matches!(state.mode, AppMode::Dialog(DialogKind::Progress(_, _))) {
-        return Some(MouseOutcome::Consumed);
+    if let AppMode::Dialog(DialogKind::Progress(_, _)) = state.mode {
+        return handle_progress_click(state, running_job, col, row, width, height);
     }
 
     if let AppMode::Dialog(DialogKind::Input { .. }) = state.mode {
@@ -129,37 +244,11 @@ fn handle_mouse_dialog(
     }
 
     if let AppMode::Dialog(DialogKind::Confirm(_)) = state.mode {
-        let dialog_height = height * 40 / 100;
-        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        let btn_row = dialog_y + dialog_height.saturating_sub(2);
-        let dialog_width = width / 2;
-        let dialog_left = (width.saturating_sub(dialog_width)) / 2;
+        return handle_confirm_click(state, running_job, width, height, col, row);
+    }
 
-        if row == btn_row && col >= dialog_left && col < dialog_left + dialog_width {
-            let btn_center = dialog_left + dialog_width / 2;
-            let new_sel = if col < btn_center { 0 } else { 1 };
-            if state.dialog_selection == new_sel {
-                if new_sel == 0 {
-                    if state.pending_action.is_some() {
-                        start_confirmed_action(state, running_job);
-                        state.dialog_selection = 0;
-                        if state.status_message.is_some() {
-                            dismiss_dialog(state);
-                            refresh_both(state);
-                            return Some(MouseOutcome::Consumed);
-                        }
-                        return Some(MouseOutcome::Consumed);
-                    }
-                    dismiss_dialog(state);
-                    refresh_both(state);
-                } else {
-                    dismiss_dialog(state);
-                }
-            } else {
-                state.dialog_selection = new_sel;
-            }
-        }
-        return Some(MouseOutcome::Consumed);
+    if let AppMode::Dialog(DialogKind::OverwriteConfirm { .. }) = state.mode {
+        return handle_overwrite_click(state, running_job, width, height, col, row);
     }
 
     if let AppMode::Dialog(_) = state.mode {
@@ -167,6 +256,135 @@ fn handle_mouse_dialog(
     }
 
     None
+}
+
+fn dialog_button_row(height: u16, dialog_height: u16) -> u16 {
+    let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+    dialog_y + dialog_height.saturating_sub(2)
+}
+
+fn dialog_left(width: u16, dialog_width: u16) -> u16 {
+    (width.saturating_sub(dialog_width)) / 2
+}
+
+fn handle_confirm_click(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    width: u16,
+    height: u16,
+    col: u16,
+    row: u16,
+) -> Option<MouseOutcome> {
+    let dialog_height = height * 40 / 100;
+    let btn_row = dialog_button_row(height, dialog_height);
+    let dialog_width = width / 2;
+    let dialog_left = dialog_left(width, dialog_width);
+
+    if row == btn_row && col >= dialog_left && col < dialog_left + dialog_width {
+        let btn_center = dialog_left + dialog_width / 2;
+        let new_sel = if col < btn_center { 0 } else { 1 };
+        if state.dialog_selection == new_sel {
+            if new_sel == 0 {
+                if state.pending_action.is_some() {
+                    start_confirmed_action(state, running_job);
+                    state.dialog_selection = 0;
+                    if state.status_message.is_some() {
+                        dismiss_dialog(state);
+                        refresh_both(state);
+                        return Some(MouseOutcome::Consumed);
+                    }
+                    return Some(MouseOutcome::Consumed);
+                }
+                dismiss_dialog(state);
+                refresh_both(state);
+            } else {
+                dismiss_dialog(state);
+            }
+        } else {
+            state.dialog_selection = new_sel;
+        }
+    }
+    Some(MouseOutcome::Consumed)
+}
+
+fn handle_overwrite_click(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    width: u16,
+    height: u16,
+    col: u16,
+    row: u16,
+) -> Option<MouseOutcome> {
+    let dialog_height = height * 40 / 100;
+    let btn_row = dialog_button_row(height, dialog_height);
+    let dialog_width = width / 2;
+    let dialog_left = dialog_left(width, dialog_width);
+
+    if row == btn_row && col >= dialog_left && col < dialog_left + dialog_width {
+        let btn_center = dialog_left + dialog_width / 2;
+        let new_sel = if col < btn_center { 0 } else { 1 };
+        if state.dialog_selection == new_sel {
+            match new_sel {
+                0 => {
+                    set_pending_overwrite(state);
+                    start_confirmed_action(state, running_job);
+                    finish_confirmed_action(state);
+                }
+                1 => {
+                    dismiss_dialog(state);
+                }
+                _ => {}
+            }
+        } else {
+            state.dialog_selection = new_sel;
+        }
+    }
+    Some(MouseOutcome::Consumed)
+}
+
+fn set_pending_overwrite(state: &mut AppState) {
+    if let Some(action) = state.pending_action.as_mut() {
+        match action {
+            crate::app::types::PendingAction::Copy { overwrite, .. }
+            | crate::app::types::PendingAction::Move { overwrite, .. } => {
+                *overwrite = true;
+            }
+            crate::app::types::PendingAction::Delete { .. } => {}
+        }
+    }
+}
+
+fn finish_confirmed_action(state: &mut AppState) {
+    state.dialog_selection = 0;
+    if state.status_message.is_some() {
+        dismiss_dialog(state);
+        refresh_both(state);
+    }
+}
+
+fn handle_progress_click(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    col: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) -> Option<MouseOutcome> {
+    let dialog_height = height * 40 / 100;
+    let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+    let cancel_row = dialog_y + dialog_height.saturating_sub(2);
+    let dialog_width = width / 2;
+    let dialog_left = dialog_left(width, dialog_width);
+
+    if row == cancel_row
+        && col >= dialog_left
+        && col < dialog_left + dialog_width
+        && let Some(job) = running_job.as_ref()
+    {
+        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        state.status_message = Some("Cancel requested".to_string());
+    }
+    Some(MouseOutcome::Consumed)
 }
 
 fn handle_mouse_menu_bar(
@@ -188,7 +406,6 @@ fn handle_mouse_menu_bar(
             return Some(MouseOutcome::Consumed);
         }
     }
-    // Consume click on menu bar even outside title bounds — prevents click-through to panels.
     Some(MouseOutcome::Consumed)
 }
 
@@ -222,6 +439,7 @@ fn handle_mouse_menu_dropdown(
             return Some(MouseOutcome::MenuAction);
         }
     }
+    state.mode = AppMode::Normal;
     Some(MouseOutcome::Consumed)
 }
 
@@ -269,8 +487,7 @@ fn handle_mouse_panels(
         return;
     }
 
-    let panel_start_row = 1u16;
-    let panel_end_row = height.saturating_sub(4);
+    let (panel_start_row, panel_end_row) = panel_bounds(height);
 
     if row <= panel_start_row || row >= panel_end_row {
         return;
@@ -316,6 +533,7 @@ fn handle_mouse_panels(
     if is_double_click {
         state.last_click_time = None;
         state.last_click_position = None;
+        state.drag_anchor_index = None;
 
         let entry = &panel.entries[clicked_index];
         let is_dir = entry.is_dir();
@@ -338,6 +556,7 @@ fn handle_mouse_panels(
     } else {
         state.last_click_time = Some(now);
         state.last_click_position = Some((col, row));
+        state.drag_anchor_index = Some(clicked_index);
 
         let panel_mut = state.active_panel_mut();
         panel_mut.cursor = clicked_index;
@@ -345,10 +564,69 @@ fn handle_mouse_panels(
     }
 }
 
+fn handle_mouse_drag(state: &mut AppState, col: u16, row: u16, width: u16, height: u16) {
+    if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
+        return;
+    }
+
+    let (panel_start_row, panel_end_row) = panel_bounds(height);
+    if row <= panel_start_row || row >= panel_end_row {
+        return;
+    }
+
+    let anchor = match state.drag_anchor_index {
+        Some(idx) => idx,
+        None => return,
+    };
+
+    let mid_col = width / 2;
+    let clicked_left = col < mid_col;
+    let same_panel = clicked_left == matches!(state.active_panel, ActivePanel::Left);
+    if !same_panel {
+        return;
+    }
+
+    let panel = if clicked_left {
+        &state.left_panel
+    } else {
+        &state.right_panel
+    };
+
+    let list_start_row = panel_start_row + 1;
+    let relative_row = row.saturating_sub(list_start_row);
+    let current_index = panel.scroll_offset + relative_row as usize;
+
+    if current_index >= panel.entries.len() {
+        return;
+    }
+
+    let panel_mut = state.active_panel_mut();
+    let start = anchor.min(current_index);
+    let end = anchor.max(current_index);
+    for entry in panel_mut.entries.iter_mut() {
+        entry.selected = false;
+    }
+    for entry in panel_mut
+        .entries
+        .iter_mut()
+        .skip(start)
+        .take(end - start + 1)
+    {
+        entry.selected = true;
+    }
+    panel_mut.cursor = current_index;
+    let visible_rows = (panel_end_row - panel_start_row).saturating_sub(1) as usize;
+    panel_mut.ensure_cursor_visible(visible_rows);
+}
+
+fn handle_mouse_up(state: &mut AppState) {
+    state.drag_anchor_index = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::{AppState, ConfirmDetails, DialogKind, InputAction};
+    use crate::app::types::{ConfirmDetails, InputAction};
 
     #[test]
     fn mouse_input_dialog_outside_preserves_text() {
@@ -485,5 +763,181 @@ mod tests {
             state.mode,
             AppMode::Dialog(DialogKind::Confirm(_))
         ));
+    }
+
+    #[test]
+    fn mouse_overwrite_confirm_dialog_handled() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::OverwriteConfirm {
+                conflicting: vec![],
+            }),
+            dialog_selection: 0,
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+
+        assert!(outcomes.is_some());
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        ));
+    }
+
+    #[test]
+    fn mouse_progress_click_is_consumed() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Progress("Copying".to_string(), 0.5)),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 40, 21, 80, 24);
+
+        assert!(outcomes.is_some());
+        assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+    }
+
+    #[test]
+    fn mouse_scroll_handles_help_dialog() {
+        let long_text = (0..200)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Help {
+                message: long_text,
+                scroll_offset: 0,
+            }),
+            ..Default::default()
+        };
+
+        handle_mouse_scroll(&mut state, MouseEventKind::ScrollDown, 0, 0, 80, 40);
+
+        assert!(
+            matches!(&state.mode, AppMode::Dialog(DialogKind::Help { scroll_offset, .. }) if *scroll_offset > 0),
+            "expected Help dialog with scroll_offset > 0"
+        );
+    }
+
+    #[test]
+    fn mouse_up_clears_drag_anchor() {
+        let mut state = AppState {
+            drag_anchor_index: Some(5),
+            ..Default::default()
+        };
+
+        handle_mouse_up(&mut state);
+
+        assert!(state.drag_anchor_index.is_none());
+    }
+
+    #[test]
+    fn drag_select_range() {
+        use crate::app::types::FileEntry;
+        let mk = |name: &str| FileEntry {
+            name: name.to_string(),
+            path: std::path::PathBuf::from(format!("/{}", name)),
+            cha: crate::fs::cha::Cha {
+                kind: crate::fs::cha::ChaKind::empty(),
+                mode: crate::fs::cha::ChaMode::new(0o100644),
+                len: 0,
+                mtime: None,
+                btime: None,
+                ctime: None,
+                atime: None,
+                uid: 0,
+                gid: 0,
+                dev: 0,
+                nlink: 0,
+            },
+            owner: String::new(),
+            group: String::new(),
+            selected: false,
+            mime_type: None,
+        };
+        let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
+        let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
+        left_panel.entries = entries.clone();
+        let mut right_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
+        right_panel.entries = entries;
+        let mut state = AppState {
+            left_panel,
+            right_panel,
+            drag_anchor_index: Some(0),
+            ..Default::default()
+        };
+
+        handle_mouse_drag(&mut state, 1, 5, 80, 24);
+
+        let selected: Vec<_> = state
+            .left_panel
+            .entries
+            .iter()
+            .filter(|e| e.selected)
+            .collect();
+        assert_eq!(selected.len(), 4);
+    }
+
+    #[test]
+    fn handle_right_click_in_dialog_emits_esc() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple("Title", "Body"))),
+            ..Default::default()
+        };
+
+        let outcome = handle_right_down(&mut state, 40, 10, 80, 24);
+        assert!(matches!(
+            outcome,
+            Some(MouseOutcome::NormalKey(KeyCode::Esc))
+        ));
+    }
+
+    #[test]
+    fn handle_right_click_in_menu_emits_esc() {
+        let mut state = AppState {
+            mode: AppMode::Menu,
+            ..Default::default()
+        };
+
+        let outcome = handle_right_down(&mut state, 40, 10, 80, 24);
+        assert!(matches!(
+            outcome,
+            Some(MouseOutcome::NormalKey(KeyCode::Esc))
+        ));
+    }
+
+    #[test]
+    fn handle_right_click_in_panel_emits_esc() {
+        let mut state = AppState::default();
+
+        let outcome = handle_right_down(&mut state, 10, 10, 80, 24);
+        assert!(matches!(
+            outcome,
+            Some(MouseOutcome::NormalKey(KeyCode::Esc))
+        ));
+    }
+
+    #[test]
+    fn handle_middle_click_in_panel_emits_f5() {
+        let mut state = AppState::default();
+
+        let outcome = handle_middle_down(&mut state, 10, 10, 80, 24);
+        assert!(matches!(
+            outcome,
+            Some(MouseOutcome::NormalKey(KeyCode::F(5)))
+        ));
+    }
+
+    #[test]
+    fn handle_middle_click_in_dialog_consumed() {
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Error("err".to_string())),
+            ..Default::default()
+        };
+
+        let outcome = handle_middle_down(&mut state, 40, 10, 80, 24);
+        assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
     }
 }

@@ -7,38 +7,9 @@ use lc::ops;
 use super::directory_tree::set_tree_diagnostic_status;
 use crate::app::panel_ops::{refresh_active, with_menu_panel};
 
-enum MenuResult {
-    NotHandled,
-    Handled,
-    EmitKey(KeyCode),
-    EmitKeyForMenuPanel(KeyCode, KeyModifiers),
-}
-
+#[allow(clippy::too_many_lines)]
 pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifiers, bool)> {
     let action = menu_action_at(state.menu_selected, state.menu_item_selected)?;
-
-    match execute_panel_action(&action, state) {
-        MenuResult::NotHandled => {}
-        MenuResult::Handled => return None,
-        MenuResult::EmitKey(kc) => return Some((kc, KeyModifiers::NONE, false)),
-        MenuResult::EmitKeyForMenuPanel(kc, mods) => return Some((kc, mods, true)),
-    }
-    match execute_navigation_action(&action, state) {
-        MenuResult::NotHandled => {}
-        MenuResult::Handled => return None,
-        MenuResult::EmitKey(kc) => return Some((kc, KeyModifiers::NONE, false)),
-        MenuResult::EmitKeyForMenuPanel(kc, mods) => return Some((kc, mods, true)),
-    }
-    match execute_file_action(&action, state) {
-        MenuResult::NotHandled => {}
-        MenuResult::Handled => return None,
-        MenuResult::EmitKey(kc) => return Some((kc, KeyModifiers::NONE, false)),
-        MenuResult::EmitKeyForMenuPanel(kc, mods) => return Some((kc, mods, true)),
-    }
-    execute_misc_action(&action, state).map(|kc| (kc, KeyModifiers::NONE, false))
-}
-
-fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
     match action {
         MenuAction::ToggleListingMode => {
             with_menu_panel(state, |state| {
@@ -49,7 +20,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
                 };
                 state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
             });
-            MenuResult::Handled
+            None
         }
         MenuAction::CycleSortOrder => {
             with_menu_panel(state, |state| {
@@ -57,7 +28,7 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
                 p.sort_mode = ops::cycle_sort_mode(p.sort_mode);
                 refresh_active(state);
             });
-            MenuResult::Handled
+            None
         }
         MenuAction::OpenFilter => {
             with_menu_panel(state, |state| {
@@ -69,11 +40,9 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
                     action: InputAction::Filter,
                 });
             });
-            MenuResult::Handled
+            None
         }
-        MenuAction::RefreshPanel => {
-            MenuResult::EmitKeyForMenuPanel(KeyCode::Char('r'), KeyModifiers::CONTROL)
-        }
+        MenuAction::RefreshPanel => Some((KeyCode::Char('r'), KeyModifiers::CONTROL, true)),
         MenuAction::ResetPanelFilter => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
@@ -81,11 +50,9 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
                 refresh_active(state);
                 state.status_message = Some("Panel filter reset".to_string());
             });
-            MenuResult::Handled
+            None
         }
-        MenuAction::ToggleHiddenFiles => {
-            MenuResult::EmitKeyForMenuPanel(KeyCode::Char('h'), KeyModifiers::CONTROL)
-        }
+        MenuAction::ToggleHiddenFiles => Some((KeyCode::Char('h'), KeyModifiers::CONTROL, true)),
         MenuAction::TogglePermissions => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
@@ -95,33 +62,8 @@ fn execute_panel_action(action: &MenuAction, state: &mut AppState) -> MenuResult
                     if panel.show_permissions { "ON" } else { "OFF" }
                 ));
             });
-            MenuResult::Handled
+            None
         }
-        MenuAction::OpenUserMenu
-        | MenuAction::ViewFile
-        | MenuAction::EditFile
-        | MenuAction::Copy
-        | MenuAction::Move
-        | MenuAction::MakeDirectory
-        | MenuAction::Delete
-        | MenuAction::Rename
-        | MenuAction::Chmod
-        | MenuAction::Quit
-        | MenuAction::DirectoryTree
-        | MenuAction::FindFile
-        | MenuAction::SwapPanels
-        | MenuAction::SwitchPanels
-        | MenuAction::CompareDirs
-        | MenuAction::History
-        | MenuAction::DirectoryHotlist
-        | MenuAction::SaveCurrentPathToHotlist
-        | MenuAction::SaveSetup => MenuResult::NotHandled,
-        _ => MenuResult::NotHandled,
-    }
-}
-
-fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
-    match action {
         MenuAction::DirectoryTree => {
             with_menu_panel(state, |state| {
                 let path = state.active_panel().path.clone();
@@ -134,7 +76,7 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
                 state.mode = AppMode::DirectoryTree;
                 set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
             });
-            MenuResult::Handled
+            None
         }
         MenuAction::FindFile => {
             state.dialog_input.clear();
@@ -144,7 +86,7 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
                 default_text: String::new(),
                 action: InputAction::FindFile,
             });
-            MenuResult::Handled
+            None
         }
         MenuAction::SwapPanels => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
@@ -152,29 +94,29 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
                 ActivePanel::Left => ActivePanel::Right,
                 ActivePanel::Right => ActivePanel::Left,
             };
-            MenuResult::Handled
+            None
         }
         MenuAction::SwitchPanels => {
             state.active_panel = match state.active_panel {
                 ActivePanel::Left => ActivePanel::Right,
                 ActivePanel::Right => ActivePanel::Left,
             };
-            MenuResult::Handled
+            None
         }
         MenuAction::CompareDirs => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::CompareMode);
-            MenuResult::Handled
+            None
         }
         MenuAction::History => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::History);
-            MenuResult::Handled
+            None
         }
         MenuAction::DirectoryHotlist => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::Hotlist);
-            MenuResult::Handled
+            None
         }
         MenuAction::SaveCurrentPathToHotlist => {
             with_menu_panel(state, |state| {
@@ -190,38 +132,14 @@ fn execute_navigation_action(action: &MenuAction, state: &mut AppState) -> MenuR
                 state.status_message =
                     Some("Path added to hotlist (run Save Setup to persist)".to_string());
             });
-            MenuResult::Handled
+            None
         }
-        MenuAction::ToggleListingMode
-        | MenuAction::CycleSortOrder
-        | MenuAction::OpenFilter
-        | MenuAction::RefreshPanel
-        | MenuAction::OpenUserMenu
-        | MenuAction::ViewFile
-        | MenuAction::EditFile
-        | MenuAction::Copy
-        | MenuAction::Move
-        | MenuAction::MakeDirectory
-        | MenuAction::Delete
-        | MenuAction::Rename
-        | MenuAction::Chmod
-        | MenuAction::Quit
-        | MenuAction::ResetPanelFilter
-        | MenuAction::ToggleHiddenFiles
-        | MenuAction::TogglePermissions
-        | MenuAction::SaveSetup => MenuResult::NotHandled,
-        _ => MenuResult::NotHandled,
-    }
-}
-
-fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult {
-    match action {
-        MenuAction::ViewFile => MenuResult::EmitKey(KeyCode::F(3)),
-        MenuAction::EditFile => MenuResult::EmitKey(KeyCode::F(4)),
-        MenuAction::Copy => MenuResult::EmitKey(KeyCode::F(5)),
-        MenuAction::Move => MenuResult::EmitKey(KeyCode::F(6)),
-        MenuAction::MakeDirectory => MenuResult::EmitKey(KeyCode::F(7)),
-        MenuAction::Delete => MenuResult::EmitKey(KeyCode::F(8)),
+        MenuAction::ViewFile => Some((KeyCode::F(3), KeyModifiers::NONE, false)),
+        MenuAction::EditFile => Some((KeyCode::F(4), KeyModifiers::NONE, false)),
+        MenuAction::Copy => Some((KeyCode::F(5), KeyModifiers::NONE, false)),
+        MenuAction::Move => Some((KeyCode::F(6), KeyModifiers::NONE, false)),
+        MenuAction::MakeDirectory => Some((KeyCode::F(7), KeyModifiers::NONE, false)),
+        MenuAction::Delete => Some((KeyCode::F(8), KeyModifiers::NONE, false)),
         MenuAction::Rename => {
             with_menu_panel(state, |state| {
                 let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
@@ -237,7 +155,7 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult 
                     });
                 }
             });
-            MenuResult::Handled
+            None
         }
         MenuAction::Chmod => {
             with_menu_panel(state, |state| {
@@ -257,32 +175,8 @@ fn execute_file_action(action: &MenuAction, state: &mut AppState) -> MenuResult 
                     });
                 }
             });
-            MenuResult::Handled
+            None
         }
-        MenuAction::ToggleListingMode
-        | MenuAction::CycleSortOrder
-        | MenuAction::OpenFilter
-        | MenuAction::RefreshPanel
-        | MenuAction::OpenUserMenu
-        | MenuAction::Quit
-        | MenuAction::DirectoryTree
-        | MenuAction::FindFile
-        | MenuAction::SwapPanels
-        | MenuAction::SwitchPanels
-        | MenuAction::CompareDirs
-        | MenuAction::History
-        | MenuAction::DirectoryHotlist
-        | MenuAction::SaveCurrentPathToHotlist
-        | MenuAction::ResetPanelFilter
-        | MenuAction::ToggleHiddenFiles
-        | MenuAction::TogglePermissions
-        | MenuAction::SaveSetup => MenuResult::NotHandled,
-        _ => MenuResult::NotHandled,
-    }
-}
-
-fn execute_misc_action(action: &MenuAction, state: &mut AppState) -> Option<KeyCode> {
-    match action {
         MenuAction::Quit => {
             state.should_quit = true;
             None
@@ -302,29 +196,6 @@ fn execute_misc_action(action: &MenuAction, state: &mut AppState) -> Option<KeyC
             open_user_menu(state);
             None
         }
-        MenuAction::ToggleListingMode
-        | MenuAction::CycleSortOrder
-        | MenuAction::OpenFilter
-        | MenuAction::RefreshPanel
-        | MenuAction::ViewFile
-        | MenuAction::EditFile
-        | MenuAction::Copy
-        | MenuAction::Move
-        | MenuAction::MakeDirectory
-        | MenuAction::Delete
-        | MenuAction::Rename
-        | MenuAction::Chmod
-        | MenuAction::DirectoryTree
-        | MenuAction::FindFile
-        | MenuAction::SwapPanels
-        | MenuAction::SwitchPanels
-        | MenuAction::CompareDirs
-        | MenuAction::History
-        | MenuAction::DirectoryHotlist
-        | MenuAction::SaveCurrentPathToHotlist
-        | MenuAction::ResetPanelFilter
-        | MenuAction::ToggleHiddenFiles
-        | MenuAction::TogglePermissions => None,
         _ => None,
     }
 }

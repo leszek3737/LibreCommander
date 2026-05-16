@@ -26,8 +26,6 @@ use app::{panel_ops, paths, shell, watcher_sync};
 use ui::viewer;
 
 const EVENT_POLL_TIMEOUT_MS: u64 = 100;
-pub(crate) const VIEWER_CHROME_HEIGHT: u16 = 3;
-pub(crate) const HORIZONTAL_SCROLL_STEP: usize = 4;
 
 pub(crate) fn file_name_str(p: &std::path::Path) -> Option<String> {
     p.file_name().map(|n| n.to_string_lossy().into_owned())

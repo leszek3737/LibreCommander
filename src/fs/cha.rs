@@ -28,7 +28,7 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
 #[cfg(unix)]
 fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
-    let nsecs = meta.ctime_nsec() as u32;
+    let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
     if secs >= 0 {
         Some(UNIX_EPOCH + Duration::new(secs as u64, nsecs))
     } else {
@@ -41,45 +41,23 @@ fn change_time(_meta: &fs::Metadata) -> Option<SystemTime> {
     None
 }
 
-#[cfg(unix)]
-fn metadata_uid(meta: &fs::Metadata) -> u32 {
-    meta.uid()
+macro_rules! cfg_trivial {
+    ($vis:vis fn $name:ident($meta:ident: &fs::Metadata) -> $ret:ty, $call:ident) => {
+        #[cfg(unix)]
+        $vis fn $name($meta: &fs::Metadata) -> $ret {
+            $meta.$call()
+        }
+        #[cfg(not(unix))]
+        $vis fn $name(_: &fs::Metadata) -> $ret {
+            0
+        }
+    };
 }
 
-#[cfg(not(unix))]
-fn metadata_uid(_meta: &fs::Metadata) -> u32 {
-    0
-}
-
-#[cfg(unix)]
-fn metadata_gid(meta: &fs::Metadata) -> u32 {
-    meta.gid()
-}
-
-#[cfg(not(unix))]
-fn metadata_gid(_meta: &fs::Metadata) -> u32 {
-    0
-}
-
-#[cfg(unix)]
-fn metadata_dev(meta: &fs::Metadata) -> u64 {
-    meta.dev()
-}
-
-#[cfg(not(unix))]
-fn metadata_dev(_meta: &fs::Metadata) -> u64 {
-    0
-}
-
-#[cfg(unix)]
-fn metadata_nlink(meta: &fs::Metadata) -> u64 {
-    meta.nlink()
-}
-
-#[cfg(not(unix))]
-fn metadata_nlink(_meta: &fs::Metadata) -> u64 {
-    0
-}
+cfg_trivial!(fn metadata_uid(meta: &fs::Metadata) -> u32, uid);
+cfg_trivial!(fn metadata_gid(meta: &fs::Metadata) -> u32, gid);
+cfg_trivial!(fn metadata_dev(meta: &fs::Metadata) -> u64, dev);
+cfg_trivial!(fn metadata_nlink(meta: &fs::Metadata) -> u64, nlink);
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,6 +150,8 @@ impl ChaMode {
     }
 }
 
+const DIR_SENTINEL_MTIME: SystemTime = UNIX_EPOCH;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cha {
     pub kind: ChaKind,
@@ -188,10 +168,10 @@ pub struct Cha {
 }
 
 impl Cha {
-    pub fn new(meta: &fs::Metadata) -> Self {
+    fn from_meta_base(meta: &fs::Metadata, kind: ChaKind, mode: ChaMode) -> Self {
         Self {
-            kind: ChaKind::empty(),
-            mode: ChaMode::new(file_mode(meta)),
+            kind,
+            mode,
             len: meta.len(),
             mtime: meta.modified().ok(),
             btime: meta.created().ok(),
@@ -202,6 +182,10 @@ impl Cha {
             dev: metadata_dev(meta),
             nlink: metadata_nlink(meta),
         }
+    }
+
+    pub fn new(meta: &fs::Metadata) -> Self {
+        Self::from_meta_base(meta, ChaKind::empty(), ChaMode::new(file_mode(meta)))
     }
 
     pub fn from_link_metadata(
@@ -215,33 +199,13 @@ impl Cha {
             if target.is_dir() {
                 kind.insert(ChaKind::DIR_TARGET);
             }
-            Self {
-                kind,
-                mode: link_mode,
-                len: target.len(),
-                mtime: target.modified().ok(),
-                btime: target.created().ok(),
-                ctime: change_time(target),
-                atime: target.accessed().ok(),
-                uid: metadata_uid(target),
-                gid: metadata_gid(target),
-                dev: metadata_dev(target),
-                nlink: metadata_nlink(target),
-            }
+            Self::from_meta_base(target, kind, link_mode)
         } else {
-            Self {
-                kind: ChaKind::empty(),
-                mode: ChaMode::new(link_mode.mode_u32() & !0o111),
-                len: 0,
-                mtime: link_meta.modified().ok(),
-                btime: link_meta.created().ok(),
-                ctime: change_time(link_meta),
-                atime: link_meta.accessed().ok(),
-                uid: metadata_uid(link_meta),
-                gid: metadata_gid(link_meta),
-                dev: metadata_dev(link_meta),
-                nlink: metadata_nlink(link_meta),
-            }
+            Self::from_meta_base(
+                link_meta,
+                ChaKind::empty(),
+                ChaMode::new(link_mode.mode_u32() & !0o111),
+            )
         }
     }
 
@@ -250,8 +214,8 @@ impl Cha {
             kind: ChaKind::DUMMY,
             mode: ChaMode::new(0o040755),
             len: 0,
-            mtime: Some(UNIX_EPOCH),
-            btime: Some(UNIX_EPOCH),
+            mtime: Some(DIR_SENTINEL_MTIME),
+            btime: Some(DIR_SENTINEL_MTIME),
             ctime: None,
             atime: None,
             uid: 0,
@@ -310,9 +274,12 @@ impl Cha {
         self.mode.is_executable()
     }
 
-    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u64 {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn mtime(&self) -> Option<SystemTime> {
@@ -373,37 +340,71 @@ impl Cha {
     }
 }
 
+struct PermBits {
+    read_bit: u32,
+    write_bit: u32,
+    exec_bit: u32,
+    special_bit: u32,
+    special_exec: char,
+    special_noexec: char,
+}
+
+fn write_perm_triple(f: &mut fmt::Formatter<'_>, m: u32, bits: &PermBits) -> fmt::Result {
+    f.write_char(if m & bits.read_bit != 0 { 'r' } else { '-' })?;
+    f.write_char(if m & bits.write_bit != 0 { 'w' } else { '-' })?;
+    f.write_char(if m & bits.special_bit != 0 {
+        if m & bits.exec_bit != 0 {
+            bits.special_exec
+        } else {
+            bits.special_noexec
+        }
+    } else if m & bits.exec_bit != 0 {
+        'x'
+    } else {
+        '-'
+    })?;
+    Ok(())
+}
+
 impl fmt::Display for ChaMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let m = self.0;
-        f.write_char(if m & 0o400 != 0 { 'r' } else { '-' })?;
-        f.write_char(if m & 0o200 != 0 { 'w' } else { '-' })?;
-        f.write_char(if m & 0o4000 != 0 {
-            if m & 0o100 != 0 { 's' } else { 'S' }
-        } else if m & 0o100 != 0 {
-            'x'
-        } else {
-            '-'
-        })?;
-        f.write_char(if m & 0o040 != 0 { 'r' } else { '-' })?;
-        f.write_char(if m & 0o020 != 0 { 'w' } else { '-' })?;
-        f.write_char(if m & 0o2000 != 0 {
-            if m & 0o010 != 0 { 's' } else { 'S' }
-        } else if m & 0o010 != 0 {
-            'x'
-        } else {
-            '-'
-        })?;
-        f.write_char(if m & 0o004 != 0 { 'r' } else { '-' })?;
-        f.write_char(if m & 0o002 != 0 { 'w' } else { '-' })?;
-        f.write_char(if m & 0o1000 != 0 {
-            if m & 0o001 != 0 { 't' } else { 'T' }
-        } else if m & 0o001 != 0 {
-            'x'
-        } else {
-            '-'
-        })?;
-        Ok(())
+        write_perm_triple(
+            f,
+            m,
+            &PermBits {
+                read_bit: 0o400,
+                write_bit: 0o200,
+                exec_bit: 0o100,
+                special_bit: 0o4000,
+                special_exec: 's',
+                special_noexec: 'S',
+            },
+        )?;
+        write_perm_triple(
+            f,
+            m,
+            &PermBits {
+                read_bit: 0o040,
+                write_bit: 0o020,
+                exec_bit: 0o010,
+                special_bit: 0o2000,
+                special_exec: 's',
+                special_noexec: 'S',
+            },
+        )?;
+        write_perm_triple(
+            f,
+            m,
+            &PermBits {
+                read_bit: 0o004,
+                write_bit: 0o002,
+                exec_bit: 0o001,
+                special_bit: 0o1000,
+                special_exec: 't',
+                special_noexec: 'T',
+            },
+        )
     }
 }
 
@@ -447,8 +448,8 @@ mod tests {
         let cha = Cha::dummy_dir();
         assert!(cha.is_dir());
         assert!(cha.kind.contains(ChaKind::DUMMY));
-        assert_eq!(cha.mtime, Some(UNIX_EPOCH));
-        assert_eq!(cha.btime, Some(UNIX_EPOCH));
+        assert_eq!(cha.mtime, Some(DIR_SENTINEL_MTIME));
+        assert_eq!(cha.btime, Some(DIR_SENTINEL_MTIME));
         assert_eq!(cha.len, 0);
     }
 

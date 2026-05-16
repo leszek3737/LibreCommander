@@ -22,6 +22,7 @@ pub struct TreeEntry {
     pub is_dir: bool,
     pub expanded: bool,
     pub name: String,
+    pub read_error: bool,
 }
 
 /// Build a flat tree listing from `root`, expanding directories up to `initial_depth` levels.
@@ -116,6 +117,7 @@ fn build_tree_recursive(
             is_dir,
             expanded,
             name,
+            read_error: false,
         });
     }
 
@@ -202,6 +204,7 @@ pub fn toggle_expand_with_diagnostics(
         let insert_pos = index + 1;
         entries.splice(insert_pos..insert_pos, children);
         entries[index].expanded = !root_read_failed;
+        entries[index].read_error = root_read_failed;
         diagnostics
     }
 }
@@ -409,6 +412,7 @@ mod tests {
             is_dir: true,
             expanded: false,
             name: "missing".to_string(),
+            read_error: false,
         }];
 
         let diagnostics = toggle_expand_with_diagnostics(&mut entries, 0, false);

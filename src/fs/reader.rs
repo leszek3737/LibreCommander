@@ -2,6 +2,7 @@
 //! Note: This module uses Unix-specific APIs (MetadataExt, uid/gid lookups)
 //! and will only compile on Unix platforms.
 
+use chrono::{DateTime, Local};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
@@ -26,6 +27,12 @@ struct UidCache {
     gid_to_name: HashMap<u32, String>,
 }
 
+// Design note: thread_local caches are per-thread. When rayon spawns
+// directory reads on multiple threads, each thread starts with an empty
+// cache, reducing the hit rate. For the typical interactive session this
+// is acceptable — most lookups happen on one or two threads. If rayon
+// usage grows, consider replacing this with a shared cache behind a
+// mutex (e.g. once_cell::sync::Lazy<Mutex<UidCache>>).
 thread_local! {
     static UID_CACHE: RefCell<UidCache> = RefCell::new(UidCache {
         uid_to_name: HashMap::new(),
@@ -71,7 +78,7 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
 
 #[cfg(not(unix))]
 fn lookup_owner_group(_uid: u32, _gid: u32) -> (String, String) {
-    (String::new(), String::new())
+    ("-".to_string(), "-".to_string())
 }
 
 fn is_parent_entry(entry: &FileEntry) -> bool {
@@ -116,13 +123,7 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
 }
 
 fn ensure_path_index(panel: &mut PanelState) {
-    // If duplicate paths exist in `unfiltered_entries`, HashMap deduplicates
-    // them (last-write-wins), so `path_index.len()` may be smaller than
-    // `unfiltered_entries.len()`. This causes a harmless but wasteful rebuild
-    // on every call. The guard below catches the common fast path (no dupes);
-    // when dupes exist the rebuild is still correct — last entry with a given
-    // path wins, matching the HashMap insert order.
-    if !panel.path_index.is_empty() {
+    if panel.path_index.len() == panel.unfiltered_entries.len() {
         return;
     }
     panel.path_index.clear();
@@ -163,6 +164,10 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
         });
     }
 
+    // read_dir is intentionally sequential. Parallel iteration via rayon
+    // would require restructured error reporting (collecting per-entry
+    // errors across threads). The sequential path is fast enough for
+    // interactive directory browsing.
     for result in fs::read_dir(path)? {
         let entry = match result {
             Ok(entry) => entry,
@@ -238,8 +243,6 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
 }
 
 pub fn format_date(time: SystemTime) -> String {
-    use chrono::{DateTime, Local};
-
     let datetime: DateTime<Local> = DateTime::from(time);
     let now = Local::now();
     let duration = now - datetime;
@@ -270,10 +273,10 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
     fn create_temp_dir() -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
         static CTR: AtomicU64 = AtomicU64::new(0);
         let id = CTR.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
@@ -293,7 +296,7 @@ mod tests {
     fn test_entry(name: &str, selected: bool) -> FileEntry {
         FileEntry::builder()
             .name(name)
-            .path(PathBuf::from("/tmp").join(name))
+            .path(std::env::temp_dir().join(name))
             .size(10)
             .modified(SystemTime::now())
             .created(SystemTime::now())
@@ -307,7 +310,7 @@ mod tests {
     fn parent_entry() -> FileEntry {
         FileEntry::builder()
             .name("..")
-            .path(PathBuf::from("/tmp"))
+            .path(std::env::temp_dir())
             .is_dir(true)
             .is_executable(true)
             .modified(SystemTime::now())
@@ -316,7 +319,7 @@ mod tests {
     }
 
     fn test_panel(entries: Vec<FileEntry>) -> PanelState {
-        let mut panel = PanelState::new(PathBuf::from("/tmp"));
+        let mut panel = PanelState::new(std::env::temp_dir());
         panel.entries = entries;
         panel.recalculate_selection_stats();
         panel
@@ -632,7 +635,7 @@ mod tests {
         let mut panel = test_panel(vec![parent_entry(), test_entry("file.txt", false)]);
         panel.unfiltered_entries = panel.entries.clone();
 
-        remove_entry(&mut panel, &PathBuf::from("/tmp"));
+        remove_entry(&mut panel, &std::env::temp_dir());
 
         assert!(
             panel

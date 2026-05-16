@@ -544,6 +544,7 @@ fn directory_tree_page_down_uses_terminal_height() {
                 is_dir: false,
                 expanded: false,
                 name: format!("entry-{i}"),
+                read_error: false,
             })
             .collect(),
         ..Default::default()
@@ -565,6 +566,7 @@ fn directory_tree_page_up_uses_terminal_height() {
                 is_dir: false,
                 expanded: false,
                 name: format!("entry-{i}"),
+                read_error: false,
             })
             .collect(),
         tree_selected: 25,
