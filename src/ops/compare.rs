@@ -516,6 +516,7 @@ mod tests {
             unfiltered_entries: vec![],
             unfiltered_dirty: true,
             path_index: HashMap::new(),
+            needs_rebuild: false,
         };
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
@@ -536,6 +537,7 @@ mod tests {
             unfiltered_entries: vec![],
             unfiltered_dirty: true,
             path_index: HashMap::new(),
+            needs_rebuild: false,
         };
 
         let report = CompareReport {

@@ -183,7 +183,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
     loop {
         panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-        watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
+        if state.needs_watcher_sync {
+            watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
+            state.needs_watcher_sync = false;
+        }
         if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
             dirty = true;
         }

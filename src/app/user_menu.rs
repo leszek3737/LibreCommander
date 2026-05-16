@@ -140,8 +140,10 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
         }
 
         // Condition line (`+ f <regex>`): consumed before the hotkey line.
-        if line.starts_with('+') {
-            pending_condition = parse_condition(line.trim());
+        // Only matches `+ ` or `+\t` prefix — bare `+text` falls through.
+        if is_condition_line(line) {
+            let new_cond = parse_condition(line.trim());
+            pending_condition = merge_conditions(pending_condition.take(), new_cond);
             pending_condition_line = line_idx + 1;
             continue;
         }
@@ -174,18 +176,19 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                 let _ = lines.next();
                 break;
             }
-            if next.starts_with('+') {
-                // Condition line for this entry.
-                let (cond_line_idx, cond_line) = lines.next().unwrap_or_default();
-                condition = parse_condition(cond_line.trim());
+            if is_condition_line(next) {
+                let Some((cond_line_idx, cond_line)) = lines.next() else {
+                    break;
+                };
+                let new_cond = parse_condition(cond_line.trim());
+                condition = merge_conditions(condition.take(), new_cond);
                 condition_line = cond_line_idx + 1;
                 continue;
             }
-            if next.starts_with('\t') || next.starts_with(' ') {
+            if next.starts_with('\t') || next.starts_with(' ') || next.starts_with('+') {
                 body_lines.push(trimmed.to_string());
                 let _ = lines.next();
             } else {
-                // Next hotkey line; leave it for the outer loop.
                 break;
             }
         }
@@ -202,7 +205,7 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                         line: condition_line,
                         message: format!("Invalid filename regex `{s}`: {err}"),
                     });
-                    continue;
+                    None
                 }
             },
             Some(ConditionParseResult::Unsupported) => {
@@ -230,6 +233,24 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
 enum ConditionParseResult {
     Pattern(String),
     Unsupported,
+}
+
+fn is_condition_line(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    bytes.first() == Some(&b'+') && bytes.get(1).is_some_and(|&b| b == b' ' || b == b'\t')
+}
+
+fn merge_conditions(
+    existing: Option<ConditionParseResult>,
+    new: Option<ConditionParseResult>,
+) -> Option<ConditionParseResult> {
+    match (existing, new) {
+        (Some(ConditionParseResult::Pattern(a)), Some(ConditionParseResult::Pattern(b))) => {
+            Some(ConditionParseResult::Pattern(format!("(?:{a})|(?:{b})")))
+        }
+        (old, None) => old,
+        (_, new) => new,
+    }
 }
 
 /// Parse a condition line of the form `+ f <regex>`.
@@ -553,18 +574,22 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_invalid_regex_skips_entry() {
+    fn test_parse_invalid_regex_keeps_entry_without_condition() {
         let src = "+ f [invalid\nT  Test\n\tcmd\n";
         let entries = parse_menu(src);
-        assert!(entries.is_empty());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].hotkey, 'T');
+        assert!(entries[0].condition.is_none());
     }
 
     #[test]
-    fn test_parse_invalid_regex_reports_warning_and_keeps_valid_entries() {
+    fn test_parse_invalid_regex_reports_warning() {
         let src = "+ f [invalid\nT  Test\n\tcmd\n\nB  Build\n\tcargo build\n";
         let parsed = parse_menu_with_warnings(src);
-        assert_eq!(parsed.entries.len(), 1);
-        assert_eq!(parsed.entries[0].hotkey, 'B');
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].hotkey, 'T');
+        assert!(parsed.entries[0].condition.is_none());
+        assert_eq!(parsed.entries[1].hotkey, 'B');
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(parsed.warnings[0].line, 1);
         assert!(
@@ -572,5 +597,24 @@ mod tests {
                 .message
                 .starts_with("Invalid filename regex `[invalid`:")
         );
+    }
+
+    #[test]
+    fn test_consecutive_conditions_merged() {
+        let src = "+ f \\.rs$\n+ f \\.toml$\nT  Test\n\tcmd %f\n";
+        let entries = parse_menu(src);
+        assert_eq!(entries.len(), 1);
+        let cond = entries[0].condition.as_ref().unwrap();
+        assert!(cond.is_match("foo.rs"));
+        assert!(cond.is_match("cargo.toml"));
+        assert!(!cond.is_match("foo.py"));
+    }
+
+    #[test]
+    fn test_unindented_plus_without_whitespace_treated_as_body() {
+        let src = "A  Add\n\tcmd\n+extra_arg\n";
+        let entries = parse_menu(src);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].command.contains("+extra_arg"));
     }
 }

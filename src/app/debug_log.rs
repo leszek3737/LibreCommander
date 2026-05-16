@@ -4,6 +4,8 @@ use std::sync::{Mutex, TryLockError};
 
 use chrono::Local;
 
+const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024;
+
 /// Simple file-based debug logger for runtime diagnostics during TUI operation.
 /// Writes to a single log file, thread-safe via Mutex.
 /// Log location: follows XDG_CACHE_HOME or falls back to ~/.cache/lc/debug.log
@@ -31,30 +33,57 @@ fn log_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("lc_debug.log"))
 }
 
-fn ensure_log_file() -> Option<std::fs::File> {
+fn ensure_log_file() -> std::io::Result<std::fs::File> {
     let path = log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()
+
+    let should_truncate = match std::fs::metadata(&path) {
+        Ok(meta) => meta.len() > MAX_LOG_SIZE,
+        Err(_) => false,
+    };
+    if should_truncate {
+        let _ = std::fs::File::create(&path);
+    }
+
+    OpenOptions::new().create(true).append(true).open(&path)
+}
+
+/// Fallback stderr write — used only when the debug logger itself fails.
+/// This module is the last-resort logger, so stderr is the only remaining channel.
+fn stderr_fallback(msg: &str) {
+    let _ = std::io::stderr().write_all(msg.as_bytes());
+    let _ = std::io::stderr().write_all(b"\n");
+    let _ = std::io::stderr().flush();
 }
 
 pub fn log(args: std::fmt::Arguments<'_>) {
     let mut guard = match LOG_FILE.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::Poisoned(err)) => err.into_inner(),
-        Err(TryLockError::WouldBlock) => return,
+        Err(TryLockError::WouldBlock) => {
+            stderr_fallback(&format!("[lc:debug_log:lock_busy] {args}"));
+            return;
+        }
     };
     if guard.is_none() {
-        *guard = ensure_log_file();
+        match ensure_log_file() {
+            Ok(file) => *guard = Some(file),
+            Err(e) => {
+                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                return;
+            }
+        }
     }
     if let Some(file) = guard.as_mut() {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-        let _ = writeln!(file, "[{timestamp}] {args}");
+        if let Err(e) = writeln!(file, "[{timestamp}] {args}") {
+            stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
+        }
+        if let Err(e) = file.flush() {
+            stderr_fallback(&format!("[lc:debug_log:flush_error] {e}"));
+        }
     }
 }
 
@@ -125,5 +154,44 @@ mod tests {
         let _guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
 
         log(format_args!("dropped message"));
+    }
+
+    #[test]
+    fn log_truncates_oversized_file() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _cache_home = TestCacheHome::new();
+        let path = log_path();
+        reset_for_test();
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        std::fs::write(&path, vec![b'X'; (MAX_LOG_SIZE + 1) as usize])
+            .expect("write oversized log");
+        assert!(
+            std::fs::metadata(&path)
+                .expect("read oversized file metadata")
+                .len()
+                > MAX_LOG_SIZE
+        );
+
+        log(format_args!("after truncate"));
+
+        let len = std::fs::metadata(&path)
+            .expect("read truncated file metadata")
+            .len();
+        assert!(
+            len < MAX_LOG_SIZE,
+            "file should have been truncated but is {len} bytes"
+        );
+
+        let mut file = std::fs::File::open(&path).expect("open log after truncate");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).expect("read log");
+        assert!(contents.contains("after truncate"));
+
+        let _ = std::fs::remove_file(&path);
+        reset_for_test();
     }
 }
