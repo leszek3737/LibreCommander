@@ -76,13 +76,22 @@ pub fn log(args: std::fmt::Arguments<'_>) {
             }
         }
     }
+    let path = log_path();
+    if guard.is_some() && std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_SIZE) {
+        *guard = None;
+        let _ = std::fs::File::create(&path);
+        match ensure_log_file() {
+            Ok(f) => *guard = Some(f),
+            Err(e) => {
+                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                return;
+            }
+        }
+    }
     if let Some(file) = guard.as_mut() {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
         if let Err(e) = writeln!(file, "[{timestamp}] {args}") {
             stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
-        }
-        if let Err(e) = file.flush() {
-            stderr_fallback(&format!("[lc:debug_log:flush_error] {e}"));
         }
     }
 }
