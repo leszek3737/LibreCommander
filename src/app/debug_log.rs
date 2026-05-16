@@ -1,8 +1,11 @@
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, TryLockError};
 
 use chrono::Local;
+
+const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Simple file-based debug logger for runtime diagnostics during TUI operation.
 /// Writes to a single log file, thread-safe via Mutex.
@@ -31,16 +34,23 @@ fn log_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("lc_debug.log"))
 }
 
-fn ensure_log_file() -> Option<std::fs::File> {
+static CHECK_COUNTER: AtomicU32 = AtomicU32::new(0);
+const CHECK_INTERVAL: u32 = 256;
+
+fn ensure_log_file() -> std::io::Result<std::fs::File> {
     let path = log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()
+    OpenOptions::new().create(true).append(true).open(&path)
+}
+
+/// Fallback stderr write — used only when the debug logger itself fails.
+/// This module is the last-resort logger, so stderr is the only remaining channel.
+fn stderr_fallback(msg: &str) {
+    let _ = std::io::stderr().write_all(msg.as_bytes());
+    let _ = std::io::stderr().write_all(b"\n");
+    let _ = std::io::stderr().flush();
 }
 
 pub fn log(args: std::fmt::Arguments<'_>) {
@@ -49,12 +59,39 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         Err(TryLockError::Poisoned(err)) => err.into_inner(),
         Err(TryLockError::WouldBlock) => return,
     };
-    if guard.is_none() {
-        *guard = ensure_log_file();
+    let freshly_opened = guard.is_none();
+    if freshly_opened {
+        match ensure_log_file() {
+            Ok(file) => *guard = Some(file),
+            Err(e) => {
+                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                return;
+            }
+        }
+    }
+    let need_size_check = freshly_opened
+        || CHECK_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(CHECK_INTERVAL);
+    if need_size_check {
+        let path = log_path();
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_SIZE) {
+            *guard = None;
+            let _ = std::fs::File::create(&path);
+            match ensure_log_file() {
+                Ok(f) => *guard = Some(f),
+                Err(e) => {
+                    stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                    return;
+                }
+            }
+        }
     }
     if let Some(file) = guard.as_mut() {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-        let _ = writeln!(file, "[{timestamp}] {args}");
+        if let Err(e) = writeln!(file, "[{timestamp}] {args}") {
+            stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
+        }
     }
 }
 
@@ -125,5 +162,44 @@ mod tests {
         let _guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
 
         log(format_args!("dropped message"));
+    }
+
+    #[test]
+    fn log_truncates_oversized_file() {
+        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _cache_home = TestCacheHome::new();
+        let path = log_path();
+        reset_for_test();
+        let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        std::fs::write(&path, vec![b'X'; (MAX_LOG_SIZE + 1) as usize])
+            .expect("write oversized log");
+        assert!(
+            std::fs::metadata(&path)
+                .expect("read oversized file metadata")
+                .len()
+                > MAX_LOG_SIZE
+        );
+
+        log(format_args!("after truncate"));
+
+        let len = std::fs::metadata(&path)
+            .expect("read truncated file metadata")
+            .len();
+        assert!(
+            len < MAX_LOG_SIZE,
+            "file should have been truncated but is {len} bytes"
+        );
+
+        let mut file = std::fs::File::open(&path).expect("open log after truncate");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).expect("read log");
+        assert!(contents.contains("after truncate"));
+
+        let _ = std::fs::remove_file(&path);
+        reset_for_test();
     }
 }

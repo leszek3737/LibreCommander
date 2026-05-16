@@ -61,7 +61,7 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();
             restore_panel_cursor(panel, current_name.as_deref());
-            clamp_panel_scroll(panel, visible_height);
+            panel.ensure_cursor_visible(visible_height);
         }
         Err(e) => {
             panel.unfiltered_entries.clear();
@@ -150,21 +150,12 @@ fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
     }
 }
 
-fn clamp_panel_scroll(panel: &mut PanelState, visible_height: usize) {
-    let max_scroll = panel.entries.len().saturating_sub(1);
-    if panel.scroll_offset > max_scroll {
-        panel.scroll_offset = max_scroll;
-    }
-    if panel.scroll_offset > panel.cursor {
-        panel.scroll_offset = panel.cursor;
-    }
-    panel.ensure_cursor_visible(visible_height);
-}
+const FALLBACK_VISIBLE_HEIGHT: usize = 18;
 
 fn current_visible_height() -> usize {
     crossterm::terminal::size()
         .map(|(_, h)| panel_visible_height(h))
-        .unwrap_or(0)
+        .unwrap_or(FALLBACK_VISIBLE_HEIGHT)
 }
 
 pub fn refresh_active(state: &mut AppState) {
@@ -209,17 +200,26 @@ pub fn panel_visible_height(terminal_height: u16) -> usize {
 }
 
 pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
-    if let Some(path) = state.directory_hotlist.get(index)
-        && path.is_dir()
-    {
-        let display = path.display().to_string();
-        let path = path.clone();
-        state.active_panel_mut().path = path;
-        state.active_panel_mut().cursor = 0;
-        state.active_panel_mut().scroll_offset = 0;
-        refresh_active(state);
-        state.status_message = Some(format!("cd to {display}"));
+    if index >= state.directory_hotlist.len() {
+        state.status_message = Some(format!(
+            "Hotlist index {} out of range (0..{})",
+            index,
+            state.directory_hotlist.len()
+        ));
+        return;
     }
+    let path = &state.directory_hotlist[index];
+    if !path.is_dir() {
+        state.status_message = Some(format!("{} is not a directory", path.display()));
+        return;
+    }
+    let display = path.display().to_string();
+    let path = path.clone();
+    state.active_panel_mut().path = path;
+    state.active_panel_mut().cursor = 0;
+    state.active_panel_mut().scroll_offset = 0;
+    refresh_active(state);
+    state.status_message = Some(format!("cd to {display}"));
 }
 
 #[cfg(test)]

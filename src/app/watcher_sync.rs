@@ -67,12 +67,9 @@ fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool
                 );
             }
             Err(err) => {
+                all_paths_present = false;
                 debug_log!("Watcher sync skipped path {}: {err}", path.display());
-                let mut desired = HashSet::new();
-                for fallback_path in [left, right] {
-                    desired.insert(fallback_path.to_path_buf());
-                }
-                return (desired, false);
+                desired.insert(path.to_path_buf());
             }
         }
     }
@@ -98,12 +95,14 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
                     if let Some(parent) = state.left_panel.path.parent().map(Path::to_path_buf) {
                         state.left_panel.path = parent;
                     }
+                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&path, &state.right_panel) {
                     if let Some(parent) = state.right_panel.path.parent().map(Path::to_path_buf) {
                         state.right_panel.path = parent;
                     }
+                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &path);
@@ -112,10 +111,12 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
             WatchEvent::Renamed { from, to } => {
                 if event_is_panel_dir(&from, &state.left_panel) {
                     state.left_panel.path = to.clone();
+                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&from, &state.right_panel) {
                     state.right_panel.path = to.clone();
+                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&to, &state.left_panel)
@@ -129,6 +130,17 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
                 dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &to);
             }
         }
+    }
+
+    if state.left_panel.needs_rebuild {
+        state.left_panel.needs_rebuild = false;
+        rebuild_visible_entries(&mut state.left_panel, None);
+        dirty = true;
+    }
+    if state.right_panel.needs_rebuild {
+        state.right_panel.needs_rebuild = false;
+        rebuild_visible_entries(&mut state.right_panel, None);
+        dirty = true;
     }
 
     dirty
@@ -165,10 +177,18 @@ fn event_is_panel_dir(path: &Path, panel: &PanelState) -> bool {
         return true;
     }
 
+    if path.parent() == Some(panel.path.as_path()) {
+        return false;
+    }
+
     let panel_canonical = match panel.path.canonicalize() {
         Ok(c) => c,
         Err(_) => return false,
     };
+
+    if path == panel_canonical {
+        return true;
+    }
 
     path.canonicalize().is_ok_and(|p| p == panel_canonical)
 }
@@ -221,7 +241,7 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
     }
 
     reader::upsert_entry(panel, entry);
-    rebuild_visible_entries(panel, path.file_name().and_then(|name| name.to_str()));
+    panel.needs_rebuild = true;
     true
 }
 
@@ -232,7 +252,7 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
         .any(|entry| entry.path == path);
     if existed {
         reader::remove_entry(panel, path);
-        rebuild_visible_entries(panel, path.file_name().and_then(|name| name.to_str()));
+        panel.needs_rebuild = true;
     }
 
     existed
@@ -322,6 +342,7 @@ mod tests {
         let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &beta));
         assert!(apply_watcher_upsert_if_matches(&mut panel, &alpha));
+        rebuild_visible_entries(&mut panel, None);
 
         let names: Vec<_> = panel
             .entries
@@ -343,12 +364,14 @@ mod tests {
         let mut panel = test_panel(dir.path());
         panel.filter = Some("*.txt".to_string());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
+        rebuild_visible_entries(&mut panel, None);
         panel.entries[1].selected = true;
         panel.sync_unfiltered_selection();
 
         fs::write(&keep, b"updated").unwrap();
         assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
         assert!(apply_watcher_upsert_if_matches(&mut panel, &drop));
+        rebuild_visible_entries(&mut panel, None);
 
         assert_eq!(panel.entries.len(), 2);
         assert_eq!(panel.entries[1].name, "keep.txt");
@@ -387,6 +410,7 @@ mod tests {
         panel.scroll_offset = 2;
 
         assert!(apply_watcher_remove_if_matches(&mut panel, &b));
+        rebuild_visible_entries(&mut panel, None);
 
         let names: Vec<_> = panel
             .entries
@@ -410,6 +434,7 @@ mod tests {
         fs::remove_file(&file).unwrap();
 
         assert!(apply_watcher_remove_if_matches(&mut panel, &file));
+        rebuild_visible_entries(&mut panel, None);
         assert_eq!(panel.entries.len(), 1);
         assert_eq!(panel.unfiltered_entries.len(), 1);
     }
@@ -465,6 +490,7 @@ mod tests {
         panel.sort_mode = SortMode::SizeDesc;
         assert!(apply_watcher_upsert_if_matches(&mut panel, &small));
         assert!(apply_watcher_upsert_if_matches(&mut panel, &big));
+        rebuild_visible_entries(&mut panel, None);
 
         let names: Vec<_> = panel
             .entries
@@ -482,6 +508,7 @@ mod tests {
 
         let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
+        rebuild_visible_entries(&mut panel, None);
         assert_eq!(panel.entries.len(), 2);
 
         assert!(!apply_watcher_upsert_if_matches(&mut panel, &file));
@@ -500,6 +527,7 @@ mod tests {
 
         fs::write(&file, b"new longer content").unwrap();
         assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
+        rebuild_visible_entries(&mut panel, None);
 
         assert_eq!(panel.entries.len(), 2);
         assert_eq!(panel.total_size, 18);

@@ -156,6 +156,7 @@ pub struct PanelState {
     pub unfiltered_entries: Vec<FileEntry>,
     pub unfiltered_dirty: bool,
     pub path_index: HashMap<PathBuf, usize>,
+    pub needs_rebuild: bool,
 }
 
 // ============================================================================
@@ -338,6 +339,7 @@ pub struct AppState {
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
+    pub needs_watcher_sync: bool,
 }
 
 // ============================================================================
@@ -671,6 +673,7 @@ impl PanelState {
             unfiltered_entries: Vec::new(),
             unfiltered_dirty: true,
             path_index: HashMap::new(),
+            needs_rebuild: false,
         }
     }
 
@@ -813,12 +816,14 @@ impl PanelState {
     }
 
     pub fn ensure_cursor_visible(&mut self, visible_height: usize) {
-        if visible_height == 0 {
-            return;
+        let max_scroll = self.entries.len().saturating_sub(1);
+        if self.scroll_offset > max_scroll {
+            self.scroll_offset = max_scroll;
         }
         if self.scroll_offset > self.cursor {
             self.scroll_offset = self.cursor;
-        } else if self.cursor >= self.scroll_offset + visible_height {
+        }
+        if visible_height > 0 && self.cursor >= self.scroll_offset + visible_height {
             self.scroll_offset = self.cursor.saturating_sub(visible_height) + 1;
         }
     }
@@ -888,6 +893,7 @@ impl AppState {
             scroll_accel: 0,
             last_scroll_time: None,
             drag_anchor_index: None,
+            needs_watcher_sync: false,
         }
     }
 
