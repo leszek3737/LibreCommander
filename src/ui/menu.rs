@@ -22,9 +22,9 @@ fn render_menu_title_bar(
     for (i, title) in MENU_TITLES.iter().enumerate() {
         let title_width = menu_title_width(title);
         let style = if i == selected_menu {
-            Theme::highlight_bold(colors)
+            Theme::highlight_bold_with_colors(colors)
         } else {
-            Theme::menu_bar(colors)
+            Theme::menu_bar_with_colors(colors)
         };
         let label = Span::styled(format!(" {title} "), style);
         let p = Paragraph::new(label);
@@ -66,8 +66,8 @@ fn render_menu_dropdown(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Theme::panel_fg(colors))
-        .style(Theme::panel_bg(colors));
+        .border_style(Theme::panel_fg_with_colors(colors))
+        .style(Theme::panel_bg_with_colors(colors));
     let inner = block.inner(dropdown_area);
     f.render_widget(block, dropdown_area);
 
@@ -87,9 +87,9 @@ fn render_menu_dropdown(
     {
         let row = i - scroll_offset;
         let style = if i == clamped_selected {
-            Theme::highlight(colors)
+            Theme::highlight_with_colors(colors)
         } else {
-            Theme::panel(colors)
+            Theme::panel_with_colors(colors)
         };
         let item_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
         let label = Span::styled(format!(" {item} "), style);
@@ -99,6 +99,21 @@ fn render_menu_dropdown(
 }
 
 pub fn render_menu_bar(
+    f: &mut Frame,
+    menu_bar_area: Rect,
+    selected_menu: usize,
+    selected_item: usize,
+) {
+    render_menu_bar_with_colors(
+        f,
+        menu_bar_area,
+        selected_menu,
+        selected_item,
+        &ColorPalette::default(),
+    );
+}
+
+pub fn render_menu_bar_with_colors(
     f: &mut Frame,
     menu_bar_area: Rect,
     selected_menu: usize,
@@ -117,15 +132,13 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
-    use crate::ui::theme::DEFAULT_COLORS;
-
     fn render_with(menu: usize, item: usize) {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 80, 1);
-                render_menu_bar(f, menu_bar, menu, item, &DEFAULT_COLORS);
+                render_menu_bar(f, menu_bar, menu, item);
             })
             .unwrap();
     }
@@ -166,7 +179,7 @@ mod tests {
         let completed = terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 30, 1);
-                render_menu_bar(f, menu_bar, 1, 8, &DEFAULT_COLORS);
+                render_menu_bar(f, menu_bar, 1, 8);
             })
             .unwrap();
         let buf = completed.buffer;
@@ -203,7 +216,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 20, 1);
-                render_menu_bar(f, menu_bar, 1, 5, &DEFAULT_COLORS);
+                render_menu_bar(f, menu_bar, 1, 5);
             })
             .unwrap();
     }

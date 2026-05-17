@@ -1790,6 +1790,21 @@ fn run_selected_menu_action_fallback_to_normal() {
 }
 
 #[test]
+#[allow(clippy::field_reassign_with_default)]
+fn menu_command_line_clears_stale_prev_mode() {
+    let mut state = AppState::default();
+    state.mode = AppMode::Menu;
+    state.prev_mode = Some(AppMode::Search);
+    state.menu_selected = 2;
+    state.menu_item_selected = 7;
+
+    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+
+    assert_eq!(state.mode, AppMode::CommandLine);
+    assert_eq!(state.prev_mode, None);
+}
+
+#[test]
 fn compare_directories_size_mode_reports_mismatches() {
     let left_dir = tempfile::tempdir().unwrap();
     let right_dir = tempfile::tempdir().unwrap();
@@ -1913,6 +1928,23 @@ fn alt_c_opens_quick_cd() {
             ..
         })
     ));
+}
+
+#[test]
+fn alt_x_opens_command_line() {
+    let mut state = AppState::default();
+    state.command_line = "draft".to_string();
+    state.command_cursor = state.command_line.len();
+    state.history_index = Some(0);
+    state.prev_mode = Some(AppMode::Search);
+
+    handle_alt_keys(&mut state, KeyCode::Char('X'), 20);
+
+    assert_eq!(state.mode, AppMode::CommandLine);
+    assert!(state.command_line.is_empty());
+    assert_eq!(state.command_cursor, 0);
+    assert_eq!(state.history_index, None);
+    assert_eq!(state.prev_mode, None);
 }
 
 #[test]

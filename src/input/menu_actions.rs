@@ -201,6 +201,7 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             state.command_line.clear();
             state.command_cursor = 0;
             state.history_index = None;
+            state.prev_mode = None;
             state.mode = AppMode::CommandLine;
             None
         }

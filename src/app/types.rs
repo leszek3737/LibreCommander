@@ -75,7 +75,6 @@ pub struct FileEntry {
     pub group: String,
     pub selected: bool,
     pub mime_type: Option<String>,
-    pub cached_natsort_key: Option<Vec<crate::ops::natsort::NatKeySegment>>,
 }
 
 // ============================================================================
@@ -477,7 +476,6 @@ impl FileEntryBuilder {
             group: self.group,
             selected: self.selected,
             mime_type: self.mime_type,
-            cached_natsort_key: None,
         }
     }
 }

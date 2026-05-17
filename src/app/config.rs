@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -116,13 +116,7 @@ impl From<&Settings> for PersistedSetup {
             sensitive: settings.sensitive,
             left: settings.left.clone(),
             right: settings.right.clone(),
-            hotlist: Some(
-                settings
-                    .hotlist
-                    .iter()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .collect::<Vec<String>>(),
-            ),
+            hotlist: Some(paths_to_utf8_strings(&settings.hotlist)),
         }
     }
 }
@@ -150,13 +144,27 @@ impl From<PersistedSetup> for Settings {
 
 fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
     PersistedPanel {
-        path: Some(panel.path.to_string_lossy().into_owned()),
+        path: path_to_utf8_string(&panel.path),
         listing_mode: panel.listing_mode,
         sort_mode: panel.sort_mode,
         filter: panel.filter.clone().unwrap_or_default(),
         show_hidden: panel.show_hidden,
         show_permissions: panel.show_permissions,
     }
+}
+
+fn path_to_utf8_string(path: &Path) -> Option<String> {
+    path.to_str().map(str::to_owned).or_else(|| {
+        crate::debug_log!("config: skipping non-UTF path {}", path.display());
+        None
+    })
+}
+
+fn paths_to_utf8_strings(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter_map(|path| path_to_utf8_string(path))
+        .collect()
 }
 
 pub fn save_setup(state: &AppState) -> io::Result<PathBuf> {
@@ -246,6 +254,11 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
 mod tests {
     use super::*;
     use crate::app::types::{ListingMode, SortMode};
+
+    #[cfg(unix)]
+    use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
 
     #[test]
     fn settings_from_state_captures_persisted_fields() {
@@ -347,5 +360,27 @@ mod tests {
         assert_eq!(persisted.left, setup.left);
         assert_eq!(persisted.right, setup.right);
         assert_eq!(persisted.hotlist, setup.hotlist);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_setup_skips_non_utf8_paths() {
+        let non_utf8 = PathBuf::from(OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xFF]));
+        let settings = Settings {
+            active_panel: ActivePanel::Left,
+            dir_first: true,
+            sensitive: false,
+            left: PersistedPanel {
+                path: path_to_utf8_string(&non_utf8),
+                ..PersistedPanel::default()
+            },
+            right: PersistedPanel::default(),
+            hotlist: vec![PathBuf::from("/tmp"), non_utf8],
+        };
+
+        let persisted = PersistedSetup::from(&settings);
+
+        assert_eq!(persisted.left.path, None);
+        assert_eq!(persisted.hotlist, Some(vec!["/tmp".to_string()]));
     }
 }

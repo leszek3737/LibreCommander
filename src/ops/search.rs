@@ -698,6 +698,7 @@ impl FileSearch {
             match reader.read_until(b'\n', &mut line_buf) {
                 Ok(0) => break,
                 Ok(bytes_read) => {
+                    line_no += 1;
                     let line = if line_buf.last() == Some(&b'\n') {
                         &line_buf[..bytes_read - 1]
                     } else {
@@ -734,9 +735,8 @@ impl FileSearch {
                     if match_found {
                         outcome
                             .matches
-                            .push((path.to_path_buf(), line_no + 1, line_text));
+                            .push((path.to_path_buf(), line_no, line_text));
                     }
-                    line_no += 1;
                 }
                 Err(err) => {
                     outcome
@@ -1154,6 +1154,30 @@ mod tests {
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::BinaryFile));
         assert!(outcome.errors.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_counts_skipped_long_lines() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_long_line_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut content = vec![b'a'; MAX_CONTENT_LINE_BYTES + 1];
+        content.extend_from_slice(b"\nneedle\n");
+        fs::write(dir.join("long_line.txt"), content).unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].1, 2);
+        assert_eq!(outcome.truncated, Some(TruncationReason::LineTooLong));
 
         let _ = fs::remove_dir_all(dir);
     }

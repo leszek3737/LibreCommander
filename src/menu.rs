@@ -206,6 +206,8 @@ mod tests {
     fn menu_action_at_maps_file_and_command_menus() {
         assert_eq!(menu_action_at(1, 7), Some(MenuAction::Rename));
         assert_eq!(menu_action_at(2, 4), Some(MenuAction::CompareDirs));
+        assert_eq!(MENU_ITEMS[2][7], "Command line");
+        assert_eq!(menu_action_at(2, 7), Some(MenuAction::CommandLine));
     }
 
     #[test]

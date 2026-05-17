@@ -903,7 +903,6 @@ mod tests {
             group: String::new(),
             selected: false,
             mime_type: None,
-            cached_natsort_key: None,
         };
         let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
         let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));

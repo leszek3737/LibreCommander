@@ -152,7 +152,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
     };
     if let Some(ref raw) = config_raw
-        && let Err(e) = ui::theme::Theme::apply_from_value(raw, &mut state.theme_colors)
+        && let Err(e) = ui::theme::Theme::apply_from_value_to_palette(raw, &mut state.theme_colors)
     {
         state.status_message = Some(e);
     }
@@ -795,10 +795,11 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             state.dialog_input = state.active_panel().path.display().to_string();
             state.dialog_cursor_pos = state.dialog_input.chars().count();
         }
-        KeyCode::Char('x') => {
+        KeyCode::Char('x' | 'X') => {
             state.command_line.clear();
             state.command_cursor = 0;
             state.history_index = None;
+            state.prev_mode = None;
             state.mode = AppMode::CommandLine;
         }
         _ => {}

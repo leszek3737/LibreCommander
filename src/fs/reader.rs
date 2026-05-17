@@ -119,7 +119,6 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
         group,
         selected: false,
         mime_type: None,
-        cached_natsort_key: None,
     })
 }
 
@@ -162,7 +161,6 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             group,
             selected: false,
             mime_type: None,
-            cached_natsort_key: None,
         });
     }
 

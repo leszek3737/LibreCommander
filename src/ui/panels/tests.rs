@@ -1,6 +1,5 @@
 use super::*;
 use crate::app::file_type::*;
-use crate::ui::theme::DEFAULT_COLORS;
 use ratatui::style::Color;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -27,11 +26,7 @@ fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) 
 #[test]
 fn test_get_file_color_directory() {
     let entry = create_test_entry("mydir", true, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::White));
     assert!(style.add_modifier.contains(Modifier::BOLD));
 }
@@ -39,22 +34,14 @@ fn test_get_file_color_directory() {
 #[test]
 fn test_get_file_color_code_script() {
     let entry = create_test_entry("script.sh", false, true, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::Yellow));
 }
 
 #[test]
 fn test_get_file_color_extensionless_executable() {
     let entry = create_test_entry("mybinary", false, true, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::Green));
     assert!(style.add_modifier.contains(Modifier::BOLD));
 }
@@ -62,121 +49,77 @@ fn test_get_file_color_extensionless_executable() {
 #[test]
 fn test_get_file_color_symlink() {
     let entry = create_test_entry("link", false, false, true);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::Cyan));
 }
 
 #[test]
 fn test_get_file_color_archive() {
     let entry = create_test_entry("archive.tar.gz", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::Red));
 }
 
 #[test]
 fn test_get_file_color_image() {
     let entry = create_test_entry("photo.png", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::Magenta));
 }
 
 #[test]
 fn test_get_file_color_source_code() {
     let entry = create_test_entry("main.rs", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::Yellow));
 }
 
 #[test]
 fn test_get_file_color_hidden_as_other() {
     let entry = create_test_entry(".hidden", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::White));
 }
 
 #[test]
 fn test_get_file_color_config() {
     let entry = create_test_entry("settings.toml", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::LightBlue));
 }
 
 #[test]
 fn test_get_file_color_video() {
     let entry = create_test_entry("movie.mp4", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::LightMagenta));
 }
 
 #[test]
 fn test_get_file_color_audio() {
     let entry = create_test_entry("song.mp3", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::LightGreen));
 }
 
 #[test]
 fn test_get_file_color_font() {
     let entry = create_test_entry("font.ttf", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::LightCyan));
 }
 
 #[test]
 fn test_get_file_color_regular() {
     let entry = create_test_entry("unknown.xyz", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::White));
 }
 
 #[test]
 fn test_get_file_color_document() {
     let entry = create_test_entry("document.txt", false, false, false);
-    let style = get_file_color(
-        &entry.category(),
-        entry.is_dir() || entry.is_executable(),
-        &DEFAULT_COLORS,
-    );
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
     assert_eq!(style.fg, Some(Color::LightYellow));
 }
 
@@ -382,73 +325,109 @@ fn test_format_brief_entry_line_width_one() {
 #[test]
 fn test_get_file_icon_directory() {
     let entry = create_test_entry("mydir", true, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "📁");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📁"
+    );
 }
 
 #[test]
 fn test_get_file_icon_document() {
     let entry = create_test_entry("report.pdf", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "📝");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📝"
+    );
 }
 
 #[test]
 fn test_get_file_icon_archive() {
     let entry = create_test_entry("backup.tar.gz", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "📦");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📦"
+    );
 }
 
 #[test]
 fn test_get_file_icon_image() {
     let entry = create_test_entry("photo.jpg", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "🖼");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🖼"
+    );
 }
 
 #[test]
 fn test_get_file_icon_audio() {
     let entry = create_test_entry("song.mp3", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "🎵");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🎵"
+    );
 }
 
 #[test]
 fn test_get_file_icon_video() {
     let entry = create_test_entry("movie.mp4", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "🎬");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🎬"
+    );
 }
 
 #[test]
 fn test_get_file_icon_config() {
     let entry = create_test_entry("config.toml", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "⚙");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "⚙"
+    );
 }
 
 #[test]
 fn test_get_file_icon_code() {
     let entry = create_test_entry("main.rs", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "💻");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "💻"
+    );
 }
 
 #[test]
 fn test_get_file_icon_default() {
     let entry = create_test_entry("unknown.xyz", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "📄");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📄"
+    );
 }
 
 #[test]
 fn test_get_file_icon_symlink() {
     let entry = create_test_entry("link", false, false, true);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "🔗");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🔗"
+    );
 }
 
 #[test]
 fn test_get_file_icon_executable() {
     let entry = create_test_entry("mybinary", false, true, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "⚡");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "⚡"
+    );
 }
 
 #[test]
 fn test_get_file_icon_font() {
     let entry = create_test_entry("font.ttf", false, false, false);
-    assert_eq!(get_file_icon(&entry.category(), IconTheme::Emoji), "🔤");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🔤"
+    );
 }
 
 #[test]
@@ -601,7 +580,7 @@ fn test_render_panel_no_panic() {
     ];
     terminal
         .draw(|f| {
-            render_panel(f, f.area(), &panel, true, &DEFAULT_COLORS);
+            render_panel(f, f.area(), &panel, true);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
@@ -616,7 +595,7 @@ fn test_render_panel_empty_no_panic() {
     let panel = PanelState::new(PathBuf::from("/test"));
     terminal
         .draw(|f| {
-            render_panel(f, f.area(), &panel, false, &DEFAULT_COLORS);
+            render_panel(f, f.area(), &panel, false);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
@@ -632,7 +611,7 @@ fn test_render_status_bar_no_panic() {
     panel.entries = vec![create_test_entry("file.txt", false, false, false)];
     terminal
         .draw(|f| {
-            render_status_bar(f, f.area(), &panel, &DEFAULT_COLORS);
+            render_status_bar(f, f.area(), &panel);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
@@ -646,7 +625,7 @@ fn test_render_function_bar_no_panic() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            render_function_bar(f, f.area(), &DEFAULT_COLORS);
+            render_function_bar(f, f.area());
         })
         .unwrap();
     let buffer = terminal.backend().buffer();

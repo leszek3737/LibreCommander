@@ -785,11 +785,11 @@ fn format_line_with_highlight<'a>(
     }
 
     let regular_style = Style::default()
-        .fg(Theme::search_match_fg(colors))
-        .bg(Theme::search_match_bg(colors));
+        .fg(Theme::search_match_fg_with_colors(colors))
+        .bg(Theme::search_match_bg_with_colors(colors));
     let current_style = Style::default()
-        .fg(Theme::search_match_current_fg(colors))
-        .bg(Theme::search_match_current_bg(colors))
+        .fg(Theme::search_match_current_fg_with_colors(colors))
+        .bg(Theme::search_match_current_bg_with_colors(colors))
         .add_modifier(Modifier::BOLD);
 
     let mut last_end = 0usize;
@@ -891,20 +891,29 @@ fn render_viewer_status(
         || (!state.is_hex_mode() && state.originally_binary)
         || state.file_truncated
     {
-        Theme::status_bar(colors).fg(Theme::warning_color(colors))
+        Theme::status_bar_with_colors(colors).fg(Theme::warning_color_with_colors(colors))
     } else {
-        Theme::status_bar(colors)
+        Theme::status_bar_with_colors(colors)
     };
     let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
 
-pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState, colors: &ColorPalette) {
+pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
+    render_viewer_with_colors(f, area, state, &ColorPalette::default());
+}
+
+pub fn render_viewer_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    state: &ViewerState,
+    colors: &ColorPalette,
+) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel(colors))
+        .style(Theme::panel_with_colors(colors))
         .title(state.file_path.display().to_string())
-        .title_style(Theme::title(colors));
+        .title_style(Theme::title_with_colors(colors));
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
@@ -1009,12 +1018,21 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState, colors: &Co
     render_viewer_status(f, inner_area, state, "Text", &position_text, colors);
 }
 
-pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState, colors: &ColorPalette) {
+pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
+    render_hex_view_with_colors(f, area, state, &ColorPalette::default());
+}
+
+pub fn render_hex_view_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    state: &ViewerState,
+    colors: &ColorPalette,
+) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel(colors))
+        .style(Theme::panel_with_colors(colors))
         .title(format!("{} [Hex]", state.file_path.display()))
-        .title_style(Theme::title(colors));
+        .title_style(Theme::title_with_colors(colors));
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
@@ -1148,7 +1166,11 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
-pub fn render_loading(f: &mut Frame, area: Rect, path: &Path, colors: &ColorPalette) {
+pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
+    render_loading_with_colors(f, area, path, &ColorPalette::default());
+}
+
+pub fn render_loading_with_colors(f: &mut Frame, area: Rect, path: &Path, colors: &ColorPalette) {
     let spinner_chars = ['|', '/', '-', '\\'];
     let idx = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1165,7 +1187,7 @@ pub fn render_loading(f: &mut Frame, area: Rect, path: &Path, colors: &ColorPale
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .style(Theme::panel_bg(colors));
+        .style(Theme::panel_bg_with_colors(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1203,7 +1225,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_viewer(frame, frame.area(), state, &DEFAULT_COLORS))
+            .draw(|frame| render_viewer(frame, frame.area(), state))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -1456,11 +1478,11 @@ mod tests {
     fn test_format_line_with_highlight_overlapping_matches_no_duplicates() {
         let line = "0123456789abcdef";
         let regular_style = Style::default()
-            .fg(Theme::search_match_fg(&DEFAULT_COLORS))
-            .bg(Theme::search_match_bg(&DEFAULT_COLORS));
+            .fg(Theme::search_match_fg())
+            .bg(Theme::search_match_bg());
         let current_style = Style::default()
-            .fg(Theme::search_match_current_fg(&DEFAULT_COLORS))
-            .bg(Theme::search_match_current_bg(&DEFAULT_COLORS))
+            .fg(Theme::search_match_current_fg())
+            .bg(Theme::search_match_current_bg())
             .add_modifier(Modifier::BOLD);
 
         let spans = format_line_with_highlight(
