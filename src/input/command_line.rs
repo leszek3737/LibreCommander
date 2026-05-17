@@ -4,7 +4,18 @@ use lc::app::{shell, types::*};
 
 use crate::app::panel_ops::refresh_active;
 
+fn clamp_to_char_boundary(s: &str, mut byte_idx: usize) -> usize {
+    if byte_idx > s.len() {
+        byte_idx = s.len();
+    }
+    while byte_idx > 0 && !s.is_char_boundary(byte_idx) {
+        byte_idx -= 1;
+    }
+    byte_idx
+}
+
 fn command_delete_word_backward(state: &mut AppState) {
+    state.command_cursor = clamp_to_char_boundary(&state.command_line, state.command_cursor);
     let cursor = state.command_cursor;
     if cursor > 0 {
         let text = &state.command_line[..cursor];
@@ -34,6 +45,7 @@ fn command_execute(state: &mut AppState) {
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
+    state.command_cursor = clamp_to_char_boundary(&state.command_line, state.command_cursor);
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('a') => {
@@ -315,5 +327,24 @@ mod tests {
         );
         assert_eq!(state.command_line, "");
         assert_eq!(state.command_cursor, 0);
+    }
+
+    #[test]
+    fn cmd_clamp_cursor_mid_multibyte() {
+        let mut state = make_cmd_state("teąst", 4);
+        assert_eq!(state.command_cursor, 4);
+        state.command_cursor = 3;
+        handle_command_line(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert!(state.command_line.is_char_boundary(state.command_cursor));
+    }
+
+    #[test]
+    fn cmd_clamp_cursor_overshoot() {
+        let mut state = make_cmd_state("hello", 100);
+        handle_command_line(
+            &mut state,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+        );
+        assert_eq!(state.command_cursor, 5);
     }
 }
