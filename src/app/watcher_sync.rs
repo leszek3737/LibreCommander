@@ -311,11 +311,16 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
         .map(|entry| entry.name.clone())
         .or_else(|| preferred_name.map(str::to_string));
 
+    let compiled_filter = panel
+        .filter
+        .as_deref()
+        .map(|f| search::CompiledPattern::new(f, false));
+
     panel.sync_unfiltered_selection();
     panel.entries = panel
         .unfiltered_entries
         .iter()
-        .filter(|entry| entry_matches_panel(entry, panel.filter.as_deref(), panel.show_hidden))
+        .filter(|entry| entry_matches_panel(entry, compiled_filter.as_ref(), panel.show_hidden))
         .cloned()
         .collect();
     sorting::sort_entries(&mut panel.entries, panel.sort_mode, panel.sort_options);
@@ -344,11 +349,14 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     panel.recalculate_selection_stats();
 }
 
-fn entry_matches_panel(entry: &reader::FileEntry, filter: Option<&str>, show_hidden: bool) -> bool {
-    let compiled = filter.map(|f| search::CompiledPattern::new(f, false));
+fn entry_matches_panel(
+    entry: &reader::FileEntry,
+    compiled_filter: Option<&search::CompiledPattern>,
+    show_hidden: bool,
+) -> bool {
     entry.name == ".."
         || (show_hidden || !entry.cha.is_hidden())
-            && compiled.as_ref().is_none_or(|pat| pat.matches(&entry.name))
+            && compiled_filter.is_none_or(|pat| pat.matches(&entry.name))
 }
 
 #[cfg(test)]
