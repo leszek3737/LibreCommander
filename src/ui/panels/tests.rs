@@ -240,7 +240,7 @@ fn test_format_time_returns_cow() {
 #[test]
 fn test_format_entry_line_basic() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 60, false, &entry.category());
+    let result = format_entry_line(&entry, 60, false, &entry.category(), IconTheme::Emoji);
     assert!(result.contains("file.txt"));
 }
 
@@ -248,14 +248,14 @@ fn test_format_entry_line_basic() {
 fn test_format_entry_line_selected() {
     let mut entry = create_test_entry("file.txt", false, false, false);
     entry.selected = true;
-    let result = format_entry_line(&entry, 60, false, &entry.category());
+    let result = format_entry_line(&entry, 60, false, &entry.category(), IconTheme::Emoji);
     assert!(result.starts_with('*'));
 }
 
 #[test]
 fn test_format_entry_line_with_permissions() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 60, true, &entry.category());
+    let result = format_entry_line(&entry, 60, true, &entry.category(), IconTheme::Emoji);
     assert!(result.contains("file.txt"));
     assert!(result.contains("r"));
 }
@@ -263,28 +263,28 @@ fn test_format_entry_line_with_permissions() {
 #[test]
 fn test_format_entry_line_width_zero() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 0, false, &entry.category());
+    let result = format_entry_line(&entry, 0, false, &entry.category(), IconTheme::Emoji);
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_format_entry_line_width_one() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 1, false, &entry.category());
+    let result = format_entry_line(&entry, 1, false, &entry.category(), IconTheme::Emoji);
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_format_entry_line_width_two() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 2, false, &entry.category());
+    let result = format_entry_line(&entry, 2, false, &entry.category(), IconTheme::Emoji);
     assert_eq!(result, " …");
 }
 
 #[test]
 fn test_format_brief_entry_line_basic() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_brief_entry_line(&entry, 60, &entry.category());
+    let result = format_brief_entry_line(&entry, 60, &entry.category(), IconTheme::Emoji);
     assert!(result.contains("file.txt"));
 }
 
@@ -292,7 +292,7 @@ fn test_format_brief_entry_line_basic() {
 fn test_format_brief_entry_line_selected() {
     let mut entry = create_test_entry("file.txt", false, false, false);
     entry.selected = true;
-    let result = format_brief_entry_line(&entry, 60, &entry.category());
+    let result = format_brief_entry_line(&entry, 60, &entry.category(), IconTheme::Emoji);
     assert!(result.starts_with('*'));
 }
 
@@ -304,94 +304,130 @@ fn test_format_brief_entry_line_truncation() {
         false,
         false,
     );
-    let result = format_brief_entry_line(&entry, 30, &entry.category());
+    let result = format_brief_entry_line(&entry, 30, &entry.category(), IconTheme::Emoji);
     assert!(result.contains('…') || UnicodeWidthStr::width(result.as_str()) <= 30);
 }
 
 #[test]
 fn test_format_brief_entry_line_width_zero() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_brief_entry_line(&entry, 0, &entry.category());
+    let result = format_brief_entry_line(&entry, 0, &entry.category(), IconTheme::Emoji);
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_format_brief_entry_line_width_one() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_brief_entry_line(&entry, 1, &entry.category());
+    let result = format_brief_entry_line(&entry, 1, &entry.category(), IconTheme::Emoji);
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_get_file_icon_directory() {
     let entry = create_test_entry("mydir", true, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📁");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📁"
+    );
 }
 
 #[test]
 fn test_get_file_icon_document() {
     let entry = create_test_entry("report.pdf", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📝");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📝"
+    );
 }
 
 #[test]
 fn test_get_file_icon_archive() {
     let entry = create_test_entry("backup.tar.gz", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📦");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📦"
+    );
 }
 
 #[test]
 fn test_get_file_icon_image() {
     let entry = create_test_entry("photo.jpg", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🖼");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🖼"
+    );
 }
 
 #[test]
 fn test_get_file_icon_audio() {
     let entry = create_test_entry("song.mp3", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🎵");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🎵"
+    );
 }
 
 #[test]
 fn test_get_file_icon_video() {
     let entry = create_test_entry("movie.mp4", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🎬");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🎬"
+    );
 }
 
 #[test]
 fn test_get_file_icon_config() {
     let entry = create_test_entry("config.toml", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "⚙");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "⚙"
+    );
 }
 
 #[test]
 fn test_get_file_icon_code() {
     let entry = create_test_entry("main.rs", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "💻");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "💻"
+    );
 }
 
 #[test]
 fn test_get_file_icon_default() {
     let entry = create_test_entry("unknown.xyz", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "📄");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "📄"
+    );
 }
 
 #[test]
 fn test_get_file_icon_symlink() {
     let entry = create_test_entry("link", false, false, true);
-    assert_eq!(get_file_icon(&entry.category()), "🔗");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🔗"
+    );
 }
 
 #[test]
 fn test_get_file_icon_executable() {
     let entry = create_test_entry("mybinary", false, true, false);
-    assert_eq!(get_file_icon(&entry.category()), "⚡");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "⚡"
+    );
 }
 
 #[test]
 fn test_get_file_icon_font() {
     let entry = create_test_entry("font.ttf", false, false, false);
-    assert_eq!(get_file_icon(&entry.category()), "🔤");
+    assert_eq!(
+        get_file_icon_with_theme(&entry.category(), IconTheme::Emoji),
+        "🔤"
+    );
 }
 
 #[test]
@@ -402,14 +438,14 @@ fn test_format_entry_line_truncation() {
         false,
         false,
     );
-    let result = format_entry_line(&entry, 47, false, &entry.category());
+    let result = format_entry_line(&entry, 47, false, &entry.category(), IconTheme::Emoji);
     assert!(result.contains('…'));
 }
 
 #[test]
 fn test_format_entry_line_truncation_handles_unicode() {
     let entry = create_test_entry("日本語テストファイル.txt", false, false, false);
-    let result = format_entry_line(&entry, 47, false, &entry.category());
+    let result = format_entry_line(&entry, 47, false, &entry.category(), IconTheme::Emoji);
     assert!(result.contains('…'));
     assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
 }

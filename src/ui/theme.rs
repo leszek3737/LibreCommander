@@ -1,10 +1,44 @@
-use std::sync::RwLock;
-
 use ratatui::style::Modifier;
 use ratatui::style::{Color, Style};
 use serde::Deserialize;
 
 use crate::app::types::FileCategory;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub enum IconTheme {
+    #[default]
+    Emoji,
+    Ascii,
+    NerdFont,
+}
+
+impl IconTheme {
+    fn from_config_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "emoji" => Some(Self::Emoji),
+            "ascii" => Some(Self::Ascii),
+            "nerdfont" | "nerd_font" | "nerd-font" => Some(Self::NerdFont),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IconTheme {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)?;
+        let Some(value) = value.as_str() else {
+            crate::debug_log!("config: non-string value for icon_theme, using emoji");
+            return Ok(Self::Emoji);
+        };
+        Ok(Self::from_config_str(value).unwrap_or_else(|| {
+            crate::debug_log!("config: invalid value for icon_theme, using emoji");
+            Self::Emoji
+        }))
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -46,10 +80,12 @@ pub struct ThemeConfig {
     pub config: Option<String>,
     pub font: Option<String>,
     pub regular_file: Option<String>,
+    #[serde(default)]
+    pub icon_theme: IconTheme,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct ColorPalette {
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ColorPalette {
     panel_bg: Color,
     status_bar_bg: Color,
     menu_bar_bg: Color,
@@ -87,9 +123,10 @@ pub(crate) struct ColorPalette {
     config: Color,
     font: Color,
     regular_file: Color,
+    icon_theme: IconTheme,
 }
 
-const DEFAULT_COLORS: ColorPalette = ColorPalette {
+pub const DEFAULT_COLORS: ColorPalette = ColorPalette {
     panel_bg: Color::Rgb(0, 0, 128),
     status_bar_bg: Color::Rgb(0, 0, 128),
     menu_bar_bg: Color::Rgb(0, 0, 128),
@@ -127,9 +164,8 @@ const DEFAULT_COLORS: ColorPalette = ColorPalette {
     config: Color::LightBlue,
     font: Color::LightCyan,
     regular_file: Color::White,
+    icon_theme: IconTheme::Emoji,
 };
-
-static THEME_COLORS: RwLock<ColorPalette> = RwLock::new(DEFAULT_COLORS);
 
 fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
@@ -187,11 +223,15 @@ fn parse_color(s: &str) -> Option<Color> {
     }
 }
 
-macro_rules! theme_color_accessor {
-    ($($method:ident => $field:ident),* $(,)?) => {
+macro_rules! default_theme_color_accessor {
+    ($($method:ident, $with_method:ident => $field:ident),* $(,)?) => {
         $(
         pub fn $method() -> Color {
-            Self::colors().$field
+            DEFAULT_COLORS.$field
+        }
+
+        pub fn $with_method(colors: &ColorPalette) -> Color {
+            colors.$field
         }
         )*
     };
@@ -203,13 +243,14 @@ macro_rules! resolve_color {
             $($field: $colors.$field.as_ref()
                 .and_then(|s| parse_color(s))
                 .unwrap_or(DEFAULT_COLORS.$field),)*
+            icon_theme: DEFAULT_COLORS.icon_theme,
         }
     };
 }
 
 impl ColorPalette {
-    fn from_config(cfg: &ThemeConfig) -> Self {
-        resolve_color!(
+    pub fn from_config(cfg: &ThemeConfig) -> Self {
+        let mut palette = resolve_color!(
             cfg,
             panel_bg,
             status_bar_bg,
@@ -248,7 +289,19 @@ impl ColorPalette {
             config,
             font,
             regular_file,
-        )
+        );
+        palette.icon_theme = cfg.icon_theme;
+        palette
+    }
+
+    pub fn icon_theme(&self) -> IconTheme {
+        self.icon_theme
+    }
+}
+
+impl Default for ColorPalette {
+    fn default() -> Self {
+        DEFAULT_COLORS
     }
 }
 
@@ -335,167 +388,217 @@ impl Theme {
     #[deprecated(note = "Use Theme::regular_file() instead")]
     pub const REGULAR_FILE: Color = Color::White;
 
-    pub fn apply_from_value(raw: &toml::Value) -> Result<(), String> {
+    pub fn apply_from_value(raw: &toml::Value) -> Result<ColorPalette, String> {
+        let mut colors = DEFAULT_COLORS;
+        Self::apply_from_value_to_palette(raw, &mut colors)?;
+        Ok(colors)
+    }
+
+    pub fn apply_from_value_to_palette(
+        raw: &toml::Value,
+        colors: &mut ColorPalette,
+    ) -> Result<(), String> {
         let Some(theme_val) = raw.get("theme") else {
             return Ok(());
         };
         let cfg: ThemeConfig = ThemeConfig::deserialize(theme_val.clone())
             .map_err(|e| format!("Failed to parse [theme] section: {e}"))?;
-        let colors = ColorPalette::from_config(&cfg);
-        THEME_COLORS
-            .write()
-            .map(|mut g| *g = colors)
-            .map_err(|_| "Theme lock poisoned".to_string())
+        *colors = ColorPalette::from_config(&cfg);
+        Ok(())
     }
 
-    fn colors() -> ColorPalette {
-        THEME_COLORS.read().map_or(DEFAULT_COLORS, |g| *g)
+    #[deprecated(note = "Use ColorPalette::icon_theme() for active theme state")]
+    pub fn icon_theme() -> IconTheme {
+        DEFAULT_COLORS.icon_theme
     }
 
-    theme_color_accessor!(
-        panel_bg_color => panel_bg,
-        status_bar_bg => status_bar_bg,
-        menu_bar_bg => menu_bar_bg,
-        dialog_bg => dialog_bg,
-        highlight_bg => highlight_bg,
-        panel_fg_color => panel_fg,
-        status_bar_fg => status_bar_fg,
-        menu_bar_fg => menu_bar_fg,
-        dialog_fg => dialog_fg,
-        highlight_fg => highlight_fg,
-        border_active_color => border_active,
-        border_inactive_color => border_inactive,
-        title_color => title,
-        error_color => error,
-        warning_color => warning,
-        info_color => info,
-        selected_file_fg => selected_file_fg,
-        scrollbar_active => scrollbar_active,
-        scrollbar_inactive => scrollbar_inactive,
-        function_bar_fg => function_bar_fg,
-        function_bar_bg => function_bar_bg,
-        search_match_fg => search_match_fg,
-        search_match_bg => search_match_bg,
-        search_match_current_fg => search_match_current_fg,
-        search_match_current_bg => search_match_current_bg,
-        directory => directory,
-        executable => executable,
-        symlink => symlink,
-        archive => archive,
-        image => image,
-        video => video,
-        audio => audio,
-        document => document,
-        source_code => source_code,
-        config => config,
-        font => font,
-        regular_file => regular_file,
+    default_theme_color_accessor!(
+        panel_bg_color, panel_bg_color_with_colors => panel_bg,
+        status_bar_bg, status_bar_bg_with_colors => status_bar_bg,
+        menu_bar_bg, menu_bar_bg_with_colors => menu_bar_bg,
+        dialog_bg, dialog_bg_with_colors => dialog_bg,
+        highlight_bg, highlight_bg_with_colors => highlight_bg,
+        panel_fg_color, panel_fg_color_with_colors => panel_fg,
+        status_bar_fg, status_bar_fg_with_colors => status_bar_fg,
+        menu_bar_fg, menu_bar_fg_with_colors => menu_bar_fg,
+        dialog_fg, dialog_fg_with_colors => dialog_fg,
+        highlight_fg, highlight_fg_with_colors => highlight_fg,
+        border_active_color, border_active_color_with_colors => border_active,
+        border_inactive_color, border_inactive_color_with_colors => border_inactive,
+        title_color, title_color_with_colors => title,
+        error_color, error_color_with_colors => error,
+        warning_color, warning_color_with_colors => warning,
+        info_color, info_color_with_colors => info,
+        selected_file_fg, selected_file_fg_with_colors => selected_file_fg,
+        scrollbar_active, scrollbar_active_with_colors => scrollbar_active,
+        scrollbar_inactive, scrollbar_inactive_with_colors => scrollbar_inactive,
+        function_bar_fg, function_bar_fg_with_colors => function_bar_fg,
+        function_bar_bg, function_bar_bg_with_colors => function_bar_bg,
+        search_match_fg, search_match_fg_with_colors => search_match_fg,
+        search_match_bg, search_match_bg_with_colors => search_match_bg,
+        search_match_current_fg, search_match_current_fg_with_colors => search_match_current_fg,
+        search_match_current_bg, search_match_current_bg_with_colors => search_match_current_bg,
+        directory, directory_with_colors => directory,
+        executable, executable_with_colors => executable,
+        symlink, symlink_with_colors => symlink,
+        archive, archive_with_colors => archive,
+        image, image_with_colors => image,
+        video, video_with_colors => video,
+        audio, audio_with_colors => audio,
+        document, document_with_colors => document,
+        source_code, source_code_with_colors => source_code,
+        config, config_with_colors => config,
+        font, font_with_colors => font,
+        regular_file, regular_file_with_colors => regular_file,
     );
 
-    /// Returns a bg-only `Style` intended for merging with a fg-only style via
-    /// Ratatui's `Style::patch`. Used by callers that set border/block backgrounds
-    /// independently of foreground: `ui::menu`, `ui::dir_tree`, main panel block.
     pub fn panel_bg() -> Style {
-        Style::default().bg(Self::colors().panel_bg)
+        Self::panel_bg_with_colors(&DEFAULT_COLORS)
     }
 
-    /// Returns an fg-only `Style` intended for merging with a bg-only style via
-    /// Ratatui's `Style::patch`. Used by `ui::menu` for border styling where
-    /// background comes from the container block.
+    pub fn panel_bg_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().bg(colors.panel_bg)
+    }
+
     pub fn panel_fg() -> Style {
-        Style::default().fg(Self::colors().panel_fg)
+        Self::panel_fg_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn panel_fg_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.panel_fg)
     }
 
     pub fn panel() -> Style {
-        Style::default()
-            .fg(Self::colors().panel_fg)
-            .bg(Self::colors().panel_bg)
+        Self::panel_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn panel_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.panel_fg).bg(colors.panel_bg)
     }
 
     pub fn status_bar() -> Style {
+        Self::status_bar_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn status_bar_with_colors(colors: &ColorPalette) -> Style {
         Style::default()
-            .fg(Self::colors().status_bar_fg)
-            .bg(Self::colors().status_bar_bg)
+            .fg(colors.status_bar_fg)
+            .bg(colors.status_bar_bg)
     }
 
     pub fn menu_bar() -> Style {
+        Self::menu_bar_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn menu_bar_with_colors(colors: &ColorPalette) -> Style {
         Style::default()
-            .fg(Self::colors().menu_bar_fg)
-            .bg(Self::colors().menu_bar_bg)
+            .fg(colors.menu_bar_fg)
+            .bg(colors.menu_bar_bg)
     }
 
     pub fn dialog() -> Style {
-        Style::default()
-            .fg(Self::colors().dialog_fg)
-            .bg(Self::colors().dialog_bg)
+        Self::dialog_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn dialog_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.dialog_fg).bg(colors.dialog_bg)
     }
 
     pub fn highlight() -> Style {
+        Self::highlight_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn highlight_with_colors(colors: &ColorPalette) -> Style {
         Style::default()
-            .fg(Self::colors().highlight_fg)
-            .bg(Self::colors().highlight_bg)
+            .fg(colors.highlight_fg)
+            .bg(colors.highlight_bg)
     }
 
     pub fn highlight_bold() -> Style {
-        Self::highlight().add_modifier(Modifier::BOLD)
+        Self::highlight_bold_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn highlight_bold_with_colors(colors: &ColorPalette) -> Style {
+        Self::highlight_with_colors(colors).add_modifier(Modifier::BOLD)
     }
 
     pub fn error_dialog() -> Style {
-        Style::default()
-            .fg(Self::colors().error)
-            .bg(Self::colors().dialog_bg)
+        Self::error_dialog_with_colors(&DEFAULT_COLORS)
     }
 
-    /// Style for help dialogs — info color on dialog background.
-    /// Also used as the base for `progress_bar()`.
+    pub fn error_dialog_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.error).bg(colors.dialog_bg)
+    }
+
     pub fn help_dialog() -> Style {
-        Style::default()
-            .fg(Self::colors().info)
-            .bg(Self::colors().dialog_bg)
+        Self::help_dialog_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn help_dialog_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.info).bg(colors.dialog_bg)
     }
 
     pub fn warning_dialog() -> Style {
-        Style::default()
-            .fg(Self::colors().warning)
-            .bg(Self::colors().dialog_bg)
+        Self::warning_dialog_with_colors(&DEFAULT_COLORS)
     }
 
-    /// Style for progress bars — delegates to `help_dialog()`.
-    /// Separate method so the style can diverge independently in future.
+    pub fn warning_dialog_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.warning).bg(colors.dialog_bg)
+    }
+
     pub fn progress_bar() -> Style {
-        Self::help_dialog()
+        Self::progress_bar_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn progress_bar_with_colors(colors: &ColorPalette) -> Style {
+        Self::help_dialog_with_colors(colors)
     }
 
     pub fn selected_error() -> Style {
-        Self::highlight()
-            .fg(Self::colors().error)
+        Self::selected_error_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn selected_error_with_colors(colors: &ColorPalette) -> Style {
+        Self::highlight_with_colors(colors)
+            .fg(colors.error)
             .add_modifier(Modifier::BOLD)
     }
 
     pub fn panel_file(color: Color) -> Style {
-        Style::default().fg(color).bg(Self::colors().panel_bg)
+        Self::panel_file_with_colors(color, &DEFAULT_COLORS)
+    }
+
+    pub fn panel_file_with_colors(color: Color, colors: &ColorPalette) -> Style {
+        Style::default().fg(color).bg(colors.panel_bg)
     }
 
     pub fn category_color(category: FileCategory) -> Color {
-        let c = Self::colors();
+        Self::category_color_with_colors(category, &DEFAULT_COLORS)
+    }
+
+    pub fn category_color_with_colors(category: FileCategory, colors: &ColorPalette) -> Color {
         match category {
-            FileCategory::Dir => c.directory,
-            FileCategory::Archive => c.archive,
-            FileCategory::Image => c.image,
-            FileCategory::Video => c.video,
-            FileCategory::Audio => c.audio,
-            FileCategory::Document => c.document,
-            FileCategory::Code => c.source_code,
-            FileCategory::Config => c.config,
-            FileCategory::Font => c.font,
-            FileCategory::Executable => c.executable,
-            FileCategory::Symlink => c.symlink,
-            FileCategory::Other => c.regular_file,
+            FileCategory::Dir => colors.directory,
+            FileCategory::Archive => colors.archive,
+            FileCategory::Image => colors.image,
+            FileCategory::Video => colors.video,
+            FileCategory::Audio => colors.audio,
+            FileCategory::Document => colors.document,
+            FileCategory::Code => colors.source_code,
+            FileCategory::Config => colors.config,
+            FileCategory::Font => colors.font,
+            FileCategory::Executable => colors.executable,
+            FileCategory::Symlink => colors.symlink,
+            FileCategory::Other => colors.regular_file,
         }
     }
 
     pub fn panel_item(color: Color, bold: bool) -> Style {
-        let style = Self::panel_file(color);
+        Self::panel_item_with_colors(color, bold, &DEFAULT_COLORS)
+    }
+
+    pub fn panel_item_with_colors(color: Color, bold: bool, colors: &ColorPalette) -> Style {
+        let style = Self::panel_file_with_colors(color, colors);
         if bold {
             style.add_modifier(Modifier::BOLD)
         } else {
@@ -504,27 +607,51 @@ impl Theme {
     }
 
     pub fn border_active() -> Style {
-        Style::default().fg(Self::colors().border_active)
+        Self::border_active_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn border_active_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.border_active)
     }
 
     pub fn border_inactive() -> Style {
-        Style::default().fg(Self::colors().border_inactive)
+        Self::border_inactive_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn border_inactive_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.border_inactive)
     }
 
     pub fn title() -> Style {
-        Style::default().fg(Self::colors().title)
+        Self::title_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn title_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.title)
     }
 
     pub fn error() -> Style {
-        Style::default().fg(Self::colors().error)
+        Self::error_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn error_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.error)
     }
 
     pub fn warning() -> Style {
-        Style::default().fg(Self::colors().warning)
+        Self::warning_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn warning_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.warning)
     }
 
     pub fn info() -> Style {
-        Style::default().fg(Self::colors().info)
+        Self::info_with_colors(&DEFAULT_COLORS)
+    }
+
+    pub fn info_with_colors(colors: &ColorPalette) -> Style {
+        Style::default().fg(colors.info)
     }
 }
 
@@ -603,7 +730,7 @@ mod tests {
 
     #[test]
     fn defaults_match_when_no_config() {
-        let c = Theme::colors();
+        let c = &DEFAULT_COLORS;
         assert_eq!(c.panel_bg, Color::Rgb(0, 0, 128));
         assert_eq!(c.directory, Color::White);
         assert_eq!(c.error, Color::Red);
@@ -635,5 +762,143 @@ mod tests {
         assert_eq!(colors.directory, Color::Cyan);
         assert_eq!(colors.error, DEFAULT_COLORS.error);
         assert_eq!(colors.panel_fg, DEFAULT_COLORS.panel_fg);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn theme_config_from_toml_invalid_icon_theme_keeps_colors() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            panel_bg = "#112233"
+            icon_theme = "bad-value"
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+
+        Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap();
+
+        assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(colors.icon_theme(), IconTheme::Emoji);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn theme_config_from_toml_non_string_icon_theme_keeps_colors() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            panel_bg = "#112233"
+            icon_theme = true
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+
+        Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap();
+
+        assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(colors.icon_theme(), IconTheme::Emoji);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn apply_from_value_returns_palette() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            panel_bg = "#112233"
+            icon_theme = "ascii"
+            "##,
+        )
+        .unwrap();
+
+        let colors = Theme::apply_from_value(&raw).unwrap();
+
+        assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(colors.icon_theme(), IconTheme::Ascii);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn theme_config_from_toml_accepts_nerd_font_alias() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            icon_theme = "nerd_font"
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+
+        Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap();
+
+        assert_eq!(colors.icon_theme(), IconTheme::NerdFont);
+    }
+
+    #[test]
+    fn icon_theme_default_is_emoji() {
+        let cfg: ThemeConfig = ThemeConfig {
+            ..Default::default()
+        };
+        assert_eq!(cfg.icon_theme, IconTheme::Emoji);
+    }
+
+    #[test]
+    fn icon_theme_deserialize_ascii() {
+        let cfg = ThemeConfig {
+            icon_theme: IconTheme::Ascii,
+            ..Default::default()
+        };
+        assert_eq!(cfg.icon_theme, IconTheme::Ascii);
+    }
+
+    #[test]
+    fn icon_theme_deserialize_emoji() {
+        let cfg = ThemeConfig {
+            icon_theme: IconTheme::Emoji,
+            ..Default::default()
+        };
+        assert_eq!(cfg.icon_theme, IconTheme::Emoji);
+    }
+
+    #[test]
+    fn icon_theme_deserialize_nerdfont() {
+        let cfg = ThemeConfig {
+            icon_theme: IconTheme::NerdFont,
+            ..Default::default()
+        };
+        assert_eq!(cfg.icon_theme, IconTheme::NerdFont);
+    }
+
+    #[test]
+    fn icon_theme_ascii_mapping() {
+        use crate::app::types::FileCategory;
+        use crate::ui::panels::get_file_icon_with_theme;
+        assert_eq!(
+            get_file_icon_with_theme(&FileCategory::Dir, IconTheme::Ascii),
+            "D"
+        );
+        assert_eq!(
+            get_file_icon_with_theme(&FileCategory::Symlink, IconTheme::Ascii),
+            "@"
+        );
+        assert_eq!(
+            get_file_icon_with_theme(&FileCategory::Executable, IconTheme::Ascii),
+            "*"
+        );
+        assert_eq!(
+            get_file_icon_with_theme(&FileCategory::Other, IconTheme::Ascii),
+            "."
+        );
+        assert_eq!(
+            get_file_icon_with_theme(&FileCategory::Dir, IconTheme::Emoji),
+            "📁"
+        );
+        assert_eq!(
+            get_file_icon_with_theme(&FileCategory::Dir, IconTheme::NerdFont),
+            ""
+        );
     }
 }

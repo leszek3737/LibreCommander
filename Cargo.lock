@@ -788,6 +788,7 @@ dependencies = [
  "rayon",
  "regex",
  "serde",
+ "shlex",
  "tempfile",
  "toml",
  "unicode-width",

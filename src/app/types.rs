@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::dir_tree::TreeEntry;
 use super::user_menu::{MenuEntry, MenuSource};
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
+use crate::ui::theme::ColorPalette;
 
 // ============================================================================
 // 1b. FileSize newtype
@@ -341,7 +342,7 @@ pub struct AppState {
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
-    pub needs_watcher_sync: bool,
+    pub theme_colors: ColorPalette,
 }
 
 // ============================================================================
@@ -508,6 +509,7 @@ impl FileEntry {
         }
     }
 
+    /// Returns the file size in bytes.
     pub fn size(&self) -> u64 {
         self.cha.len()
     }
@@ -906,7 +908,7 @@ impl AppState {
             scroll_accel: 0,
             last_scroll_time: None,
             drag_anchor_index: None,
-            needs_watcher_sync: false,
+            theme_colors: crate::ui::theme::DEFAULT_COLORS,
         }
     }
 
@@ -929,6 +931,14 @@ impl AppState {
             ActivePanel::Left => &self.right_panel,
             ActivePanel::Right => &self.left_panel,
         }
+    }
+
+    pub fn enter_command_line_mode(&mut self) {
+        self.command_line.clear();
+        self.command_cursor = 0;
+        self.history_index = None;
+        self.prev_mode = None;
+        self.mode = AppMode::CommandLine;
     }
 }
 

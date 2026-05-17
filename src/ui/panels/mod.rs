@@ -10,7 +10,8 @@ use std::fmt::Write;
 use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
-use super::theme::Theme;
+use super::theme::IconTheme;
+use super::theme::{ColorPalette, Theme};
 
 use crate::app::types::{
     FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
@@ -21,29 +22,86 @@ struct Suffix {
     width: usize,
 }
 
-fn icon_display_width(category: &FileCategory) -> usize {
-    UnicodeWidthStr::width(get_file_icon(category))
+const ASCII_ICONS: &[(FileCategory, &str)] = &[
+    (FileCategory::Dir, "D"),
+    (FileCategory::Symlink, "@"),
+    (FileCategory::Executable, "*"),
+    (FileCategory::Code, "{"),
+    (FileCategory::Config, "#"),
+    (FileCategory::Archive, "A"),
+    (FileCategory::Image, "I"),
+    (FileCategory::Video, "V"),
+    (FileCategory::Audio, "~"),
+    (FileCategory::Document, "="),
+    (FileCategory::Font, "F"),
+    (FileCategory::Other, "."),
+];
+
+const NERD_FONT_ICONS: &[(FileCategory, &str)] = &[
+    (FileCategory::Dir, ""),
+    (FileCategory::Symlink, ""),
+    (FileCategory::Executable, ""),
+    (FileCategory::Code, ""),
+    (FileCategory::Config, ""),
+    (FileCategory::Archive, ""),
+    (FileCategory::Image, ""),
+    (FileCategory::Video, ""),
+    (FileCategory::Audio, ""),
+    (FileCategory::Document, ""),
+    (FileCategory::Font, ""),
+    (FileCategory::Other, ""),
+];
+
+fn find_icon(
+    category: &FileCategory,
+    table: &'static [(FileCategory, &'static str)],
+) -> &'static str {
+    table
+        .iter()
+        .find(|(cat, _)| cat == category)
+        .map(|(_, icon)| *icon)
+        .unwrap_or("?")
+}
+
+fn icon_display_width(category: &FileCategory, theme: IconTheme) -> usize {
+    UnicodeWidthStr::width(get_file_icon_with_theme(category, theme))
 }
 
 pub fn get_file_color(category: &FileCategory, bold: bool) -> Style {
-    let color = Theme::category_color(*category);
-    Theme::panel_item(color, bold)
+    get_file_color_with_palette(category, bold, &ColorPalette::default())
+}
+
+pub fn get_file_color_with_palette(
+    category: &FileCategory,
+    bold: bool,
+    colors: &ColorPalette,
+) -> Style {
+    let color = Theme::category_color_with_colors(*category, colors);
+    Theme::panel_item_with_colors(color, bold, colors)
 }
 
 pub fn get_file_icon(category: &FileCategory) -> &'static str {
-    match category {
-        FileCategory::Dir => "📁",
-        FileCategory::Symlink => "🔗",
-        FileCategory::Executable => "⚡",
-        FileCategory::Code => "💻",
-        FileCategory::Config => "⚙",
-        FileCategory::Archive => "📦",
-        FileCategory::Image => "🖼",
-        FileCategory::Video => "🎬",
-        FileCategory::Audio => "🎵",
-        FileCategory::Document => "📝",
-        FileCategory::Font => "🔤",
-        FileCategory::Other => "📄",
+    get_file_icon_with_theme(category, IconTheme::default())
+}
+
+pub fn get_file_icon_with_theme(category: &FileCategory, theme: IconTheme) -> &'static str {
+    match theme {
+        IconTheme::Ascii => find_icon(category, ASCII_ICONS),
+        IconTheme::NerdFont => find_icon(category, NERD_FONT_ICONS),
+        IconTheme::Emoji => match category {
+            FileCategory::Dir => "📁",
+            FileCategory::Symlink => "🔗",
+            FileCategory::Executable => "⚡",
+            FileCategory::Code => "💻",
+            FileCategory::Config => "⚙",
+            FileCategory::Archive => "📦",
+            FileCategory::Image => "🖼",
+            FileCategory::Video => "🎬",
+            FileCategory::Audio => "🎵",
+            FileCategory::Document => "📝",
+            FileCategory::Font => "🔤",
+            FileCategory::Other => "📄",
+        },
     }
 }
 
@@ -96,10 +154,28 @@ fn truncate_name(name: &str, max_width: usize) -> String {
 }
 
 pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
+    render_panel_with_colors(
+        f,
+        area,
+        panel,
+        is_active,
+        &ColorPalette::default(),
+        IconTheme::default(),
+    );
+}
+
+pub fn render_panel_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    panel: &PanelState,
+    is_active: bool,
+    colors: &ColorPalette,
+    icon_theme: IconTheme,
+) {
     let border_style = if is_active {
-        Theme::border_active()
+        Theme::border_active_with_colors(colors)
     } else {
-        Theme::border_inactive()
+        Theme::border_inactive_with_colors(colors)
     };
 
     let title = format!(" {} ", panel.path.display());
@@ -108,7 +184,7 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         .borders(Borders::ALL)
         .border_style(border_style)
         .title(title)
-        .title_style(Theme::title());
+        .title_style(Theme::title_with_colors(colors));
 
     let inner_area = block.inner(area);
     f.render_widget(block, area);
@@ -135,27 +211,28 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
         let string_line = match panel.listing_mode {
             ListingMode::Long => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
-                format_entry_line(entry, width, panel.show_permissions, &cat)
+                format_entry_line(entry, width, panel.show_permissions, &cat, icon_theme)
             }
             ListingMode::Brief => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
-                format_brief_entry_line(entry, width, &cat)
+                format_brief_entry_line(entry, width, &cat, icon_theme)
             }
         };
 
         let line_style = if entry.selected {
-            get_file_color(&cat, bold).fg(Theme::selected_file_fg())
+            get_file_color_with_palette(&cat, bold, colors)
+                .fg(Theme::selected_file_fg_with_colors(colors))
         } else {
-            get_file_color(&cat, bold)
+            get_file_color_with_palette(&cat, bold, colors)
         };
 
         list_items.push(ListItem::new(Span::styled(string_line, line_style)));
     }
 
     let highlight_style = if is_active {
-        Theme::highlight()
+        Theme::highlight_with_colors(colors)
     } else {
-        Theme::panel()
+        Theme::panel_with_colors(colors)
     };
 
     let list = List::new(list_items)
@@ -172,12 +249,13 @@ pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bo
     if panel.entries.is_empty()
         && let Some(ref err) = panel.last_error
     {
-        let err_text = Paragraph::new(format!(" Error: {err}")).style(Theme::error());
+        let err_text =
+            Paragraph::new(format!(" Error: {err}")).style(Theme::error_with_colors(colors));
         f.render_widget(err_text, chunks[0]);
     }
 
     if !panel.entries.is_empty() {
-        render_scrollbar(f, chunks[1], panel, is_active);
+        render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors);
     }
 }
 
@@ -227,14 +305,15 @@ fn format_entry_line(
     width: usize,
     show_permissions: bool,
     category: &FileCategory,
+    icon_theme: IconTheme,
 ) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     if width <= 1 {
         return format!("{marker}");
     }
 
-    let icon = get_file_icon(category);
-    let icon_width = icon_display_width(category);
+    let icon = get_file_icon_with_theme(category, icon_theme);
+    let icon_width = icon_display_width(category, icon_theme);
     let size_str = if entry.is_dir() {
         String::from("     <DIR>")
     } else {
@@ -276,10 +355,15 @@ fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> Str
     }
 }
 
-fn format_brief_entry_line(entry: &FileEntry, width: usize, category: &FileCategory) -> String {
+fn format_brief_entry_line(
+    entry: &FileEntry,
+    width: usize,
+    category: &FileCategory,
+    icon_theme: IconTheme,
+) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
-    let icon = get_file_icon(category);
-    let icon_width = icon_display_width(category) + 1;
+    let icon = get_file_icon_with_theme(category, icon_theme);
+    let icon_width = icon_display_width(category, icon_theme) + 1;
     let available = width.saturating_sub(1);
     if available == 0 {
         return format!("{marker}");
@@ -300,6 +384,16 @@ fn format_brief_entry_line(entry: &FileEntry, width: usize, category: &FileCateg
 }
 
 pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
+    render_scrollbar_with_colors(f, area, panel, is_active, &ColorPalette::default());
+}
+
+pub fn render_scrollbar_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    panel: &PanelState,
+    is_active: bool,
+    colors: &ColorPalette,
+) {
     if panel.entries.is_empty() {
         return;
     }
@@ -334,9 +428,9 @@ pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active
     }
 
     let style = if is_active {
-        Style::default().fg(Theme::scrollbar_active())
+        Style::default().fg(Theme::scrollbar_active_with_colors(colors))
     } else {
-        Style::default().fg(Theme::scrollbar_inactive())
+        Style::default().fg(Theme::scrollbar_inactive_with_colors(colors))
     };
 
     let paragraph = Paragraph::new(scrollbar)
@@ -374,6 +468,15 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
 }
 
 pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
+    render_status_bar_with_colors(f, area, panel, &ColorPalette::default());
+}
+
+pub fn render_status_bar_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    panel: &PanelState,
+    colors: &ColorPalette,
+) {
     let available = area.width as usize;
 
     let (right_info, right_width) = panel_status_summary(panel);
@@ -411,13 +514,17 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let full_text = format!("{info_line}{}{right_info}", " ".repeat(padding));
 
     let paragraph = Paragraph::new(full_text)
-        .style(Theme::status_bar())
+        .style(Theme::status_bar_with_colors(colors))
         .block(Block::default().borders(Borders::TOP));
 
     f.render_widget(paragraph, area);
 }
 
 pub fn render_function_bar(f: &mut Frame, area: Rect) {
+    render_function_bar_with_colors(f, area, &ColorPalette::default());
+}
+
+pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {
     const CONSTRAINTS: [Constraint; 10] = [Constraint::Percentage(10); 10];
 
     let keys = [
@@ -439,12 +546,12 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
         .split(area);
 
     let key_style = Style::default()
-        .fg(Theme::function_bar_fg())
-        .bg(Theme::function_bar_bg())
+        .fg(Theme::function_bar_fg_with_colors(colors))
+        .bg(Theme::function_bar_bg_with_colors(colors))
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default()
-        .fg(Theme::function_bar_fg())
-        .bg(Theme::function_bar_bg());
+        .fg(Theme::function_bar_fg_with_colors(colors))
+        .bg(Theme::function_bar_bg_with_colors(colors));
 
     for (i, (key, label)) in keys.iter().enumerate() {
         let line = Line::from(vec![
@@ -459,7 +566,14 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 }
 
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
-    f.render_widget(Paragraph::new("").style(Theme::menu_bar()), area);
+    render_menu_bar_with_colors(f, area, &ColorPalette::default());
+}
+
+pub fn render_menu_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {
+    f.render_widget(
+        Paragraph::new("").style(Theme::menu_bar_with_colors(colors)),
+        area,
+    );
 
     let menu_text = "   Left   File   Command   Options   Right   ";
     let text_width = UnicodeWidthStr::width(menu_text) as u16;
@@ -468,7 +582,7 @@ pub fn render_menu_bar(f: &mut Frame, area: Rect) {
     let centered_area = Rect::new(x, area.y, clipped_width, area.height);
 
     let paragraph = Paragraph::new(menu_text)
-        .style(Theme::menu_bar())
+        .style(Theme::menu_bar_with_colors(colors))
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, centered_area);

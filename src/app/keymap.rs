@@ -212,6 +212,12 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
         action: "ExternalView",
         description: "Toggle external panel view",
     },
+    KeyBinding {
+        mode: "Normal",
+        key: "Alt+X",
+        action: "CommandLine",
+        description: "Open command line",
+    },
     // ── Viewer ───────────────────────────────────────────────────────────────
     KeyBinding {
         mode: "Viewing",

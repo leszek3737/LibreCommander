@@ -12,6 +12,9 @@ pub use crate::app::types::SortOptions;
 
 use crate::ops::natsort;
 
+type NaturalSortKey = (u8, Vec<natsort::NatKeySegment>, Vec<u8>);
+type ReverseNaturalSortKey = (u8, Reverse<Vec<natsort::NatKeySegment>>, Reverse<Vec<u8>>);
+
 pub fn cmp_ignore_case(a: &str, b: &str) -> Ordering {
     let mut ai = a.chars().flat_map(|c| c.to_lowercase());
     let mut bi = b.chars().flat_map(|c| c.to_lowercase());
@@ -43,6 +46,7 @@ const GROUP_DIR: u8 = 1;
 const GROUP_FILE: u8 = 2;
 
 #[inline]
+#[allow(clippy::too_many_lines)]
 pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOptions) {
     let dir_first = options.dir_first;
     let sensitive = options.sensitive;
@@ -122,21 +126,29 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         // NOTE: natsort uses ASCII-only case folding; regular Name sort uses full Unicode
         // via str::to_lowercase(). NaturalName and Name sorts may disagree on non-ASCII filenames.
         // Raw bytes serve as deterministic tiebreaker for case-variant names (a1.txt vs A1.txt).
-        SortMode::NaturalNameAsc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                natsort::natsort_key(entry.name.as_bytes(), !sensitive),
-                entry.name.as_bytes().to_vec(),
-            )
-        }),
-        SortMode::NaturalNameDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(natsort::natsort_key(entry.name.as_bytes(), !sensitive)),
-                Reverse(entry.name.as_bytes().to_vec()),
-            )
-        }),
+        SortMode::NaturalNameAsc => {
+            entries.sort_by_cached_key(|entry| natural_sort_key(entry, dir_first, sensitive))
+        }
+        SortMode::NaturalNameDesc => entries
+            .sort_by_cached_key(|entry| reverse_natural_sort_key(entry, dir_first, sensitive)),
     }
+}
+
+fn natural_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> NaturalSortKey {
+    (
+        entry_group(entry, dir_first),
+        natsort::natsort_key(entry.name.as_bytes(), !sensitive),
+        entry.name.as_bytes().to_vec(),
+    )
+}
+
+fn reverse_natural_sort_key(
+    entry: &FileEntry,
+    dir_first: bool,
+    sensitive: bool,
+) -> ReverseNaturalSortKey {
+    let (_, key, bytes) = natural_sort_key(entry, dir_first, sensitive);
+    (entry_group(entry, dir_first), Reverse(key), Reverse(bytes))
 }
 
 fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {

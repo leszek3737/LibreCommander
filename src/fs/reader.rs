@@ -122,7 +122,7 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
     })
 }
 
-fn ensure_path_index(panel: &mut PanelState) {
+pub fn ensure_path_index(panel: &mut PanelState) {
     if !panel.path_index.is_empty() {
         return;
     }

@@ -11,7 +11,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::dir_tree::TreeEntry;
-use crate::ui::theme::Theme;
+use crate::ui::theme::{ColorPalette, Theme};
 
 const HELP_TEXT: &str = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
 
@@ -52,6 +52,7 @@ fn render_tree_scrollbar(
     total_entries: usize,
     mut scroll_offset: usize,
     visible_height: usize,
+    colors: &ColorPalette,
 ) {
     if total_entries == 0 || area.height == 0 {
         return;
@@ -85,11 +86,12 @@ fn render_tree_scrollbar(
         }
     }
 
-    let style = Style::default().fg(Theme::scrollbar_active());
+    let style = Style::default().fg(Theme::scrollbar_active_with_colors(colors));
     let paragraph = Paragraph::new(scrollbar).style(style);
     f.render_widget(paragraph, area);
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn render_directory_tree(
     f: &mut Frame,
     tree_root: &Path,
@@ -97,15 +99,34 @@ pub fn render_directory_tree(
     selected: usize,
     scroll: usize,
 ) {
+    render_directory_tree_with_colors(
+        f,
+        tree_root,
+        entries,
+        selected,
+        scroll,
+        &ColorPalette::default(),
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn render_directory_tree_with_colors(
+    f: &mut Frame,
+    tree_root: &Path,
+    entries: &[TreeEntry],
+    selected: usize,
+    scroll: usize,
+    colors: &ColorPalette,
+) {
     let area = f.area();
 
-    let bg_block = Block::default().style(Theme::panel_bg());
+    let bg_block = Block::default().style(Theme::panel_bg_with_colors(colors));
     f.render_widget(bg_block, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" Directory Tree: {} ", tree_root.display()))
-        .title_style(Theme::title());
+        .title_style(Theme::title_with_colors(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -115,7 +136,7 @@ pub fn render_directory_tree(
 
     if entries.is_empty() {
         let placeholder = Paragraph::new("(empty directory)")
-            .style(Theme::warning())
+            .style(Theme::warning_with_colors(colors))
             .centered();
         f.render_widget(placeholder, inner);
         return;
@@ -154,7 +175,14 @@ pub fn render_directory_tree(
             1,
             inner.height.saturating_sub(1),
         );
-        render_tree_scrollbar(f, sb_area, entries.len(), effective_scroll, visible_height);
+        render_tree_scrollbar(
+            f,
+            sb_area,
+            entries.len(),
+            effective_scroll,
+            visible_height,
+            colors,
+        );
     }
 
     for (offset, entry) in entries[start..end].iter().enumerate() {
@@ -181,11 +209,11 @@ pub fn render_directory_tree(
         let display_name = truncate_name(entry.name.as_str(), available);
 
         let line_style = if row == selected {
-            Theme::highlight()
+            Theme::highlight_with_colors(colors)
         } else if entry.is_dir {
-            Theme::panel_file(Theme::directory())
+            Theme::panel_file_with_colors(Theme::directory_with_colors(colors), colors)
         } else {
-            Theme::panel_file(Theme::regular_file())
+            Theme::panel_file_with_colors(Theme::regular_file_with_colors(colors), colors)
         };
 
         let line = Line::from(vec![
@@ -204,11 +232,11 @@ pub fn render_directory_tree(
     let avail = inner.width as usize;
     let help_width = UnicodeWidthStr::width(HELP_TEXT);
     if avail >= help_width {
-        let help_para = Paragraph::new(HELP_TEXT).style(Theme::warning());
+        let help_para = Paragraph::new(HELP_TEXT).style(Theme::warning_with_colors(colors));
         f.render_widget(help_para, bottom_area);
     } else if avail > 1 {
         let truncated = truncate_name(HELP_TEXT, avail);
-        let help_para = Paragraph::new(truncated).style(Theme::warning());
+        let help_para = Paragraph::new(truncated).style(Theme::warning_with_colors(colors));
         f.render_widget(help_para, bottom_area);
     }
 }

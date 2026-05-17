@@ -33,6 +33,7 @@ pub const MENU_ITEMS: [&[&str]; 5] = [
         "Compare dirs",
         "History",
         "Directory hotlist",
+        "Command line",
     ],
     &[
         "Show hidden files",
@@ -78,6 +79,7 @@ pub enum MenuAction {
     ToggleHiddenFiles,
     TogglePermissions,
     SaveSetup,
+    CommandLine,
 }
 
 const LEFT_RIGHT_MENU_ACTIONS: [MenuAction; 4] = [
@@ -100,7 +102,7 @@ const FILE_MENU_ACTIONS: [MenuAction; 10] = [
     MenuAction::Quit,
 ];
 
-const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
+const COMMAND_MENU_ACTIONS: [MenuAction; 8] = [
     MenuAction::DirectoryTree,
     MenuAction::FindFile,
     MenuAction::SwapPanels,
@@ -108,6 +110,7 @@ const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
     MenuAction::CompareDirs,
     MenuAction::History,
     MenuAction::DirectoryHotlist,
+    MenuAction::CommandLine,
 ];
 
 const OPTIONS_MENU_ACTIONS: [MenuAction; 5] = [
@@ -203,6 +206,8 @@ mod tests {
     fn menu_action_at_maps_file_and_command_menus() {
         assert_eq!(menu_action_at(1, 7), Some(MenuAction::Rename));
         assert_eq!(menu_action_at(2, 4), Some(MenuAction::CompareDirs));
+        assert_eq!(MENU_ITEMS[2][7], "Command line");
+        assert_eq!(menu_action_at(2, 7), Some(MenuAction::CommandLine));
     }
 
     #[test]

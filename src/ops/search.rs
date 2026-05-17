@@ -690,50 +690,60 @@ impl FileSearch {
             }
         };
 
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
+        let mut line_buf = Vec::new();
+        let mut line_no = 0_usize;
+        loop {
+            line_buf.clear();
+            match reader.read_until(b'\n', &mut line_buf) {
+                Ok(0) => break,
+                Ok(bytes_read) => {
+                    line_no += 1;
+                    let line = if line_buf.last() == Some(&b'\n') {
+                        &line_buf[..bytes_read - 1]
+                    } else {
+                        &line_buf[..bytes_read]
+                    };
+                    if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                        if outcome.truncated.is_none() {
+                            outcome.truncated = Some(TruncationReason::ContentResultLimit);
+                        }
+                        return;
+                    }
+                    if line.contains(&0) {
+                        if outcome.truncated.is_none() {
+                            outcome.truncated = Some(TruncationReason::BinaryFile);
+                        }
+                        return;
+                    }
+                    if line.len() > MAX_CONTENT_LINE_BYTES {
+                        if outcome.truncated.is_none() {
+                            outcome.truncated = Some(TruncationReason::LineTooLong);
+                        }
+                        continue;
+                    }
+                    let line_text = match std::str::from_utf8(line) {
+                        Ok(s) => s.strip_suffix('\r').unwrap_or(s).to_owned(),
+                        Err(_) => continue,
+                    };
+                    let match_found = if case_sensitive {
+                        line_text.contains(pattern)
+                    } else {
+                        Self::contains_case_insensitive(&line_text, pattern_lower)
+                    };
 
-        for (line_no, line) in reader.split(b'\n').enumerate() {
-            if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::ContentResultLimit);
+                    if match_found {
+                        outcome
+                            .matches
+                            .push((path.to_path_buf(), line_no, line_text));
+                    }
                 }
-                return;
-            }
-            let line = match line {
-                Ok(line) => line,
                 Err(err) => {
                     outcome
                         .errors
                         .push(format!("Failed to read {}: {err}", path.display()));
                     return;
                 }
-            };
-            if line.contains(&0) {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::BinaryFile);
-                }
-                return;
-            }
-            if line.len() > MAX_CONTENT_LINE_BYTES {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::LineTooLong);
-                }
-                continue;
-            }
-            let line_text = match String::from_utf8(line) {
-                Ok(s) => s.strip_suffix('\r').map(str::to_owned).unwrap_or(s),
-                Err(_) => continue,
-            };
-            let match_found = if case_sensitive {
-                line_text.contains(pattern)
-            } else {
-                Self::contains_case_insensitive(&line_text, pattern_lower)
-            };
-
-            if match_found {
-                outcome
-                    .matches
-                    .push((path.to_path_buf(), line_no + 1, line_text));
             }
         }
     }
@@ -1144,6 +1154,30 @@ mod tests {
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::BinaryFile));
         assert!(outcome.errors.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_search_content_counts_skipped_long_lines() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_long_line_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut content = vec![b'a'; MAX_CONTENT_LINE_BYTES + 1];
+        content.extend_from_slice(b"\nneedle\n");
+        fs::write(dir.join("long_line.txt"), content).unwrap();
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].1, 2);
+        assert_eq!(outcome.truncated, Some(TruncationReason::LineTooLong));
 
         let _ = fs::remove_dir_all(dir);
     }
