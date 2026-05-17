@@ -789,13 +789,21 @@ impl PanelState {
         }
     }
 
-    pub fn move_cursor_up(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
+    pub fn move_cursor_up(&mut self, max_height: usize) {
+        if self.entries.is_empty() {
+            return;
         }
-        // Adjust scroll if cursor goes above visible area
-        if self.cursor < self.scroll_offset {
-            self.scroll_offset = self.cursor;
+
+        if self.cursor == 0 {
+            self.cursor = self.entries.len().saturating_sub(1);
+            if max_height > 0 {
+                self.scroll_offset = self.entries.len().saturating_sub(max_height);
+            }
+        } else {
+            self.cursor = self.cursor.saturating_sub(1);
+            if self.cursor < self.scroll_offset {
+                self.scroll_offset = self.cursor;
+            }
         }
     }
 
@@ -806,12 +814,14 @@ impl PanelState {
 
         let max_index = self.entries.len().saturating_sub(1);
 
-        if self.cursor < max_index {
+        if self.cursor >= max_index {
+            self.cursor = 0;
+            self.scroll_offset = 0;
+        } else {
             self.cursor += 1;
-        }
-
-        if max_height > 0 && self.cursor >= self.scroll_offset + max_height {
-            self.scroll_offset = self.cursor.saturating_sub(max_height) + 1;
+            if max_height > 0 && self.cursor >= self.scroll_offset + max_height {
+                self.scroll_offset = self.cursor.saturating_sub(max_height) + 1;
+            }
         }
     }
 
@@ -1229,7 +1239,7 @@ mod tests {
             .entries
             .push(create_test_entry("file2.txt", false, 200, 0o644, false));
         panel.cursor = 1;
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 0);
     }
 
@@ -1240,7 +1250,7 @@ mod tests {
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel.cursor = 0;
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 0);
     }
 
@@ -1269,7 +1279,7 @@ mod tests {
             .push(create_test_entry("file2.txt", false, 200, 0o644, false));
         panel.cursor = 1;
         panel.move_cursor_down(10);
-        assert_eq!(panel.cursor, 1);
+        assert_eq!(panel.cursor, 0);
     }
 
     #[test]
@@ -1527,7 +1537,7 @@ mod tests {
         }
         panel.cursor = 3;
         panel.scroll_offset = 5;
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 2);
         assert_eq!(panel.scroll_offset, 2);
     }
@@ -1546,7 +1556,7 @@ mod tests {
         }
         panel.cursor = 5;
         panel.scroll_offset = 3;
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 4);
         assert_eq!(panel.scroll_offset, 3);
     }
@@ -1775,7 +1785,7 @@ mod tests {
         assert_eq!(panel.cursor, 0);
         panel.move_cursor_down(10);
         assert_eq!(panel.cursor, 0);
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 0);
     }
 
@@ -1807,7 +1817,7 @@ mod tests {
         panel.cursor = 1;
 
         panel.move_cursor_down(10);
-        assert_eq!(panel.cursor, 1);
+        assert_eq!(panel.cursor, 0);
 
         panel.move_cursor_down(10);
         assert_eq!(panel.cursor, 1);
@@ -1819,9 +1829,9 @@ mod tests {
         panel.entries = vec![create_test_entry("a.txt", false, 10, 0o644, false)];
         panel.cursor = 0;
 
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 0);
-        panel.move_cursor_up();
+        panel.move_cursor_up(10);
         assert_eq!(panel.cursor, 0);
     }
 
@@ -1842,7 +1852,8 @@ mod tests {
         let visible_height = 20;
         panel.move_cursor_down(visible_height);
 
-        assert_eq!(panel.cursor, 99);
+        assert_eq!(panel.cursor, 0);
+        assert_eq!(panel.scroll_offset, 0);
         assert!(
             panel.scroll_offset + visible_height > panel.cursor,
             "cursor must be visible within scroll window"
@@ -1912,5 +1923,118 @@ mod tests {
         );
         assert_eq!(entries[0].name, "known.txt");
         assert_eq!(entries[1].name, "unknown.txt");
+    }
+
+    #[test]
+    fn test_move_cursor_up_wraps_to_last_entry() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        for i in 0..5 {
+            panel.entries.push(create_test_entry(
+                &format!("file{i}.txt"),
+                false,
+                100,
+                0o644,
+                false,
+            ));
+        }
+        panel.cursor = 0;
+        panel.move_cursor_up(3);
+        assert_eq!(panel.cursor, 4);
+        assert_eq!(panel.scroll_offset, 2);
+    }
+
+    #[test]
+    fn test_move_cursor_up_wraps_with_single_entry() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel
+            .entries
+            .push(create_test_entry("file.txt", false, 100, 0o644, false));
+        panel.cursor = 0;
+        panel.move_cursor_up(3);
+        assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_down_wraps_to_first_entry() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        for i in 0..5 {
+            panel.entries.push(create_test_entry(
+                &format!("file{i}.txt"),
+                false,
+                100,
+                0o644,
+                false,
+            ));
+        }
+        panel.cursor = 4;
+        panel.move_cursor_down(3);
+        assert_eq!(panel.cursor, 0);
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_down_wraps_with_single_entry() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        panel
+            .entries
+            .push(create_test_entry("file.txt", false, 100, 0o644, false));
+        panel.cursor = 0;
+        panel.move_cursor_down(3);
+        assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_up_wrap_then_down_wrap() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        for i in 0..5 {
+            panel.entries.push(create_test_entry(
+                &format!("file{i}.txt"),
+                false,
+                100,
+                0o644,
+                false,
+            ));
+        }
+        panel.cursor = 0;
+        panel.move_cursor_up(5);
+        assert_eq!(panel.cursor, 4);
+        panel.move_cursor_down(5);
+        assert_eq!(panel.cursor, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_down_wrap_with_many_entries_scroll_check() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        for i in 0..20 {
+            panel.entries.push(create_test_entry(
+                &format!("file{i}.txt"),
+                false,
+                100,
+                0o644,
+                false,
+            ));
+        }
+        panel.cursor = 19;
+        panel.move_cursor_down(5);
+        assert_eq!(panel.cursor, 0);
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_move_cursor_up_wrap_with_many_entries_scroll_check() {
+        let mut panel = PanelState::new(PathBuf::from("/test"));
+        for i in 0..20 {
+            panel.entries.push(create_test_entry(
+                &format!("file{i}.txt"),
+                false,
+                100,
+                0o644,
+                false,
+            ));
+        }
+        panel.cursor = 0;
+        panel.move_cursor_up(5);
+        assert_eq!(panel.cursor, 19);
+        assert_eq!(panel.scroll_offset, 15);
     }
 }

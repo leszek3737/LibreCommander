@@ -564,30 +564,23 @@ pub(crate) fn handle_navigation_keys(
     match key {
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
             let panel = state.active_panel_mut();
-            if panel.cursor > 0 {
-                panel.toggle_selection_at(panel.cursor);
-                panel.cursor -= 1;
-                if panel.cursor < panel.scroll_offset {
-                    panel.scroll_offset = panel.cursor;
-                }
+            if panel.entries.is_empty() {
+                return;
             }
+            panel.toggle_selection_at(panel.cursor);
+            panel.move_cursor_up(visible);
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
             let panel = state.active_panel_mut();
-            let len = panel.entries.len();
-            if len > 0 {
-                panel.toggle_selection_at(panel.cursor);
-                if panel.cursor < len - 1 {
-                    panel.cursor += 1;
-                    if panel.cursor >= panel.scroll_offset + visible {
-                        panel.scroll_offset = panel.cursor.saturating_sub(visible) + 1;
-                    }
-                }
+            if panel.entries.is_empty() {
+                return;
             }
+            panel.toggle_selection_at(panel.cursor);
+            panel.move_cursor_down(visible);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             let panel = state.active_panel_mut();
-            panel.move_cursor_up();
+            panel.move_cursor_up(visible);
         }
         KeyCode::Down | KeyCode::Char('j') => {
             let panel = state.active_panel_mut();
@@ -629,8 +622,13 @@ pub(crate) fn handle_navigation_keys(
         }
         KeyCode::Insert => {
             let panel = state.active_panel_mut();
+            if panel.entries.is_empty() {
+                return;
+            }
             panel.toggle_selection();
-            panel.move_cursor_down(visible);
+            if panel.cursor < panel.entries.len() - 1 {
+                panel.move_cursor_down(visible);
+            }
         }
         _ => {}
     }
