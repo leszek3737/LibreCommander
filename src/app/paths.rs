@@ -68,7 +68,9 @@ pub fn terminal_state_file_path() -> PathBuf {
 pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> PathBuf {
     cache_home(env)
         .map(|dir| dir.join("terminal_state"))
-        .unwrap_or_else(|| std::env::temp_dir().join("lc_terminal_state"))
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("lc_terminal_state_{}", std::process::id()))
+        })
 }
 
 fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
@@ -81,6 +83,7 @@ fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
             env.var_os("HOME")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
                 .map(|home| home.join(".config").join(APP_NAME))
         })
 }
@@ -95,6 +98,7 @@ pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
             env.var_os("HOME")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
                 .map(|home| home.join(".cache").join(APP_NAME))
         })
 }
@@ -173,9 +177,12 @@ mod tests {
     fn terminal_state_path_falls_back_to_temp_when_no_env() {
         let env = MapEnv::default();
 
-        assert_eq!(
-            terminal_state_file_path_with_env(&env),
-            std::env::temp_dir().join("lc_terminal_state")
+        let result = terminal_state_file_path_with_env(&env);
+        assert!(result.starts_with(std::env::temp_dir()));
+        assert!(
+            result
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("lc_terminal_state_"))
         );
     }
 
@@ -199,6 +206,25 @@ mod tests {
         assert_eq!(
             terminal_state_file_path_with_env(&env),
             PathBuf::from("/home/user/.cache/lc/terminal_state")
+        );
+    }
+
+    #[test]
+    fn config_path_rejects_relative_home() {
+        let env = env(&[("HOME", "relative/home")]);
+        assert!(config_file_path_with_env(&env).is_none());
+    }
+
+    #[test]
+    fn terminal_state_path_rejects_relative_home() {
+        let env = env(&[("HOME", "relative/home")]);
+
+        let result = terminal_state_file_path_with_env(&env);
+        assert!(result.starts_with(std::env::temp_dir()));
+        assert!(
+            result
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("lc_terminal_state_"))
         );
     }
 }

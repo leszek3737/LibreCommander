@@ -16,7 +16,7 @@ const VIEWER_CHROME_HEIGHT: u16 = 3;
 const HORIZONTAL_SCROLL_STEP: usize = 4;
 
 pub(crate) fn clear_search_state(state: &mut AppState) {
-    state.mode = AppMode::Normal;
+    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
     state.search_query.clear();
     state.search_cursor = 0;
     let panel = state.active_panel_mut();
@@ -80,7 +80,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
         }
         _ => {
             if let KeyCode::Char(c) = key
-                && modifiers.is_empty()
+                && (modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT)
             {
                 initiate_search(state, AppMode::Normal, c);
             }

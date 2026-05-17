@@ -140,7 +140,13 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
                     other_dir: &other_dir,
                     tagged: &tagged,
                 };
-                let cmd = user_menu::apply_substitutions(&entry.command, &ctx);
+                let cmd = match user_menu::apply_substitutions(&entry.command, &ctx) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        state.status_message = Some(e);
+                        return;
+                    }
+                };
                 if state.user_menu_source == MenuSource::Local {
                     state.pending_menu_command = Some(cmd);
                     state.dialog_selection = 0;

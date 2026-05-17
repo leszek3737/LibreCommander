@@ -754,13 +754,13 @@ fn hotlist_persistence_roundtrip() {
             show_hidden: false,
             ..Default::default()
         },
-        hotlist: hotlist.clone(),
+        hotlist: Some(hotlist.clone()),
     };
 
     let serialized = toml::to_string(&setup).unwrap();
     let deserialized: PersistedSetup = toml::from_str(&serialized).unwrap();
 
-    assert_eq!(deserialized.hotlist, hotlist);
+    assert_eq!(deserialized.hotlist, Some(hotlist));
 }
 
 #[test]

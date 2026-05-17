@@ -81,8 +81,9 @@ pub struct SubstContext<'a> {
     pub tagged: &'a [PathBuf],
 }
 
-/// Perform MC-compatible substitutions in `cmd`.
-pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> String {
+const NON_UTF8_ERR: &str = "non-UTF-8 path not supported in menu";
+
+pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, String> {
     let mut out = String::with_capacity(cmd.len());
     let mut chars = cmd.chars().peekable();
 
@@ -95,31 +96,42 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> String {
             None => out.push('%'),
             Some('%') => out.push('%'),
             Some('f') => out.push_str(&shell_quote(ctx.current_file)),
-            Some('d') => out.push_str(&shell_quote(&ctx.active_dir.display().to_string())),
-            Some('D') => out.push_str(&shell_quote(&ctx.other_dir.display().to_string())),
+            Some('d') => {
+                out.push_str(&shell_quote(
+                    ctx.active_dir
+                        .to_str()
+                        .ok_or_else(|| NON_UTF8_ERR.to_owned())?,
+                ));
+            }
+            Some('D') => {
+                out.push_str(&shell_quote(
+                    ctx.other_dir
+                        .to_str()
+                        .ok_or_else(|| NON_UTF8_ERR.to_owned())?,
+                ));
+            }
             Some('t' | 's') => {
                 if ctx.tagged.is_empty() {
                     out.push_str(&shell_quote(ctx.current_file));
                 } else {
-                    let quoted: Vec<String> = ctx
+                    let quoted: Result<Vec<String>, String> = ctx
                         .tagged
                         .iter()
-                        .map(|p| shell_quote(&tagged_name(p, ctx.active_dir)))
+                        .map(|p| tagged_name(p, ctx.active_dir).map(|n| shell_quote(&n)))
                         .collect();
-                    out.push_str(&quoted.join(" "));
+                    out.push_str(&quoted?.join(" "));
                 }
             }
             Some(other) => {
-                // Unknown token: pass through verbatim.
                 out.push('%');
                 out.push(other);
             }
         }
     }
-    out
+    Ok(out)
 }
 
-fn tagged_name(path: &Path, active_dir: &Path) -> String {
+fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
     path.strip_prefix(active_dir)
         .ok()
         .and_then(|p| p.to_str())
@@ -130,7 +142,7 @@ fn tagged_name(path: &Path, active_dir: &Path) -> String {
                 .and_then(|name| name.to_str())
                 .map(ToOwned::to_owned)
         })
-        .unwrap_or_else(|| path.display().to_string())
+        .ok_or_else(|| NON_UTF8_ERR.to_owned())
 }
 
 /// Parse the menu file content and return all entries.
@@ -411,7 +423,10 @@ mod tests {
         let active = PathBuf::from("/home/user");
         let other = PathBuf::from("/tmp");
         let c = ctx("file.txt", &active, &other, &[]);
-        assert_eq!(apply_substitutions("echo %f", &c), "echo 'file.txt'");
+        assert_eq!(
+            apply_substitutions("echo %f", &c).unwrap(),
+            "echo 'file.txt'"
+        );
     }
 
     #[test]
@@ -420,7 +435,7 @@ mod tests {
         let other = PathBuf::from("/tmp");
         let c = ctx("my document.pdf", &active, &other, &[]);
         assert_eq!(
-            apply_substitutions("xdg-open %f", &c),
+            apply_substitutions("xdg-open %f", &c).unwrap(),
             "xdg-open 'my document.pdf'"
         );
     }
@@ -430,7 +445,10 @@ mod tests {
         let active = PathBuf::from("/home/user/docs");
         let other = PathBuf::from("/tmp");
         let c = ctx("f", &active, &other, &[]);
-        assert_eq!(apply_substitutions("ls %d", &c), "ls '/home/user/docs'");
+        assert_eq!(
+            apply_substitutions("ls %d", &c).unwrap(),
+            "ls '/home/user/docs'"
+        );
     }
 
     #[test]
@@ -439,7 +457,10 @@ mod tests {
         let active = PathBuf::from("/home/user");
         let other = PathBuf::from("/mnt/backup");
         let c = ctx("f", &active, &other, &[]);
-        assert_eq!(apply_substitutions("cp %f %D", &c), "cp 'f' '/mnt/backup'");
+        assert_eq!(
+            apply_substitutions("cp %f %D", &c).unwrap(),
+            "cp 'f' '/mnt/backup'"
+        );
     }
 
     #[test]
@@ -448,7 +469,7 @@ mod tests {
         let other = PathBuf::from("/b");
         let c = ctx("file.rs", &active, &other, &[]);
         assert_eq!(
-            apply_substitutions("tar czf a.tgz %t", &c),
+            apply_substitutions("tar czf a.tgz %t", &c).unwrap(),
             "tar czf a.tgz 'file.rs'"
         );
     }
@@ -459,7 +480,7 @@ mod tests {
         let other = PathBuf::from("/b");
         let tagged = vec![PathBuf::from("/a/x.txt"), PathBuf::from("/a/y.txt")];
         let c = ctx("x.txt", &active, &other, &tagged);
-        let result = apply_substitutions("tar czf a.tgz %s", &c);
+        let result = apply_substitutions("tar czf a.tgz %s", &c).unwrap();
         assert!(result.contains("'x.txt'"));
         assert!(result.contains("'y.txt'"));
     }
@@ -470,7 +491,7 @@ mod tests {
         let other = PathBuf::from("/dst");
         let tagged = vec![PathBuf::from("/src/a b.txt"), PathBuf::from("/src/c.txt")];
         let c = ctx("a b.txt", &active, &other, &tagged);
-        let result = apply_substitutions("cp %t /dst/", &c);
+        let result = apply_substitutions("cp %t /dst/", &c).unwrap();
         assert_eq!(result, "cp 'a b.txt' 'c.txt' /dst/");
     }
 
@@ -480,7 +501,7 @@ mod tests {
         let other = PathBuf::from("/dst");
         let tagged = vec![PathBuf::from("/src/dir/a.txt")];
         let c = ctx("dir/a.txt", &active, &other, &tagged);
-        let result = apply_substitutions("cp %t /dst/", &c);
+        let result = apply_substitutions("cp %t /dst/", &c).unwrap();
         assert_eq!(result, "cp 'dir/a.txt' /dst/");
     }
 
@@ -489,7 +510,7 @@ mod tests {
         let active = PathBuf::from("/a");
         let other = PathBuf::from("/b");
         let c = ctx("f", &active, &other, &[]);
-        assert_eq!(apply_substitutions("echo 100%%", &c), "echo 100%");
+        assert_eq!(apply_substitutions("echo 100%%", &c).unwrap(), "echo 100%");
     }
 
     #[test]
@@ -497,7 +518,7 @@ mod tests {
         let active = PathBuf::from("/a");
         let other = PathBuf::from("/b");
         let c = ctx("f", &active, &other, &[]);
-        assert_eq!(apply_substitutions("echo %z", &c), "echo %z");
+        assert_eq!(apply_substitutions("echo %z", &c).unwrap(), "echo %z");
     }
 
     // --- parse_menu ---
