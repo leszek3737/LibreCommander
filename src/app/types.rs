@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::dir_tree::TreeEntry;
 use super::user_menu::{MenuEntry, MenuSource};
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
+use crate::ui::theme::ColorPalette;
 
 // ============================================================================
 // 1b. FileSize newtype
@@ -342,6 +343,7 @@ pub struct AppState {
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
     pub needs_watcher_sync: bool,
+    pub theme_colors: ColorPalette,
 }
 
 // ============================================================================
@@ -907,6 +909,7 @@ impl AppState {
             last_scroll_time: None,
             drag_anchor_index: None,
             needs_watcher_sync: false,
+            theme_colors: crate::ui::theme::DEFAULT_COLORS,
         }
     }
 

@@ -152,7 +152,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
     };
     if let Some(ref raw) = config_raw
-        && let Err(e) = ui::theme::Theme::apply_from_value(raw)
+        && let Err(e) = ui::theme::Theme::apply_from_value(raw, &mut state.theme_colors)
     {
         state.status_message = Some(e);
     }

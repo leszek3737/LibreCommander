@@ -15,7 +15,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::app::types::{ViewMode, format_size};
 
-use super::theme::Theme;
+use super::theme::{ColorPalette, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SearchLineMatch {
@@ -776,6 +776,7 @@ fn format_line_with_highlight<'a>(
     line: &'a str,
     line_matches: &[SearchLineMatch],
     current_match_idx: Option<usize>,
+    colors: &ColorPalette,
 ) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
 
@@ -784,11 +785,11 @@ fn format_line_with_highlight<'a>(
     }
 
     let regular_style = Style::default()
-        .fg(Theme::search_match_fg())
-        .bg(Theme::search_match_bg());
+        .fg(Theme::search_match_fg(colors))
+        .bg(Theme::search_match_bg(colors));
     let current_style = Style::default()
-        .fg(Theme::search_match_current_fg())
-        .bg(Theme::search_match_current_bg())
+        .fg(Theme::search_match_current_fg(colors))
+        .bg(Theme::search_match_current_bg(colors))
         .add_modifier(Modifier::BOLD);
 
     let mut last_end = 0usize;
@@ -857,6 +858,7 @@ fn render_viewer_status(
     state: &ViewerState,
     mode_label: &str,
     position_text: &str,
+    colors: &ColorPalette,
 ) {
     let status_area = Rect {
         x: inner_area.x,
@@ -889,20 +891,20 @@ fn render_viewer_status(
         || (!state.is_hex_mode() && state.originally_binary)
         || state.file_truncated
     {
-        Theme::status_bar().fg(Theme::warning_color())
+        Theme::status_bar(colors).fg(Theme::warning_color(colors))
     } else {
-        Theme::status_bar()
+        Theme::status_bar(colors)
     };
     let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
 }
 
-pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
+pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState, colors: &ColorPalette) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel())
+        .style(Theme::panel(colors))
         .title(state.file_path.display().to_string())
-        .title_style(Theme::title());
+        .title_style(Theme::title(colors));
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
@@ -961,16 +963,21 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
                 line_spans.push(Span::raw(line_content));
             } else {
                 line_spans.extend(
-                    format_line_with_highlight(&line_content, line_matches, state.current_match)
-                        .into_iter()
-                        .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                    format_line_with_highlight(
+                        &line_content,
+                        line_matches,
+                        state.current_match,
+                        colors,
+                    )
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
                 );
             }
             line_spans
         } else if line_matches.is_empty() {
             vec![Span::raw(line_content)]
         } else {
-            format_line_with_highlight(&line_content, line_matches, state.current_match)
+            format_line_with_highlight(&line_content, line_matches, state.current_match, colors)
                 .into_iter()
                 .map(|s| Span::styled(s.content.into_owned(), s.style))
                 .collect()
@@ -999,15 +1006,15 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
         state.scroll_offset
     };
     let position_text = format!("Line: {}/{}", current_line + 1, state.line_count);
-    render_viewer_status(f, inner_area, state, "Text", &position_text);
+    render_viewer_status(f, inner_area, state, "Text", &position_text, colors);
 }
 
-pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
+pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState, colors: &ColorPalette) {
     let block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel())
+        .style(Theme::panel(colors))
         .title(format!("{} [Hex]", state.file_path.display()))
-        .title_style(Theme::title());
+        .title_style(Theme::title(colors));
     f.render_widget(block, area);
 
     let inner_area = area.inner(Margin {
@@ -1056,8 +1063,12 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         let spans: Vec<Span<'static>> = if line_matches.is_empty() {
             vec![Span::raw(std::mem::take(&mut hex_line_buffer))]
         } else {
-            let highlighted =
-                format_line_with_highlight(&hex_line_buffer, line_matches, state.current_match);
+            let highlighted = format_line_with_highlight(
+                &hex_line_buffer,
+                line_matches,
+                state.current_match,
+                colors,
+            );
             highlighted
                 .into_iter()
                 .map(|s| Span::styled(s.content.into_owned(), s.style))
@@ -1076,7 +1087,7 @@ pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
         state.scroll_offset + 1
     };
     let position_text = format!("Offset: {current_line}/{total_lines}");
-    render_viewer_status(f, inner_area, state, "Hex", &position_text);
+    render_viewer_status(f, inner_area, state, "Hex", &position_text, colors);
 }
 
 #[cfg(test)]
@@ -1137,7 +1148,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     None
 }
 
-pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
+pub fn render_loading(f: &mut Frame, area: Rect, path: &Path, colors: &ColorPalette) {
     let spinner_chars = ['|', '/', '-', '\\'];
     let idx = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1154,7 +1165,7 @@ pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .style(Theme::panel_bg());
+        .style(Theme::panel_bg(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1176,6 +1187,7 @@ pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::ui::theme::DEFAULT_COLORS;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -1191,7 +1203,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_viewer(frame, frame.area(), state))
+            .draw(|frame| render_viewer(frame, frame.area(), state, &DEFAULT_COLORS))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -1436,6 +1448,7 @@ mod tests {
                 end_byte: 17,
             }],
             Some(0),
+            &DEFAULT_COLORS,
         );
     }
 
@@ -1443,11 +1456,11 @@ mod tests {
     fn test_format_line_with_highlight_overlapping_matches_no_duplicates() {
         let line = "0123456789abcdef";
         let regular_style = Style::default()
-            .fg(Theme::search_match_fg())
-            .bg(Theme::search_match_bg());
+            .fg(Theme::search_match_fg(&DEFAULT_COLORS))
+            .bg(Theme::search_match_bg(&DEFAULT_COLORS));
         let current_style = Style::default()
-            .fg(Theme::search_match_current_fg())
-            .bg(Theme::search_match_current_bg())
+            .fg(Theme::search_match_current_fg(&DEFAULT_COLORS))
+            .bg(Theme::search_match_current_bg(&DEFAULT_COLORS))
             .add_modifier(Modifier::BOLD);
 
         let spans = format_line_with_highlight(
@@ -1467,6 +1480,7 @@ mod tests {
                 },
             ],
             Some(1),
+            &DEFAULT_COLORS,
         );
 
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1501,6 +1515,7 @@ mod tests {
                 },
             ],
             None,
+            &DEFAULT_COLORS,
         );
 
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();

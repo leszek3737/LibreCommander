@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::path::{MAIN_SEPARATOR, Path};
 
-use super::theme::Theme;
+use super::theme::{ColorPalette, Theme};
 
 use ratatui::{
     Frame,
@@ -67,7 +67,7 @@ pub enum DialogKind<'a> {
     },
 }
 
-pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
+pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>, colors: &ColorPalette) {
     if matches!(dialog, DialogKind::OverwriteConfirm { files, .. } if files.is_empty()) {
         return;
     }
@@ -76,7 +76,7 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
     let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, rect);
 
     f.render_widget(Clear, dialog_area);
-    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
+    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog(colors));
     f.render_widget(bg_block, dialog_area);
 
     match dialog {
@@ -93,6 +93,7 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
                 message,
                 *selection,
                 files.as_deref().unwrap_or_default(),
+                colors,
             );
         }
         DialogKind::Input {
@@ -101,17 +102,17 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
             value,
             cursor_pos,
         } => {
-            render_input_dialog(f, dialog_area, title, prompt, value, *cursor_pos);
+            render_input_dialog(f, dialog_area, title, prompt, value, *cursor_pos, colors);
         }
         DialogKind::Error { title, message } => {
-            render_error_dialog(f, dialog_area, title, message);
+            render_error_dialog(f, dialog_area, title, message, colors);
         }
         DialogKind::Help {
             title,
             message,
             scroll_offset,
         } => {
-            render_help_dialog(f, dialog_area, title, message, *scroll_offset);
+            render_help_dialog(f, dialog_area, title, message, *scroll_offset, colors);
         }
         DialogKind::Progress {
             title,
@@ -119,13 +120,21 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
             percent,
             cancellable,
         } => {
-            render_progress_dialog(f, dialog_area, title, message, *percent, *cancellable);
+            render_progress_dialog(
+                f,
+                dialog_area,
+                title,
+                message,
+                *percent,
+                *cancellable,
+                colors,
+            );
         }
         DialogKind::Properties { info } => {
-            render_properties_dialog(f, dialog_area, info);
+            render_properties_dialog(f, dialog_area, info, colors);
         }
         DialogKind::OverwriteConfirm { selection, files } => {
-            render_overwrite_dialog(f, dialog_area, *selection, files);
+            render_overwrite_dialog(f, dialog_area, *selection, files, colors);
         }
     }
 }
@@ -221,19 +230,25 @@ fn truncate_path(path: &str, max_width: usize) -> String {
     format!("{dir_part}{MAIN_SEPARATOR}{file}")
 }
 
-fn render_file_list(f: &mut Frame, area: Rect, files: &[impl AsRef<str>], max_name_width: usize) {
+fn render_file_list(
+    f: &mut Frame,
+    area: Rect,
+    files: &[impl AsRef<str>],
+    max_name_width: usize,
+    colors: &ColorPalette,
+) {
     let max_visible = area.height as usize;
     let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
     let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
     if files.len() <= show_count {
         for name in files {
             let display = truncate_path(name.as_ref(), max_name_width);
-            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+            lines.push(Line::from(format!("  {display}")).style(Theme::warning(colors)));
         }
     } else {
         for name in files.iter().take(show_count.saturating_sub(1)) {
             let display = truncate_path(name.as_ref(), max_name_width);
-            lines.push(Line::from(format!("  {display}")).style(Theme::warning()));
+            lines.push(Line::from(format!("  {display}")).style(Theme::warning(colors)));
         }
         let remaining = files.len() - show_count + 1;
         lines.push(Line::from(format!("  ... +{remaining} more")));
@@ -249,8 +264,9 @@ fn render_confirmation_dialog_inner(
     message: &str,
     buttons: &[(Style, &str)],
     files: &[impl AsRef<str>],
+    colors: &ColorPalette,
 ) {
-    let block = dialog_block(title, Theme::dialog());
+    let block = dialog_block(title, Theme::dialog(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -278,7 +294,7 @@ fn render_confirmation_dialog_inner(
 
     if has_files {
         let max_name_width = inner.width.saturating_sub(2) as usize;
-        render_file_list(f, chunks[1], files, max_name_width);
+        render_file_list(f, chunks[1], files, max_name_width, colors);
     }
 
     let mut spans: Vec<ratatui::text::Span> = Vec::new();
@@ -300,26 +316,27 @@ pub fn render_confirm_dialog(
     message: &str,
     selection: usize,
     files: &[impl AsRef<str>],
+    colors: &ColorPalette,
 ) {
     let buttons = [
         (
             if selection == 0 {
-                Theme::highlight_bold()
+                Theme::highlight_bold(colors)
             } else {
-                Theme::dialog()
+                Theme::dialog(colors)
             },
             "[ Yes ]",
         ),
         (
             if selection == 1 {
-                Theme::highlight_bold()
+                Theme::highlight_bold(colors)
             } else {
-                Theme::dialog()
+                Theme::dialog(colors)
             },
             "[ No ]",
         ),
     ];
-    render_confirmation_dialog_inner(f, area, title, message, &buttons, files);
+    render_confirmation_dialog_inner(f, area, title, message, &buttons, files, colors);
 }
 
 pub fn render_overwrite_dialog(
@@ -327,6 +344,7 @@ pub fn render_overwrite_dialog(
     area: Rect,
     selection: usize,
     files: &[impl AsRef<str>],
+    colors: &ColorPalette,
 ) {
     if files.is_empty() {
         return;
@@ -340,16 +358,16 @@ pub fn render_overwrite_dialog(
 
     let btn_style = |idx: usize| -> Style {
         if selection == idx {
-            Theme::highlight_bold()
+            Theme::highlight_bold(colors)
         } else {
-            Theme::dialog()
+            Theme::dialog(colors)
         }
     };
     let buttons = [
         (btn_style(0), "[ Overwrite All ]"),
         (btn_style(1), "[ Cancel ]"),
     ];
-    render_confirmation_dialog_inner(f, area, "Overwrite?", &msg, &buttons, files);
+    render_confirmation_dialog_inner(f, area, "Overwrite?", &msg, &buttons, files, colors);
 }
 
 pub fn input_dialog_rect(area: Rect) -> Rect {
@@ -363,8 +381,9 @@ pub fn render_input_dialog(
     prompt: &str,
     value: &str,
     cursor_pos: usize,
+    colors: &ColorPalette,
 ) {
-    let block = dialog_block(title, Theme::dialog());
+    let block = dialog_block(title, Theme::dialog(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -384,7 +403,7 @@ pub fn render_input_dialog(
         .borders(Borders::ALL)
         .border_type(BorderType::Plain);
     let input_block = if value.is_empty() {
-        input_block.border_style(Theme::warning())
+        input_block.border_style(Theme::warning(colors))
     } else {
         input_block
     };
@@ -443,8 +462,14 @@ pub fn render_input_dialog(
     f.set_cursor_position((cursor_x, cursor_y));
 }
 
-pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str) {
-    let block = dialog_block(title, Theme::error_dialog());
+pub fn render_error_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: &str,
+    colors: &ColorPalette,
+) {
+    let block = dialog_block(title, Theme::error_dialog(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -456,11 +481,11 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
     let message_paragraph = Paragraph::new(message)
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center)
-        .style(Theme::error());
+        .style(Theme::error(colors));
     f.render_widget(message_paragraph, chunks[0]);
 
     let ok_btn = Paragraph::new("[ OK ]")
-        .style(Theme::selected_error())
+        .style(Theme::selected_error(colors))
         .alignment(Alignment::Center);
     f.render_widget(ok_btn, chunks[1]);
 }
@@ -485,8 +510,9 @@ pub fn render_help_dialog(
     title: &str,
     message: &str,
     scroll_offset: usize,
+    colors: &ColorPalette,
 ) {
-    let block = dialog_block(title, Theme::help_dialog());
+    let block = dialog_block(title, Theme::help_dialog(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -514,7 +540,7 @@ pub fn render_help_dialog(
         .wrap(Wrap { trim: true })
         .scroll((clamped_offset as u16, 0))
         .alignment(Alignment::Left)
-        .style(Theme::info());
+        .style(Theme::info(colors));
     f.render_widget(message_paragraph, message_area);
 
     let has_scrollbar = total_lines > max_lines && content_area.width > 1;
@@ -534,8 +560,8 @@ pub fn render_help_dialog(
                 .track_symbol(Some("░"))
                 .begin_symbol(None)
                 .end_symbol(None)
-                .thumb_style(Style::default().fg(Theme::scrollbar_active()))
-                .track_style(Style::default().fg(Theme::scrollbar_active())),
+                .thumb_style(Style::default().fg(Theme::scrollbar_active(colors)))
+                .track_style(Style::default().fg(Theme::scrollbar_active(colors))),
             scrollbar_area,
             &mut scrollbar_state,
         );
@@ -548,7 +574,7 @@ pub fn render_help_dialog(
         1,
     );
     let ok_btn = Paragraph::new("[ Press any key to exit, Arrows/PgUp/PgDn to scroll ]")
-        .style(Theme::highlight_bold())
+        .style(Theme::highlight_bold(colors))
         .alignment(Alignment::Center);
     f.render_widget(ok_btn, button_area);
 }
@@ -562,8 +588,9 @@ pub fn render_progress_dialog(
     message: &str,
     percent: f32,
     cancellable: bool,
+    colors: &ColorPalette,
 ) {
-    let block = dialog_block(title, Theme::dialog());
+    let block = dialog_block(title, Theme::dialog(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -583,7 +610,7 @@ pub fn render_progress_dialog(
 
     let clamped = (percent.clamp(0.0, 100.0).round()) as u16;
     let gauge = Gauge::default()
-        .gauge_style(Theme::progress_bar())
+        .gauge_style(Theme::progress_bar(colors))
         .percent(clamped)
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
@@ -597,16 +624,21 @@ pub fn render_progress_dialog(
     };
     if !hint_text.is_empty() {
         let hint = Paragraph::new(hint_text)
-            .style(Theme::warning())
+            .style(Theme::warning(colors))
             .alignment(Alignment::Center);
         f.render_widget(hint, chunks[2]);
     }
 }
 
-pub fn render_properties_dialog(f: &mut Frame, area: Rect, info: &PropertiesInfo) {
+pub fn render_properties_dialog(
+    f: &mut Frame,
+    area: Rect,
+    info: &PropertiesInfo,
+    colors: &ColorPalette,
+) {
     let display_name = truncate_path(&info.name, 30);
     let title = format!("Properties — {display_name}");
-    let block = dialog_block(&title, Theme::warning_dialog());
+    let block = dialog_block(&title, Theme::warning_dialog(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -618,7 +650,7 @@ pub fn render_properties_dialog(f: &mut Frame, area: Rect, info: &PropertiesInfo
         Line::from(format!("Permissions: {}", info.permissions)),
         Line::from(format!("Owner: {}:{}", info.owner, info.group)),
         Line::from(""),
-        Line::from("[ Press Enter or Esc to close ]").style(Theme::info()),
+        Line::from("[ Press Enter or Esc to close ]").style(Theme::info(colors)),
     ];
 
     let paragraph = Paragraph::new(lines)
@@ -633,15 +665,16 @@ pub fn render_list_picker<T: AsRef<str>>(
     items: &[T],
     selected: usize,
     hint: &str,
+    colors: &ColorPalette,
 ) {
     let area = f.area();
     let picker_area = centered_rect(60, 70, area);
 
     f.render_widget(Clear, picker_area);
-    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog());
+    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog(colors));
     f.render_widget(bg_block, picker_area);
 
-    let block = dialog_block(title, Theme::dialog());
+    let block = dialog_block(title, Theme::dialog(colors));
     let inner = block.inner(picker_area);
     f.render_widget(block, picker_area);
 
@@ -652,7 +685,7 @@ pub fn render_list_picker<T: AsRef<str>>(
 
     if items.is_empty() {
         let empty = Paragraph::new("(empty)")
-            .style(Style::default().fg(Theme::regular_file()))
+            .style(Style::default().fg(Theme::regular_file(colors)))
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {
@@ -676,7 +709,7 @@ pub fn render_list_picker<T: AsRef<str>>(
             .map(|s| ListItem::new(s.as_ref()))
             .collect();
         let list = List::new(list_items)
-            .highlight_style(Theme::highlight_bold())
+            .highlight_style(Theme::highlight_bold(colors))
             .highlight_symbol("> ");
         let mut list_state = ListState::default();
         list_state.select(Some(clamped_selected - start_idx));
@@ -684,7 +717,7 @@ pub fn render_list_picker<T: AsRef<str>>(
     }
 
     let hint_para = Paragraph::new(hint)
-        .style(Theme::warning())
+        .style(Theme::warning(colors))
         .alignment(Alignment::Center);
     f.render_widget(hint_para, chunks[1]);
 }
@@ -713,6 +746,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::DEFAULT_COLORS;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -773,7 +807,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = centered_rect(50, 40, f.area());
-                render_help_dialog(f, area, "Help", &message, 0);
+                render_help_dialog(f, area, "Help", &message, 0, &DEFAULT_COLORS);
             })
             .unwrap();
 
@@ -805,7 +839,7 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
         terminal
-            .draw(|f| render_help_dialog(f, area, "Help", &message, 0))
+            .draw(|f| render_help_dialog(f, area, "Help", &message, 0, &DEFAULT_COLORS))
             .unwrap();
         let unscrolled_start = terminal.backend().buffer()[(content.x, content.y)]
             .symbol()
@@ -813,7 +847,7 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
         terminal
-            .draw(|f| render_help_dialog(f, area, "Help", &message, 1))
+            .draw(|f| render_help_dialog(f, area, "Help", &message, 1, &DEFAULT_COLORS))
             .unwrap();
         let buffer = terminal.backend().buffer();
 
@@ -893,6 +927,7 @@ mod tests {
                         selection: 0,
                         files: &[],
                     },
+                    &DEFAULT_COLORS,
                 );
             })
             .unwrap();
@@ -905,7 +940,7 @@ mod tests {
         let items: Vec<String> = (0..20).map(|i| format!("Item {i}")).collect();
 
         terminal
-            .draw(|f| render_list_picker(f, "Pick", &items, 19, "hint"))
+            .draw(|f| render_list_picker(f, "Pick", &items, 19, "hint", &DEFAULT_COLORS))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -932,10 +967,11 @@ mod tests {
                     "Confirm",
                     "Are you sure?",
                     &[
-                        (Theme::highlight_bold(), "[ Yes ]"),
-                        (Theme::dialog(), "[ No ]"),
+                        (Theme::highlight_bold(&DEFAULT_COLORS), "[ Yes ]"),
+                        (Theme::dialog(&DEFAULT_COLORS), "[ No ]"),
                     ],
                     &["file1.txt", "file2.txt"] as &[&str],
+                    &DEFAULT_COLORS,
                 );
             })
             .unwrap();
@@ -975,8 +1011,9 @@ mod tests {
                     area,
                     "",
                     "msg",
-                    &[(Theme::dialog(), "[ OK ]")],
+                    &[(Theme::dialog(&DEFAULT_COLORS), "[ OK ]")],
                     &[] as &[&str],
+                    &DEFAULT_COLORS,
                 );
             })
             .unwrap();
@@ -1028,7 +1065,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = centered_rect(50, 40, f.area());
-                render_input_dialog(f, area, "Input", "Enter value:", "", 0);
+                render_input_dialog(f, area, "Input", "Enter value:", "", 0, &DEFAULT_COLORS);
             })
             .unwrap();
 
@@ -1046,7 +1083,7 @@ mod tests {
 
         let input_area = chunks[1];
         let top_left = buf[(input_area.x, input_area.y)].clone();
-        let warning_color = Theme::warning().fg.unwrap_or(Color::Yellow);
+        let warning_color = Theme::warning(&DEFAULT_COLORS).fg.unwrap_or(Color::Yellow);
         assert_eq!(
             top_left.fg, warning_color,
             "empty value input border should have warning color"
@@ -1070,7 +1107,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = centered_rect(50, 40, f.area());
-                render_properties_dialog(f, area, &info);
+                render_properties_dialog(f, area, &info, &DEFAULT_COLORS);
             })
             .unwrap();
 

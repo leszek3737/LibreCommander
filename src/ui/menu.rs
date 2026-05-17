@@ -7,19 +7,24 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
-use crate::ui::theme::Theme;
+use crate::ui::theme::{ColorPalette, Theme};
 
 const MIN_DROPDOWN_ITEM_WIDTH: usize = 10;
 const MENU_VERTICAL_OFFSET: u16 = 4;
 const MENU_DROPDOWN_OFFSET: u16 = 2;
 
-fn render_menu_title_bar(f: &mut Frame, menu_bar_area: Rect, selected_menu: usize) {
+fn render_menu_title_bar(
+    f: &mut Frame,
+    menu_bar_area: Rect,
+    selected_menu: usize,
+    colors: &ColorPalette,
+) {
     for (i, title) in MENU_TITLES.iter().enumerate() {
         let title_width = menu_title_width(title);
         let style = if i == selected_menu {
-            Theme::highlight_bold()
+            Theme::highlight_bold(colors)
         } else {
-            Theme::menu_bar()
+            Theme::menu_bar(colors)
         };
         let label = Span::styled(format!(" {title} "), style);
         let p = Paragraph::new(label);
@@ -38,6 +43,7 @@ fn render_menu_dropdown(
     menu_bar_area: Rect,
     active_menu: usize,
     selected_item: usize,
+    colors: &ColorPalette,
 ) {
     let items = MENU_ITEMS[active_menu];
     let dropdown_width = items
@@ -60,8 +66,8 @@ fn render_menu_dropdown(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Theme::panel_fg())
-        .style(Theme::panel_bg());
+        .border_style(Theme::panel_fg(colors))
+        .style(Theme::panel_bg(colors));
     let inner = block.inner(dropdown_area);
     f.render_widget(block, dropdown_area);
 
@@ -81,9 +87,9 @@ fn render_menu_dropdown(
     {
         let row = i - scroll_offset;
         let style = if i == clamped_selected {
-            Theme::highlight()
+            Theme::highlight(colors)
         } else {
-            Theme::panel()
+            Theme::panel(colors)
         };
         let item_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
         let label = Span::styled(format!(" {item} "), style);
@@ -97,11 +103,12 @@ pub fn render_menu_bar(
     menu_bar_area: Rect,
     selected_menu: usize,
     selected_item: usize,
+    colors: &ColorPalette,
 ) {
     let selected_menu = selected_menu.min(MENU_ITEMS.len().saturating_sub(1));
-    render_menu_title_bar(f, menu_bar_area, selected_menu);
+    render_menu_title_bar(f, menu_bar_area, selected_menu, colors);
     if !MENU_ITEMS[selected_menu].is_empty() {
-        render_menu_dropdown(f, menu_bar_area, selected_menu, selected_item);
+        render_menu_dropdown(f, menu_bar_area, selected_menu, selected_item, colors);
     }
 }
 
@@ -110,6 +117,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::*;
+    use crate::ui::theme::DEFAULT_COLORS;
 
     fn render_with(menu: usize, item: usize) {
         let backend = TestBackend::new(80, 24);
@@ -117,7 +125,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 80, 1);
-                render_menu_bar(f, menu_bar, menu, item);
+                render_menu_bar(f, menu_bar, menu, item, &DEFAULT_COLORS);
             })
             .unwrap();
     }
@@ -158,7 +166,7 @@ mod tests {
         let completed = terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 30, 1);
-                render_menu_bar(f, menu_bar, 1, 8);
+                render_menu_bar(f, menu_bar, 1, 8, &DEFAULT_COLORS);
             })
             .unwrap();
         let buf = completed.buffer;
@@ -195,7 +203,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 20, 1);
-                render_menu_bar(f, menu_bar, 1, 5);
+                render_menu_bar(f, menu_bar, 1, 5, &DEFAULT_COLORS);
             })
             .unwrap();
     }
