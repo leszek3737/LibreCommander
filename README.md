@@ -33,7 +33,7 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 ### Building from Source
 
 ```bash
-cd ~/git/lc
+cd ~/git/LibreCommander
 cargo build --release
 ```
 
@@ -58,12 +58,15 @@ cargo install --path .
 | `ratatui` 0.30 | Terminal UI framework |
 | `crossterm` 0.29 | Cross-platform terminal I/O |
 | `serde` 1.0 | Config serialization |
-| `toml` 0.9 | Config file parsing |
+| `toml` 1 | Config file parsing |
 | `chrono` 0.4 | Date/time formatting |
 | `regex` 1.0 | User menu condition matching |
 | `unicode-width` 0.2 | Unicode character width for alignment |
 | `users` 0.11 | File owner/group lookup |
-| `notify` 8 | Filesystem watcher for auto-refresh |
+| `notify` 8 | Filesystem watcher for auto-refresh (platform-conditional: macOS uses `macos_fsevent`) |
+| `bitflags` 2 | Bitflag types |
+| `dirs` 6 | XDG/user directories |
+| `rayon` 1 | Parallel iteration / background jobs |
 | `infer` 0.19 | MIME type detection |
 | `filetime` 0.2 | File modification time handling |
 
@@ -140,7 +143,7 @@ Dev dependency: `tempfile` 3 (for tests).
 
 | Key | Action |
 |-----|--------|
-| `Esc` / `F3` / `q` | Exit viewer |
+| `Esc` / `F3` / `F10` / `q` | Exit viewer |
 | `↑` / `k` | Scroll up |
 | `↓` / `j` | Scroll down |
 | `PageUp` / `PageDown` | Page up/down |
@@ -169,6 +172,11 @@ Dev dependency: `tempfile` 3 (for tests).
 | `Enter` | Execute shell command |
 | `↑` / `↓` | Browse command history |
 | `Backspace` | Delete character |
+| `Ctrl+A` | Move to line start |
+| `Ctrl+E` | Move to line end |
+| `Ctrl+W` | Delete word |
+| `Ctrl+U` | Delete to line start |
+| `Ctrl+C` | Cancel command line |
 
 ### Menu Bar (F9)
 
@@ -189,6 +197,21 @@ Dev dependency: `tempfile` 3 (for tests).
 | `a` | Add to hotlist (hotlist picker only) |
 | `d` | Delete from hotlist (hotlist picker only) |
 
+Note: `a` (add) and `d` (delete) work only in the Hotlist picker.
+
+### Mouse
+
+| Action | Effect |
+|--------|--------|
+| Left click on file | Select entry |
+| Left double-click | Open directory or view file |
+| Left click on panel | Switch active panel |
+| Left drag in panel | Select range of entries |
+| Middle click | Copy (F5 equivalent) |
+| Right click | Cancel / close (Esc equivalent) |
+| Scroll | Scroll panel cursor |
+| Click function bar (bottom) | F1-F10 actions |
+
 ## Configuration
 
 Configuration file location: `~/.config/lc/config.toml`
@@ -196,7 +219,6 @@ Configuration file location: `~/.config/lc/config.toml`
 ### Config Schema
 
 ```toml
-version = 1
 active_panel = "left"  # "left" or "right"
 dir_first = true       # directories before files in sort
 sort_sensitive = false # case-sensitive name sorting
@@ -204,6 +226,7 @@ sort_sensitive = false # case-sensitive name sorting
 [left]
 path = "/home/user"
 show_hidden = true
+show_permissions = false
 listing_mode = "long"  # "long" or "brief"
 sort_mode = "name_asc" # see sort modes below
 filter = ""            # glob pattern, empty = no filter
@@ -211,6 +234,7 @@ filter = ""            # glob pattern, empty = no filter
 [right]
 path = "/home/user/projects"
 show_hidden = true
+show_permissions = false
 listing_mode = "long"
 sort_mode = "name_asc"
 filter = ""
@@ -222,17 +246,20 @@ hotlist = ["/home/user", "/home/user/projects"]
 
 `name_asc`, `name_desc`, `natural_name_asc`, `natural_name_desc`, `size_asc`, `size_desc`, `mod_time_asc`, `mod_time_desc`, `btime_asc`, `btime_desc`, `extension_asc`, `extension_desc`
 
+An optional `[theme]` section is supported for color customization; all fields have defaults.
+
 ### Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `EDITOR` | External editor for F4 | `vi` |
 | `HOME` | Config/menu file location | (required) |
+| `XDG_CONFIG_HOME` | Config/menu file base directory | `$HOME/.config` |
 
 ## User Menu
 
 Create custom menu entries in:
-- Local: `.mc.menu` in the current directory
+- Local: `.mc.menu` in the active panel's directory
 - Global: `~/.config/lc/menu`
 
 ### Menu Format
@@ -260,7 +287,7 @@ D  Diff panels
 - **Hotkey**: First character of the line (single char)
 - **Title**: Rest of the hotkey line (display label)
 - **Body**: Indented lines (tab or space) as shell commands
-- **Condition**: `+ f <regex>` — only show entry when filename matches regex
+- **Condition**: `+ f <regex>` — only show entry when filename matches regex; multiple condition lines are OR'd together. Conditions can appear before or after the hotkey line.
 
 ### Substitution Tokens
 
@@ -269,10 +296,12 @@ D  Diff panels
 | `%f` | Current filename (shell-quoted) |
 | `%d` | Active panel directory (shell-quoted) |
 | `%D` | Other panel directory (shell-quoted) |
-| `%t` / `%s` | Tagged/selected files (space-separated, shell-quoted) |
+| `%t` / `%s` | Tagged/selected files (space-separated, shell-quoted); `%s` is an alias for `%t` |
 | `%%` | Literal `%` |
 
 Commands are executed via `sh -c` with the active panel's directory as working directory.
+
+Menu files are limited to 1 MiB.
 
 ## File Operations
 
@@ -296,6 +325,8 @@ The built-in viewer (F3) supports:
 - **In-file search** (`/` to search, `n`/`N` to navigate matches)
 - **Horizontal scrolling** for wide lines
 - **Unicode support** — lossy UTF-8 display for binary files
+- **Size limit** — files up to 100 MiB (larger files are truncated)
+- **Content detection** — auto-detection of text vs binary content (MIME-based with null-byte fallback)
 
 ## Search
 
@@ -309,7 +340,7 @@ Menu: Command > Find file. Recursive glob-pattern search from the active panel's
 
 ### Content Search
 
-Available programmatically via `FileSearch::search_content()`. Searches file contents line-by-line. Case-insensitive. Not yet wired to a UI action.
+Available programmatically via `FileSearch::search_content()`. Searches file contents line-by-line. Case-insensitive. Content search limits: files over 10 MiB skipped, lines over 64 KiB skipped, max 1000 results, max depth 20, max 10000 items scanned. Not yet wired to a UI action.
 
 ## Sorting
 
@@ -361,6 +392,8 @@ The test suite covers:
 - User menu parsing and substitution
 - Directory tree building and toggling
 - Viewer (scroll, search, hex mode, Unicode)
+- Batch operations (copy/move/delete with progress and cancellation)
+- File watcher events and debouncing
 
 ## Quality Gates
 
