@@ -932,6 +932,14 @@ impl AppState {
             ActivePanel::Right => &self.left_panel,
         }
     }
+
+    pub fn enter_command_line_mode(&mut self) {
+        self.command_line.clear();
+        self.command_cursor = 0;
+        self.history_index = None;
+        self.prev_mode = None;
+        self.mode = AppMode::CommandLine;
+    }
 }
 
 // Default implementation for AppState

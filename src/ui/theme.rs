@@ -28,8 +28,12 @@ impl<'de> Deserialize<'de> for IconTheme {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        Ok(Self::from_config_str(&value).unwrap_or_else(|| {
+        let value = toml::Value::deserialize(deserializer)?;
+        let Some(value) = value.as_str() else {
+            crate::debug_log!("config: non-string value for icon_theme, using emoji");
+            return Ok(Self::Emoji);
+        };
+        Ok(Self::from_config_str(value).unwrap_or_else(|| {
             crate::debug_log!("config: invalid value for icon_theme, using emoji");
             Self::Emoji
         }))
@@ -384,9 +388,10 @@ impl Theme {
     #[deprecated(note = "Use Theme::regular_file() instead")]
     pub const REGULAR_FILE: Color = Color::White;
 
-    pub fn apply_from_value(raw: &toml::Value) -> Result<(), String> {
+    pub fn apply_from_value(raw: &toml::Value) -> Result<ColorPalette, String> {
         let mut colors = DEFAULT_COLORS;
-        Self::apply_from_value_to_palette(raw, &mut colors)
+        Self::apply_from_value_to_palette(raw, &mut colors)?;
+        Ok(colors)
     }
 
     pub fn apply_from_value_to_palette(
@@ -402,6 +407,7 @@ impl Theme {
         Ok(())
     }
 
+    #[deprecated(note = "Use ColorPalette::icon_theme() for active theme state")]
     pub fn icon_theme() -> IconTheme {
         DEFAULT_COLORS.icon_theme
     }
@@ -775,6 +781,43 @@ mod tests {
 
         assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(colors.icon_theme(), IconTheme::Emoji);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn theme_config_from_toml_non_string_icon_theme_keeps_colors() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            panel_bg = "#112233"
+            icon_theme = true
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+
+        Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap();
+
+        assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(colors.icon_theme(), IconTheme::Emoji);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn apply_from_value_returns_palette() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            panel_bg = "#112233"
+            icon_theme = "ascii"
+            "##,
+        )
+        .unwrap();
+
+        let colors = Theme::apply_from_value(&raw).unwrap();
+
+        assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(colors.icon_theme(), IconTheme::Ascii);
     }
 
     #[test]

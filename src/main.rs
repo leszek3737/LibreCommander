@@ -520,7 +520,7 @@ fn launch_editor<B: ratatui::backend::Backend>(
         });
         let cmd = parts.first().map_or("vi", |s| s.as_str());
         let status = std::process::Command::new(cmd)
-            .args(&parts[1..])
+            .args(parts.get(1..).unwrap_or_default())
             .arg(&path)
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
@@ -795,13 +795,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             state.dialog_input = state.active_panel().path.display().to_string();
             state.dialog_cursor_pos = state.dialog_input.chars().count();
         }
-        KeyCode::Char('x' | 'X') => {
-            state.command_line.clear();
-            state.command_cursor = 0;
-            state.history_index = None;
-            state.prev_mode = None;
-            state.mode = AppMode::CommandLine;
-        }
+        KeyCode::Char('x' | 'X') => state.enter_command_line_mode(),
         _ => {}
     }
 }
