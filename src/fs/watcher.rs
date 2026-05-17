@@ -12,11 +12,17 @@ use std::time::{Duration, Instant};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
 
+#[derive(Clone)]
 pub enum WatchEvent {
     Created(PathBuf),
     Deleted(PathBuf),
     Modified(PathBuf),
     Renamed { from: PathBuf, to: PathBuf },
+}
+
+struct PendingEntry {
+    last_seen: Instant,
+    coalesced: Option<WatchEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +37,7 @@ pub struct Watcher {
     watchers: HashMap<PathBuf, WhichWatcher>,
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
-    debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
     path_cache: HashMap<PathBuf, PathBuf>,
 }
@@ -78,7 +84,6 @@ impl Watcher {
             .map_err(|e| notify_to_io(&e))?;
             self.fallback = Some(fallback);
         }
-        // Safe: guaranteed Some by is_none() check above or prior call
         #[allow(clippy::unwrap_used)]
         Ok(self.fallback.as_mut().unwrap())
     }
@@ -181,12 +186,23 @@ impl Watcher {
     pub fn resume(&self) {
         self.paused.store(false, Ordering::Release);
     }
+
+    pub fn flush_pending(&self) {
+        let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
+        let flushed = flush_expired(&mut debounce);
+        drop(debounce);
+        for evt in flushed {
+            if let Err(e) = self.event_tx.send(evt) {
+                debug_log!("watcher send failed: {e}");
+            }
+        }
+    }
 }
 
 fn make_handler(
     event_tx: Sender<WatchEvent>,
     paused: Arc<AtomicBool>,
-    debounce_state: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
@@ -208,7 +224,17 @@ fn make_handler(
                     Some(p.clone())
                 }
                 WatchEvent::Renamed { from, to } => {
-                    should_emit(&debounce_state, &[from.as_path(), to.as_path()], true);
+                    let (_, flushed) = process_debounce(
+                        &debounce_state,
+                        &[from.as_path(), to.as_path()],
+                        None,
+                        true,
+                    );
+                    for evt in flushed {
+                        if let Err(e) = event_tx.send(evt) {
+                            debug_log!("watcher send failed: {e}");
+                        }
+                    }
                     if let Err(e) = event_tx.send(watch_event) {
                         debug_log!("watcher send failed: {e}");
                     }
@@ -217,10 +243,25 @@ fn make_handler(
             };
 
             let skip_debounce = matches!(&watch_event, WatchEvent::Deleted(_));
-            if let Some(path) = path
-                && !should_emit(&debounce_state, &[path.as_path()], skip_debounce)
-            {
-                continue;
+            if let Some(path) = path {
+                let (emit, flushed) = process_debounce(
+                    &debounce_state,
+                    &[path.as_path()],
+                    if skip_debounce {
+                        None
+                    } else {
+                        Some(&watch_event)
+                    },
+                    skip_debounce,
+                );
+                for evt in flushed {
+                    if let Err(e) = event_tx.send(evt) {
+                        debug_log!("watcher send failed: {e}");
+                    }
+                }
+                if !emit {
+                    continue;
+                }
             }
 
             if let Err(e) = event_tx.send(watch_event) {
@@ -230,40 +271,79 @@ fn make_handler(
     }
 }
 
-fn should_emit(
-    debounce_state: &Mutex<HashMap<PathBuf, Instant>>,
+fn flush_expired(debounce: &mut HashMap<PathBuf, PendingEntry>) -> Vec<WatchEvent> {
+    let now = Instant::now();
+    let mut flushed = Vec::new();
+    debounce.retain(|_, entry| {
+        if now.duration_since(entry.last_seen) >= DEBOUNCE_DURATION {
+            if let Some(evt) = entry.coalesced.take() {
+                flushed.push(evt);
+            }
+            false
+        } else {
+            true
+        }
+    });
+    flushed
+}
+
+fn process_debounce(
+    debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
     paths: &[&Path],
+    event: Option<&WatchEvent>,
     skip_debounce: bool,
-) -> bool {
+) -> (bool, Vec<WatchEvent>) {
     let now = Instant::now();
     let mut debounce = lock_or_recover(debounce_state, "watcher");
-    debounce
-        .retain(|_, instant| now.duration_since(*instant) < DEBOUNCE_DURATION.saturating_mul(2));
+
+    let mut flushed = flush_expired(&mut debounce);
+
     if skip_debounce {
         for p in paths {
-            debounce_upsert(&mut debounce, p, now);
+            if let Some(mut old) = debounce.remove(*p)
+                && let Some(evt) = old.coalesced.take()
+            {
+                flushed.push(evt);
+            }
+            debounce.insert(
+                p.to_path_buf(),
+                PendingEntry {
+                    last_seen: now,
+                    coalesced: None,
+                },
+            );
         }
-        return true;
+        return (true, flushed);
     }
+
     let suppressed = paths.iter().any(|p| {
         debounce
             .get(*p)
-            .is_some_and(|last| now.duration_since(*last) < DEBOUNCE_DURATION)
+            .is_some_and(|entry| now.duration_since(entry.last_seen) < DEBOUNCE_DURATION)
     });
-    if !suppressed {
+
+    if suppressed {
+        if let Some(evt) = event {
+            for p in paths {
+                if let Some(entry) = debounce.get_mut(*p) {
+                    entry.coalesced = Some(evt.clone());
+                    entry.last_seen = now;
+                }
+            }
+        }
+    } else {
         for p in paths {
-            debounce_upsert(&mut debounce, p, now);
+            debounce.insert(
+                p.to_path_buf(),
+                PendingEntry {
+                    last_seen: now,
+                    coalesced: None,
+                },
+            );
         }
     }
-    !suppressed
-}
 
-fn debounce_upsert(map: &mut HashMap<PathBuf, Instant>, path: &Path, instant: Instant) {
-    if let Some(ts) = map.get_mut(path) {
-        *ts = instant;
-    } else {
-        map.insert(path.to_path_buf(), instant);
-    }
+    (!suppressed, flushed)
 }
 
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
@@ -336,9 +416,6 @@ fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<Wa
     paths.into_iter().map(map).collect()
 }
 
-// Named helper for readability — avoids repeating `.into_iter().map(..).collect()`
-// at each of the 6 call sites in `convert_event`.
-
 fn notify_to_io(err: &notify::Error) -> io::Error {
     io::Error::other(err.to_string())
 }
@@ -371,7 +448,7 @@ fn normalize_missing_target(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
@@ -479,5 +556,49 @@ mod tests {
         let watcher = Watcher::new(event_tx).expect("create watcher");
         assert!(watcher.fallback.is_none());
         assert!(watcher.watchers.is_empty());
+    }
+
+    #[test]
+    fn flush_pending_emits_coalesced_event_after_debounce_window() {
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(tx).expect("create watcher");
+
+        let path = PathBuf::from("/tmp/test_file.txt");
+        {
+            let mut debounce = watcher.debounce_state.lock().unwrap();
+            debounce.insert(
+                path.clone(),
+                PendingEntry {
+                    last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
+                    coalesced: Some(WatchEvent::Modified(path.clone())),
+                },
+            );
+        }
+
+        watcher.flush_pending();
+
+        let flushed = rx.try_recv().expect("should have flushed event");
+        assert!(matches!(flushed, WatchEvent::Modified(p) if p == path));
+    }
+
+    #[test]
+    fn process_debounce_coalesces_suppressed_event() {
+        let debounce_state: Mutex<HashMap<PathBuf, PendingEntry>> = Mutex::new(HashMap::new());
+        let path = PathBuf::from("/tmp/coalesce.txt");
+        let event = WatchEvent::Modified(path.clone());
+
+        let (emit1, flushed1) =
+            process_debounce(&debounce_state, &[path.as_path()], Some(&event), false);
+        assert!(emit1);
+        assert!(flushed1.is_empty());
+
+        let (emit2, flushed2) =
+            process_debounce(&debounce_state, &[path.as_path()], Some(&event), false);
+        assert!(!emit2);
+        assert!(flushed2.is_empty());
+
+        let map = debounce_state.lock().unwrap();
+        let entry = map.get(&path).expect("entry should exist");
+        assert!(entry.coalesced.is_some());
     }
 }
