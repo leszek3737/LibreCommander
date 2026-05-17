@@ -77,14 +77,24 @@ fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool
 }
 
 pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
-    let mut dirty = false;
+    const MAX_WATCHER_EVENTS_PER_POLL: usize = 64;
 
-    while let Ok(event) = receiver.try_recv() {
+    let mut dirty = false;
+    let mut left_needs_full_refresh = false;
+    let mut right_needs_full_refresh = false;
+
+    for _ in 0..MAX_WATCHER_EVENTS_PER_POLL {
+        let Ok(event) = receiver.try_recv() else {
+            break;
+        };
         match event {
             WatchEvent::Created(path) | WatchEvent::Modified(path) => {
-                if event_is_panel_dir(&path, &state.left_panel)
-                    || event_is_panel_dir(&path, &state.right_panel)
-                {
+                if event_is_panel_dir(&path, &state.left_panel) {
+                    left_needs_full_refresh = true;
+                    dirty = true;
+                }
+                if event_is_panel_dir(&path, &state.right_panel) {
+                    right_needs_full_refresh = true;
                     dirty = true;
                 }
                 dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &path);
@@ -130,6 +140,13 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
                 dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &to);
             }
         }
+    }
+
+    if left_needs_full_refresh {
+        full_refresh_panel(&mut state.left_panel);
+    }
+    if right_needs_full_refresh {
+        full_refresh_panel(&mut state.right_panel);
     }
 
     if state.left_panel.needs_rebuild {
@@ -258,6 +275,34 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     existed
 }
 
+fn full_refresh_panel(panel: &mut PanelState) {
+    let current_name = panel
+        .entries
+        .get(panel.cursor)
+        .filter(|entry| entry.name != "..")
+        .map(|entry| entry.name.clone());
+    let saved: HashSet<PathBuf> = panel
+        .selected_entries()
+        .into_iter()
+        .map(|e| e.path.clone())
+        .collect();
+
+    match reader::read_directory(&panel.path) {
+        Ok((entries, _errors)) => {
+            panel.unfiltered_entries = entries;
+            panel.path_index.clear();
+            panel.needs_rebuild = false;
+            for entry in &mut panel.unfiltered_entries {
+                entry.selected = saved.contains(&entry.path);
+            }
+            rebuild_visible_entries(panel, current_name.as_deref());
+        }
+        Err(_) => {
+            panel.needs_rebuild = true;
+        }
+    }
+}
+
 fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>) {
     let current_name = panel
         .entries
@@ -270,7 +315,7 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     panel.entries = panel
         .unfiltered_entries
         .iter()
-        .filter(|entry| entry_matches_panel(entry, panel.filter.as_deref()))
+        .filter(|entry| entry_matches_panel(entry, panel.filter.as_deref(), panel.show_hidden))
         .cloned()
         .collect();
     sorting::sort_entries(&mut panel.entries, panel.sort_mode, panel.sort_options);
@@ -299,10 +344,12 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     panel.recalculate_selection_stats();
 }
 
-fn entry_matches_panel(entry: &reader::FileEntry, filter: Option<&str>) -> bool {
+fn entry_matches_panel(entry: &reader::FileEntry, filter: Option<&str>, show_hidden: bool) -> bool {
     entry.name == ".."
-        || filter
-            .is_none_or(|filter| search::FileSearch::matches_pattern(&entry.name, filter, false))
+        || (show_hidden || !entry.cha.is_hidden())
+            && filter.is_none_or(|filter| {
+                search::FileSearch::matches_pattern(&entry.name, filter, false)
+            })
 }
 
 #[cfg(test)]
