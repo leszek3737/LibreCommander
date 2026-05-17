@@ -345,11 +345,10 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
 }
 
 fn entry_matches_panel(entry: &reader::FileEntry, filter: Option<&str>, show_hidden: bool) -> bool {
+    let compiled = filter.map(|f| search::CompiledPattern::new(f, false));
     entry.name == ".."
         || (show_hidden || !entry.cha.is_hidden())
-            && filter.is_none_or(|filter| {
-                search::FileSearch::matches_pattern(&entry.name, filter, false)
-            })
+            && compiled.as_ref().is_none_or(|pat| pat.matches(&entry.name))
 }
 
 #[cfg(test)]

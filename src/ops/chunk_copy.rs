@@ -4,8 +4,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 const BUFFER_SIZE: usize = 64 * 1024;
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(50);
 
 pub fn copy_with_progress(
     src: &Path,
@@ -65,6 +67,8 @@ fn copy_to_temp(
     let mut writer = BufWriter::new(dest_file);
     let mut buffer = [0_u8; BUFFER_SIZE];
     let mut total_written = 0_u64;
+    let mut pending_delta = 0_u64;
+    let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
 
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -75,12 +79,26 @@ fn copy_to_temp(
         writer.write_all(&buffer[..bytes_read])?;
         let bytes_written = bytes_read as u64;
         total_written += bytes_written;
-        let _ = progress_tx.send(bytes_written);
+        pending_delta += bytes_written;
+
+        let now = Instant::now();
+        if now.duration_since(last_progress) >= PROGRESS_THROTTLE {
+            let _ = progress_tx.send(pending_delta);
+            pending_delta = 0;
+            last_progress = now;
+        }
 
         if cancel.load(Ordering::Relaxed) {
+            if pending_delta > 0 {
+                let _ = progress_tx.send(pending_delta);
+            }
             let _ = writer.flush();
             return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
         }
+    }
+
+    if pending_delta > 0 {
+        let _ = progress_tx.send(pending_delta);
     }
 
     writer.flush()?;
