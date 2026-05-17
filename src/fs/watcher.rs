@@ -11,6 +11,7 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
+const PENDING_FROM_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub enum WatchEvent {
@@ -39,6 +40,7 @@ pub struct Watcher {
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
+    pending_from_time: Arc<Mutex<Option<Instant>>>,
     path_cache: HashMap<PathBuf, PathBuf>,
 }
 
@@ -47,12 +49,14 @@ impl Watcher {
         let paused = Arc::new(AtomicBool::new(false));
         let debounce_state = Arc::new(Mutex::new(HashMap::new()));
         let pending_from = Arc::new(Mutex::new(None));
+        let pending_from_time = Arc::new(Mutex::new(None));
         let primary = RecommendedWatcher::new(
             make_handler(
                 event_tx.clone(),
                 Arc::clone(&paused),
                 Arc::clone(&debounce_state),
                 Arc::clone(&pending_from),
+                Arc::clone(&pending_from_time),
             ),
             Config::default(),
         )
@@ -66,6 +70,7 @@ impl Watcher {
             paused,
             debounce_state,
             pending_from,
+            pending_from_time,
             path_cache: HashMap::new(),
         })
     }
@@ -78,6 +83,7 @@ impl Watcher {
                     Arc::clone(&self.paused),
                     Arc::clone(&self.debounce_state),
                     Arc::clone(&self.pending_from),
+                    Arc::clone(&self.pending_from_time),
                 ),
                 Config::default(),
             )
@@ -181,6 +187,7 @@ impl Watcher {
             debug_log!("watcher paused: clearing stale pending_from");
         }
         *pending = None;
+        *lock_or_recover(&self.pending_from_time, "pending_from_time") = None;
     }
 
     pub fn resume(&self) {
@@ -196,6 +203,22 @@ impl Watcher {
                 debug_log!("watcher send failed: {e}");
             }
         }
+
+        let mut pending = lock_or_recover(&self.pending_from, "pending_from");
+        let mut pending_time = lock_or_recover(&self.pending_from_time, "pending_from_time");
+        if let (Some(path), Some(time)) = (pending.as_ref(), pending_time.as_ref())
+            && time.elapsed() >= PENDING_FROM_TIMEOUT
+        {
+            debug_log!(
+                "stale rename From timed out: emitting Deleted for {}",
+                path.display(),
+            );
+            if let Err(e) = self.event_tx.send(WatchEvent::Deleted(path.clone())) {
+                debug_log!("watcher send failed: {e}");
+            }
+            *pending = None;
+            *pending_time = None;
+        }
     }
 }
 
@@ -204,6 +227,7 @@ fn make_handler(
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
+    pending_from_time: Arc<Mutex<Option<Instant>>>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
         if paused.load(Ordering::Acquire) {
@@ -218,7 +242,9 @@ fn make_handler(
             }
         };
 
-        for watch_event in convert_event_with_rename_pairing(event, &pending_from) {
+        for watch_event in
+            convert_event_with_rename_pairing(event, &pending_from, &pending_from_time)
+        {
             let path = match &watch_event {
                 WatchEvent::Created(p) | WatchEvent::Deleted(p) | WatchEvent::Modified(p) => {
                     Some(p.clone())
@@ -362,25 +388,32 @@ fn lock_pending(
 fn convert_event_with_rename_pairing(
     event: notify::Event,
     pending_from: &Mutex<Option<PathBuf>>,
+    pending_from_time: &Mutex<Option<Instant>>,
 ) -> Vec<WatchEvent> {
     match &event.kind {
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
             if let Some(path) = event.paths.into_iter().next() {
                 let mut pending = lock_pending(pending_from);
+                let mut pending_time = lock_or_recover(pending_from_time, "pending_from_time");
+                let mut events = Vec::new();
                 if let Some(stale) = pending.take() {
                     debug_log!(
                         "orphan rename From: emitting Deleted for stale path {}",
                         stale.display(),
                     );
-                    return vec![WatchEvent::Deleted(stale)];
+                    events.push(WatchEvent::Deleted(stale));
                 }
                 *pending = Some(path);
+                *pending_time = Some(Instant::now());
+                events
+            } else {
+                Vec::new()
             }
-            Vec::new()
         }
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)) => {
             let to_path = event.paths.into_iter().next();
             let from_path = lock_pending(pending_from).take();
+            let _ = lock_or_recover(pending_from_time, "pending_from_time").take();
             match (from_path, to_path) {
                 (Some(from), Some(to)) => vec![WatchEvent::Renamed { from, to }],
                 (None, Some(to)) => vec![WatchEvent::Created(to)],
@@ -530,6 +563,7 @@ mod tests {
     #[test]
     fn convert_event_maps_split_rename_events() {
         let pending: Mutex<Option<PathBuf>> = Mutex::new(None);
+        let pending_time: Mutex<Option<Instant>> = Mutex::new(None);
         let from = notify::Event {
             kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
             paths: vec![PathBuf::from("old")],
@@ -541,10 +575,10 @@ mod tests {
             attrs: Default::default(),
         };
 
-        let from_events = convert_event_with_rename_pairing(from, &pending);
+        let from_events = convert_event_with_rename_pairing(from, &pending, &pending_time);
         assert!(from_events.is_empty());
 
-        let to_events = convert_event_with_rename_pairing(to, &pending);
+        let to_events = convert_event_with_rename_pairing(to, &pending, &pending_time);
         assert!(
             matches!(to_events.as_slice(), [WatchEvent::Renamed { from, to }] if from == &PathBuf::from("old") && to == &PathBuf::from("new"))
         );
@@ -600,5 +634,85 @@ mod tests {
         let map = debounce_state.lock().unwrap();
         let entry = map.get(&path).expect("entry should exist");
         assert!(entry.coalesced.is_some());
+    }
+
+    #[test]
+    fn stale_from_emits_deleted_and_stores_new_from() {
+        let pending: Mutex<Option<PathBuf>> = Mutex::new(None);
+        let pending_time: Mutex<Option<Instant>> = Mutex::new(None);
+
+        let from1 = notify::Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+            paths: vec![PathBuf::from("old_a")],
+            attrs: Default::default(),
+        };
+        let from2 = notify::Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+            paths: vec![PathBuf::from("old_b")],
+            attrs: Default::default(),
+        };
+        let to = notify::Event {
+            kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)),
+            paths: vec![PathBuf::from("new_b")],
+            attrs: Default::default(),
+        };
+
+        let ev1 = convert_event_with_rename_pairing(from1, &pending, &pending_time);
+        assert!(ev1.is_empty());
+
+        let ev2 = convert_event_with_rename_pairing(from2, &pending, &pending_time);
+        assert!(matches!(ev2.as_slice(), [WatchEvent::Deleted(p)] if p == &PathBuf::from("old_a")));
+
+        let ev3 = convert_event_with_rename_pairing(to, &pending, &pending_time);
+        assert!(
+            matches!(ev3.as_slice(), [WatchEvent::Renamed { from, to }] if from == &PathBuf::from("old_b") && to == &PathBuf::from("new_b"))
+        );
+    }
+
+    #[test]
+    fn flush_pending_emits_deleted_for_stale_from() {
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(tx).expect("create watcher");
+
+        {
+            let mut pending = watcher.pending_from.lock().unwrap();
+            *pending = Some(PathBuf::from("/tmp/stale_file.txt"));
+        }
+        {
+            let mut pending_time = watcher.pending_from_time.lock().unwrap();
+            *pending_time = Some(Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1));
+        }
+
+        watcher.flush_pending();
+
+        let evt = rx
+            .try_recv()
+            .expect("should have flushed stale From as Deleted");
+        assert!(
+            matches!(evt, WatchEvent::Deleted(p) if p.as_path() == Path::new("/tmp/stale_file.txt"))
+        );
+
+        assert!(watcher.pending_from.lock().unwrap().is_none());
+        assert!(watcher.pending_from_time.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn flush_pending_keeps_fresh_from() {
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(tx).expect("create watcher");
+
+        {
+            let mut pending = watcher.pending_from.lock().unwrap();
+            *pending = Some(PathBuf::from("/tmp/fresh_file.txt"));
+        }
+        {
+            let mut pending_time = watcher.pending_from_time.lock().unwrap();
+            *pending_time = Some(Instant::now());
+        }
+
+        watcher.flush_pending();
+
+        assert!(rx.try_recv().is_err());
+        assert!(watcher.pending_from.lock().unwrap().is_some());
     }
 }
