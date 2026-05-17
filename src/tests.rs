@@ -6,7 +6,7 @@ use app::config::{PersistedPanel, PersistedSetup};
 use app::types::{
     ActivePanel, CompareMode, DialogKind, FileEntry, InputAction, PendingAction, PickerKind,
 };
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, KeyEventKind};
 use mode_dispatch::{
     handle_menu_mode, handle_normal_mode, handle_search_mode, run_selected_menu_action,
 };
@@ -2213,4 +2213,175 @@ fn check_overwrite_conflict_delete_no_conflict() {
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
     assert!(conflicts.is_none());
+}
+
+#[test]
+fn key_press_triggers_search_initiation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
+    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.entries = vec![
+        TestEntry::new("alpha.txt")
+            .path(tmp.path().join("alpha.txt"))
+            .build(),
+    ];
+    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.path_index = state
+        .left_panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.path.clone(), i))
+        .collect();
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut job: Option<RunningJob> = None;
+    let mut terminal = test_terminal();
+    let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+
+    let result = super::dispatch_event(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        &mut job,
+        &mut terminal,
+        &Event::Key(key),
+    );
+
+    assert!(result.is_ok());
+    assert!(matches!(state.mode, AppMode::Search));
+}
+
+#[test]
+fn key_release_is_ignored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
+    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.entries = vec![
+        TestEntry::new("alpha.txt")
+            .path(tmp.path().join("alpha.txt"))
+            .build(),
+    ];
+    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.path_index = state
+        .left_panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.path.clone(), i))
+        .collect();
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut job: Option<RunningJob> = None;
+    let mut terminal = test_terminal();
+    let key = KeyEvent::new_with_kind(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    );
+
+    let result = super::dispatch_event(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        &mut job,
+        &mut terminal,
+        &Event::Key(key),
+    );
+
+    assert!(result.is_ok());
+    assert!(matches!(state.mode, AppMode::Normal));
+}
+
+#[test]
+fn key_repeat_navigation_moves_cursor() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("a.txt"), b"a").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), b"b").unwrap();
+    std::fs::write(tmp.path().join("c.txt"), b"c").unwrap();
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
+    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.entries = vec![
+        TestEntry::new("a.txt")
+            .path(tmp.path().join("a.txt"))
+            .build(),
+        TestEntry::new("b.txt")
+            .path(tmp.path().join("b.txt"))
+            .build(),
+        TestEntry::new("c.txt")
+            .path(tmp.path().join("c.txt"))
+            .build(),
+    ];
+    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.path_index = state
+        .left_panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.path.clone(), i))
+        .collect();
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut job: Option<RunningJob> = None;
+    let mut terminal = test_terminal();
+    let key = KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat);
+
+    let result = super::dispatch_event(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        &mut job,
+        &mut terminal,
+        &Event::Key(key),
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(state.left_panel.cursor, 1);
+}
+
+#[test]
+fn key_repeat_destructive_is_ignored() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("victim.txt"), b"x").unwrap();
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
+    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.entries = vec![
+        TestEntry::new("victim.txt")
+            .path(tmp.path().join("victim.txt"))
+            .build(),
+    ];
+    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.path_index = state
+        .left_panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.path.clone(), i))
+        .collect();
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut job: Option<RunningJob> = None;
+    let mut terminal = test_terminal();
+    let key = KeyEvent::new_with_kind(KeyCode::F(8), KeyModifiers::NONE, KeyEventKind::Repeat);
+
+    let result = super::dispatch_event(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        &mut job,
+        &mut terminal,
+        &Event::Key(key),
+    );
+
+    assert!(result.is_ok());
+    assert!(matches!(state.mode, AppMode::Normal));
+    assert!(state.pending_action.is_none());
 }

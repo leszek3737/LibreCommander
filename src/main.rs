@@ -6,8 +6,8 @@ use std::time::Duration;
 use crossterm::{
     cursor::{Hide, Show},
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseEvent,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEvent,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -265,6 +265,23 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     key: &KeyEvent,
 ) -> Result<bool, B::Error> {
     let size = terminal.size()?;
+    match key.kind {
+        KeyEventKind::Press => {}
+        KeyEventKind::Repeat
+            if matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Char('j' | 'k')
+            ) => {}
+        _ => return Ok(true),
+    }
     match &state.mode {
         AppMode::Normal => {
             input::mode_dispatch::handle_normal_mode(
