@@ -47,6 +47,7 @@ pub struct ViewerState {
     visual_offsets: Vec<usize>,
     cached_content_width: usize,
     file_truncated: bool,
+    cancel_search: Arc<AtomicBool>,
 }
 
 pub struct ViewerLoader {
@@ -66,7 +67,7 @@ impl ViewerLoader {
             if cancel_flag.load(Ordering::Relaxed) {
                 return;
             }
-            let result = ViewerState::open(&owned_path);
+            let result = ViewerState::open_with_cancel(&owned_path, Some(&cancel_flag));
             if !cancel_flag.load(Ordering::Relaxed) {
                 let _ = tx.send(result);
             }
@@ -88,12 +89,29 @@ impl Drop for ViewerLoader {
 
 impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_with_cancel(path, None)
+    }
+
+    fn open_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<Self> {
         const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
+        const READ_CHUNK: usize = 64 * 1024;
 
         let file = fs::File::open(path)?;
         let mut raw_bytes = Vec::new();
-        file.take((MAX_VIEW_SIZE + 1) as u64)
-            .read_to_end(&mut raw_bytes)?;
+        let mut reader = file.take((MAX_VIEW_SIZE + 1) as u64);
+        let mut buf = [0u8; READ_CHUNK];
+        loop {
+            if let Some(c) = cancel
+                && c.load(Ordering::Relaxed)
+            {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            }
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            raw_bytes.extend_from_slice(&buf[..n]);
+        }
         let file_truncated = raw_bytes.len() > MAX_VIEW_SIZE;
         if file_truncated {
             raw_bytes.truncate(MAX_VIEW_SIZE);
@@ -157,11 +175,16 @@ impl ViewerState {
             visual_offsets: Vec::new(),
             cached_content_width: 0,
             file_truncated,
+            cancel_search: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub fn open_background(path: PathBuf) -> ViewerLoader {
         ViewerLoader::start(path)
+    }
+
+    pub fn request_search_cancel(&self) {
+        self.cancel_search.store(true, Ordering::Relaxed);
     }
 
     #[must_use]
@@ -270,6 +293,7 @@ impl ViewerState {
     }
 
     pub fn search(&mut self, query: &str, page_height: usize) {
+        self.cancel_search.store(false, Ordering::Relaxed);
         self.search_query = Some(query.to_string());
         self.clear_search_results();
         self.current_match = None;
@@ -289,6 +313,10 @@ impl ViewerState {
         let mut byte_map_buf = Vec::new();
 
         for (line_idx, line) in self.content.iter().enumerate() {
+            if line_idx % 1000 == 0 && self.cancel_search.load(Ordering::Relaxed) {
+                self.clear_search_results();
+                return;
+            }
             build_lowercase_mapping(line, &mut lower_buf, &mut byte_map_buf);
             let mut search_start = 0;
             while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
@@ -349,7 +377,13 @@ impl ViewerState {
 
         if let Some(ref needle) = query_bytes {
             let mut pos = 0;
+            let mut iterations = 0u32;
             while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
+                iterations += 1;
+                if iterations.is_multiple_of(1000) && self.cancel_search.load(Ordering::Relaxed) {
+                    self.clear_search_results();
+                    return;
+                }
                 let abs_offset = pos + idx;
                 let line_idx = abs_offset / bpl;
                 let byte_in_line = abs_offset % bpl;
@@ -382,7 +416,13 @@ impl ViewerState {
                 }
             }
             let mut search_start = 0;
+            let mut iterations = 0u32;
             while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
+                iterations += 1;
+                if iterations.is_multiple_of(1000) && self.cancel_search.load(Ordering::Relaxed) {
+                    self.clear_search_results();
+                    return;
+                }
                 let abs_pos = search_start + pos;
                 let advance = lower_buf[abs_pos..]
                     .chars()
