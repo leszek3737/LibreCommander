@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use super::dir_tree::TreeEntry;
-use super::user_menu::MenuEntry;
+use super::user_menu::{MenuEntry, MenuSource};
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
 
 // ============================================================================
@@ -317,6 +317,8 @@ pub struct AppState {
     pub menu_item_selected: usize,
     pub picker_selected: usize,
     pub user_menu_entries: Vec<MenuEntry>,
+    pub user_menu_source: MenuSource,
+    pub pending_menu_command: Option<String>,
     pub tree_root: PathBuf,
     pub tree_entries: Vec<TreeEntry>,
     pub tree_selected: usize,
@@ -884,6 +886,8 @@ impl AppState {
             menu_item_selected: 0,
             picker_selected: 0,
             user_menu_entries: Vec::new(),
+            user_menu_source: MenuSource::Global,
+            pending_menu_command: None,
             tree_root: PathBuf::new(),
             tree_entries: Vec::new(),
             tree_selected: 0,

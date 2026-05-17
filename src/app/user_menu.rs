@@ -1,8 +1,19 @@
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
 use crate::app::paths;
+
+const MAX_MENU_FILE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub enum CompiledCondition {
+    Always,
+    Match(Regex),
+    Never,
+}
 
 /// A single entry parsed from a user menu file.
 #[derive(Debug, Clone)]
@@ -10,7 +21,7 @@ pub struct MenuEntry {
     pub hotkey: char,
     pub title: String,
     pub command: String,
-    pub condition: Option<Regex>,
+    pub condition: CompiledCondition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,8 +42,11 @@ impl PartialEq for MenuEntry {
             && self.title == other.title
             && self.command == other.command
             && match (&self.condition, &other.condition) {
-                (None, None) => true,
-                (Some(a), Some(b)) => a.as_str() == b.as_str(),
+                (CompiledCondition::Always, CompiledCondition::Always) => true,
+                (CompiledCondition::Never, CompiledCondition::Never) => true,
+                (CompiledCondition::Match(a), CompiledCondition::Match(b)) => {
+                    a.as_str() == b.as_str()
+                }
                 _ => false,
             }
     }
@@ -199,23 +213,23 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
 
         let compiled_condition = match condition {
             Some(ConditionParseResult::Pattern(s)) => match Regex::new(&s) {
-                Ok(re) => Some(re),
+                Ok(re) => CompiledCondition::Match(re),
                 Err(err) => {
                     warnings.push(MenuWarning {
                         line: condition_line,
                         message: format!("Invalid filename regex `{s}`: {err}"),
                     });
-                    None
+                    CompiledCondition::Never
                 }
             },
             Some(ConditionParseResult::Unsupported) => {
                 warnings.push(MenuWarning {
                     line: condition_line,
-                    message: "Unsupported condition type, ignored".into(),
+                    message: "Unsupported condition type, entry will never match".into(),
                 });
-                None
+                CompiledCondition::Never
             }
-            None => None,
+            None => CompiledCondition::Always,
         };
 
         entries.push(MenuEntry {
@@ -278,22 +292,32 @@ pub fn filter_entries<'a>(entries: &'a [MenuEntry], filename: &str) -> Vec<&'a M
     entries
         .iter()
         .filter(|e| match &e.condition {
-            None => true,
-            Some(re) => re.is_match(filename),
+            CompiledCondition::Always => true,
+            CompiledCondition::Match(re) => re.is_match(filename),
+            CompiledCondition::Never => false,
         })
         .collect()
 }
 
-/// Return the first existing menu file path, or `None`.
-pub fn locate_menu_file(panel_dir: &Path) -> Option<PathBuf> {
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| !m.is_symlink() && m.is_file())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuSource {
+    Local,
+    Global,
+}
+
+pub fn locate_menu_file(panel_dir: &Path) -> Option<(PathBuf, MenuSource)> {
     let local = panel_dir.join(".mc.menu");
-    if local.exists() {
-        return Some(local);
+    if is_regular_file(&local) {
+        return Some((local, MenuSource::Local));
     }
     if let Some(cfg) = paths::user_menu_path()
-        && cfg.exists()
+        && is_regular_file(&cfg)
     {
-        return Some(cfg);
+        return Some((cfg, MenuSource::Global));
     }
     None
 }
@@ -302,17 +326,30 @@ pub fn locate_menu_file(panel_dir: &Path) -> Option<PathBuf> {
 pub struct LoadedMenu {
     pub entries: Vec<MenuEntry>,
     pub warnings: Vec<MenuWarning>,
+    pub source: MenuSource,
 }
 
-/// Load and parse entries from the best menu file, preserving non-fatal warnings.
 pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<LoadedMenu, String> {
-    let path = locate_menu_file(panel_dir).ok_or_else(|| {
+    let (path, source) = locate_menu_file(panel_dir).ok_or_else(|| {
         format!(
             "No user menu file found (searched: {}/.mc.menu, ~/.config/lc/menu)",
             panel_dir.display()
         )
     })?;
-    let content = std::fs::read_to_string(&path)
+    let metadata = fs::metadata(&path)
+        .map_err(|e| format!("Failed to stat menu file {}: {e}", path.display()))?;
+    if metadata.len() > MAX_MENU_FILE_BYTES {
+        return Err(format!(
+            "Menu file too large ({} bytes, max {MAX_MENU_FILE_BYTES}): {}",
+            metadata.len(),
+            path.display()
+        ));
+    }
+    let mut content = String::with_capacity(metadata.len() as usize);
+    File::open(&path)
+        .map_err(|e| format!("Failed to open menu file {}: {e}", path.display()))?
+        .take(MAX_MENU_FILE_BYTES)
+        .read_to_string(&mut content)
         .map_err(|e| format!("Failed to read menu file {}: {e}", path.display()))?;
     let parsed = parse_menu_with_warnings(&content);
     let entries = filter_entries(&parsed.entries, filename)
@@ -322,6 +359,7 @@ pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<Loade
     Ok(LoadedMenu {
         entries,
         warnings: parsed.warnings,
+        source,
     })
 }
 
@@ -472,7 +510,7 @@ mod tests {
         assert_eq!(entries[0].hotkey, 'A');
         assert_eq!(entries[0].title, "Archive");
         assert_eq!(entries[0].command, "tar czf a.tgz");
-        assert!(entries[0].condition.is_none());
+        assert!(matches!(entries[0].condition, CompiledCondition::Always));
     }
 
     #[test]
@@ -512,8 +550,8 @@ mod tests {
         let src = "T  Test\n\tcargo test %f\n+ f \\.rs$\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].condition.is_some());
-        assert!(entries[0].condition.as_ref().unwrap().is_match("main.rs"));
+        assert!(matches!(entries[0].condition, CompiledCondition::Match(_)));
+        assert!(!filter_entries(&entries, "main.rs").is_empty());
     }
 
     #[test]
@@ -521,8 +559,8 @@ mod tests {
         let src = "+ f \\.rs$\nT  Test\n\tcargo test %f\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].condition.is_some());
-        assert!(entries[0].condition.as_ref().unwrap().is_match("foo.rs"));
+        assert!(matches!(entries[0].condition, CompiledCondition::Match(_)));
+        assert!(!filter_entries(&entries, "foo.rs").is_empty());
     }
 
     #[test]
@@ -541,7 +579,7 @@ mod tests {
             hotkey: 'A',
             title: "Anything".into(),
             command: "cmd".into(),
-            condition: None,
+            condition: CompiledCondition::Always,
         }];
         assert_eq!(filter_entries(&entries, "whatever.py").len(), 1);
     }
@@ -552,7 +590,7 @@ mod tests {
             hotkey: 'T',
             title: "Test".into(),
             command: "cargo test".into(),
-            condition: Some(Regex::new("\\.rs$").unwrap()),
+            condition: CompiledCondition::Match(Regex::new("\\.rs$").unwrap()),
         }];
         assert_eq!(filter_entries(&entries, "main.rs").len(), 1);
         assert_eq!(filter_entries(&entries, "main.py").len(), 0);
@@ -570,16 +608,17 @@ mod tests {
         let src = "T  Test\n\tcmd\n+ f \n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].condition.is_none());
+        assert!(matches!(entries[0].condition, CompiledCondition::Always));
     }
 
     #[test]
-    fn test_parse_invalid_regex_keeps_entry_without_condition() {
+    fn test_parse_invalid_regex_never_matches() {
         let src = "+ f [invalid\nT  Test\n\tcmd\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hotkey, 'T');
-        assert!(entries[0].condition.is_none());
+        assert!(matches!(entries[0].condition, CompiledCondition::Never));
+        assert_eq!(filter_entries(&entries, "anything.txt").len(), 0);
     }
 
     #[test]
@@ -588,7 +627,10 @@ mod tests {
         let parsed = parse_menu_with_warnings(src);
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(parsed.entries[0].hotkey, 'T');
-        assert!(parsed.entries[0].condition.is_none());
+        assert!(matches!(
+            parsed.entries[0].condition,
+            CompiledCondition::Never
+        ));
         assert_eq!(parsed.entries[1].hotkey, 'B');
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(parsed.warnings[0].line, 1);
@@ -600,12 +642,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_unsupported_condition_keeps_entry_without_condition() {
+    fn test_parse_unsupported_condition_never_matches() {
         let src = "+ d /tmp\nT  Test\n\tcmd\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hotkey, 'T');
-        assert!(entries[0].condition.is_none());
+        assert!(matches!(entries[0].condition, CompiledCondition::Never));
+        assert_eq!(filter_entries(&entries, "anything.txt").len(), 0);
     }
 
     #[test]
@@ -614,11 +657,14 @@ mod tests {
         let parsed = parse_menu_with_warnings(src);
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(parsed.entries[0].hotkey, 'T');
-        assert!(parsed.entries[0].condition.is_none());
+        assert!(matches!(
+            parsed.entries[0].condition,
+            CompiledCondition::Never
+        ));
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(
             parsed.warnings[0].message,
-            "Unsupported condition type, ignored"
+            "Unsupported condition type, entry will never match"
         );
     }
 
@@ -627,10 +673,10 @@ mod tests {
         let src = "+ f \\.rs$\n+ f \\.toml$\nT  Test\n\tcmd %f\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        let cond = entries[0].condition.as_ref().unwrap();
-        assert!(cond.is_match("foo.rs"));
-        assert!(cond.is_match("cargo.toml"));
-        assert!(!cond.is_match("foo.py"));
+        assert!(matches!(entries[0].condition, CompiledCondition::Match(_)));
+        assert!(!filter_entries(&entries, "foo.rs").is_empty());
+        assert!(!filter_entries(&entries, "cargo.toml").is_empty());
+        assert!(filter_entries(&entries, "foo.py").is_empty());
     }
 
     #[test]

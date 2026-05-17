@@ -3,12 +3,13 @@ use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
+use crate::app::shell;
 use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::viewer;
 
 use super::dialogs::{check_overwrite_conflict, dismiss_dialog};
-use crate::app::panel_ops::{refresh_both, refresh_panel};
+use crate::app::panel_ops::{refresh_active, refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
@@ -293,6 +294,11 @@ fn handle_confirm_click(
                     }
                     start_confirmed_action(state, running_job);
                     finish_confirmed_action(state);
+                    return Some(MouseOutcome::Consumed);
+                }
+                if let Some(cmd) = state.pending_menu_command.take() {
+                    state.mode = AppMode::Normal;
+                    shell::run_shell_command(state, &cmd, true, refresh_active);
                     return Some(MouseOutcome::Consumed);
                 }
                 dismiss_dialog(state);

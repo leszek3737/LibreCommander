@@ -4,6 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 
 use lc::app::job_runner::{RunningJob, start_confirmed_action};
+use lc::app::shell;
 use lc::app::types::*;
 use lc::fs;
 use lc::ops;
@@ -87,6 +88,7 @@ fn finish_confirmed_action(state: &mut AppState) {
 pub(crate) fn dismiss_dialog(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.pending_action = None;
+    state.pending_menu_command = None;
     state.status_message = None;
     state.dialog_selection = 0;
     if let Some(panel) = state.menu_restore_panel.take() {
@@ -185,6 +187,9 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
             }
             start_confirmed_action(state, running_job);
             finish_confirmed_action(state);
+        } else if let Some(cmd) = state.pending_menu_command.take() {
+            state.mode = AppMode::Normal;
+            shell::run_shell_command(state, &cmd, true, refresh_active);
         } else {
             dismiss_dialog(state);
             refresh_both(state);
