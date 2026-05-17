@@ -578,4 +578,57 @@ mod tests {
         assert_eq!(panel.entries.len(), 2);
         assert_eq!(panel.total_size, 18);
     }
+
+    #[test]
+    fn poll_watcher_events_processes_at_most_64_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut state = AppState::new();
+        state.left_panel = test_panel(dir.path());
+        state.right_panel = test_panel(dir.path());
+
+        for idx in 0..65 {
+            let file = dir.path().join(format!("file{idx}.txt"));
+            fs::write(&file, b"x").unwrap();
+            tx.send(WatchEvent::Created(file)).unwrap();
+        }
+
+        assert!(poll_watcher_events(&mut state, &rx));
+
+        let left_names: Vec<_> = state
+            .left_panel
+            .unfiltered_entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(state.left_panel.unfiltered_entries.len(), 65);
+        assert!(left_names.contains(&".."));
+        assert!(left_names.contains(&"file0.txt"));
+        assert!(!left_names.contains(&"file64.txt"));
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn full_refresh_preserves_selected_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let selected = dir.path().join("selected.txt");
+        fs::write(&selected, b"selected").unwrap();
+
+        let mut panel = test_panel(dir.path());
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &selected));
+        rebuild_visible_entries(&mut panel, None);
+        panel.entries[1].selected = true;
+        panel.sync_unfiltered_selection();
+
+        full_refresh_panel(&mut panel);
+
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.path == selected && entry.selected)
+        );
+        assert_eq!(panel.selected_count, 1);
+        assert_eq!(panel.selected_size, 8);
+    }
 }

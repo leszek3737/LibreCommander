@@ -266,6 +266,7 @@ fn copy_dir_recursive_with_progress_inner(
 
     let mut total_bytes: u64 = 0;
     for entry in fs::read_dir(src)? {
+        check_canceled(ctx.cancel)?;
         let entry = entry?;
         let entry_path = entry.path();
         let dest_path = dest.join(entry.file_name());
@@ -277,6 +278,7 @@ fn copy_dir_recursive_with_progress_inner(
             total_bytes = total_bytes.saturating_add(copied);
         } else if file_type.is_symlink() {
             copy_symlink(&entry_path, &dest_path, ctx.overwrite)?;
+            check_canceled(ctx.cancel)?;
         } else {
             total_bytes = total_bytes.saturating_add(copy_file_with_progress(
                 &entry_path,
@@ -426,6 +428,7 @@ pub fn move_entry_with_progress(
             let meta = src.symlink_metadata()?;
             if meta.file_type().is_symlink() {
                 copy_symlink(src, dest, overwrite)?;
+                check_canceled(cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
@@ -436,6 +439,7 @@ pub fn move_entry_with_progress(
                 }
             } else if meta.is_dir() {
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel, overwrite)?;
+                check_canceled(cancel)?;
                 if let Err(del_err) = delete_dir_recursive_cancelable(src, cancel) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
@@ -446,6 +450,7 @@ pub fn move_entry_with_progress(
                 }
             } else {
                 copy_file_with_progress(src, dest, progress_tx, cancel, overwrite)?;
+                check_canceled(cancel)?;
                 if let Err(del_err) = fs::remove_file(src) {
                     return Err(io::Error::other(format!(
                         "cross-device move: copied '{}' to '{}' but failed to remove source: {}",

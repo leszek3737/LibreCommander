@@ -168,7 +168,6 @@ mod tests {
         log(format_args!("dropped message"));
     }
 
-    #[allow(clippy::panic)]
     #[test]
     fn log_truncates_oversized_file() {
         let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -186,6 +185,7 @@ mod tests {
                 .expect("write oversized log");
         }
 
+        let mut truncated = false;
         for attempt in 0..20 {
             reset_for_test();
             log(format_args!("attempt {attempt}"));
@@ -196,12 +196,17 @@ mod tests {
                     .expect("open log")
                     .read_to_string(&mut contents);
                 assert!(contents.contains("attempt"));
-                let _ = std::fs::remove_file(&path);
-                reset_for_test();
-                return;
+                truncated = true;
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("log() never acquired mutex to truncate oversized file after 20 retries");
+
+        let _ = std::fs::remove_file(&path);
+        reset_for_test();
+        assert!(
+            truncated,
+            "log() never acquired mutex to truncate oversized file after 20 retries"
+        );
     }
 }

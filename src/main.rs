@@ -270,19 +270,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     let size = terminal.size()?;
     match key.kind {
         KeyEventKind::Press => {}
-        KeyEventKind::Repeat
-            if matches!(
-                key.code,
-                KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::Home
-                    | KeyCode::End
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Char('j' | 'k')
-            ) => {}
+        KeyEventKind::Repeat if key_repeat_allowed(&state.mode, key.code) => {}
         _ => return Ok(true),
     }
     match &state.mode {
@@ -351,6 +339,31 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
         }
     }
     Ok(true)
+}
+
+fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'k')
+    ) || matches!(
+        mode,
+        AppMode::CommandLine
+            | AppMode::Dialog(_)
+            | AppMode::Search
+            | AppMode::Menu
+            | AppMode::ListPicker(_)
+    ) && matches!(
+        key,
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_) | KeyCode::Enter
+    )
 }
 
 fn dispatch_mouse_event<B: ratatui::backend::Backend>(
@@ -423,6 +436,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             {
                 let path = entry.path.clone();
                 *viewer_loader = Some(viewer::ViewerState::open_background(path));
+                state.prev_mode = None;
                 state.mode = AppMode::Viewing;
             }
         }

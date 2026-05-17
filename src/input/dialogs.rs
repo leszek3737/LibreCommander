@@ -480,11 +480,11 @@ fn handle_input_dialog(
     match key {
         KeyCode::Enter => handle_input_action(state, viewer_state, action, terminal_height),
         KeyCode::Esc => {
-            state.mode = if *action == InputAction::ViewerSearch {
-                AppMode::Viewing
+            if *action == InputAction::ViewerSearch {
+                state.mode = AppMode::Viewing;
             } else {
-                AppMode::Normal
-            };
+                state.mode = AppMode::Normal;
+            }
             state.dialog_input.clear();
             state.dialog_cursor_pos = 0;
             if let Some(panel) = state.menu_restore_panel.take() {
@@ -646,7 +646,7 @@ pub(crate) fn handle_dialog(
         DialogKind::Error(_) => {
             handle_error_dialog(state, key);
         }
-        DialogKind::Progress(_, _) => {
+        DialogKind::Progress(_, _, _) => {
             handle_progress_dialog(state, running_job, key);
         }
         DialogKind::Properties { .. } => {

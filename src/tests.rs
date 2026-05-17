@@ -2038,7 +2038,7 @@ fn config_load_missing_file_ok() {
 #[test]
 fn progress_dialog_nan_percent_handled() {
     let state = AppState {
-        mode: AppMode::Dialog(DialogKind::Progress("copying".to_string(), f32::NAN)),
+        mode: AppMode::Dialog(DialogKind::Progress("copying".to_string(), f32::NAN, true)),
         ..Default::default()
     };
     let mut terminal = test_terminal();
@@ -2200,7 +2200,49 @@ fn check_overwrite_conflict_move_conflict() {
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
-    let _ = conflicts;
+    assert_eq!(conflicts, Some(vec![String::from("file.txt")]));
+}
+
+#[test]
+fn check_overwrite_conflict_move_same_file_no_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let file = src.join("file.txt");
+    std::fs::write(&file, "a").unwrap();
+    let state = AppState {
+        active_panel: ActivePanel::Left,
+        pending_action: Some(PendingAction::Move {
+            sources: vec![file],
+            dest: src,
+            overwrite: false,
+        }),
+        ..Default::default()
+    };
+    let conflicts = dialogs::check_overwrite_conflict(&state);
+    assert!(conflicts.is_none());
+}
+
+#[test]
+fn check_overwrite_conflict_move_overwrite_no_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(src.join("file.txt"), "a").unwrap();
+    std::fs::write(dest.join("file.txt"), "b").unwrap();
+    let state = AppState {
+        active_panel: ActivePanel::Left,
+        pending_action: Some(PendingAction::Move {
+            sources: vec![src.join("file.txt")],
+            dest,
+            overwrite: true,
+        }),
+        ..Default::default()
+    };
+    let conflicts = dialogs::check_overwrite_conflict(&state);
+    assert!(conflicts.is_none());
 }
 
 #[test]
@@ -2343,6 +2385,104 @@ fn key_repeat_navigation_moves_cursor() {
 
     assert!(result.is_ok());
     assert_eq!(state.left_panel.cursor, 1);
+}
+
+#[test]
+fn key_repeat_text_edit_updates_input_dialog() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Create directory:".to_string(),
+            default_text: String::new(),
+            action: InputAction::CreateDirectory,
+        }),
+        dialog_input: "ab".to_string(),
+        dialog_cursor_pos: 2,
+        ..Default::default()
+    };
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut job: Option<RunningJob> = None;
+    let mut terminal = test_terminal();
+    let key = KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Repeat);
+
+    let result = super::dispatch_event(
+        &mut state,
+        &mut viewer,
+        &mut None,
+        &mut job,
+        &mut terminal,
+        &Event::Key(key),
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(state.dialog_input, "a");
+    assert_eq!(state.dialog_cursor_pos, 1);
+}
+
+#[test]
+fn f3_viewer_clears_stale_prev_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("view.txt");
+    std::fs::write(&file, b"view").unwrap();
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        prev_mode: Some(AppMode::Search),
+        ..Default::default()
+    };
+    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.entries = vec![TestEntry::new("view.txt").path(file).size(4).build()];
+    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.cursor = 0;
+    state.left_panel.path_index = state
+        .left_panel
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.path.clone(), i))
+        .collect();
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut loader = None;
+    let mut terminal = test_terminal();
+
+    super::handle_function_keys(
+        &mut state,
+        &mut viewer,
+        &mut loader,
+        KeyCode::F(3),
+        &mut terminal,
+    );
+
+    assert!(matches!(state.mode, AppMode::Viewing));
+    assert!(state.prev_mode.is_none());
+}
+
+#[test]
+fn viewer_search_esc_keeps_viewer_previous_mode() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Viewer search:".to_string(),
+            default_text: "needle".to_string(),
+            action: InputAction::ViewerSearch,
+        }),
+        dialog_input: "needle".to_string(),
+        dialog_cursor_pos: 6,
+        prev_mode: Some(AppMode::Normal),
+        ..Default::default()
+    };
+    let mut viewer: Option<viewer::ViewerState> = None;
+    let mut job: Option<RunningJob> = None;
+
+    dialogs::handle_dialog(
+        &mut state,
+        &mut viewer,
+        &mut job,
+        KeyCode::Esc,
+        ratatui::layout::Size::new(80, 24),
+    );
+
+    assert!(matches!(state.mode, AppMode::Viewing));
+    assert_eq!(state.prev_mode, Some(AppMode::Normal));
+    assert!(state.dialog_input.is_empty());
+    assert_eq!(state.dialog_cursor_pos, 0);
 }
 
 #[test]

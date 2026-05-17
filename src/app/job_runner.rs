@@ -62,6 +62,7 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     state.mode = AppMode::Dialog(DialogKind::Progress(
         format!("{action_label} starting..."),
         0.0,
+        true,
     ));
     *running_job = Some(RunningJob {
         receiver,
@@ -91,8 +92,11 @@ pub fn poll_running_job(
                 if let Some(progress) = latest_progress.take() {
                     let msg =
                         format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-                    state.mode =
-                        AppMode::Dialog(DialogKind::Progress(msg, progress.byte_percent() / 100.0));
+                    state.mode = AppMode::Dialog(DialogKind::Progress(
+                        msg,
+                        progress.byte_percent() / 100.0,
+                        true,
+                    ));
                     dirty = true;
                 }
                 finished = Some(report);
@@ -102,7 +106,11 @@ pub fn poll_running_job(
 
     if let Some(progress) = latest_progress {
         let msg = format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-        state.mode = AppMode::Dialog(DialogKind::Progress(msg, progress.byte_percent() / 100.0));
+        state.mode = AppMode::Dialog(DialogKind::Progress(
+            msg,
+            progress.byte_percent() / 100.0,
+            true,
+        ));
         dirty = true;
     }
 

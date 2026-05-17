@@ -195,6 +195,10 @@ impl Watcher {
     }
 
     pub fn flush_pending(&self) {
+        if self.paused.load(Ordering::Acquire) {
+            return;
+        }
+
         let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
         let flushed = flush_expired(&mut debounce);
         drop(debounce);
@@ -481,69 +485,75 @@ fn normalize_missing_target(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::error::Error;
     use std::sync::mpsc;
 
-    #[test]
-    fn watcher_can_watch_and_unwatch_directory() {
-        let tempdir = tempfile::tempdir().expect("create tempdir");
-        let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Watcher::new(event_tx).expect("create watcher");
-        let watched_path = tempdir.path().canonicalize().expect("canonicalize tempdir");
+    type TestResult = Result<(), Box<dyn Error>>;
 
-        watcher.watch(tempdir.path()).expect("watch tempdir");
+    #[test]
+    fn watcher_can_watch_and_unwatch_directory() -> TestResult {
+        let tempdir = tempfile::tempdir()?;
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut watcher = Watcher::new(event_tx)?;
+        let watched_path = tempdir.path().canonicalize()?;
+
+        watcher.watch(tempdir.path())?;
         assert_eq!(watcher.watched_dirs(), vec![watched_path]);
 
-        watcher.unwatch(tempdir.path()).expect("unwatch tempdir");
+        watcher.unwatch(tempdir.path())?;
         assert!(watcher.watched_dirs().is_empty());
+        Ok(())
     }
 
     #[test]
-    fn watcher_unwatch_cleans_state_when_directory_vanished() {
-        let tempdir = tempfile::tempdir().expect("create tempdir");
+    fn watcher_unwatch_cleans_state_when_directory_vanished() -> TestResult {
+        let tempdir = tempfile::tempdir()?;
         let watched_path = tempdir.path().to_path_buf();
-        let canonical = watched_path.canonicalize().expect("canonicalize tempdir");
+        let canonical = watched_path.canonicalize()?;
         let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Watcher::new(event_tx).expect("create watcher");
+        let mut watcher = Watcher::new(event_tx)?;
 
-        watcher.watch(&watched_path).expect("watch tempdir");
-        std::fs::remove_dir_all(&watched_path).expect("remove watched dir");
+        watcher.watch(&watched_path)?;
+        std::fs::remove_dir_all(&watched_path)?;
 
-        watcher.unwatch(&canonical).expect("unwatch vanished dir");
+        watcher.unwatch(&canonical)?;
 
         assert!(watcher.watched_dirs().is_empty());
         assert!(watcher.watchers.is_empty());
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn watcher_unwatch_cleans_state_when_symlink_target_vanished() {
-        let tempdir = tempfile::tempdir().expect("create tempdir");
+    fn watcher_unwatch_cleans_state_when_symlink_target_vanished() -> TestResult {
+        let tempdir = tempfile::tempdir()?;
         let target = tempdir.path().join("target");
         let link = tempdir.path().join("link");
-        std::fs::create_dir(&target).expect("create target dir");
-        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+        std::fs::create_dir(&target)?;
+        std::os::unix::fs::symlink(&target, &link)?;
 
         let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Watcher::new(event_tx).expect("create watcher");
-        watcher.watch(&link).expect("watch symlinked dir");
-        std::fs::remove_dir_all(&target).expect("remove target dir");
+        let mut watcher = Watcher::new(event_tx)?;
+        watcher.watch(&link)?;
+        std::fs::remove_dir_all(&target)?;
 
-        watcher.unwatch(&link).expect("unwatch vanished target");
+        watcher.unwatch(&link)?;
 
         assert!(watcher.watched_dirs().is_empty());
         assert!(watcher.watchers.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn watcher_pause_and_resume_do_not_panic() {
+    fn watcher_pause_and_resume_do_not_panic() -> TestResult {
         let (event_tx, _event_rx) = mpsc::channel();
-        let watcher = Watcher::new(event_tx).expect("create watcher");
+        let watcher = Watcher::new(event_tx)?;
 
         watcher.pause();
         watcher.resume();
+        Ok(())
     }
 
     #[test]
@@ -585,21 +595,25 @@ mod tests {
     }
 
     #[test]
-    fn watcher_created_with_primary_only_no_fallback() {
+    fn watcher_created_with_primary_only_no_fallback() -> TestResult {
         let (event_tx, _event_rx) = mpsc::channel();
-        let watcher = Watcher::new(event_tx).expect("create watcher");
+        let watcher = Watcher::new(event_tx)?;
         assert!(watcher.fallback.is_none());
         assert!(watcher.watchers.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn flush_pending_emits_coalesced_event_after_debounce_window() {
+    fn flush_pending_emits_coalesced_event_after_debounce_window() -> TestResult {
         let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx).expect("create watcher");
+        let watcher = Watcher::new(tx)?;
 
         let path = PathBuf::from("/tmp/test_file.txt");
         {
-            let mut debounce = watcher.debounce_state.lock().unwrap();
+            let mut debounce = watcher
+                .debounce_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             debounce.insert(
                 path.clone(),
                 PendingEntry {
@@ -611,8 +625,42 @@ mod tests {
 
         watcher.flush_pending();
 
-        let flushed = rx.try_recv().expect("should have flushed event");
+        let flushed = rx.try_recv()?;
         assert!(matches!(flushed, WatchEvent::Modified(p) if p == path));
+        Ok(())
+    }
+
+    #[test]
+    fn flush_pending_does_not_emit_while_paused() -> TestResult {
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::new(tx)?;
+
+        let path = PathBuf::from("/tmp/test_file.txt");
+        {
+            let mut debounce = watcher
+                .debounce_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            debounce.insert(
+                path.clone(),
+                PendingEntry {
+                    last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
+                    coalesced: Some(WatchEvent::Modified(path.clone())),
+                },
+            );
+        }
+
+        watcher.pause();
+        watcher.flush_pending();
+
+        assert!(rx.try_recv().is_err());
+
+        watcher.resume();
+        watcher.flush_pending();
+
+        let flushed = rx.try_recv()?;
+        assert!(matches!(flushed, WatchEvent::Modified(p) if p == path));
+        Ok(())
     }
 
     #[test]
@@ -631,8 +679,11 @@ mod tests {
         assert!(!emit2);
         assert!(flushed2.is_empty());
 
-        let map = debounce_state.lock().unwrap();
-        let entry = map.get(&path).expect("entry should exist");
+        let map = debounce_state.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(entry) = map.get(&path) else {
+            assert!(map.contains_key(&path));
+            return;
+        };
         assert!(entry.coalesced.is_some());
     }
 
@@ -670,49 +721,79 @@ mod tests {
     }
 
     #[test]
-    fn flush_pending_emits_deleted_for_stale_from() {
+    fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
         let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx).expect("create watcher");
+        let watcher = Watcher::new(tx)?;
 
         {
-            let mut pending = watcher.pending_from.lock().unwrap();
+            let mut pending = watcher
+                .pending_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             *pending = Some(PathBuf::from("/tmp/stale_file.txt"));
         }
         {
-            let mut pending_time = watcher.pending_from_time.lock().unwrap();
+            let mut pending_time = watcher
+                .pending_from_time
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             *pending_time = Some(Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1));
         }
 
         watcher.flush_pending();
 
-        let evt = rx
-            .try_recv()
-            .expect("should have flushed stale From as Deleted");
+        let evt = rx.try_recv()?;
         assert!(
             matches!(evt, WatchEvent::Deleted(p) if p.as_path() == Path::new("/tmp/stale_file.txt"))
         );
 
-        assert!(watcher.pending_from.lock().unwrap().is_none());
-        assert!(watcher.pending_from_time.lock().unwrap().is_none());
+        assert!(
+            watcher
+                .pending_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .is_none()
+        );
+        assert!(
+            watcher
+                .pending_from_time
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .is_none()
+        );
+        Ok(())
     }
 
     #[test]
-    fn flush_pending_keeps_fresh_from() {
+    fn flush_pending_keeps_fresh_from() -> TestResult {
         let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx).expect("create watcher");
+        let watcher = Watcher::new(tx)?;
 
         {
-            let mut pending = watcher.pending_from.lock().unwrap();
+            let mut pending = watcher
+                .pending_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             *pending = Some(PathBuf::from("/tmp/fresh_file.txt"));
         }
         {
-            let mut pending_time = watcher.pending_from_time.lock().unwrap();
+            let mut pending_time = watcher
+                .pending_from_time
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
             *pending_time = Some(Instant::now());
         }
 
         watcher.flush_pending();
 
         assert!(rx.try_recv().is_err());
-        assert!(watcher.pending_from.lock().unwrap().is_some());
+        assert!(
+            watcher
+                .pending_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .is_some()
+        );
+        Ok(())
     }
 }

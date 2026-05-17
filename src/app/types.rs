@@ -226,7 +226,7 @@ pub enum DialogKind {
         message: String,
         scroll_offset: usize,
     },
-    Progress(String, f32), // (message, progress 0.0-1.0)
+    Progress(String, f32, bool), // (message, progress 0.0-1.0, cancellable)
     CopyMove {
         source: Vec<PathBuf>,
         dest: PathBuf,
@@ -1452,10 +1452,11 @@ mod tests {
 
     #[test]
     fn test_dialog_kind_progress() {
-        let dialog = DialogKind::Progress("Copying...".to_string(), 0.5);
-        if let DialogKind::Progress(msg, progress) = dialog {
+        let dialog = DialogKind::Progress("Copying...".to_string(), 0.5, true);
+        if let DialogKind::Progress(msg, progress, cancellable) = dialog {
             assert_eq!(msg, "Copying...");
             assert_eq!(progress, 0.5);
+            assert!(cancellable);
         } else {
             panic!("Expected Progress variant");
         }

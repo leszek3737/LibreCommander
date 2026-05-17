@@ -231,15 +231,15 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                         line: condition_line,
                         message: format!("Invalid filename regex `{s}`: {err}"),
                     });
-                    CompiledCondition::Never
+                    CompiledCondition::Always
                 }
             },
             Some(ConditionParseResult::Unsupported) => {
                 warnings.push(MenuWarning {
                     line: condition_line,
-                    message: "Unsupported condition type, entry will never match".into(),
+                    message: "Unsupported condition type, entry will always match".into(),
                 });
-                CompiledCondition::Never
+                CompiledCondition::Always
             }
             None => CompiledCondition::Always,
         };
@@ -322,14 +322,21 @@ pub enum MenuSource {
 }
 
 pub fn locate_menu_file(panel_dir: &Path) -> Option<(PathBuf, MenuSource)> {
+    locate_menu_file_with_global(panel_dir, paths::user_menu_path().as_deref())
+}
+
+fn locate_menu_file_with_global(
+    panel_dir: &Path,
+    global_path: Option<&Path>,
+) -> Option<(PathBuf, MenuSource)> {
     let local = panel_dir.join(".mc.menu");
     if is_regular_file(&local) {
         return Some((local, MenuSource::Local));
     }
-    if let Some(cfg) = paths::user_menu_path()
-        && is_regular_file(&cfg)
+    if let Some(cfg) = global_path
+        && is_regular_file(cfg)
     {
-        return Some((cfg, MenuSource::Global));
+        return Some((cfg.to_path_buf(), MenuSource::Global));
     }
     None
 }
@@ -383,6 +390,7 @@ pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<Loade
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
 
     fn ctx<'a>(
@@ -633,13 +641,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_invalid_regex_never_matches() {
+    fn test_parse_invalid_regex_keeps_entry_visible() {
         let src = "+ f [invalid\nT  Test\n\tcmd\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hotkey, 'T');
-        assert!(matches!(entries[0].condition, CompiledCondition::Never));
-        assert_eq!(filter_entries(&entries, "anything.txt").len(), 0);
+        assert!(matches!(entries[0].condition, CompiledCondition::Always));
+        assert_eq!(filter_entries(&entries, "anything.txt").len(), 1);
     }
 
     #[test]
@@ -650,8 +658,9 @@ mod tests {
         assert_eq!(parsed.entries[0].hotkey, 'T');
         assert!(matches!(
             parsed.entries[0].condition,
-            CompiledCondition::Never
+            CompiledCondition::Always
         ));
+        assert_eq!(filter_entries(&parsed.entries, "anything.txt").len(), 2);
         assert_eq!(parsed.entries[1].hotkey, 'B');
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(parsed.warnings[0].line, 1);
@@ -663,13 +672,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_unsupported_condition_never_matches() {
+    fn test_parse_unsupported_condition_keeps_entry_visible() {
         let src = "+ d /tmp\nT  Test\n\tcmd\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hotkey, 'T');
-        assert!(matches!(entries[0].condition, CompiledCondition::Never));
-        assert_eq!(filter_entries(&entries, "anything.txt").len(), 0);
+        assert!(matches!(entries[0].condition, CompiledCondition::Always));
+        assert_eq!(filter_entries(&entries, "anything.txt").len(), 1);
     }
 
     #[test]
@@ -680,13 +689,31 @@ mod tests {
         assert_eq!(parsed.entries[0].hotkey, 'T');
         assert!(matches!(
             parsed.entries[0].condition,
-            CompiledCondition::Never
+            CompiledCondition::Always
         ));
+        assert_eq!(filter_entries(&parsed.entries, "anything.txt").len(), 2);
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(
             parsed.warnings[0].message,
-            "Unsupported condition type, entry will never match"
+            "Unsupported condition type, entry will always match"
         );
+    }
+
+    #[test]
+    fn test_locate_menu_file_prefers_local_over_global() {
+        let temp = tempfile::tempdir().unwrap();
+        let panel_dir = temp.path().join("panel");
+        let config_dir = temp.path().join("config");
+        fs::create_dir(&panel_dir).unwrap();
+        fs::create_dir(&config_dir).unwrap();
+
+        let local = panel_dir.join(".mc.menu");
+        let global = config_dir.join("menu");
+        fs::write(&local, "L  Local\n\tcmd\n").unwrap();
+        fs::write(&global, "G  Global\n\tcmd\n").unwrap();
+
+        let located = locate_menu_file_with_global(&panel_dir, Some(&global)).unwrap();
+        assert_eq!(located, (local, MenuSource::Local));
     }
 
     #[test]

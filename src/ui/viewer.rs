@@ -48,7 +48,6 @@ pub struct ViewerState {
     visual_offsets: Vec<usize>,
     cached_content_width: usize,
     file_truncated: bool,
-    cancel_search: Arc<AtomicBool>,
 }
 
 pub struct ViewerLoader {
@@ -241,16 +240,11 @@ impl ViewerState {
             visual_offsets: Vec::new(),
             cached_content_width: 0,
             file_truncated,
-            cancel_search: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub fn open_background(path: PathBuf) -> ViewerLoader {
         ViewerLoader::start(path)
-    }
-
-    pub fn request_search_cancel(&self) {
-        self.cancel_search.store(true, Ordering::Relaxed);
     }
 
     #[must_use]
@@ -359,7 +353,6 @@ impl ViewerState {
     }
 
     pub fn search(&mut self, query: &str, page_height: usize) {
-        self.cancel_search.store(false, Ordering::Relaxed);
         self.search_query = Some(query.to_string());
         self.clear_search_results();
         self.current_match = None;
@@ -379,10 +372,6 @@ impl ViewerState {
         let mut byte_map_buf = Vec::new();
 
         for line_idx in 0..self.line_count {
-            if line_idx % 1000 == 0 && self.cancel_search.load(Ordering::Relaxed) {
-                self.clear_search_results();
-                return;
-            }
             let line = self.get_line(line_idx).into_owned();
             build_lowercase_mapping(&line, &mut lower_buf, &mut byte_map_buf);
             let mut search_start = 0;
@@ -444,13 +433,7 @@ impl ViewerState {
 
         if let Some(ref needle) = query_bytes {
             let mut pos = 0;
-            let mut iterations = 0u32;
             while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
-                iterations += 1;
-                if iterations.is_multiple_of(1000) && self.cancel_search.load(Ordering::Relaxed) {
-                    self.clear_search_results();
-                    return;
-                }
                 let abs_offset = pos + idx;
                 let line_idx = abs_offset / bpl;
                 let byte_in_line = abs_offset % bpl;
@@ -483,13 +466,7 @@ impl ViewerState {
                 }
             }
             let mut search_start = 0;
-            let mut iterations = 0u32;
             while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
-                iterations += 1;
-                if iterations.is_multiple_of(1000) && self.cancel_search.load(Ordering::Relaxed) {
-                    self.clear_search_results();
-                    return;
-                }
                 let abs_pos = search_start + pos;
                 let advance = lower_buf[abs_pos..]
                     .chars()
@@ -1236,6 +1213,16 @@ mod tests {
         assert_eq!(state.get_line(1), "Line 2");
         assert_eq!(state.get_line(2), "Line 3");
         assert_eq!(state.line_count, 3);
+    }
+
+    #[test]
+    fn test_open_file_with_trailing_newline_omits_empty_tail() {
+        let file = create_test_file("Line 1\nLine 2\n");
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.line_count, 2);
+        assert_eq!(state.get_line(0), "Line 1");
+        assert_eq!(state.get_line(1), "Line 2");
     }
 
     #[test]

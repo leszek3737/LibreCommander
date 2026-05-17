@@ -56,6 +56,7 @@ pub enum DialogKind<'a> {
         title: Cow<'a, str>,
         message: Cow<'a, str>,
         percent: f32,
+        cancellable: bool,
     },
     Properties {
         info: PropertiesInfo,
@@ -116,8 +117,9 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
             title,
             message,
             percent,
+            cancellable,
         } => {
-            render_progress_dialog(f, dialog_area, title, message, *percent);
+            render_progress_dialog(f, dialog_area, title, message, *percent, *cancellable);
         }
         DialogKind::Properties { info } => {
             render_properties_dialog(f, dialog_area, info);
@@ -491,7 +493,8 @@ pub fn render_help_dialog(
     let content_area = help_dialog_content_rect(area);
     let max_lines = content_area.height as usize;
 
-    let likely_scrollable = message.lines().count() > max_lines || content_area.width <= 1;
+    let likely_scrollable =
+        wrapped_line_count(message, content_area.width.saturating_sub(1)) > max_lines;
     let message_area = if likely_scrollable && content_area.width > 1 {
         Rect::new(
             content_area.x,
@@ -552,7 +555,14 @@ pub fn render_help_dialog(
 
 const CANCELING_PREFIX: &str = "Canceling:";
 
-pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &str, percent: f32) {
+pub fn render_progress_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: &str,
+    percent: f32,
+    cancellable: bool,
+) {
     let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -578,15 +588,19 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
 
-    let hint_text = if message.starts_with(CANCELING_PREFIX) {
+    let hint_text = if !cancellable {
+        ""
+    } else if message.starts_with(CANCELING_PREFIX) {
         "Canceled"
     } else {
         "Esc: cancel after current item"
     };
-    let hint = Paragraph::new(hint_text)
-        .style(Theme::warning())
-        .alignment(Alignment::Center);
-    f.render_widget(hint, chunks[2]);
+    if !hint_text.is_empty() {
+        let hint = Paragraph::new(hint_text)
+            .style(Theme::warning())
+            .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[2]);
+    }
 }
 
 pub fn render_properties_dialog(f: &mut Frame, area: Rect, info: &PropertiesInfo) {
@@ -777,6 +791,37 @@ mod tests {
         assert_ne!(buffer[(text_last_x, chunks[0].y)].symbol(), "░");
         assert!(matches!(
             buffer[(scrollbar_x, chunks[0].y)].symbol(),
+            "█" | "░"
+        ));
+    }
+
+    #[test]
+    fn help_scrollbar_reserved_for_wrapped_single_line() {
+        let message = "abcdefghijklmnopqrstuvwxyz".repeat(5);
+        let area = centered_rect(50, 40, Rect::new(0, 0, 40, 12));
+        let content = help_dialog_content_rect(area);
+        let text_last_x = content.x + content.width - 2;
+        let scrollbar_x = content.x + content.width - 1;
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|f| render_help_dialog(f, area, "Help", &message, 0))
+            .unwrap();
+        let unscrolled_start = terminal.backend().buffer()[(content.x, content.y)]
+            .symbol()
+            .to_owned();
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|f| render_help_dialog(f, area, "Help", &message, 1))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert_ne!(buffer[(content.x, content.y)].symbol(), unscrolled_start);
+        assert_ne!(buffer[(text_last_x, content.y)].symbol(), "█");
+        assert_ne!(buffer[(text_last_x, content.y)].symbol(), "░");
+        assert!(matches!(
+            buffer[(scrollbar_x, content.y)].symbol(),
             "█" | "░"
         ));
     }

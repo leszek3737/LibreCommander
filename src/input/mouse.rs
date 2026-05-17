@@ -259,7 +259,7 @@ fn handle_mouse_dialog(
     width: u16,
     height: u16,
 ) -> Option<MouseOutcome> {
-    if let AppMode::Dialog(DialogKind::Progress(_, _)) = state.mode {
+    if let AppMode::Dialog(DialogKind::Progress(_, _, _)) = state.mode {
         return handle_progress_click(state, running_job, col, row, width, height);
     }
 
@@ -476,7 +476,7 @@ fn handle_mouse_menu_dropdown(
             return Some(MouseOutcome::MenuAction);
         }
     }
-    state.mode = AppMode::Normal;
+    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
     Some(MouseOutcome::Consumed)
 }
 
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn mouse_progress_click_is_consumed() {
         let mut state = AppState {
-            mode: AppMode::Dialog(DialogKind::Progress("Copying".to_string(), 0.5)),
+            mode: AppMode::Dialog(DialogKind::Progress("Copying".to_string(), 0.5, true)),
             ..Default::default()
         };
         let mut running_job = None;
@@ -956,6 +956,21 @@ mod tests {
     }
 
     #[test]
+    fn mouse_menu_dropdown_outside_restores_previous_mode() {
+        let mut state = AppState {
+            mode: AppMode::Menu,
+            prev_mode: Some(AppMode::Search),
+            ..Default::default()
+        };
+
+        let outcome = handle_mouse_menu_dropdown(&mut state, 79, 23, 80);
+
+        assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
+        assert!(matches!(state.mode, AppMode::Search));
+        assert!(state.prev_mode.is_none());
+    }
+
+    #[test]
     fn handle_right_click_in_panel_emits_esc() {
         let mut state = AppState::default();
 
@@ -1070,7 +1085,7 @@ mod tests {
         ));
         assert!(matches!(
             state.mode,
-            AppMode::Dialog(DialogKind::Progress(_, _))
+            AppMode::Dialog(DialogKind::Progress(_, _, _))
         ));
     }
 }

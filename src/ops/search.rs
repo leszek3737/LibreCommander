@@ -87,6 +87,7 @@ pub enum CompiledPattern {
     WildcardSimple {
         prefix: Option<Vec<char>>,
         suffix: Option<Vec<char>>,
+        contains: bool,
         insensitive: bool,
     },
     WildcardDp {
@@ -143,6 +144,7 @@ impl CompiledPattern {
             return Some(Self::WildcardSimple {
                 prefix,
                 suffix,
+                contains: false,
                 insensitive,
             });
         }
@@ -165,24 +167,7 @@ impl CompiledPattern {
                 return Some(Self::WildcardSimple {
                     prefix: None,
                     suffix: Some(inner),
-                    insensitive,
-                });
-            }
-            if !prefix_empty && suffix_empty {
-                let pre = Self::maybe_lower(prefix_str, insensitive)?;
-                let suf = Self::maybe_lower(inner_str, insensitive)?;
-                return Some(Self::WildcardSimple {
-                    prefix: Some(pre),
-                    suffix: Some(suf),
-                    insensitive,
-                });
-            }
-            if prefix_empty && !suffix_empty {
-                let pre = Self::maybe_lower(inner_str, insensitive)?;
-                let suf = Self::maybe_lower(suffix_str, insensitive)?;
-                return Some(Self::WildcardSimple {
-                    prefix: Some(pre),
-                    suffix: Some(suf),
+                    contains: true,
                     insensitive,
                 });
             }
@@ -234,6 +219,7 @@ impl CompiledPattern {
             Self::WildcardSimple {
                 prefix,
                 suffix,
+                contains,
                 insensitive,
             } => {
                 let name_chars: Vec<char> = if *insensitive {
@@ -241,6 +227,13 @@ impl CompiledPattern {
                 } else {
                     name.chars().collect()
                 };
+                if *contains {
+                    return suffix.as_deref().is_some_and(|suffix_chars| {
+                        name_chars
+                            .windows(suffix_chars.len())
+                            .any(|window| window == suffix_chars)
+                    });
+                }
                 if let Some(prefix_chars) = prefix {
                     if name_chars.len() < prefix_chars.len() {
                         return false;
@@ -363,11 +356,11 @@ impl FileSearch {
     ) -> SearchOutcome<FileEntry> {
         let mut outcome = SearchOutcome::default();
         let mut item_count: usize = 0;
+        let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
         Self::search_files_recursive(
             path,
-            pattern,
+            &compiled_pattern,
             recursive,
-            case_sensitive,
             &mut outcome,
             0,
             &mut item_count,
@@ -377,9 +370,8 @@ impl FileSearch {
 
     fn search_files_recursive(
         path: &Path,
-        pattern: &str,
+        pattern: &CompiledPattern,
         recursive: bool,
-        case_sensitive: bool,
         outcome: &mut SearchOutcome<FileEntry>,
         depth: usize,
         item_count: &mut usize,
@@ -440,7 +432,7 @@ impl FileSearch {
 
             let name = entry.file_name();
             let name_lossy = name.to_string_lossy();
-            if Self::matches_pattern(&name_lossy, pattern, case_sensitive) {
+            if pattern.matches(&name_lossy) {
                 match get_file_info(&entry_path) {
                     Ok(file_entry) => outcome.matches.push(file_entry),
                     Err(err) => outcome.errors.push(format!(
@@ -459,7 +451,6 @@ impl FileSearch {
                     &entry_path,
                     pattern,
                     recursive,
-                    case_sensitive,
                     outcome,
                     depth + 1,
                     item_count,
@@ -825,9 +816,82 @@ mod tests {
         assert!(FileSearch::matches_pattern("file.txt", "file.*", true));
         assert!(FileSearch::matches_pattern("file.txt", "*", true));
         assert!(FileSearch::matches_pattern(
+            "prefix-foo-suffix",
+            "*foo*",
+            true
+        ));
+        assert!(FileSearch::matches_pattern(
             "long_file_name.txt",
             "*.txt",
             true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_multi_star_order() {
+        assert!(FileSearch::matches_pattern(
+            "pre-mid-tail",
+            "pre*mid*",
+            true
+        ));
+        assert!(FileSearch::matches_pattern(
+            "head-mid-suf",
+            "*mid*suf",
+            true
+        ));
+        assert!(FileSearch::matches_pattern("abXYcdZZ", "ab*cd*", true));
+        assert!(FileSearch::matches_pattern("ZZabXYcd", "*ab*cd", true));
+        assert!(FileSearch::matches_pattern(
+            "preXmidYsuf",
+            "pre*mid*suf",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_multi_star_order_false() {
+        assert!(!FileSearch::matches_pattern(
+            "mid-tail-pre",
+            "pre*mid*",
+            true
+        ));
+        assert!(!FileSearch::matches_pattern(
+            "head-suf-mid",
+            "*mid*suf",
+            true
+        ));
+        assert!(!FileSearch::matches_pattern("cdXYabZZ", "ab*cd*", true));
+        assert!(!FileSearch::matches_pattern("ZZcdXYab", "*ab*cd", true));
+        assert!(!FileSearch::matches_pattern(
+            "preXsufYmid",
+            "pre*mid*suf",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_multi_star_case_insensitive() {
+        assert!(FileSearch::matches_pattern(
+            "PRE-MID-tail",
+            "pre*mid*",
+            false
+        ));
+        assert!(FileSearch::matches_pattern(
+            "head-MID-SUF",
+            "*mid*suf",
+            false
+        ));
+        assert!(FileSearch::matches_pattern("ABxyCDzz", "ab*cd*", false));
+        assert!(FileSearch::matches_pattern("zzABxyCD", "*ab*cd", false));
+        assert!(FileSearch::matches_pattern(
+            "PREfooMIDbarSUF",
+            "pre*mid*suf",
+            false
+        ));
+        assert!(FileSearch::matches_pattern(
+            "prefix-FOO-suffix",
+            "*foo*",
+            false
         ));
     }
 
