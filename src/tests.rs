@@ -771,7 +771,7 @@ fn user_menu_picker_esc_closes() {
             hotkey: 'A',
             title: "Archive".to_string(),
             command: "tar czf a.tgz".to_string(),
-            condition: None,
+            condition: app::user_menu::CompiledCondition::Always,
         }],
         ..Default::default()
     };
@@ -790,13 +790,13 @@ fn user_menu_picker_navigate_and_select() {
                 hotkey: 'A',
                 title: "Archive".to_string(),
                 command: "echo archive".to_string(),
-                condition: None,
+                condition: app::user_menu::CompiledCondition::Always,
             },
             app::user_menu::MenuEntry {
                 hotkey: 'B',
                 title: "Build".to_string(),
                 command: "echo build".to_string(),
-                condition: None,
+                condition: app::user_menu::CompiledCondition::Always,
             },
         ],
         ..Default::default()
