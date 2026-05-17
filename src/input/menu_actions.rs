@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use lc::app::user_menu::MenuSource;
 use lc::app::{config, dir_tree, types::*, user_menu};
 use lc::menu::{MenuAction, menu_action_at};
 use lc::ops;
@@ -231,6 +232,11 @@ pub fn open_user_menu(state: &mut AppState) {
                     warning.line, warning.message
                 ));
             }
+            if loaded.source == MenuSource::Local {
+                state.status_message =
+                    Some("Local .mc.menu loaded — commands require confirmation".to_string());
+            }
+            state.user_menu_source = loaded.source;
             state.user_menu_entries = loaded.entries;
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::UserMenu);

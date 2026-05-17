@@ -56,14 +56,14 @@ pub struct PersistedSetup {
     pub active_panel: String,
     #[serde(default = "default_true")]
     pub dir_first: bool,
-    #[serde(default, alias = "sort_sensitive")]
+    #[serde(default, rename = "sort_sensitive", alias = "sensitive")]
     pub sensitive: bool,
     #[serde(default)]
     pub left: PersistedPanel,
     #[serde(default)]
     pub right: PersistedPanel,
     #[serde(default)]
-    pub hotlist: Vec<String>,
+    pub hotlist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,19 +116,21 @@ impl From<&Settings> for PersistedSetup {
             sensitive: settings.sensitive,
             left: settings.left.clone(),
             right: settings.right.clone(),
-            hotlist: settings
-                .hotlist
-                .iter()
-                .filter_map(|p| {
-                    p.to_str().map(String::from).or_else(|| {
-                        crate::app::debug_log::log(format_args!(
-                            "config: skipping non-UTF-8 hotlist path: {}",
-                            p.display()
-                        ));
-                        None
+            hotlist: Some(
+                settings
+                    .hotlist
+                    .iter()
+                    .filter_map(|p| {
+                        p.to_str().map(String::from).or_else(|| {
+                            crate::app::debug_log::log(format_args!(
+                                "config: skipping non-UTF-8 hotlist path: {}",
+                                p.display()
+                            ));
+                            None
+                        })
                     })
-                })
-                .collect(),
+                    .collect::<Vec<String>>(),
+            ),
         }
     }
 }
@@ -146,6 +148,7 @@ impl From<PersistedSetup> for Settings {
             right: setup.right,
             hotlist: setup
                 .hotlist
+                .unwrap_or_default()
                 .iter()
                 .map(|s| crate::fs::path::clean_path(&crate::fs::path::expand_path(s)))
                 .collect(),
@@ -340,7 +343,7 @@ mod tests {
                 show_permissions: false,
             },
             right: PersistedPanel::default(),
-            hotlist: vec!["/tmp".to_string(), "/usr".to_string()],
+            hotlist: Some(vec!["/tmp".to_string(), "/usr".to_string()]),
         };
         let settings = Settings::from(setup.clone());
         let persisted = PersistedSetup::from(&settings);

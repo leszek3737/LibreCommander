@@ -6,8 +6,8 @@ use std::time::Duration;
 use crossterm::{
     cursor::{Hide, Show},
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseEvent,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEvent,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -184,6 +184,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     loop {
         panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
         watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
+        if let Some(ref w) = watcher {
+            w.flush_pending();
+        }
         if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
             dirty = true;
         }
@@ -265,6 +268,11 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     key: &KeyEvent,
 ) -> Result<bool, B::Error> {
     let size = terminal.size()?;
+    match key.kind {
+        KeyEventKind::Press => {}
+        KeyEventKind::Repeat if key_repeat_allowed(&state.mode, key.code) => {}
+        _ => return Ok(true),
+    }
     match &state.mode {
         AppMode::Normal => {
             input::mode_dispatch::handle_normal_mode(
@@ -331,6 +339,31 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
         }
     }
     Ok(true)
+}
+
+fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Char('j' | 'k')
+    ) || matches!(
+        mode,
+        AppMode::CommandLine
+            | AppMode::Dialog(_)
+            | AppMode::Search
+            | AppMode::Menu
+            | AppMode::ListPicker(_)
+    ) && matches!(
+        key,
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_) | KeyCode::Enter
+    )
 }
 
 fn dispatch_mouse_event<B: ratatui::backend::Backend>(
@@ -403,6 +436,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             {
                 let path = entry.path.clone();
                 *viewer_loader = Some(viewer::ViewerState::open_background(path));
+                state.prev_mode = None;
                 state.mode = AppMode::Viewing;
             }
         }
@@ -440,6 +474,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             confirm_delete(state);
         }
         KeyCode::F(9) => {
+            state.prev_mode = Some(state.mode.clone());
             state.mode = AppMode::Menu;
             state.menu_item_selected = 0;
         }
@@ -717,7 +752,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             {
                 state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
                     name: entry.name.clone(),
-                    size: entry.len(),
+                    size: entry.size(),
                     mtime: entry.mtime(),
                     permissions: entry.mode_bits(),
                     owner: entry.owner.clone(),

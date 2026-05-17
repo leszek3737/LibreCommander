@@ -114,6 +114,7 @@ pub fn filtered_sorted_entries(
     sort_options: SortOptions,
     show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
+    let compiled = filter.map(|f| ops::search::CompiledPattern::new(f, false));
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
         .filter(|e| {
@@ -121,8 +122,8 @@ pub fn filtered_sorted_entries(
                 true
             } else if !show_hidden && e.cha.is_hidden() {
                 false
-            } else if let Some(filter) = filter {
-                ops::FileSearch::matches_pattern(&e.name, filter, false)
+            } else if let Some(ref pat) = compiled {
+                pat.matches(&e.name)
             } else {
                 true
             }

@@ -62,6 +62,7 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     state.mode = AppMode::Dialog(DialogKind::Progress(
         format!("{action_label} starting..."),
         0.0,
+        true,
     ));
     *running_job = Some(RunningJob {
         receiver,
@@ -80,20 +81,37 @@ pub fn poll_running_job(
     };
     let mut dirty = false;
     let mut finished = None;
+    let mut latest_progress: Option<ops::batch::BatchProgress> = None;
 
     while let Ok(message) = job.receiver.try_recv() {
-        dirty = true;
         match message {
             JobMessage::Progress(progress) => {
-                let message =
-                    format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-                state.mode = AppMode::Dialog(DialogKind::Progress(
-                    message,
-                    progress.byte_percent() / 100.0,
-                ));
+                latest_progress = Some(progress);
             }
-            JobMessage::Finished { report } => finished = Some(report),
+            JobMessage::Finished { report } => {
+                if let Some(progress) = latest_progress.take() {
+                    let msg =
+                        format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
+                    state.mode = AppMode::Dialog(DialogKind::Progress(
+                        msg,
+                        progress.byte_percent() / 100.0,
+                        true,
+                    ));
+                    dirty = true;
+                }
+                finished = Some(report);
+            }
         }
+    }
+
+    if let Some(progress) = latest_progress {
+        let msg = format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
+        state.mode = AppMode::Dialog(DialogKind::Progress(
+            msg,
+            progress.byte_percent() / 100.0,
+            true,
+        ));
+        dirty = true;
     }
 
     if let Some(report) = finished {

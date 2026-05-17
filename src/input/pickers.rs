@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
 
+use lc::app::user_menu::MenuSource;
 use lc::app::{types::*, user_menu};
 use lc::ops;
 
@@ -139,8 +140,25 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
                     other_dir: &other_dir,
                     tagged: &tagged,
                 };
-                let cmd = user_menu::apply_substitutions(&entry.command, &ctx);
-                lc::app::shell::run_shell_command(state, &cmd, true, refresh_active);
+                let cmd = match user_menu::apply_substitutions(&entry.command, &ctx) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        state.status_message = Some(e);
+                        return;
+                    }
+                };
+                if state.user_menu_source == MenuSource::Local {
+                    state.pending_menu_command = Some(cmd);
+                    state.dialog_selection = 0;
+                    state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                        "Trust Local Menu?",
+                        "This menu comes from the current directory.\n\
+                             Running untrusted commands may be dangerous.\n\n\
+                             Execute?",
+                    )));
+                } else {
+                    lc::app::shell::run_shell_command(state, &cmd, true, refresh_active);
+                }
             }
         }
         _ => {}

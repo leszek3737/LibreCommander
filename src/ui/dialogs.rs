@@ -13,6 +13,7 @@ use ratatui::{
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
+use unicode_width::UnicodeWidthStr;
 
 const DIALOG_WIDTH_PERCENT: u16 = 50;
 const DIALOG_HEIGHT_PERCENT: u16 = 40;
@@ -55,6 +56,7 @@ pub enum DialogKind<'a> {
         title: Cow<'a, str>,
         message: Cow<'a, str>,
         percent: f32,
+        cancellable: bool,
     },
     Properties {
         info: PropertiesInfo,
@@ -115,8 +117,9 @@ pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
             title,
             message,
             percent,
+            cancellable,
         } => {
-            render_progress_dialog(f, dialog_area, title, message, *percent);
+            render_progress_dialog(f, dialog_area, title, message, *percent, *cancellable);
         }
         DialogKind::Properties { info } => {
             render_properties_dialog(f, dialog_area, info);
@@ -142,6 +145,16 @@ fn help_dialog_content_rect(dialog_area: Rect) -> Rect {
 pub fn help_visible_height(area: Rect) -> usize {
     let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, area);
     help_dialog_content_rect(dialog_area).height as usize
+}
+
+pub fn help_message_width(area: Rect) -> u16 {
+    let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, area);
+    let content = help_dialog_content_rect(dialog_area);
+    if content.width > 1 {
+        content.width.saturating_sub(1)
+    } else {
+        content.width
+    }
 }
 
 fn dialog_block(title: &str, style: Style) -> Block<'_> {
@@ -452,6 +465,20 @@ pub fn render_error_dialog(f: &mut Frame, area: Rect, title: &str, message: &str
     f.render_widget(ok_btn, chunks[1]);
 }
 
+pub fn wrapped_line_count(text: &str, available_width: u16) -> usize {
+    let w = available_width.max(1) as usize;
+    text.lines()
+        .map(|line| {
+            let display_w = UnicodeWidthStr::width(line);
+            if display_w == 0 {
+                1
+            } else {
+                display_w.div_ceil(w)
+            }
+        })
+        .sum()
+}
+
 pub fn render_help_dialog(
     f: &mut Frame,
     area: Rect,
@@ -465,19 +492,10 @@ pub fn render_help_dialog(
 
     let content_area = help_dialog_content_rect(area);
     let max_lines = content_area.height as usize;
-    let all_lines: Vec<&str> = message.lines().collect();
-    let total_lines = all_lines.len();
 
-    let clamped_offset = scroll_offset.min(total_lines.saturating_sub(max_lines));
-    let visible_lines: Vec<Line> = all_lines
-        .iter()
-        .skip(clamped_offset)
-        .take(max_lines)
-        .map(|l| Line::from(*l))
-        .collect();
-
-    let has_scrollbar = total_lines > max_lines && content_area.width > 1;
-    let message_area = if has_scrollbar {
+    let likely_scrollable =
+        wrapped_line_count(message, content_area.width.saturating_sub(1)) > max_lines;
+    let message_area = if likely_scrollable && content_area.width > 1 {
         Rect::new(
             content_area.x,
             content_area.y,
@@ -488,12 +506,18 @@ pub fn render_help_dialog(
         content_area
     };
 
-    let message_paragraph = Paragraph::new(visible_lines)
+    let total_lines = wrapped_line_count(message, message_area.width);
+    let clamped_offset = scroll_offset.min(total_lines.saturating_sub(max_lines));
+
+    let all_lines: Vec<Line> = message.lines().map(Line::from).collect();
+    let message_paragraph = Paragraph::new(all_lines)
         .wrap(Wrap { trim: true })
+        .scroll((clamped_offset as u16, 0))
         .alignment(Alignment::Left)
         .style(Theme::info());
     f.render_widget(message_paragraph, message_area);
 
+    let has_scrollbar = total_lines > max_lines && content_area.width > 1;
     if has_scrollbar {
         let scrollbar_area = Rect::new(
             content_area.x + content_area.width.saturating_sub(1),
@@ -531,7 +555,14 @@ pub fn render_help_dialog(
 
 const CANCELING_PREFIX: &str = "Canceling:";
 
-pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &str, percent: f32) {
+pub fn render_progress_dialog(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: &str,
+    percent: f32,
+    cancellable: bool,
+) {
     let block = dialog_block(title, Theme::dialog());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -557,15 +588,19 @@ pub fn render_progress_dialog(f: &mut Frame, area: Rect, title: &str, message: &
         .label(format!("{clamped}%"));
     f.render_widget(gauge, chunks[1]);
 
-    let hint_text = if message.starts_with(CANCELING_PREFIX) {
+    let hint_text = if !cancellable {
+        ""
+    } else if message.starts_with(CANCELING_PREFIX) {
         "Canceled"
     } else {
         "Esc: cancel after current item"
     };
-    let hint = Paragraph::new(hint_text)
-        .style(Theme::warning())
-        .alignment(Alignment::Center);
-    f.render_widget(hint, chunks[2]);
+    if !hint_text.is_empty() {
+        let hint = Paragraph::new(hint_text)
+            .style(Theme::warning())
+            .alignment(Alignment::Center);
+        f.render_widget(hint, chunks[2]);
+    }
 }
 
 pub fn render_properties_dialog(f: &mut Frame, area: Rect, info: &PropertiesInfo) {
@@ -758,6 +793,69 @@ mod tests {
             buffer[(scrollbar_x, chunks[0].y)].symbol(),
             "█" | "░"
         ));
+    }
+
+    #[test]
+    fn help_scrollbar_reserved_for_wrapped_single_line() {
+        let message = "abcdefghijklmnopqrstuvwxyz".repeat(5);
+        let area = centered_rect(50, 40, Rect::new(0, 0, 40, 12));
+        let content = help_dialog_content_rect(area);
+        let text_last_x = content.x + content.width - 2;
+        let scrollbar_x = content.x + content.width - 1;
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|f| render_help_dialog(f, area, "Help", &message, 0))
+            .unwrap();
+        let unscrolled_start = terminal.backend().buffer()[(content.x, content.y)]
+            .symbol()
+            .to_owned();
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|f| render_help_dialog(f, area, "Help", &message, 1))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        assert_ne!(buffer[(content.x, content.y)].symbol(), unscrolled_start);
+        assert_ne!(buffer[(text_last_x, content.y)].symbol(), "█");
+        assert_ne!(buffer[(text_last_x, content.y)].symbol(), "░");
+        assert!(matches!(
+            buffer[(scrollbar_x, content.y)].symbol(),
+            "█" | "░"
+        ));
+    }
+
+    #[test]
+    fn wrapped_line_count_long_line_narrow_area() {
+        let text = "abcdefghijklmnopqrstuvwxyz";
+        assert_eq!(wrapped_line_count(text, 10), 3);
+        assert!(wrapped_line_count(text, 1) > 1);
+    }
+
+    #[test]
+    fn wrapped_line_count_short_line_wide_area() {
+        assert_eq!(wrapped_line_count("abc", 80), 1);
+    }
+
+    #[test]
+    fn wrapped_line_count_empty_text() {
+        assert_eq!(wrapped_line_count("", 10), 0);
+    }
+
+    #[test]
+    fn wrapped_line_count_multiline() {
+        let text = "short\nthis is a much longer line that should wrap\nend";
+        assert!(wrapped_line_count(text, 20) > text.lines().count());
+    }
+
+    #[test]
+    fn help_scroll_uses_wrapped_lines() {
+        let long_line: String = "x".repeat(200);
+        let message = format!("header\n{long_line}\nfooter");
+        let width: u16 = 20;
+        let total = wrapped_line_count(&message, width);
+        assert!(total > 3, "wrapped count {total} should exceed 3 raw lines");
     }
 
     #[test]

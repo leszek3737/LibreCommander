@@ -66,7 +66,7 @@ pub fn compare_entries(
                 e.name.as_str(),
                 EntryMeta {
                     is_dir: e.is_dir(),
-                    size: e.len(),
+                    size: e.size(),
                     mtime: e.cha.mtime(),
                 },
             )
@@ -81,7 +81,7 @@ pub fn compare_entries(
                 e.name.as_str(),
                 EntryMeta {
                     is_dir: e.is_dir(),
-                    size: e.len(),
+                    size: e.size(),
                     mtime: e.cha.mtime(),
                 },
             )

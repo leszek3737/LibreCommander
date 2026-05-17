@@ -4,6 +4,7 @@ use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 
 use lc::app::job_runner::{RunningJob, start_confirmed_action};
+use lc::app::shell;
 use lc::app::types::*;
 use lc::fs;
 use lc::ops;
@@ -87,6 +88,7 @@ fn finish_confirmed_action(state: &mut AppState) {
 pub(crate) fn dismiss_dialog(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.pending_action = None;
+    state.pending_menu_command = None;
     state.status_message = None;
     state.dialog_selection = 0;
     if let Some(panel) = state.menu_restore_panel.take() {
@@ -185,6 +187,9 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
             }
             start_confirmed_action(state, running_job);
             finish_confirmed_action(state);
+        } else if let Some(cmd) = state.pending_menu_command.take() {
+            state.mode = AppMode::Normal;
+            shell::run_shell_command(state, &cmd, true, refresh_active);
         } else {
             dismiss_dialog(state);
             refresh_both(state);
@@ -475,11 +480,11 @@ fn handle_input_dialog(
     match key {
         KeyCode::Enter => handle_input_action(state, viewer_state, action, terminal_height),
         KeyCode::Esc => {
-            state.mode = if *action == InputAction::ViewerSearch {
-                AppMode::Viewing
+            if *action == InputAction::ViewerSearch {
+                state.mode = AppMode::Viewing;
             } else {
-                AppMode::Normal
-            };
+                state.mode = AppMode::Normal;
+            }
             state.dialog_input.clear();
             state.dialog_cursor_pos = 0;
             if let Some(panel) = state.menu_restore_panel.take() {
@@ -572,13 +577,10 @@ pub(crate) fn handle_dialog(
         scroll_offset,
     }) = &mut state.mode
     {
-        let total_lines = message.lines().count();
-        let max_lines = dialogs::help_visible_height(Rect::new(
-            0,
-            0,
-            terminal_size.width,
-            terminal_size.height,
-        ));
+        let term_rect = Rect::new(0, 0, terminal_size.width, terminal_size.height);
+        let total_lines =
+            dialogs::wrapped_line_count(message, dialogs::help_message_width(term_rect));
+        let max_lines = dialogs::help_visible_height(term_rect);
         let should_exit = match key {
             KeyCode::Up | KeyCode::Char('k') => {
                 *scroll_offset = scroll_offset.saturating_sub(1);
@@ -644,7 +646,7 @@ pub(crate) fn handle_dialog(
         DialogKind::Error(_) => {
             handle_error_dialog(state, key);
         }
-        DialogKind::Progress(_, _) => {
+        DialogKind::Progress(_, _, _) => {
             handle_progress_dialog(state, running_job, key);
         }
         DialogKind::Properties { .. } => {

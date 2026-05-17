@@ -77,14 +77,24 @@ fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool
 }
 
 pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
-    let mut dirty = false;
+    const MAX_WATCHER_EVENTS_PER_POLL: usize = 64;
 
-    while let Ok(event) = receiver.try_recv() {
+    let mut dirty = false;
+    let mut left_needs_full_refresh = false;
+    let mut right_needs_full_refresh = false;
+
+    for _ in 0..MAX_WATCHER_EVENTS_PER_POLL {
+        let Ok(event) = receiver.try_recv() else {
+            break;
+        };
         match event {
             WatchEvent::Created(path) | WatchEvent::Modified(path) => {
-                if event_is_panel_dir(&path, &state.left_panel)
-                    || event_is_panel_dir(&path, &state.right_panel)
-                {
+                if event_is_panel_dir(&path, &state.left_panel) {
+                    left_needs_full_refresh = true;
+                    dirty = true;
+                }
+                if event_is_panel_dir(&path, &state.right_panel) {
+                    right_needs_full_refresh = true;
                     dirty = true;
                 }
                 dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &path);
@@ -130,6 +140,13 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
                 dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &to);
             }
         }
+    }
+
+    if left_needs_full_refresh {
+        full_refresh_panel(&mut state.left_panel);
+    }
+    if right_needs_full_refresh {
+        full_refresh_panel(&mut state.right_panel);
     }
 
     if state.left_panel.needs_rebuild {
@@ -258,6 +275,34 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     existed
 }
 
+fn full_refresh_panel(panel: &mut PanelState) {
+    let current_name = panel
+        .entries
+        .get(panel.cursor)
+        .filter(|entry| entry.name != "..")
+        .map(|entry| entry.name.clone());
+    let saved: HashSet<PathBuf> = panel
+        .selected_entries()
+        .into_iter()
+        .map(|e| e.path.clone())
+        .collect();
+
+    match reader::read_directory(&panel.path) {
+        Ok((entries, _errors)) => {
+            panel.unfiltered_entries = entries;
+            panel.path_index.clear();
+            panel.needs_rebuild = false;
+            for entry in &mut panel.unfiltered_entries {
+                entry.selected = saved.contains(&entry.path);
+            }
+            rebuild_visible_entries(panel, current_name.as_deref());
+        }
+        Err(_) => {
+            panel.needs_rebuild = true;
+        }
+    }
+}
+
 fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>) {
     let current_name = panel
         .entries
@@ -266,11 +311,16 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
         .map(|entry| entry.name.clone())
         .or_else(|| preferred_name.map(str::to_string));
 
+    let compiled_filter = panel
+        .filter
+        .as_deref()
+        .map(|f| search::CompiledPattern::new(f, false));
+
     panel.sync_unfiltered_selection();
     panel.entries = panel
         .unfiltered_entries
         .iter()
-        .filter(|entry| entry_matches_panel(entry, panel.filter.as_deref()))
+        .filter(|entry| entry_matches_panel(entry, compiled_filter.as_ref(), panel.show_hidden))
         .cloned()
         .collect();
     sorting::sort_entries(&mut panel.entries, panel.sort_mode, panel.sort_options);
@@ -299,10 +349,14 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     panel.recalculate_selection_stats();
 }
 
-fn entry_matches_panel(entry: &reader::FileEntry, filter: Option<&str>) -> bool {
+fn entry_matches_panel(
+    entry: &reader::FileEntry,
+    compiled_filter: Option<&search::CompiledPattern>,
+    show_hidden: bool,
+) -> bool {
     entry.name == ".."
-        || filter
-            .is_none_or(|filter| search::FileSearch::matches_pattern(&entry.name, filter, false))
+        || (show_hidden || !entry.cha.is_hidden())
+            && compiled_filter.is_none_or(|pat| pat.matches(&entry.name))
 }
 
 #[cfg(test)]
@@ -531,5 +585,58 @@ mod tests {
 
         assert_eq!(panel.entries.len(), 2);
         assert_eq!(panel.total_size, 18);
+    }
+
+    #[test]
+    fn poll_watcher_events_processes_at_most_64_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut state = AppState::new();
+        state.left_panel = test_panel(dir.path());
+        state.right_panel = test_panel(dir.path());
+
+        for idx in 0..65 {
+            let file = dir.path().join(format!("file{idx}.txt"));
+            fs::write(&file, b"x").unwrap();
+            tx.send(WatchEvent::Created(file)).unwrap();
+        }
+
+        assert!(poll_watcher_events(&mut state, &rx));
+
+        let left_names: Vec<_> = state
+            .left_panel
+            .unfiltered_entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(state.left_panel.unfiltered_entries.len(), 65);
+        assert!(left_names.contains(&".."));
+        assert!(left_names.contains(&"file0.txt"));
+        assert!(!left_names.contains(&"file64.txt"));
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn full_refresh_preserves_selected_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let selected = dir.path().join("selected.txt");
+        fs::write(&selected, b"selected").unwrap();
+
+        let mut panel = test_panel(dir.path());
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &selected));
+        rebuild_visible_entries(&mut panel, None);
+        panel.entries[1].selected = true;
+        panel.sync_unfiltered_selection();
+
+        full_refresh_panel(&mut panel);
+
+        assert!(
+            panel
+                .unfiltered_entries
+                .iter()
+                .any(|entry| entry.path == selected && entry.selected)
+        );
+        assert_eq!(panel.selected_count, 1);
+        assert_eq!(panel.selected_size, 8);
     }
 }

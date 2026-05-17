@@ -73,17 +73,20 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         || CHECK_COUNTER
             .fetch_add(1, Ordering::Relaxed)
             .is_multiple_of(CHECK_INTERVAL);
-    if need_size_check {
+    if need_size_check
+        && guard
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .is_some_and(|m| m.len() > MAX_LOG_SIZE)
+    {
+        *guard = None;
         let path = log_path();
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_SIZE) {
-            *guard = None;
-            let _ = std::fs::File::create(&path);
-            match ensure_log_file() {
-                Ok(f) => *guard = Some(f),
-                Err(e) => {
-                    stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
-                    return;
-                }
+        let _ = std::fs::File::create(&path).and_then(|f| f.sync_all());
+        match ensure_log_file() {
+            Ok(f) => *guard = Some(f),
+            Err(e) => {
+                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                return;
             }
         }
     }
@@ -132,6 +135,7 @@ mod tests {
     fn reset_for_test() {
         let mut guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
         *guard = None;
+        CHECK_COUNTER.store(0, Ordering::SeqCst);
     }
 
     #[test]
@@ -175,31 +179,34 @@ mod tests {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        std::fs::write(&path, vec![b'X'; (MAX_LOG_SIZE + 1) as usize])
-            .expect("write oversized log");
-        assert!(
-            std::fs::metadata(&path)
-                .expect("read oversized file metadata")
-                .len()
-                > MAX_LOG_SIZE
-        );
+        {
+            let mut f = std::fs::File::create(&path).expect("create oversized log");
+            std::io::Write::write_all(&mut f, &vec![b'X'; (MAX_LOG_SIZE + 1) as usize])
+                .expect("write oversized log");
+        }
 
-        log(format_args!("after truncate"));
-
-        let len = std::fs::metadata(&path)
-            .expect("read truncated file metadata")
-            .len();
-        assert!(
-            len < MAX_LOG_SIZE,
-            "file should have been truncated but is {len} bytes"
-        );
-
-        let mut file = std::fs::File::open(&path).expect("open log after truncate");
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).expect("read log");
-        assert!(contents.contains("after truncate"));
+        let mut truncated = false;
+        for attempt in 0..20 {
+            reset_for_test();
+            log(format_args!("attempt {attempt}"));
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if len > 0 && len < MAX_LOG_SIZE {
+                let mut contents = String::new();
+                let _ = std::fs::File::open(&path)
+                    .expect("open log")
+                    .read_to_string(&mut contents);
+                assert!(contents.contains("attempt"));
+                truncated = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
 
         let _ = std::fs::remove_file(&path);
         reset_for_test();
+        assert!(
+            truncated,
+            "log() never acquired mutex to truncate oversized file after 20 retries"
+        );
     }
 }

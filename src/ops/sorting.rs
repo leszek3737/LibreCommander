@@ -48,40 +48,44 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
     let sensitive = options.sensitive;
 
     match mode {
-        SortMode::NameAsc => entries.sort_by_cached_key(|entry| {
-            (entry_group(entry, dir_first), name_key(entry, sensitive))
+        SortMode::NameAsc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::NameDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(name_key(entry, sensitive)),
-            )
+        SortMode::NameDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive).reverse())
         }),
-        SortMode::ExtensionAsc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                extension_key(entry, sensitive),
-                name_key(entry, sensitive),
-            )
+        SortMode::ExtensionAsc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| {
+                    cmp_extension(get_extension(&a.name), get_extension(&b.name), sensitive)
+                })
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::ExtensionDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(extension_key(entry, sensitive)),
-                name_key(entry, sensitive),
-            )
+        SortMode::ExtensionDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| {
+                    cmp_extension(get_extension(&a.name), get_extension(&b.name), sensitive)
+                        .reverse()
+                })
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
         SortMode::SizeAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                entry.len(),
+                entry.size(),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                Reverse(entry.len()),
+                Reverse(entry.size()),
                 name_key(entry, sensitive),
             )
         }),
@@ -152,11 +156,19 @@ fn name_key(entry: &FileEntry, sensitive: bool) -> (String, String) {
     }
 }
 
-fn extension_key(entry: &FileEntry, sensitive: bool) -> String {
+fn cmp_name(a: &str, b: &str, sensitive: bool) -> Ordering {
     if sensitive {
-        get_extension(&entry.name).to_string()
+        a.cmp(b)
     } else {
-        get_extension(&entry.name).to_lowercase()
+        cmp_ignore_case(a, b).then_with(|| a.as_bytes().cmp(b.as_bytes()))
+    }
+}
+
+fn cmp_extension(a: &str, b: &str, sensitive: bool) -> Ordering {
+    if sensitive {
+        a.cmp(b)
+    } else {
+        cmp_ignore_case(a, b).then_with(|| a.as_bytes().cmp(b.as_bytes()))
     }
 }
 

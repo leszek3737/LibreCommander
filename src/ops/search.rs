@@ -78,6 +78,264 @@ impl<const N: usize> std::ops::IndexMut<usize> for SmallCharBuf<N> {
     }
 }
 
+pub enum CompiledPattern {
+    Plain {
+        needle: Vec<char>,
+        needle_ascii: Option<String>,
+        insensitive: bool,
+    },
+    WildcardSimple {
+        prefix: Option<Vec<char>>,
+        suffix: Option<Vec<char>>,
+        contains: bool,
+        insensitive: bool,
+    },
+    WildcardDp {
+        chars: Vec<char>,
+        insensitive: bool,
+    },
+}
+
+impl CompiledPattern {
+    pub fn new(pattern: &str, case_sensitive: bool) -> Self {
+        let insensitive = !case_sensitive;
+
+        if !pattern.contains(['*', '?']) {
+            let needle = if insensitive {
+                pattern.chars().flat_map(|c| c.to_lowercase()).collect()
+            } else {
+                pattern.chars().collect()
+            };
+            let needle_ascii = if insensitive && pattern.is_ascii() {
+                Some(pattern.to_ascii_lowercase())
+            } else {
+                None
+            };
+            return Self::Plain {
+                needle,
+                needle_ascii,
+                insensitive,
+            };
+        }
+
+        if let Some(simple) = Self::try_simple_wildcard(pattern, insensitive) {
+            return simple;
+        }
+
+        let chars = if insensitive {
+            pattern.chars().flat_map(|c| c.to_lowercase()).collect()
+        } else {
+            pattern.chars().collect()
+        };
+        Self::WildcardDp { chars, insensitive }
+    }
+
+    fn try_simple_wildcard(pattern: &str, insensitive: bool) -> Option<Self> {
+        if pattern.contains('?') {
+            return None;
+        }
+        let star_count = pattern.chars().filter(|&c| c == '*').count();
+        if star_count == 1 {
+            let pos = pattern.find('*')?;
+            let prefix_str = &pattern[..pos];
+            let suffix_str = &pattern[pos + 1..];
+            let prefix = Self::maybe_lower(prefix_str, insensitive);
+            let suffix = Self::maybe_lower(suffix_str, insensitive);
+            return Some(Self::WildcardSimple {
+                prefix,
+                suffix,
+                contains: false,
+                insensitive,
+            });
+        }
+        if star_count == 2 {
+            let f = pattern.find('*')?;
+            let l = pattern.rfind('*')?;
+            if l <= f {
+                return None;
+            }
+            let prefix_str = &pattern[..f];
+            let inner_str = &pattern[f + 1..l];
+            let suffix_str = &pattern[l + 1..];
+            if inner_str.is_empty() {
+                return None;
+            }
+            let prefix_empty = prefix_str.is_empty();
+            let suffix_empty = suffix_str.is_empty();
+            if prefix_empty && suffix_empty {
+                let inner = Self::maybe_lower(inner_str, insensitive)?;
+                return Some(Self::WildcardSimple {
+                    prefix: None,
+                    suffix: Some(inner),
+                    contains: true,
+                    insensitive,
+                });
+            }
+        }
+        None
+    }
+
+    fn maybe_lower(s: &str, insensitive: bool) -> Option<Vec<char>> {
+        if s.is_empty() {
+            return None;
+        }
+        Some(if insensitive {
+            s.chars().flat_map(|c| c.to_lowercase()).collect()
+        } else {
+            s.chars().collect()
+        })
+    }
+
+    pub fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Plain {
+                needle,
+                needle_ascii,
+                insensitive: true,
+            } => {
+                if needle.is_empty() {
+                    return true;
+                }
+                if let Some(ascii_needle) = needle_ascii
+                    && name.is_ascii()
+                {
+                    return name
+                        .as_bytes()
+                        .windows(ascii_needle.len())
+                        .any(|w| w.eq_ignore_ascii_case(ascii_needle.as_bytes()));
+                }
+                Self::contains_case_insensitive_compiled(name, needle)
+            }
+            Self::Plain {
+                needle,
+                needle_ascii: _,
+                insensitive: false,
+            } => {
+                if needle.is_empty() {
+                    return true;
+                }
+                name.contains(needle.iter().collect::<String>().as_str())
+            }
+            Self::WildcardSimple {
+                prefix,
+                suffix,
+                contains,
+                insensitive,
+            } => {
+                let name_chars: Vec<char> = if *insensitive {
+                    name.chars().flat_map(|c| c.to_lowercase()).collect()
+                } else {
+                    name.chars().collect()
+                };
+                if *contains {
+                    return suffix.as_deref().is_some_and(|suffix_chars| {
+                        name_chars
+                            .windows(suffix_chars.len())
+                            .any(|window| window == suffix_chars)
+                    });
+                }
+                if let Some(prefix_chars) = prefix {
+                    if name_chars.len() < prefix_chars.len() {
+                        return false;
+                    }
+                    if name_chars[..prefix_chars.len()] != prefix_chars[..] {
+                        return false;
+                    }
+                }
+                if let Some(suffix_chars) = suffix {
+                    if name_chars.len() < suffix_chars.len() {
+                        return false;
+                    }
+                    let start = name_chars.len() - suffix_chars.len();
+                    if name_chars[start..] != suffix_chars[..] {
+                        return false;
+                    }
+                }
+                true
+            }
+            Self::WildcardDp { chars, insensitive } => {
+                let name_chars: Vec<char> = if *insensitive {
+                    name.chars().flat_map(|c| c.to_lowercase()).collect()
+                } else {
+                    name.chars().collect()
+                };
+                Self::dp_wildcard_match(&name_chars, chars)
+            }
+        }
+    }
+
+    fn contains_case_insensitive_compiled(haystack: &str, needle_lower: &[char]) -> bool {
+        if needle_lower.is_empty() {
+            return true;
+        }
+        let needle_len = needle_lower.len();
+        let mut buf = SmallCharBuf::<64>::new(needle_len);
+        let mut filled = 0usize;
+        let mut head = 0usize;
+
+        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+            buf[head] = c;
+            head = (head + 1) % needle_len;
+            if filled < needle_len {
+                filled += 1;
+            }
+            if filled == needle_len {
+                let mut all_match = true;
+                for (i, &nc) in needle_lower.iter().enumerate() {
+                    let idx = (head + i) % needle_len;
+                    if buf[idx] != nc {
+                        all_match = false;
+                        break;
+                    }
+                }
+                if all_match {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn dp_wildcard_match(name_chars: &[char], pattern_chars: &[char]) -> bool {
+        let n = name_chars.len();
+        let m = pattern_chars.len();
+
+        let mut dp_prev = vec![false; m + 1];
+        let mut dp_curr = vec![false; m + 1];
+        dp_prev[0] = true;
+
+        for j in 1..=m {
+            if pattern_chars[j - 1] == '*' {
+                dp_prev[j] = dp_prev[j - 1];
+            }
+        }
+
+        for i in 1..=n {
+            dp_curr.fill(false);
+            for j in 1..=m {
+                match pattern_chars[j - 1] {
+                    '*' => {
+                        dp_curr[j] = dp_prev[j] || dp_curr[j - 1];
+                    }
+                    '?' => {
+                        dp_curr[j] = dp_prev[j - 1];
+                    }
+                    c => {
+                        dp_curr[j] = if name_chars[i - 1] == c {
+                            dp_prev[j - 1]
+                        } else {
+                            false
+                        };
+                    }
+                }
+            }
+            std::mem::swap(&mut dp_prev, &mut dp_curr);
+        }
+
+        dp_prev[m]
+    }
+}
+
 pub struct FileSearch;
 
 impl FileSearch {
@@ -98,11 +356,11 @@ impl FileSearch {
     ) -> SearchOutcome<FileEntry> {
         let mut outcome = SearchOutcome::default();
         let mut item_count: usize = 0;
+        let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
         Self::search_files_recursive(
             path,
-            pattern,
+            &compiled_pattern,
             recursive,
-            case_sensitive,
             &mut outcome,
             0,
             &mut item_count,
@@ -112,9 +370,8 @@ impl FileSearch {
 
     fn search_files_recursive(
         path: &Path,
-        pattern: &str,
+        pattern: &CompiledPattern,
         recursive: bool,
-        case_sensitive: bool,
         outcome: &mut SearchOutcome<FileEntry>,
         depth: usize,
         item_count: &mut usize,
@@ -175,7 +432,7 @@ impl FileSearch {
 
             let name = entry.file_name();
             let name_lossy = name.to_string_lossy();
-            if Self::matches_pattern(&name_lossy, pattern, case_sensitive) {
+            if pattern.matches(&name_lossy) {
                 match get_file_info(&entry_path) {
                     Ok(file_entry) => outcome.matches.push(file_entry),
                     Err(err) => outcome.errors.push(format!(
@@ -194,7 +451,6 @@ impl FileSearch {
                     &entry_path,
                     pattern,
                     recursive,
-                    case_sensitive,
                     outcome,
                     depth + 1,
                     item_count,
@@ -517,81 +773,8 @@ impl FileSearch {
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {
-        if !pattern.contains(['*', '?']) {
-            return if case_sensitive {
-                name.contains(pattern)
-            } else {
-                Self::contains_case_insensitive_str(name, pattern)
-            };
-        }
-
-        // Wildcard path: Vec<char> required for DP indexing, but pre-allocate.
-        let (name_chars, pattern_chars): (Vec<char>, Vec<char>) = if case_sensitive {
-            let nc = name.chars().collect::<Vec<char>>();
-            let pc = pattern.chars().collect::<Vec<char>>();
-            (nc, pc)
-        } else {
-            let nc = name
-                .chars()
-                .flat_map(|c| c.to_lowercase())
-                .collect::<Vec<char>>();
-            let pc = pattern
-                .chars()
-                .flat_map(|c| c.to_lowercase())
-                .collect::<Vec<char>>();
-            (nc, pc)
-        };
-        let n = name_chars.len();
-        let m = pattern_chars.len();
-
-        let mut dp_prev = vec![false; m + 1];
-        let mut dp_curr = vec![false; m + 1];
-        dp_prev[0] = true;
-
-        for j in 1..=m {
-            if pattern_chars[j - 1] == '*' {
-                dp_prev[j] = dp_prev[j - 1];
-            }
-        }
-
-        for i in 1..=n {
-            dp_curr.fill(false);
-            for j in 1..=m {
-                match pattern_chars[j - 1] {
-                    '*' => {
-                        dp_curr[j] = dp_prev[j] || dp_curr[j - 1];
-                    }
-                    '?' => {
-                        dp_curr[j] = dp_prev[j - 1];
-                    }
-                    c => {
-                        dp_curr[j] = if name_chars[i - 1] == c {
-                            dp_prev[j - 1]
-                        } else {
-                            false
-                        };
-                    }
-                }
-            }
-            std::mem::swap(&mut dp_prev, &mut dp_curr);
-        }
-
-        dp_prev[m]
-    }
-
-    /// Fast ASCII path, Unicode fallback with full lowercase expansion.
-    fn contains_case_insensitive_str(haystack: &str, needle: &str) -> bool {
-        if needle.is_empty() {
-            return true;
-        }
-        if haystack.is_ascii() && needle.is_ascii() {
-            return haystack
-                .as_bytes()
-                .windows(needle.len())
-                .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()));
-        }
-        let needle_lower: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
-        Self::contains_case_insensitive(haystack, &needle_lower)
+        let compiled = CompiledPattern::new(pattern, case_sensitive);
+        compiled.matches(name)
     }
 }
 
@@ -633,9 +816,82 @@ mod tests {
         assert!(FileSearch::matches_pattern("file.txt", "file.*", true));
         assert!(FileSearch::matches_pattern("file.txt", "*", true));
         assert!(FileSearch::matches_pattern(
+            "prefix-foo-suffix",
+            "*foo*",
+            true
+        ));
+        assert!(FileSearch::matches_pattern(
             "long_file_name.txt",
             "*.txt",
             true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_multi_star_order() {
+        assert!(FileSearch::matches_pattern(
+            "pre-mid-tail",
+            "pre*mid*",
+            true
+        ));
+        assert!(FileSearch::matches_pattern(
+            "head-mid-suf",
+            "*mid*suf",
+            true
+        ));
+        assert!(FileSearch::matches_pattern("abXYcdZZ", "ab*cd*", true));
+        assert!(FileSearch::matches_pattern("ZZabXYcd", "*ab*cd", true));
+        assert!(FileSearch::matches_pattern(
+            "preXmidYsuf",
+            "pre*mid*suf",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_multi_star_order_false() {
+        assert!(!FileSearch::matches_pattern(
+            "mid-tail-pre",
+            "pre*mid*",
+            true
+        ));
+        assert!(!FileSearch::matches_pattern(
+            "head-suf-mid",
+            "*mid*suf",
+            true
+        ));
+        assert!(!FileSearch::matches_pattern("cdXYabZZ", "ab*cd*", true));
+        assert!(!FileSearch::matches_pattern("ZZcdXYab", "*ab*cd", true));
+        assert!(!FileSearch::matches_pattern(
+            "preXsufYmid",
+            "pre*mid*suf",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_multi_star_case_insensitive() {
+        assert!(FileSearch::matches_pattern(
+            "PRE-MID-tail",
+            "pre*mid*",
+            false
+        ));
+        assert!(FileSearch::matches_pattern(
+            "head-MID-SUF",
+            "*mid*suf",
+            false
+        ));
+        assert!(FileSearch::matches_pattern("ABxyCDzz", "ab*cd*", false));
+        assert!(FileSearch::matches_pattern("zzABxyCD", "*ab*cd", false));
+        assert!(FileSearch::matches_pattern(
+            "PREfooMIDbarSUF",
+            "pre*mid*suf",
+            false
+        ));
+        assert!(FileSearch::matches_pattern(
+            "prefix-FOO-suffix",
+            "*foo*",
+            false
         ));
     }
 

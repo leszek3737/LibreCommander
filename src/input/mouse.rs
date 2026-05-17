@@ -3,12 +3,13 @@ use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
+use crate::app::shell;
 use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::viewer;
 
-use super::dialogs::dismiss_dialog;
-use crate::app::panel_ops::{refresh_both, refresh_panel};
+use super::dialogs::{check_overwrite_conflict, dismiss_dialog};
+use crate::app::panel_ops::{refresh_active, refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
@@ -36,7 +37,15 @@ pub fn handle_mouse_event(
         mouse_event.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) {
-        handle_mouse_scroll(state, mouse_event.kind, col, row, width, height);
+        handle_mouse_scroll(
+            state,
+            _viewer_state,
+            mouse_event.kind,
+            col,
+            row,
+            width,
+            height,
+        );
         return None;
     }
 
@@ -151,6 +160,7 @@ fn panel_bounds(height: u16) -> (u16, u16) {
 
 fn handle_mouse_scroll(
     state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
     kind: crossterm::event::MouseEventKind,
     col: u16,
     row: u16,
@@ -170,12 +180,26 @@ fn handle_mouse_scroll(
             message,
             scroll_offset: off,
         }) => {
-            let visible = crate::ui::dialogs::help_visible_height(Rect::new(0, 0, width, height));
-            let total_lines = message.lines().count();
+            let term_rect = Rect::new(0, 0, width, height);
+            let visible = crate::ui::dialogs::help_visible_height(term_rect);
+            let total_lines = crate::ui::dialogs::wrapped_line_count(
+                message,
+                crate::ui::dialogs::help_message_width(term_rect),
+            );
             *off = apply_scroll_delta(*off, delta, visible, total_lines);
             return;
         }
         AppMode::Dialog(DialogKind::Error(_)) => {
+            return;
+        }
+        AppMode::Viewing => {
+            if let Some(vs) = viewer_state {
+                match kind {
+                    MouseEventKind::ScrollUp => vs.scroll_up(SCROLL_LINES),
+                    MouseEventKind::ScrollDown => vs.scroll_down(SCROLL_LINES),
+                    _ => {}
+                }
+            }
             return;
         }
         _ => {}
@@ -235,7 +259,7 @@ fn handle_mouse_dialog(
     width: u16,
     height: u16,
 ) -> Option<MouseOutcome> {
-    if let AppMode::Dialog(DialogKind::Progress(_, _)) = state.mode {
+    if let AppMode::Dialog(DialogKind::Progress(_, _, _)) = state.mode {
         return handle_progress_click(state, running_job, col, row, width, height);
     }
 
@@ -286,13 +310,18 @@ fn handle_confirm_click(
         if state.dialog_selection == new_sel {
             if new_sel == 0 {
                 if state.pending_action.is_some() {
-                    start_confirmed_action(state, running_job);
-                    state.dialog_selection = 0;
-                    if state.status_message.is_some() {
-                        dismiss_dialog(state);
-                        refresh_both(state);
+                    if let Some(conflicting) = check_overwrite_conflict(state) {
+                        state.dialog_selection = 0;
+                        state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
                         return Some(MouseOutcome::Consumed);
                     }
+                    start_confirmed_action(state, running_job);
+                    finish_confirmed_action(state);
+                    return Some(MouseOutcome::Consumed);
+                }
+                if let Some(cmd) = state.pending_menu_command.take() {
+                    state.mode = AppMode::Normal;
+                    shell::run_shell_command(state, &cmd, true, refresh_active);
                     return Some(MouseOutcome::Consumed);
                 }
                 dismiss_dialog(state);
@@ -393,7 +422,12 @@ fn handle_mouse_menu_bar(
     row: u16,
     width: u16,
 ) -> Option<MouseOutcome> {
-    if row != 0 || !matches!(state.mode, AppMode::Normal | AppMode::Menu) {
+    if row != 0
+        || !matches!(
+            state.mode,
+            AppMode::Normal | AppMode::Menu | AppMode::DirectoryTree | AppMode::Search
+        )
+    {
         return None;
     }
     for (i, title) in MENU_TITLES.iter().enumerate() {
@@ -402,7 +436,10 @@ fn handle_mouse_menu_bar(
         if col >= x_offset && col < x_offset + title_width {
             state.menu_selected = i;
             state.menu_item_selected = 0;
-            state.mode = AppMode::Menu;
+            if state.mode != AppMode::Menu {
+                state.prev_mode = Some(state.mode.clone());
+                state.mode = AppMode::Menu;
+            }
             return Some(MouseOutcome::Consumed);
         }
     }
@@ -439,7 +476,7 @@ fn handle_mouse_menu_dropdown(
             return Some(MouseOutcome::MenuAction);
         }
     }
-    state.mode = AppMode::Normal;
+    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
     Some(MouseOutcome::Consumed)
 }
 
@@ -625,8 +662,10 @@ fn handle_mouse_up(state: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
-    use crate::app::types::{ConfirmDetails, InputAction};
+    use crate::app::types::{ConfirmDetails, InputAction, PendingAction};
 
     #[test]
     fn mouse_input_dialog_outside_preserves_text() {
@@ -788,7 +827,7 @@ mod tests {
     #[test]
     fn mouse_progress_click_is_consumed() {
         let mut state = AppState {
-            mode: AppMode::Dialog(DialogKind::Progress("Copying".to_string(), 0.5)),
+            mode: AppMode::Dialog(DialogKind::Progress("Copying".to_string(), 0.5, true)),
             ..Default::default()
         };
         let mut running_job = None;
@@ -813,7 +852,15 @@ mod tests {
             ..Default::default()
         };
 
-        handle_mouse_scroll(&mut state, MouseEventKind::ScrollDown, 0, 0, 80, 40);
+        handle_mouse_scroll(
+            &mut state,
+            &mut None,
+            MouseEventKind::ScrollDown,
+            0,
+            0,
+            80,
+            40,
+        );
 
         assert!(
             matches!(&state.mode, AppMode::Dialog(DialogKind::Help { scroll_offset, .. }) if *scroll_offset > 0),
@@ -909,6 +956,21 @@ mod tests {
     }
 
     #[test]
+    fn mouse_menu_dropdown_outside_restores_previous_mode() {
+        let mut state = AppState {
+            mode: AppMode::Menu,
+            prev_mode: Some(AppMode::Search),
+            ..Default::default()
+        };
+
+        let outcome = handle_mouse_menu_dropdown(&mut state, 79, 23, 80);
+
+        assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
+        assert!(matches!(state.mode, AppMode::Search));
+        assert!(state.prev_mode.is_none());
+    }
+
+    #[test]
     fn handle_right_click_in_panel_emits_esc() {
         let mut state = AppState::default();
 
@@ -939,5 +1001,91 @@ mod tests {
 
         let outcome = handle_middle_down(&mut state, 40, 10, 80, 24);
         assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
+    }
+
+    #[test]
+    fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dest_dir = tmp.path().join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(src_dir.join("clash.txt"), b"src").unwrap();
+        std::fs::write(dest_dir.join("clash.txt"), b"dest").unwrap();
+
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Copy", "Proceed?",
+            ))),
+            dialog_selection: 0,
+            pending_action: Some(PendingAction::Copy {
+                sources: vec![src_dir.join("clash.txt")],
+                dest: dest_dir,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let height: u16 = 24;
+        let width: u16 = 80;
+        let dialog_height = height * 40 / 100;
+        let btn_row = {
+            let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+            dialog_y + dialog_height.saturating_sub(2)
+        };
+
+        let _outcome =
+            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        ));
+        assert!(state.pending_action.is_some());
+    }
+
+    #[test]
+    fn mouse_confirm_click_without_conflict_starts_action() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dest_dir = tmp.path().join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(src_dir.join("unique.txt"), b"data").unwrap();
+
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Copy", "Proceed?",
+            ))),
+            dialog_selection: 0,
+            pending_action: Some(PendingAction::Copy {
+                sources: vec![src_dir.join("unique.txt")],
+                dest: dest_dir,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let height: u16 = 24;
+        let width: u16 = 80;
+        let dialog_height = height * 40 / 100;
+        let btn_row = {
+            let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+            dialog_y + dialog_height.saturating_sub(2)
+        };
+
+        let _outcome =
+            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+
+        assert!(!matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        ));
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::Progress(_, _, _))
+        ));
     }
 }

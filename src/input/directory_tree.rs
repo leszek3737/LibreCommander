@@ -4,7 +4,6 @@ use lc::app::{dir_tree, types::*};
 use lc::ui::{DIR_TREE_OVERHEAD_ROWS, viewer};
 
 use crate::app::panel_ops::refresh_active;
-use crate::input::mode_dispatch;
 
 #[allow(clippy::too_many_lines)]
 pub(crate) fn handle_directory_tree(
@@ -93,9 +92,6 @@ pub(crate) fn handle_directory_tree(
                 refresh_active(state);
                 state.mode = AppMode::Normal;
             }
-        }
-        KeyCode::Char(c) if c != 'c' && c != 'j' && c != 'k' => {
-            mode_dispatch::initiate_search(state, AppMode::DirectoryTree, c);
         }
         _ => {}
     }
