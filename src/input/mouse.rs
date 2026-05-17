@@ -7,7 +7,7 @@ use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::viewer;
 
-use super::dialogs::dismiss_dialog;
+use super::dialogs::{check_overwrite_conflict, dismiss_dialog};
 use crate::app::panel_ops::{refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
@@ -286,13 +286,13 @@ fn handle_confirm_click(
         if state.dialog_selection == new_sel {
             if new_sel == 0 {
                 if state.pending_action.is_some() {
-                    start_confirmed_action(state, running_job);
-                    state.dialog_selection = 0;
-                    if state.status_message.is_some() {
-                        dismiss_dialog(state);
-                        refresh_both(state);
+                    if let Some(conflicting) = check_overwrite_conflict(state) {
+                        state.dialog_selection = 0;
+                        state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
                         return Some(MouseOutcome::Consumed);
                     }
+                    start_confirmed_action(state, running_job);
+                    finish_confirmed_action(state);
                     return Some(MouseOutcome::Consumed);
                 }
                 dismiss_dialog(state);
@@ -625,8 +625,10 @@ fn handle_mouse_up(state: &mut AppState) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
-    use crate::app::types::{ConfirmDetails, InputAction};
+    use crate::app::types::{ConfirmDetails, InputAction, PendingAction};
 
     #[test]
     fn mouse_input_dialog_outside_preserves_text() {
@@ -939,5 +941,91 @@ mod tests {
 
         let outcome = handle_middle_down(&mut state, 40, 10, 80, 24);
         assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
+    }
+
+    #[test]
+    fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dest_dir = tmp.path().join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(src_dir.join("clash.txt"), b"src").unwrap();
+        std::fs::write(dest_dir.join("clash.txt"), b"dest").unwrap();
+
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Copy", "Proceed?",
+            ))),
+            dialog_selection: 0,
+            pending_action: Some(PendingAction::Copy {
+                sources: vec![src_dir.join("clash.txt")],
+                dest: dest_dir,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let height: u16 = 24;
+        let width: u16 = 80;
+        let dialog_height = height * 40 / 100;
+        let btn_row = {
+            let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+            dialog_y + dialog_height.saturating_sub(2)
+        };
+
+        let _outcome =
+            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        ));
+        assert!(state.pending_action.is_some());
+    }
+
+    #[test]
+    fn mouse_confirm_click_without_conflict_starts_action() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dest_dir = tmp.path().join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(src_dir.join("unique.txt"), b"data").unwrap();
+
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Copy", "Proceed?",
+            ))),
+            dialog_selection: 0,
+            pending_action: Some(PendingAction::Copy {
+                sources: vec![src_dir.join("unique.txt")],
+                dest: dest_dir,
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let height: u16 = 24;
+        let width: u16 = 80;
+        let dialog_height = height * 40 / 100;
+        let btn_row = {
+            let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+            dialog_y + dialog_height.saturating_sub(2)
+        };
+
+        let _outcome =
+            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+
+        assert!(!matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        ));
+        assert!(matches!(
+            state.mode,
+            AppMode::Dialog(DialogKind::Progress(_, _))
+        ));
     }
 }
