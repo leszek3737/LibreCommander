@@ -78,14 +78,14 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         SortMode::SizeAsc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                entry.len(),
+                entry.size(),
                 name_key(entry, sensitive),
             )
         }),
         SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
             (
                 entry_group(entry, dir_first),
-                Reverse(entry.len()),
+                Reverse(entry.size()),
                 name_key(entry, sensitive),
             )
         }),

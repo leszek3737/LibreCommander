@@ -460,6 +460,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             confirm_delete(state);
         }
         KeyCode::F(9) => {
+            state.prev_mode = Some(state.mode.clone());
             state.mode = AppMode::Menu;
             state.menu_item_selected = 0;
         }
@@ -737,7 +738,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             {
                 state.mode = AppMode::Dialog(app::types::DialogKind::Properties {
                     name: entry.name.clone(),
-                    size: entry.len(),
+                    size: entry.size(),
                     mtime: entry.mtime(),
                     permissions: entry.mode_bits(),
                     owner: entry.owner.clone(),

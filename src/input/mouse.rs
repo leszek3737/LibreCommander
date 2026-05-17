@@ -37,7 +37,15 @@ pub fn handle_mouse_event(
         mouse_event.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) {
-        handle_mouse_scroll(state, mouse_event.kind, col, row, width, height);
+        handle_mouse_scroll(
+            state,
+            _viewer_state,
+            mouse_event.kind,
+            col,
+            row,
+            width,
+            height,
+        );
         return None;
     }
 
@@ -152,6 +160,7 @@ fn panel_bounds(height: u16) -> (u16, u16) {
 
 fn handle_mouse_scroll(
     state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
     kind: crossterm::event::MouseEventKind,
     col: u16,
     row: u16,
@@ -181,6 +190,16 @@ fn handle_mouse_scroll(
             return;
         }
         AppMode::Dialog(DialogKind::Error(_)) => {
+            return;
+        }
+        AppMode::Viewing => {
+            if let Some(vs) = viewer_state {
+                match kind {
+                    MouseEventKind::ScrollUp => vs.scroll_up(SCROLL_LINES),
+                    MouseEventKind::ScrollDown => vs.scroll_down(SCROLL_LINES),
+                    _ => {}
+                }
+            }
             return;
         }
         _ => {}
@@ -403,7 +422,12 @@ fn handle_mouse_menu_bar(
     row: u16,
     width: u16,
 ) -> Option<MouseOutcome> {
-    if row != 0 || !matches!(state.mode, AppMode::Normal | AppMode::Menu) {
+    if row != 0
+        || !matches!(
+            state.mode,
+            AppMode::Normal | AppMode::Menu | AppMode::DirectoryTree | AppMode::Search
+        )
+    {
         return None;
     }
     for (i, title) in MENU_TITLES.iter().enumerate() {
@@ -412,7 +436,10 @@ fn handle_mouse_menu_bar(
         if col >= x_offset && col < x_offset + title_width {
             state.menu_selected = i;
             state.menu_item_selected = 0;
-            state.mode = AppMode::Menu;
+            if state.mode != AppMode::Menu {
+                state.prev_mode = Some(state.mode.clone());
+                state.mode = AppMode::Menu;
+            }
             return Some(MouseOutcome::Consumed);
         }
     }
@@ -825,7 +852,15 @@ mod tests {
             ..Default::default()
         };
 
-        handle_mouse_scroll(&mut state, MouseEventKind::ScrollDown, 0, 0, 80, 40);
+        handle_mouse_scroll(
+            &mut state,
+            &mut None,
+            MouseEventKind::ScrollDown,
+            0,
+            0,
+            80,
+            40,
+        );
 
         assert!(
             matches!(&state.mode, AppMode::Dialog(DialogKind::Help { scroll_offset, .. }) if *scroll_offset > 0),

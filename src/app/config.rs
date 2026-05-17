@@ -56,7 +56,7 @@ pub struct PersistedSetup {
     pub active_panel: String,
     #[serde(default = "default_true")]
     pub dir_first: bool,
-    #[serde(default, alias = "sort_sensitive")]
+    #[serde(default, rename = "sort_sensitive", alias = "sensitive")]
     pub sensitive: bool,
     #[serde(default)]
     pub left: PersistedPanel,

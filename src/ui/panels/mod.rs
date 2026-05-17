@@ -238,7 +238,7 @@ fn format_entry_line(
     let size_str = if entry.is_dir() {
         String::from("     <DIR>")
     } else {
-        format!("{:>10}", format_size(entry.len()))
+        format!("{:>10}", format_size(entry.size()))
     };
     let date_str = format_time(entry.mtime());
     let suffix = build_suffix(entry, &size_str, &date_str, width, show_permissions);
@@ -381,7 +381,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
 
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
-        let size_str = format_size(entry.len());
+        let size_str = format_size(entry.size());
         let metadata = status_metadata(&size_str, entry, panel.show_permissions);
         let full_info = format!("{} | {metadata}", entry.name);
         let full_width = UnicodeWidthStr::width(full_info.as_str());

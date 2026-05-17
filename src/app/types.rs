@@ -508,8 +508,7 @@ impl FileEntry {
         }
     }
 
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> u64 {
+    pub fn size(&self) -> u64 {
         self.cha.len()
     }
 
@@ -599,7 +598,7 @@ impl FileEntry {
     }
 
     pub fn display_size(&self) -> String {
-        Self::format_size(self.len())
+        Self::format_size(self.size())
     }
 
     pub fn format_size(size: u64) -> String {
@@ -703,7 +702,7 @@ impl PanelState {
                 return;
             }
             entry.selected = !entry.selected;
-            let size = entry.len();
+            let size = entry.size();
             let selected = entry.selected;
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
@@ -717,7 +716,7 @@ impl PanelState {
                 return;
             }
             entry.selected = selected;
-            let size = entry.len();
+            let size = entry.size();
             let path = entry.path.clone();
             self.update_selection_stats(size, selected);
             self.set_unfiltered_selection(&path, selected);
@@ -783,10 +782,10 @@ impl PanelState {
             &self.unfiltered_entries
         };
         for entry in source {
-            self.total_size = self.total_size.saturating_add(entry.len());
+            self.total_size = self.total_size.saturating_add(entry.size());
             if entry.selected {
                 self.selected_count = self.selected_count.saturating_add(1);
-                self.selected_size = self.selected_size.saturating_add(entry.len());
+                self.selected_size = self.selected_size.saturating_add(entry.size());
             }
         }
     }
