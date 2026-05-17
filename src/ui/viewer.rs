@@ -5,6 +5,7 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::borrow::Cow;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -26,12 +27,12 @@ struct SearchLineMatch {
 
 pub struct ViewerState {
     pub file_path: PathBuf,
-    pub content: Vec<String>,
+    line_offsets: Vec<usize>,
     pub scroll_offset: usize,
     pub horizontal_offset: usize,
     pub line_count: usize,
     pub search_query: Option<String>,
-    pub search_matches: Vec<(usize, usize, usize)>, // (line, col, highlight_len)
+    pub search_matches: Vec<(usize, usize, usize)>,
     search_matches_by_line: Vec<SearchLineMatch>,
     pub current_match: Option<usize>,
     pub wrap_lines: bool,
@@ -92,6 +93,74 @@ impl ViewerState {
         Self::open_with_cancel(path, None)
     }
 
+    fn compute_line_offsets(bytes: &[u8]) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        if bytes.is_empty() {
+            return offsets;
+        }
+        offsets.push(0);
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\n' {
+                let next = i + 1;
+                if next < bytes.len() {
+                    offsets.push(next);
+                }
+            }
+            i += 1;
+        }
+        offsets
+    }
+
+    fn compute_max_line_width(line_offsets: &[usize], raw_bytes: &[u8]) -> usize {
+        let mut max_w = 0;
+        for (i, &start) in line_offsets.iter().enumerate() {
+            let end = line_offsets.get(i + 1).copied().unwrap_or(raw_bytes.len());
+            let line_end = if end > 0 && raw_bytes.get(end - 1) == Some(&b'\n') {
+                end - 1
+            } else {
+                end
+            };
+            let w = match std::str::from_utf8(&raw_bytes[start..line_end]) {
+                Ok(s) => unicode_width::UnicodeWidthStr::width(s),
+                Err(_) => {
+                    let cow = String::from_utf8_lossy(&raw_bytes[start..line_end]);
+                    unicode_width::UnicodeWidthStr::width(cow.as_ref())
+                }
+            };
+            if w > max_w {
+                max_w = w;
+            }
+        }
+        max_w
+    }
+
+    pub fn get_line(&self, idx: usize) -> Cow<'_, str> {
+        if self.raw_bytes.is_empty() && idx == 0 {
+            return Cow::Borrowed("[Empty file]");
+        }
+        let start = *self.line_offsets.get(idx).unwrap_or(&0);
+        let end = self
+            .line_offsets
+            .get(idx + 1)
+            .copied()
+            .unwrap_or(self.raw_bytes.len());
+        let line_end = if end > start && self.raw_bytes.get(end - 1) == Some(&b'\n') {
+            end - 1
+        } else {
+            end
+        };
+        if line_end <= start {
+            return Cow::Borrowed("");
+        }
+        match std::str::from_utf8(&self.raw_bytes[start..line_end]) {
+            Ok(s) => Cow::Borrowed(s),
+            Err(_) => {
+                Cow::Owned(String::from_utf8_lossy(&self.raw_bytes[start..line_end]).into_owned())
+            }
+        }
+    }
+
     fn open_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<Self> {
         const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
         const READ_CHUNK: usize = 64 * 1024;
@@ -124,33 +193,30 @@ impl ViewerState {
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
 
-        let (content, has_invalid_utf8) = if raw_bytes.is_empty() {
-            (vec!["[Empty file]".to_string()], false)
-        } else if open_as_text {
-            let has_invalid = !file_truncated && std::str::from_utf8(&raw_bytes).is_err();
-            let content_str = String::from_utf8_lossy(&raw_bytes);
-            let mut content: Vec<String> = content_str.lines().map(String::from).collect();
-            if raw_bytes.last() == Some(&b'\n') {
-                content.push(String::new());
-            }
-            (content, has_invalid)
+        let has_invalid_utf8 =
+            !raw_bytes.is_empty() && open_as_text && std::str::from_utf8(&raw_bytes).is_err();
+
+        let line_offsets = if raw_bytes.is_empty() || !open_as_text {
+            Vec::new()
         } else {
-            let mime_label = mime.as_deref().unwrap_or("unknown MIME");
-            let msg = vec![format!(
-                "Binary file ({mime_label}, {file_size} bytes). Opened in Hex mode."
-            )];
-            (msg, false)
+            Self::compute_line_offsets(&raw_bytes)
         };
-        let line_count = content.len();
-        let max_line_width = content
-            .iter()
-            .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
-            .max()
-            .unwrap_or(0);
+        let line_count = if raw_bytes.is_empty() {
+            1
+        } else if !open_as_text {
+            raw_bytes.len().div_ceil(HEX_BYTES_PER_LINE)
+        } else {
+            line_offsets.len()
+        };
+        let max_line_width = if open_as_text && !raw_bytes.is_empty() {
+            Self::compute_max_line_width(&line_offsets, &raw_bytes)
+        } else {
+            0
+        };
 
         Ok(ViewerState {
             file_path: path.to_path_buf(),
-            content,
+            line_offsets,
             scroll_offset: 0,
             horizontal_offset: 0,
             line_count,
@@ -217,13 +283,13 @@ impl ViewerState {
                 }
                 acc += h;
             }
-            return (self.content.len().saturating_sub(1), 0);
+            return (self.line_count.saturating_sub(1), 0);
         }
         let idx = self
             .visual_offsets
             .partition_point(|&offset| offset <= visual_row);
         if idx >= self.visual_offsets.len() {
-            return (self.content.len().saturating_sub(1), 0);
+            return (self.line_count.saturating_sub(1), 0);
         }
         let acc_before = if idx == 0 {
             0
@@ -312,12 +378,13 @@ impl ViewerState {
         let mut lower_buf = String::new();
         let mut byte_map_buf = Vec::new();
 
-        for (line_idx, line) in self.content.iter().enumerate() {
+        for line_idx in 0..self.line_count {
             if line_idx % 1000 == 0 && self.cancel_search.load(Ordering::Relaxed) {
                 self.clear_search_results();
                 return;
             }
-            build_lowercase_mapping(line, &mut lower_buf, &mut byte_map_buf);
+            let line = self.get_line(line_idx).into_owned();
+            build_lowercase_mapping(&line, &mut lower_buf, &mut byte_map_buf);
             let mut search_start = 0;
             while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
                 let match_byte_start = search_start + pos;
@@ -543,18 +610,17 @@ impl ViewerState {
         self.horizontal_offset = 0;
 
         if !self.is_hex_mode() && self.originally_binary {
-            let content_str = String::from_utf8_lossy(&self.raw_bytes);
-            self.content = content_str.lines().map(String::from).collect();
-            if self.raw_bytes.last() == Some(&b'\n') {
-                self.content.push(String::new());
-            }
-            self.line_count = self.content.len();
-            self.max_line_width = self
-                .content
-                .iter()
-                .map(|line| unicode_width::UnicodeWidthStr::width(line.as_str()))
-                .max()
-                .unwrap_or(0);
+            self.line_offsets = Self::compute_line_offsets(&self.raw_bytes);
+            self.line_count = if self.raw_bytes.is_empty() {
+                1
+            } else {
+                self.line_offsets.len()
+            };
+            self.max_line_width = if self.raw_bytes.is_empty() {
+                0
+            } else {
+                Self::compute_max_line_width(&self.line_offsets, &self.raw_bytes)
+            };
             self.clear_search_results();
             self.current_match = None;
             self.search_query = None;
@@ -563,7 +629,7 @@ impl ViewerState {
     }
 
     pub fn update_wrap_layout(&mut self, content_width: usize) {
-        if !self.wrap_lines || self.is_hex_mode() || self.content.is_empty() {
+        if !self.wrap_lines || self.is_hex_mode() || self.line_count == 0 {
             if !self.visual_heights.is_empty() {
                 self.visual_heights.clear();
                 self.visual_offsets.clear();
@@ -580,11 +646,10 @@ impl ViewerState {
             0
         };
         let width = content_width.max(1);
-        self.visual_heights = self
-            .content
-            .iter()
-            .map(|line| {
-                let text_width = unicode_width::UnicodeWidthStr::width(line.as_str());
+        self.visual_heights = (0..self.line_count)
+            .map(|i| {
+                let line = self.get_line(i);
+                let text_width = unicode_width::UnicodeWidthStr::width(line.as_ref());
                 let total_width = line_num_width.saturating_add(text_width);
                 total_width.div_ceil(width).max(1)
             })
@@ -741,32 +806,65 @@ fn format_line_with_highlight<'a>(
         return vec![Span::raw(line)];
     }
 
+    let regular_style = Style::default()
+        .fg(Theme::search_match_fg())
+        .bg(Theme::search_match_bg());
+    let current_style = Style::default()
+        .fg(Theme::search_match_current_fg())
+        .bg(Theme::search_match_current_bg())
+        .add_modifier(Modifier::BOLD);
+
     let mut last_end = 0usize;
+    let mut prev_match_start: Option<usize> = None;
+
     for line_match in line_matches {
-        let start_byte = line_match.start_byte.min(line.len());
+        let orig_start = line_match.start_byte.min(line.len());
+        let end_byte = line_match.end_byte.min(line.len());
+        let is_current = Some(line_match.global_idx) == current_match_idx;
+
+        let start_byte;
+        let mut overlap_prev_end: Option<usize> = None;
+
+        if orig_start < last_end && is_current {
+            if let Some(ps) = prev_match_start
+                && ps < orig_start
+                && !spans.is_empty()
+            {
+                let last_idx = spans.len() - 1;
+                spans[last_idx] = Span::styled(&line[ps..orig_start], regular_style);
+                overlap_prev_end = Some(last_end);
+            }
+            start_byte = orig_start;
+        } else if orig_start < last_end {
+            start_byte = last_end;
+        } else {
+            start_byte = orig_start;
+        }
+
+        if end_byte <= start_byte {
+            continue;
+        }
 
         if start_byte > last_end {
             spans.push(Span::raw(&line[last_end..start_byte]));
         }
 
-        let end_byte = line_match.end_byte.min(line.len());
-        let match_text = &line[start_byte..end_byte];
-
-        let is_current = Some(line_match.global_idx) == current_match_idx;
-
         let style = if is_current {
-            Style::default()
-                .fg(Theme::search_match_current_fg())
-                .bg(Theme::search_match_current_bg())
-                .add_modifier(Modifier::BOLD)
+            current_style
         } else {
-            Style::default()
-                .fg(Theme::search_match_fg())
-                .bg(Theme::search_match_bg())
+            regular_style
         };
-
-        spans.push(Span::styled(match_text, style));
+        spans.push(Span::styled(&line[start_byte..end_byte], style));
+        prev_match_start = Some(start_byte);
         last_end = end_byte;
+
+        if let Some(pe) = overlap_prev_end
+            && end_byte < pe
+        {
+            spans.push(Span::styled(&line[end_byte..pe], regular_style));
+            prev_match_start = Some(end_byte);
+            last_end = pe;
+        }
     }
 
     if last_end < line.len() {
@@ -855,21 +953,21 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
         let (logical_start, sub) = state.visual_row_to_logical(state.scroll_offset);
         let mut visual_budget = visible_height.saturating_add(sub);
         let mut end = logical_start;
-        while end < state.content.len() && visual_budget > 0 {
+        while end < state.line_count && visual_budget > 0 {
             visual_budget = visual_budget.saturating_sub(state.visual_heights[end]);
             end += 1;
         }
         (logical_start, sub, end)
     } else {
         let start = state.scroll_offset;
-        let end = (start + visible_height).min(state.content.len());
+        let end = (start + visible_height).min(state.line_count);
         (start, 0, end)
     };
 
     let visible_matches = &state.search_matches_by_line;
     let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
     for i in start_idx..end_idx {
-        let line_content = &state.content[i];
+        let line_content = state.get_line(i).into_owned();
         let line_match_start = match_start;
         while match_start < visible_matches.len() && visible_matches[match_start].line == i {
             match_start += 1;
@@ -883,19 +981,22 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
             );
             let mut line_spans = vec![Span::raw(line_num)];
             if line_matches.is_empty() {
-                line_spans.push(Span::raw(line_content.as_str()));
+                line_spans.push(Span::raw(line_content));
             } else {
-                line_spans.extend(format_line_with_highlight(
-                    line_content,
-                    line_matches,
-                    state.current_match,
-                ));
+                line_spans.extend(
+                    format_line_with_highlight(&line_content, line_matches, state.current_match)
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                );
             }
             line_spans
         } else if line_matches.is_empty() {
-            vec![Span::raw(line_content.as_str())]
+            vec![Span::raw(line_content)]
         } else {
-            format_line_with_highlight(line_content, line_matches, state.current_match)
+            format_line_with_highlight(&line_content, line_matches, state.current_match)
+                .into_iter()
+                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                .collect()
         };
 
         lines.push(Line::from(spans));
@@ -1130,10 +1231,10 @@ mod tests {
         let file = create_test_file(content);
         let state = ViewerState::open(file.path()).unwrap();
 
-        assert_eq!(state.content.len(), 3);
-        assert_eq!(state.content[0], "Line 1");
-        assert_eq!(state.content[1], "Line 2");
-        assert_eq!(state.content[2], "Line 3");
+        assert_eq!(state.line_count, 3);
+        assert_eq!(state.get_line(0), "Line 1");
+        assert_eq!(state.get_line(1), "Line 2");
+        assert_eq!(state.get_line(2), "Line 3");
         assert_eq!(state.line_count, 3);
     }
 
@@ -1245,8 +1346,8 @@ mod tests {
         let file = create_test_file("");
         let state = ViewerState::open(file.path()).unwrap();
 
-        assert_eq!(state.content.len(), 1);
-        assert_eq!(state.content[0], "[Empty file]");
+        assert_eq!(state.line_count, 1);
+        assert_eq!(state.get_line(0), "[Empty file]");
         assert_eq!(state.line_count, 1);
         assert_eq!(state.file_size, 0);
         assert_eq!(state.scroll_offset, 0);
@@ -1352,6 +1453,74 @@ mod tests {
     }
 
     #[test]
+    fn test_format_line_with_highlight_overlapping_matches_no_duplicates() {
+        let line = "0123456789abcdef";
+        let regular_style = Style::default()
+            .fg(Theme::search_match_fg())
+            .bg(Theme::search_match_bg());
+        let current_style = Style::default()
+            .fg(Theme::search_match_current_fg())
+            .bg(Theme::search_match_current_bg())
+            .add_modifier(Modifier::BOLD);
+
+        let spans = format_line_with_highlight(
+            line,
+            &[
+                SearchLineMatch {
+                    line: 0,
+                    global_idx: 0,
+                    start_byte: 3,
+                    end_byte: 9,
+                },
+                SearchLineMatch {
+                    line: 0,
+                    global_idx: 1,
+                    start_byte: 4,
+                    end_byte: 10,
+                },
+            ],
+            Some(1),
+        );
+
+        let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            rendered, line,
+            "overlapping matches must not duplicate text"
+        );
+
+        assert_eq!(spans[0], Span::raw("012"));
+        assert_eq!(spans[1], Span::styled("3", regular_style));
+        assert_eq!(spans[2], Span::styled("456789", current_style));
+        assert_eq!(spans[3], Span::raw("abcdef"));
+    }
+
+    #[test]
+    fn test_format_line_with_highlight_fully_overlapping_skipped() {
+        let line = "abcdefghij";
+        let spans = format_line_with_highlight(
+            line,
+            &[
+                SearchLineMatch {
+                    line: 0,
+                    global_idx: 0,
+                    start_byte: 2,
+                    end_byte: 8,
+                },
+                SearchLineMatch {
+                    line: 0,
+                    global_idx: 1,
+                    start_byte: 3,
+                    end_byte: 6,
+                },
+            ],
+            None,
+        );
+
+        let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, line, "fully overlapped match must be skipped");
+    }
+
+    #[test]
     fn test_search_line_match_cache_stores_unicode_byte_ranges() {
         let file = create_test_file("zażółć gęślą jaźń");
         let mut state = ViewerState::open(file.path()).unwrap();
@@ -1411,7 +1580,7 @@ mod tests {
         let state = ViewerState::open(file.path()).unwrap();
 
         assert!(!state.has_invalid_utf8);
-        assert!(state.content[0].contains('\u{FFFD}'));
+        assert!(state.get_line(0).contains('\u{FFFD}'));
     }
 
     #[test]
@@ -1422,7 +1591,7 @@ mod tests {
         let state = ViewerState::open(file.path()).unwrap();
 
         assert!(state.has_invalid_utf8);
-        assert!(state.content[0].contains('\u{FFFD}'));
+        assert!(state.get_line(0).contains('\u{FFFD}'));
     }
 
     #[test]
@@ -1740,7 +1909,7 @@ mod tests {
 
         let (last_logical, last_sub) = state.visual_row_to_logical(total_visual.saturating_sub(1));
         assert_eq!(last_logical, state.visual_heights.len() - 1);
-        let expected_last_line = state.content.len() - 1;
+        let expected_last_line = state.line_count - 1;
         assert_eq!(last_logical, expected_last_line);
         assert!(
             last_sub < state.visual_heights[last_logical],
@@ -1760,7 +1929,7 @@ mod tests {
         }
 
         let result = state.visual_row_to_logical(total_visual);
-        assert_eq!(result.0, state.content.len().saturating_sub(1));
+        assert_eq!(result.0, state.line_count.saturating_sub(1));
         assert_eq!(result.1, 0);
     }
 

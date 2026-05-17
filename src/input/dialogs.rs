@@ -577,13 +577,10 @@ pub(crate) fn handle_dialog(
         scroll_offset,
     }) = &mut state.mode
     {
-        let total_lines = message.lines().count();
-        let max_lines = dialogs::help_visible_height(Rect::new(
-            0,
-            0,
-            terminal_size.width,
-            terminal_size.height,
-        ));
+        let term_rect = Rect::new(0, 0, terminal_size.width, terminal_size.height);
+        let total_lines =
+            dialogs::wrapped_line_count(message, dialogs::help_message_width(term_rect));
+        let max_lines = dialogs::help_visible_height(term_rect);
         let should_exit = match key {
             KeyCode::Up | KeyCode::Char('k') => {
                 *scroll_offset = scroll_offset.saturating_sub(1);

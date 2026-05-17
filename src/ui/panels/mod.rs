@@ -411,7 +411,7 @@ pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
     let full_text = format!("{info_line}{}{right_info}", " ".repeat(padding));
 
     let paragraph = Paragraph::new(full_text)
-        .style(Style::default().fg(Theme::status_bar_fg()))
+        .style(Theme::status_bar())
         .block(Block::default().borders(Borders::TOP));
 
     f.render_widget(paragraph, area);
@@ -459,17 +459,16 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 }
 
 pub fn render_menu_bar(f: &mut Frame, area: Rect) {
+    f.render_widget(Paragraph::new("").style(Theme::menu_bar()), area);
+
     let menu_text = "   Left   File   Command   Options   Right   ";
     let text_width = UnicodeWidthStr::width(menu_text) as u16;
+    let clipped_width = text_width.min(area.width);
     let x = area.x + area.width.saturating_sub(text_width) / 2;
-    let centered_area = Rect::new(x, area.y, text_width, area.height);
+    let centered_area = Rect::new(x, area.y, clipped_width, area.height);
 
     let paragraph = Paragraph::new(menu_text)
-        .style(
-            Style::default()
-                .fg(Theme::menu_bar_fg())
-                .bg(Theme::menu_bar_bg()),
-        )
+        .style(Theme::menu_bar())
         .alignment(Alignment::Left);
 
     f.render_widget(paragraph, centered_area);

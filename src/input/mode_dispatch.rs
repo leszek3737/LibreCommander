@@ -38,7 +38,12 @@ pub(crate) fn initiate_search(state: &mut AppState, prev_mode: AppMode, c: char)
     panel.filter = Some(filter_query);
     panel.cursor = 0;
     panel.scroll_offset = 0;
-    panel_ops::refresh_active(state);
+    if panel.unfiltered_dirty {
+        panel.unfiltered_dirty = false;
+        panel_ops::refresh_active(state);
+    } else {
+        apply_search_filter(panel);
+    }
 }
 
 pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(

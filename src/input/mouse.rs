@@ -171,8 +171,12 @@ fn handle_mouse_scroll(
             message,
             scroll_offset: off,
         }) => {
-            let visible = crate::ui::dialogs::help_visible_height(Rect::new(0, 0, width, height));
-            let total_lines = message.lines().count();
+            let term_rect = Rect::new(0, 0, width, height);
+            let visible = crate::ui::dialogs::help_visible_height(term_rect);
+            let total_lines = crate::ui::dialogs::wrapped_line_count(
+                message,
+                crate::ui::dialogs::help_message_width(term_rect),
+            );
             *off = apply_scroll_delta(*off, delta, visible, total_lines);
             return;
         }
