@@ -474,6 +474,10 @@ pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::
 
 fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
     check_optional_canceled(cancel)?;
+    let root_metadata = fs::symlink_metadata(path)?;
+    if root_metadata.file_type().is_symlink() {
+        return fs::remove_file(path);
+    }
     let canonical = path
         .canonicalize()
         .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?;
@@ -519,6 +523,13 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
 }
 
 fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to recursively delete symlinked directory",
+        ));
+    }
     let canonical = path.canonicalize().map_err(|e| {
         io::Error::new(
             e.kind(),
@@ -1361,6 +1372,47 @@ mod tests {
         delete_dir_recursive(&dir).unwrap();
 
         assert!(!dir.exists());
+        assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_delete_dir_recursive_removes_top_level_symlink_not_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = unique_temp_dir();
+        let link = tmp.join("linked_dir");
+        let target = tmp.join("target_dir");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"keep").unwrap();
+        symlink(&target, &link).unwrap();
+
+        delete_dir_recursive(&link).unwrap();
+
+        assert!(!link.exists());
+        assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_delete_dir_recursive_cancelable_removes_top_level_symlink_not_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = unique_temp_dir();
+        let link = tmp.join("linked_dir");
+        let target = tmp.join("target_dir");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"keep").unwrap();
+        symlink(&target, &link).unwrap();
+        let cancel = AtomicBool::new(false);
+
+        delete_dir_recursive_cancelable(&link, &cancel).unwrap();
+
+        assert!(!link.exists());
         assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
 
         fs::remove_dir_all(&tmp).unwrap();
