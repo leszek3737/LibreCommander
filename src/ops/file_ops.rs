@@ -303,6 +303,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     {
         if overwrite {
             let temp = reserve_temp_file_for(dest)?;
+            fs::remove_file(&temp)?;
             std::os::unix::fs::symlink(&target, &temp)?;
             if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
                 let _ = fs::remove_file(&temp);
@@ -885,6 +886,18 @@ fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     let mtime = filetime::FileTime::from_last_modification_time(src_meta);
     let _ = filetime::set_file_times(target, atime, mtime);
     Ok(())
+}
+
+pub(super) fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
+    if let Ok(meta) = fs::symlink_metadata(dest)
+        && meta.is_dir()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            format!("cannot overwrite directory with file: {}", dest.display()),
+        ));
+    }
+    fs::rename(temp, dest)
 }
 
 fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {

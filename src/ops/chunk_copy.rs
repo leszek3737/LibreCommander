@@ -5,9 +5,6 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
-
 const BUFFER_SIZE: usize = 64 * 1024;
 
 pub fn copy_with_progress(
@@ -24,22 +21,7 @@ pub fn copy_with_progress(
     let metadata = fs::symlink_metadata(src)?;
 
     if metadata.file_type().is_symlink() {
-        let target = fs::read_link(src)?;
-        #[cfg(unix)]
-        {
-            if overwrite {
-                let _ = fs::remove_file(dest);
-            }
-            symlink(&target, dest)?;
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (target, dest);
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "symlinks not supported on this platform",
-            ));
-        }
+        super::file_ops::copy_symlink(src, dest, overwrite)?;
         return Ok(0);
     }
 
@@ -120,7 +102,7 @@ fn publish_temp(
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
     }
     if overwrite {
-        fs::rename(temp_dest, dest)?;
+        super::file_ops::replace_file_with_temp(temp_dest, dest)?;
         return Ok(());
     }
 
@@ -491,5 +473,92 @@ mod tests {
             mode,
             "permissions preserved"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_with_progress_symlink_overwrite_replaces_link_not_target() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let old_target = dir.path().join("old_target");
+        let new_target = dir.path().join("new_target");
+        fs::create_dir(&old_target).expect("create old_target dir");
+        fs::create_dir(&new_target).expect("create new_target dir");
+        fs::write(old_target.join("file.txt"), b"old").expect("write old file");
+        fs::write(new_target.join("file.txt"), b"new").expect("write new file");
+
+        let src = dir.path().join("src_link");
+        let dest = dir.path().join("dest_link");
+        std::os::unix::fs::symlink(&new_target, &src).expect("create src symlink");
+        std::os::unix::fs::symlink(&old_target, &dest).expect("create dest symlink");
+
+        let (tx, _) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+        copy_with_progress(&src, &dest, &tx, &cancel, true).expect("overwrite symlink");
+
+        assert_eq!(
+            fs::read_link(&dest).expect("read dest"),
+            new_target,
+            "dest should point to new_target"
+        );
+        assert_eq!(
+            fs::read(old_target.join("file.txt")).expect("read old file"),
+            b"old",
+            "old_target content untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_with_progress_symlink_no_overwrite_existing_dest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let old_target = dir.path().join("old_target");
+        let new_target = dir.path().join("new_target");
+        fs::create_dir(&old_target).expect("create old dir");
+        fs::create_dir(&new_target).expect("create new dir");
+
+        let src = dir.path().join("src_link");
+        let dest = dir.path().join("dest_link");
+        std::os::unix::fs::symlink(&new_target, &src).expect("src symlink");
+        std::os::unix::fs::symlink(&old_target, &dest).expect("dest symlink");
+
+        let (tx, _) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+        let err = copy_with_progress(&src, &dest, &tx, &cancel, false)
+            .expect_err("should fail with AlreadyExists");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn test_publish_temp_overwrite_refuses_directory_dest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let temp = dir.path().join("temp_file");
+        let dest = dir.path().join("dest_dir");
+        fs::write(&temp, b"data").expect("write temp");
+        fs::create_dir(&dest).expect("create dest dir");
+
+        let src_meta = fs::metadata(&temp).expect("temp meta");
+        let cancel = AtomicBool::new(false);
+        let err = publish_temp(&temp, &dest, &src_meta, &cancel, true).expect_err("should fail");
+        assert!(
+            err.kind() == io::ErrorKind::IsADirectory || err.kind() == io::ErrorKind::Other,
+            "expected IsADirectory or Other, got {:?}",
+            err.kind()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_with_progress_symlink_to_absent_dest() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let target = dir.path().join("some_target");
+        let src = dir.path().join("src_link");
+        let dest = dir.path().join("dest_link");
+        std::os::unix::fs::symlink(&target, &src).expect("create src symlink");
+
+        let (tx, _) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+        copy_with_progress(&src, &dest, &tx, &cancel, false).expect("copy symlink to absent dest");
+
+        assert_eq!(fs::read_link(&dest).expect("read dest"), target);
     }
 }
