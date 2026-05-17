@@ -75,6 +75,7 @@ pub struct FileEntry {
     pub group: String,
     pub selected: bool,
     pub mime_type: Option<String>,
+    pub cached_natsort_key: Option<Vec<crate::ops::natsort::NatKeySegment>>,
 }
 
 // ============================================================================
@@ -342,7 +343,6 @@ pub struct AppState {
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
-    pub needs_watcher_sync: bool,
     pub theme_colors: ColorPalette,
 }
 
@@ -477,6 +477,7 @@ impl FileEntryBuilder {
             group: self.group,
             selected: self.selected,
             mime_type: self.mime_type,
+            cached_natsort_key: None,
         }
     }
 }
@@ -510,6 +511,7 @@ impl FileEntry {
         }
     }
 
+    /// Returns the file size in bytes.
     pub fn size(&self) -> u64 {
         self.cha.len()
     }
@@ -908,7 +910,6 @@ impl AppState {
             scroll_accel: 0,
             last_scroll_time: None,
             drag_anchor_index: None,
-            needs_watcher_sync: false,
             theme_colors: crate::ui::theme::DEFAULT_COLORS,
         }
     }

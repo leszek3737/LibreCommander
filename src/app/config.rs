@@ -120,15 +120,7 @@ impl From<&Settings> for PersistedSetup {
                 settings
                     .hotlist
                     .iter()
-                    .filter_map(|p| {
-                        p.to_str().map(String::from).or_else(|| {
-                            crate::app::debug_log::log(format_args!(
-                                "config: skipping non-UTF-8 hotlist path: {}",
-                                p.display()
-                            ));
-                            None
-                        })
-                    })
+                    .map(|p| p.to_string_lossy().into_owned())
                     .collect::<Vec<String>>(),
             ),
         }
@@ -158,13 +150,7 @@ impl From<PersistedSetup> for Settings {
 
 fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
     PersistedPanel {
-        path: panel.path.to_str().map(String::from).or_else(|| {
-            crate::app::debug_log::log(format_args!(
-                "config: skipping non-UTF-8 panel path: {}",
-                panel.path.display()
-            ));
-            None
-        }),
+        path: Some(panel.path.to_string_lossy().into_owned()),
         listing_mode: panel.listing_mode,
         sort_mode: panel.sort_mode,
         filter: panel.filter.clone().unwrap_or_default(),

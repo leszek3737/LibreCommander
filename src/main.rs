@@ -510,10 +510,17 @@ fn launch_editor<B: ratatui::backend::Backend>(
         if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
             lc::debug_log!("failed to write terminal state file: {e}");
         }
-        let mut parts = editor.split_whitespace();
-        let cmd = parts.next().unwrap_or("vi");
+        let parts: Vec<String> = shlex::split(&editor).unwrap_or_else(|| {
+            let fallback: Vec<String> = editor.split_whitespace().map(String::from).collect();
+            if fallback.is_empty() {
+                vec!["vi".to_string()]
+            } else {
+                fallback
+            }
+        });
+        let cmd = parts.first().map_or("vi", |s| s.as_str());
         let status = std::process::Command::new(cmd)
-            .args(parts)
+            .args(&parts[1..])
             .arg(&path)
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
@@ -787,6 +794,12 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             });
             state.dialog_input = state.active_panel().path.display().to_string();
             state.dialog_cursor_pos = state.dialog_input.chars().count();
+        }
+        KeyCode::Char('x') => {
+            state.command_line.clear();
+            state.command_cursor = 0;
+            state.history_index = None;
+            state.mode = AppMode::CommandLine;
         }
         _ => {}
     }

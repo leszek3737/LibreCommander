@@ -105,14 +105,12 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
                     if let Some(parent) = state.left_panel.path.parent().map(Path::to_path_buf) {
                         state.left_panel.path = parent;
                     }
-                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&path, &state.right_panel) {
                     if let Some(parent) = state.right_panel.path.parent().map(Path::to_path_buf) {
                         state.right_panel.path = parent;
                     }
-                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &path);
@@ -121,12 +119,10 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
             WatchEvent::Renamed { from, to } => {
                 if event_is_panel_dir(&from, &state.left_panel) {
                     state.left_panel.path = to.clone();
-                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&from, &state.right_panel) {
                     state.right_panel.path = to.clone();
-                    state.needs_watcher_sync = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&to, &state.left_panel)
@@ -246,11 +242,12 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
         return apply_watcher_remove(panel, path);
     }
 
-    if let Some(existing) = panel
-        .unfiltered_entries
-        .iter()
-        .find(|existing| existing.path == entry.path)
-    {
+    reader::ensure_path_index(panel);
+    let existing = panel
+        .path_index
+        .get(&entry.path)
+        .and_then(|&idx| panel.unfiltered_entries.get(idx));
+    if let Some(existing) = existing {
         if existing.cha.hits(&entry.cha) {
             return false;
         }
@@ -290,6 +287,7 @@ fn full_refresh_panel(panel: &mut PanelState) {
     match reader::read_directory(&panel.path) {
         Ok((entries, _errors)) => {
             panel.unfiltered_entries = entries;
+            panel.unfiltered_dirty = false;
             panel.path_index.clear();
             panel.needs_rebuild = false;
             for entry in &mut panel.unfiltered_entries {

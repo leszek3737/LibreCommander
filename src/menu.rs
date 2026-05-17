@@ -33,6 +33,7 @@ pub const MENU_ITEMS: [&[&str]; 5] = [
         "Compare dirs",
         "History",
         "Directory hotlist",
+        "Command line",
     ],
     &[
         "Show hidden files",
@@ -78,6 +79,7 @@ pub enum MenuAction {
     ToggleHiddenFiles,
     TogglePermissions,
     SaveSetup,
+    CommandLine,
 }
 
 const LEFT_RIGHT_MENU_ACTIONS: [MenuAction; 4] = [
@@ -100,7 +102,7 @@ const FILE_MENU_ACTIONS: [MenuAction; 10] = [
     MenuAction::Quit,
 ];
 
-const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
+const COMMAND_MENU_ACTIONS: [MenuAction; 8] = [
     MenuAction::DirectoryTree,
     MenuAction::FindFile,
     MenuAction::SwapPanels,
@@ -108,6 +110,7 @@ const COMMAND_MENU_ACTIONS: [MenuAction; 7] = [
     MenuAction::CompareDirs,
     MenuAction::History,
     MenuAction::DirectoryHotlist,
+    MenuAction::CommandLine,
 ];
 
 const OPTIONS_MENU_ACTIONS: [MenuAction; 5] = [

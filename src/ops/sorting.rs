@@ -43,6 +43,7 @@ const GROUP_DIR: u8 = 1;
 const GROUP_FILE: u8 = 2;
 
 #[inline]
+#[allow(clippy::too_many_lines)]
 pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOptions) {
     let dir_first = options.dir_first;
     let sensitive = options.sensitive;
@@ -122,20 +123,42 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         // NOTE: natsort uses ASCII-only case folding; regular Name sort uses full Unicode
         // via str::to_lowercase(). NaturalName and Name sorts may disagree on non-ASCII filenames.
         // Raw bytes serve as deterministic tiebreaker for case-variant names (a1.txt vs A1.txt).
-        SortMode::NaturalNameAsc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                natsort::natsort_key(entry.name.as_bytes(), !sensitive),
-                entry.name.as_bytes().to_vec(),
-            )
-        }),
-        SortMode::NaturalNameDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(natsort::natsort_key(entry.name.as_bytes(), !sensitive)),
-                Reverse(entry.name.as_bytes().to_vec()),
-            )
-        }),
+        SortMode::NaturalNameAsc => {
+            cache_natsort_keys(entries, sensitive);
+            entries.sort_by_cached_key(|entry| {
+                (
+                    entry_group(entry, dir_first),
+                    entry
+                        .cached_natsort_key
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_default(),
+                    entry.name.as_bytes().to_vec(),
+                )
+            })
+        }
+        SortMode::NaturalNameDesc => {
+            cache_natsort_keys(entries, sensitive);
+            entries.sort_by_cached_key(|entry| {
+                (
+                    entry_group(entry, dir_first),
+                    Reverse(
+                        entry
+                            .cached_natsort_key
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_default(),
+                    ),
+                    Reverse(entry.name.as_bytes().to_vec()),
+                )
+            })
+        }
+    }
+}
+
+fn cache_natsort_keys(entries: &mut [FileEntry], sensitive: bool) {
+    for entry in entries.iter_mut() {
+        entry.cached_natsort_key = Some(natsort::natsort_key(entry.name.as_bytes(), !sensitive));
     }
 }
 

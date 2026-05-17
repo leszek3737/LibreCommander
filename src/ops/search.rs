@@ -690,50 +690,60 @@ impl FileSearch {
             }
         };
 
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
+        let mut line_buf = Vec::new();
+        let mut line_no = 0_usize;
+        loop {
+            line_buf.clear();
+            match reader.read_until(b'\n', &mut line_buf) {
+                Ok(0) => break,
+                Ok(bytes_read) => {
+                    let line = if line_buf.last() == Some(&b'\n') {
+                        &line_buf[..bytes_read - 1]
+                    } else {
+                        &line_buf[..bytes_read]
+                    };
+                    if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                        if outcome.truncated.is_none() {
+                            outcome.truncated = Some(TruncationReason::ContentResultLimit);
+                        }
+                        return;
+                    }
+                    if line.contains(&0) {
+                        if outcome.truncated.is_none() {
+                            outcome.truncated = Some(TruncationReason::BinaryFile);
+                        }
+                        return;
+                    }
+                    if line.len() > MAX_CONTENT_LINE_BYTES {
+                        if outcome.truncated.is_none() {
+                            outcome.truncated = Some(TruncationReason::LineTooLong);
+                        }
+                        continue;
+                    }
+                    let line_text = match std::str::from_utf8(line) {
+                        Ok(s) => s.strip_suffix('\r').unwrap_or(s).to_owned(),
+                        Err(_) => continue,
+                    };
+                    let match_found = if case_sensitive {
+                        line_text.contains(pattern)
+                    } else {
+                        Self::contains_case_insensitive(&line_text, pattern_lower)
+                    };
 
-        for (line_no, line) in reader.split(b'\n').enumerate() {
-            if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::ContentResultLimit);
+                    if match_found {
+                        outcome
+                            .matches
+                            .push((path.to_path_buf(), line_no + 1, line_text));
+                    }
+                    line_no += 1;
                 }
-                return;
-            }
-            let line = match line {
-                Ok(line) => line,
                 Err(err) => {
                     outcome
                         .errors
                         .push(format!("Failed to read {}: {err}", path.display()));
                     return;
                 }
-            };
-            if line.contains(&0) {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::BinaryFile);
-                }
-                return;
-            }
-            if line.len() > MAX_CONTENT_LINE_BYTES {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::LineTooLong);
-                }
-                continue;
-            }
-            let line_text = match String::from_utf8(line) {
-                Ok(s) => s.strip_suffix('\r').map(str::to_owned).unwrap_or(s),
-                Err(_) => continue,
-            };
-            let match_found = if case_sensitive {
-                line_text.contains(pattern)
-            } else {
-                Self::contains_case_insensitive(&line_text, pattern_lower)
-            };
-
-            if match_found {
-                outcome
-                    .matches
-                    .push((path.to_path_buf(), line_no + 1, line_text));
             }
         }
     }

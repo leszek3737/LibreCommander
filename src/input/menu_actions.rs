@@ -197,6 +197,13 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             open_user_menu(state);
             None
         }
+        MenuAction::CommandLine => {
+            state.command_line.clear();
+            state.command_cursor = 0;
+            state.history_index = None;
+            state.mode = AppMode::CommandLine;
+            None
+        }
         _ => None,
     }
 }

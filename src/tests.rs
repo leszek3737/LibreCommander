@@ -1920,7 +1920,7 @@ fn alt_c_opens_quick_cd() {
 fn alt_unhandled_does_nothing() {
     let mut state = AppState::default();
     state.active_panel = ActivePanel::Left;
-    handle_alt_keys(&mut state, KeyCode::Char('x'), 20);
+    handle_alt_keys(&mut state, KeyCode::Char('y'), 20);
     assert!(matches!(state.mode, AppMode::Normal));
 }
 
