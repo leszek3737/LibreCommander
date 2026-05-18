@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, TryLockError};
 
 use chrono::Local;
 
@@ -54,9 +54,10 @@ fn stderr_fallback(msg: &str) {
 }
 
 pub fn log(args: std::fmt::Arguments<'_>) {
-    let mut guard = match LOG_FILE.lock() {
+    let mut guard = match LOG_FILE.try_lock() {
         Ok(guard) => guard,
-        Err(err) => err.into_inner(),
+        Err(TryLockError::Poisoned(err)) => err.into_inner(),
+        Err(TryLockError::WouldBlock) => return,
     };
     let freshly_opened = guard.is_none();
     if freshly_opened {
