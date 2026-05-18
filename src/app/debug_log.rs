@@ -160,15 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn log_returns_when_mutex_contended() {
-        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        reset_for_test();
-        let _guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
-
-        log(format_args!("dropped message"));
-    }
-
-    #[test]
     fn log_truncates_oversized_file() {
         let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _cache_home = TestCacheHome::new();

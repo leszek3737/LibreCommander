@@ -217,9 +217,12 @@ pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     }
     let display = path.display().to_string();
     let path = path.clone();
-    state.active_panel_mut().path = path;
-    state.active_panel_mut().cursor = 0;
-    state.active_panel_mut().scroll_offset = 0;
+    let panel = state.active_panel_mut();
+    panel.history.push(panel.path.clone());
+    panel.path = path;
+    panel.cursor = 0;
+    panel.scroll_offset = 0;
+    panel.filter = None;
     refresh_active(state);
     state.status_message = Some(format!("cd to {display}"));
 }

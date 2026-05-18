@@ -77,11 +77,10 @@ fn dismiss_dialog_and_restore(state: &mut AppState) {
 fn finish_confirmed_action(state: &mut AppState) {
     state.dialog_selection = 0;
     if state.status_message.is_some() {
-        state.mode = AppMode::Normal;
+        let msg = state.status_message.take();
+        dismiss_dialog(state);
+        state.status_message = msg;
         refresh_both(state);
-        if let Some(panel) = state.menu_restore_panel.take() {
-            set_active_panel(state, panel);
-        }
     }
 }
 

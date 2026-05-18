@@ -343,7 +343,6 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     if panel.scroll_offset > panel.cursor {
         panel.scroll_offset = panel.cursor;
     }
-    panel.ensure_cursor_visible(0);
     panel.recalculate_selection_stats();
 }
 

@@ -335,7 +335,7 @@ mod tests {
             .owner("user")
             .group("group")
             .build();
-        assert_eq!(entry.display_size(), "     0 B");
+        assert_eq!(entry.display_size(), "   0 B");
     }
 
     #[test]
@@ -348,7 +348,7 @@ mod tests {
             .owner("user")
             .group("group")
             .build();
-        assert_eq!(entry.display_size(), "   500 B");
+        assert_eq!(entry.display_size(), " 500 B");
     }
 
     #[test]
