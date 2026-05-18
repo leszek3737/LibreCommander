@@ -28,7 +28,6 @@ struct PendingEntry {
 
 struct ExpiredDebouncedEvent {
     path: PathBuf,
-    last_seen: Instant,
     event: WatchEvent,
 }
 
@@ -339,11 +338,7 @@ fn flush_expired(debounce: &mut HashMap<PathBuf, PendingEntry>) -> Vec<ExpiredDe
         if let Some(mut entry) = debounce.remove(&path)
             && let Some(event) = entry.coalesced.take()
         {
-            flushed.push(ExpiredDebouncedEvent {
-                path,
-                last_seen: entry.last_seen,
-                event,
-            });
+            flushed.push(ExpiredDebouncedEvent { path, event });
         }
     }
 
@@ -357,13 +352,12 @@ fn send_expired_events(
 ) {
     for expired in flushed {
         let path = expired.path;
-        let last_seen = expired.last_seen;
         match try_send_event(event_tx, expired.event) {
             SendStatus::Sent | SendStatus::Disconnected => {}
             SendStatus::Full(event) => {
                 let mut debounce = lock_or_recover(debounce_state, "watcher");
                 debounce.entry(path).or_insert(PendingEntry {
-                    last_seen,
+                    last_seen: Instant::now(),
                     coalesced: Some(event),
                 });
             }
@@ -410,7 +404,6 @@ fn process_debounce(
             {
                 flushed.push(ExpiredDebouncedEvent {
                     path: p.to_path_buf(),
-                    last_seen: old.last_seen,
                     event: evt,
                 });
             }
@@ -748,12 +741,12 @@ mod tests {
         let watcher = Watcher::new(Arc::new(tx))?;
 
         let first = PathBuf::from("/tmp/first.txt");
+        let expired = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
         {
             let mut debounce = watcher
                 .debounce_state
                 .lock()
                 .unwrap_or_else(|err| err.into_inner());
-            let expired = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
             debounce.insert(
                 first.clone(),
                 PendingEntry {
@@ -774,6 +767,7 @@ mod tests {
             assert!(debounce.contains_key(&PathBuf::from("/tmp/first.txt")));
             return Ok(());
         };
+        assert!(entry.last_seen > expired);
         assert!(matches!(entry.coalesced, Some(WatchEvent::Modified(_))));
         Ok(())
     }
@@ -804,6 +798,21 @@ mod tests {
         assert!(
             matches!(filler, WatchEvent::Modified(p) if p.as_path() == Path::new("/tmp/fill.txt"))
         );
+
+        watcher.flush_pending();
+        assert!(rx.try_recv().is_err());
+
+        {
+            let mut debounce = watcher
+                .debounce_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let Some(entry) = debounce.get_mut(&path) else {
+                assert!(debounce.contains_key(&path));
+                return Ok(());
+            };
+            entry.last_seen = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
+        }
 
         watcher.flush_pending();
 

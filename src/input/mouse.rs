@@ -317,7 +317,7 @@ fn handle_confirm_click(
                     }
                     let status_message = state.status_message.take();
                     start_confirmed_action(state, running_job);
-                    if status_message.is_some() {
+                    if state.status_message.is_none() {
                         state.status_message = status_message;
                     }
                     finish_confirmed_action(state);
@@ -1130,5 +1130,61 @@ mod tests {
             state.mode,
             AppMode::Dialog(DialogKind::Progress(_, _, _))
         ));
+    }
+
+    #[test]
+    fn mouse_confirm_click_keeps_new_status_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first_src_dir = tmp.path().join("first-src");
+        let second_src_dir = tmp.path().join("second-src");
+        let dest_dir = tmp.path().join("dest");
+        std::fs::create_dir_all(&first_src_dir).unwrap();
+        std::fs::create_dir_all(&second_src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(first_src_dir.join("first.txt"), b"data").unwrap();
+        std::fs::write(second_src_dir.join("second.txt"), b"data").unwrap();
+
+        let mut state = AppState {
+            mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Copy", "Proceed?",
+            ))),
+            dialog_selection: 0,
+            pending_action: Some(PendingAction::Copy {
+                sources: vec![first_src_dir.join("first.txt")],
+                dest: dest_dir.clone(),
+                overwrite: false,
+            }),
+            ..Default::default()
+        };
+        let mut running_job = None;
+
+        let height: u16 = 24;
+        let width: u16 = 80;
+        let dialog_height = height * 40 / 100;
+        let btn_row = {
+            let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+            dialog_y + dialog_height.saturating_sub(2)
+        };
+
+        let _outcome =
+            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+
+        state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+            "Copy", "Proceed?",
+        )));
+        state.status_message = Some("Queued".to_string());
+        state.pending_action = Some(PendingAction::Copy {
+            sources: vec![second_src_dir.join("second.txt")],
+            dest: dest_dir,
+            overwrite: false,
+        });
+
+        let _outcome =
+            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+
+        assert_eq!(
+            state.status_message.as_deref(),
+            Some("Another job is already running")
+        );
     }
 }
