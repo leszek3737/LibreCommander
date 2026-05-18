@@ -29,6 +29,13 @@ pub fn copy_with_progress(
         return Ok(0);
     }
 
+    if !overwrite && dest.try_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {}", dest.display()),
+        ));
+    }
+
     let src_file = File::open(src)?;
     let temp_dest = temp_path_for(dest);
     let result = copy_to_temp(src_file, &temp_dest, &metadata, progress_tx, cancel);
@@ -36,11 +43,15 @@ pub fn copy_with_progress(
     match result {
         Ok(total_written) => {
             if cancel.load(Ordering::Relaxed) {
-                let _ = fs::remove_file(&temp_dest);
+                if let Err(e) = fs::remove_file(&temp_dest) {
+                    debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
+                }
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
             if let Err(err) = publish_temp(&temp_dest, dest, &metadata, cancel, overwrite) {
-                let _ = fs::remove_file(&temp_dest);
+                if let Err(e) = fs::remove_file(&temp_dest) {
+                    debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
+                }
                 return Err(err);
             }
 
@@ -53,7 +64,9 @@ pub fn copy_with_progress(
             Ok(total_written)
         }
         Err(err) => {
-            let _ = fs::remove_file(&temp_dest);
+            if let Err(e) = fs::remove_file(&temp_dest) {
+                debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
+            }
             Err(err)
         }
     }
@@ -125,7 +138,9 @@ fn publish_temp(
     overwrite: bool,
 ) -> io::Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        let _ = fs::remove_file(temp_dest);
+        if let Err(e) = fs::remove_file(temp_dest) {
+            debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
+        }
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
     }
     if overwrite {
@@ -149,8 +164,12 @@ fn publish_temp(
         loop {
             if cancel.load(Ordering::Relaxed) {
                 drop(dest_file);
-                let _ = fs::remove_file(dest);
-                let _ = fs::remove_file(temp_dest);
+                if let Err(e) = fs::remove_file(dest) {
+                    debug_log!("failed to clean up dest file {}: {e}", dest.display());
+                }
+                if let Err(e) = fs::remove_file(temp_dest) {
+                    debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
+                }
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
 
@@ -166,13 +185,17 @@ fn publish_temp(
         dest_file.get_ref().sync_all()?;
         Ok(())
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(dest);
+    if result.is_err()
+        && let Err(e) = fs::remove_file(dest)
+    {
+        debug_log!("failed to clean up dest file {}: {e}", dest.display());
     }
     result?;
     let atime = filetime::FileTime::from_last_access_time(src_metadata);
     let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
-    let _ = fs::remove_file(temp_dest);
+    if let Err(e) = fs::remove_file(temp_dest) {
+        debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
+    }
     if let Err(e) = filetime::set_file_times(dest, atime, mtime) {
         debug_log!("set_file_times failed for {}: {e}", dest.display());
     }
@@ -186,10 +209,15 @@ fn temp_path_for(dest: &Path) -> std::path::PathBuf {
         .map(|name| name.to_os_string())
         .unwrap_or_else(|| OsString::from("copy"));
     let tid = std::thread::current().id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
     name.push(format!(
-        ".lc-copy-{}-{}.tmp",
+        ".lc-copy-{}-{}-{:08x}.tmp",
         std::process::id(),
-        hash_thread_id(tid)
+        hash_thread_id(tid),
+        nanos ^ (hash_thread_id(tid) as u32)
     ));
     dest.with_file_name(name)
 }
@@ -283,7 +311,7 @@ mod tests {
 
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&dest).expect("read dest file"), b"old content");
-        assert_eq!(progress_rx.try_iter().collect::<Vec<_>>(), vec![11]);
+        assert!(progress_rx.try_iter().collect::<Vec<_>>().is_empty());
         assert!(!temp_path_for(&dest).exists());
     }
 
@@ -310,16 +338,19 @@ mod tests {
         let src = dir.path().join("src.txt");
         let dest = dir.path().join("dest.txt");
         fs::write(&src, b"content").expect("write source file");
-        fs::write(temp_path_for(&dest), b"leftover").expect("write temp file");
+        let stale_temp = temp_path_for(&dest);
+        fs::write(&stale_temp, b"leftover").expect("write temp file");
 
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
 
-        let err =
-            copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect_err("copy fails");
-
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        assert!(!dest.exists());
+        let result = copy_with_progress(&src, &dest, &progress_tx, &cancel, false);
+        assert!(
+            result.is_ok(),
+            "stale temp with unique name should not block copy"
+        );
+        assert!(dest.exists());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "content");
     }
 
     #[cfg(unix)]
