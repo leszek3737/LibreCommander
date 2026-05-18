@@ -1,6 +1,6 @@
 use crate::debug_log;
 use crate::ops::chunk_copy;
-use crate::ops::helpers::path_starts_with;
+use crate::ops::helpers::{cleanup_dir, cleanup_dir_all, cleanup_file, path_starts_with};
 
 use std::fs;
 use std::io;
@@ -81,9 +81,7 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
         let bytes = fs::copy(src, &temp)?;
         apply_metadata(&temp, &src_meta)?;
         if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
-            if let Err(e) = fs::remove_file(&temp) {
-                debug_log!("failed to clean up temp file {}: {e}", temp.display());
-            }
+            cleanup_file(&temp);
             return Err(err);
         }
         Ok(bytes)
@@ -134,23 +132,13 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Resul
     match result {
         Ok(bytes) => {
             if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite) {
-                if let Err(e) = fs::remove_dir_all(&temp_dest) {
-                    debug_log!(
-                        "failed to clean up temp directory {}: {e}",
-                        temp_dest.display()
-                    );
-                }
+                cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
             Ok(bytes)
         }
         Err(err) => {
-            if let Err(e) = fs::remove_dir_all(&temp_dest) {
-                debug_log!(
-                    "failed to clean up temp directory {}: {e}",
-                    temp_dest.display()
-                );
-            }
+            cleanup_dir_all(&temp_dest);
             Err(err)
         }
     }
@@ -175,32 +163,17 @@ pub fn copy_dir_recursive_with_progress(
     match result {
         Ok(bytes) => {
             if let Err(err) = check_canceled(cancel) {
-                if let Err(e) = fs::remove_dir_all(&temp_dest) {
-                    debug_log!(
-                        "failed to clean up temp directory {}: {e}",
-                        temp_dest.display()
-                    );
-                }
+                cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
             if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite) {
-                if let Err(e) = fs::remove_dir_all(&temp_dest) {
-                    debug_log!(
-                        "failed to clean up temp directory {}: {e}",
-                        temp_dest.display()
-                    );
-                }
+                cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
             Ok(bytes)
         }
         Err(err) => {
-            if let Err(e) = fs::remove_dir_all(&temp_dest) {
-                debug_log!(
-                    "failed to clean up temp directory {}: {e}",
-                    temp_dest.display()
-                );
-            }
+            cleanup_dir_all(&temp_dest);
             Err(err)
         }
     }
@@ -339,9 +312,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
             fs::remove_file(&temp)?;
             std::os::unix::fs::symlink(&target, &temp)?;
             if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
-                if let Err(e) = fs::remove_file(&temp) {
-                    debug_log!("failed to clean up temp file {}: {e}", temp.display());
-                }
+                cleanup_file(&temp);
                 return Err(err);
             }
         } else {
@@ -775,12 +746,7 @@ fn publish_temp_dir(temp_dest: &Path, dest: &Path, overwrite: bool) -> io::Resul
                         backup.entry.display()
                     );
                 }
-                if let Err(e) = fs::remove_dir(&backup.container) {
-                    debug_log!(
-                        "warning: failed to cleanup backup container {}: {e}",
-                        backup.container.display()
-                    );
-                }
+                cleanup_dir(&backup.container);
             }
             Ok(())
         }
@@ -818,21 +784,11 @@ fn move_existing_dest_to_backup(dest: &Path) -> io::Result<Option<DestBackup>> {
                 return match fs::rename(dest, &entry) {
                     Ok(()) => Ok(Some(DestBackup { container, entry })),
                     Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                        if let Err(e) = fs::remove_dir(&container) {
-                            debug_log!(
-                                "failed to clean up backup container {}: {e}",
-                                container.display()
-                            );
-                        }
+                        cleanup_dir(&container);
                         Ok(None)
                     }
                     Err(err) => {
-                        if let Err(e) = fs::remove_dir(&container) {
-                            debug_log!(
-                                "failed to clean up backup container {}: {e}",
-                                container.display()
-                            );
-                        }
+                        cleanup_dir(&container);
                         Err(err)
                     }
                 };
@@ -964,37 +920,45 @@ fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
 }
 
 pub(super) fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(dest) {
-        Ok(meta) => {
-            if meta.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::IsADirectory,
-                    format!("cannot overwrite directory with file: {}", dest.display()),
-                ));
-            }
-            fs::remove_file(dest)?;
+    let need_remove = match fs::symlink_metadata(dest) {
+        Ok(meta) if meta.is_dir() => {
+            return Err(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                format!("cannot overwrite directory with file: {}", dest.display()),
+            ));
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    // On Windows, fs::rename fails if dest exists — remove first.
+    // On Unix, rename(2) atomically replaces the target.
+    #[cfg(windows)]
+    if need_remove {
+        fs::remove_file(dest)?;
     }
+    let _ = need_remove; // unused on Unix
     fs::rename(temp, dest)
 }
 
 fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     if overwrite {
-        match fs::symlink_metadata(dest) {
-            Ok(meta) => {
-                if meta.is_dir() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::IsADirectory,
-                        "cannot replace a directory with a file",
-                    ));
-                }
-                fs::remove_file(dest)?;
+        let need_remove = match fs::symlink_metadata(dest) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::IsADirectory,
+                    "cannot replace a directory with a file",
+                ));
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+            Ok(_) => true,
+            Err(_) => false,
+        };
+        // On Windows, fs::rename fails if dest exists — remove first.
+        // On Unix, rename(2) atomically replaces the target.
+        #[cfg(windows)]
+        if need_remove {
+            fs::remove_file(dest)?;
         }
+        let _ = need_remove; // unused on Unix
     }
     std::fs::rename(temp, dest)
 }

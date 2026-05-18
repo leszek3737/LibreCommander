@@ -1,3 +1,4 @@
+use super::helpers::cleanup_file;
 use crate::debug_log;
 use filetime::FileTime;
 use std::ffi::OsString;
@@ -43,15 +44,11 @@ pub fn copy_with_progress(
     match result {
         Ok(total_written) => {
             if cancel.load(Ordering::Relaxed) {
-                if let Err(e) = fs::remove_file(&temp_dest) {
-                    debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
-                }
+                cleanup_file(&temp_dest);
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
             if let Err(err) = publish_temp(&temp_dest, dest, &metadata, cancel, overwrite) {
-                if let Err(e) = fs::remove_file(&temp_dest) {
-                    debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
-                }
+                cleanup_file(&temp_dest);
                 return Err(err);
             }
 
@@ -64,9 +61,7 @@ pub fn copy_with_progress(
             Ok(total_written)
         }
         Err(err) => {
-            if let Err(e) = fs::remove_file(&temp_dest) {
-                debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
-            }
+            cleanup_file(&temp_dest);
             Err(err)
         }
     }
@@ -138,9 +133,7 @@ fn publish_temp(
     overwrite: bool,
 ) -> io::Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        if let Err(e) = fs::remove_file(temp_dest) {
-            debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
-        }
+        cleanup_file(temp_dest);
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
     }
     if overwrite {
@@ -164,12 +157,8 @@ fn publish_temp(
         loop {
             if cancel.load(Ordering::Relaxed) {
                 drop(dest_file);
-                if let Err(e) = fs::remove_file(dest) {
-                    debug_log!("failed to clean up dest file {}: {e}", dest.display());
-                }
-                if let Err(e) = fs::remove_file(temp_dest) {
-                    debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
-                }
+                cleanup_file(dest);
+                cleanup_file(temp_dest);
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
 
@@ -185,17 +174,13 @@ fn publish_temp(
         dest_file.get_ref().sync_all()?;
         Ok(())
     })();
-    if result.is_err()
-        && let Err(e) = fs::remove_file(dest)
-    {
-        debug_log!("failed to clean up dest file {}: {e}", dest.display());
+    if result.is_err() {
+        cleanup_file(dest);
     }
     result?;
     let atime = filetime::FileTime::from_last_access_time(src_metadata);
     let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
-    if let Err(e) = fs::remove_file(temp_dest) {
-        debug_log!("failed to clean up temp file {}: {e}", temp_dest.display());
-    }
+    cleanup_file(temp_dest);
     if let Err(e) = filetime::set_file_times(dest, atime, mtime) {
         debug_log!("set_file_times failed for {}: {e}", dest.display());
     }
