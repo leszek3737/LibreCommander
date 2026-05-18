@@ -13,7 +13,7 @@ fn search_enter_clears_filter_and_refreshes_from_disk() {
         search_cursor: 5,
         ..Default::default()
     };
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
     state.left_panel.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").size(1).build(),
@@ -55,7 +55,7 @@ fn search_enter_preserves_current_entry_focus() {
         search_cursor: 4,
         ..Default::default()
     };
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.entries = vec![TestEntry::new("beta.txt").path(&beta).size(1).build()];
     state.left_panel.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").path(&alpha).size(1).build(),
@@ -84,7 +84,7 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
         search_cursor: 5,
         ..Default::default()
     };
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.entries = vec![TestEntry::new("stale.txt").size(1).build()];
     state.left_panel.unfiltered_entries = vec![TestEntry::new("stale.txt").size(1).build()];
     state.left_panel.unfiltered_dirty = true;
@@ -120,7 +120,7 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
         search_cursor: 5,
         ..Default::default()
     };
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
     state.left_panel.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").size(1).build(),
@@ -147,7 +147,7 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
 fn search_mode_with_empty_panel_handles_enter_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
@@ -158,7 +158,7 @@ fn search_mode_with_empty_panel_handles_enter_gracefully() {
 fn search_mode_with_empty_panel_handles_esc_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
@@ -170,7 +170,7 @@ fn search_mode_with_empty_panel_handles_esc_gracefully() {
 fn search_mode_with_empty_panel_handles_char_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;

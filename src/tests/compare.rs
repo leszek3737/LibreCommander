@@ -71,8 +71,8 @@ fn compare_directories_size_mode_reports_mismatches() {
     std::fs::write(left_dir.path().join("file.txt"), "short").unwrap();
     std::fs::write(right_dir.path().join("file.txt"), "longer content here").unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = left_dir.path().to_path_buf();
-    state.right_panel.path = right_dir.path().to_path_buf();
+    state.left_panel.set_path(left_dir.path().to_path_buf());
+    state.right_panel.set_path(right_dir.path().to_path_buf());
     state.left_panel.entries = vec![
         TestEntry::new("file.txt")
             .path(left_dir.path().join("file.txt"))
@@ -100,8 +100,8 @@ fn compare_directories_by_content_zero_length() {
     let left_dir = tempfile::tempdir().unwrap();
     let right_dir = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = left_dir.path().to_path_buf();
-    state.right_panel.path = right_dir.path().to_path_buf();
+    state.left_panel.set_path(left_dir.path().to_path_buf());
+    state.right_panel.set_path(right_dir.path().to_path_buf());
     pickers::compare_directories(&mut state, CompareMode::Quick);
 }
 

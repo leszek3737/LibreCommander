@@ -261,7 +261,7 @@ fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
     if let Some(first) = outcome.matches.first()
         && let Some(parent) = first.path.parent()
     {
-        state.active_panel_mut().path = parent.to_path_buf();
+        state.active_panel_mut().set_path(parent.to_path_buf());
         refresh_active(state);
         if let Some(pos) = state
             .active_panel()
@@ -303,7 +303,7 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
     if expanded.is_dir() {
         let panel = state.active_panel_mut();
         panel.history.push(panel.path.clone());
-        panel.path = expanded.clone();
+        panel.set_path(expanded.clone());
         panel.cursor = 0;
         panel.scroll_offset = 0;
         refresh_active(state);

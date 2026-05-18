@@ -8,7 +8,7 @@ use std::path::PathBuf;
 fn hotlist_picker_add_current_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.directory_hotlist.clear();
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 
@@ -21,7 +21,7 @@ fn hotlist_picker_add_current_dir() {
 fn hotlist_picker_add_dedup() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.directory_hotlist = vec![tmp.path().to_path_buf()];
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 

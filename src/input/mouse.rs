@@ -578,7 +578,7 @@ fn handle_mouse_panels(
             }
             let panel_mut = state.active_panel_mut();
             panel_mut.history.push(panel_mut.path.clone());
-            panel_mut.path = path;
+            panel_mut.set_path(path);
             panel_mut.cursor = 0;
             panel_mut.scroll_offset = 0;
             refresh_panel(panel_mut, panel_height as usize);

@@ -51,7 +51,7 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Enter => {
             if let Some(path) = state.directory_hotlist.get(state.picker_selected).cloned() {
                 if path.is_dir() {
-                    state.active_panel_mut().path = path;
+                    state.active_panel_mut().set_path(path);
                     state.active_panel_mut().cursor = 0;
                     state.active_panel_mut().scroll_offset = 0;
                     refresh_active(state);

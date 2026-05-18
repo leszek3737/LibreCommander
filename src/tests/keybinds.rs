@@ -34,7 +34,7 @@ fn ctrl_alt_h_toggles_hidden() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
     let temp_dir = tempfile::tempdir().unwrap();
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.show_hidden = false;
     state.left_panel.cursor = 3;
     state.left_panel.scroll_offset = 2;
@@ -58,7 +58,7 @@ fn ctrl_alt_h_toggles_hidden() {
 fn ctrl_alt_h_toggles_hidden_back() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.show_hidden = true;
     state.active_panel = ActivePanel::Left;
     super::super::handle_ctrl_keys(&mut state, KeyCode::Char('h'), 24);
@@ -71,7 +71,7 @@ fn ctrl_alt_r_refreshes() {
     let mut state = AppState::default();
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("existing.txt"), b"data").unwrap();
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.entries = vec![];
     assert!(state.left_panel.entries.is_empty());
 
@@ -100,8 +100,8 @@ fn ctrl_alt_r_refreshes() {
 fn ctrl_alt_u_swaps_panels() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.path = PathBuf::from("/tmp/left");
-    state.right_panel.path = PathBuf::from("/tmp/right");
+    state.left_panel.set_path(PathBuf::from("/tmp/left"));
+    state.right_panel.set_path(PathBuf::from("/tmp/right"));
     state.active_panel = ActivePanel::Left;
 
     handle_normal_mode(

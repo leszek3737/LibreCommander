@@ -489,6 +489,7 @@ mod tests {
     fn apply_marks_selected_flags() {
         let mut left_panel = PanelState {
             path: PathBuf::from("/tmp"),
+            canonical_path: None,
             entries: vec![entry("a.txt", 10), entry("b.txt", 20)],
             cursor: 0,
             scroll_offset: 0,
@@ -510,6 +511,7 @@ mod tests {
         };
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
+            canonical_path: None,
             entries: vec![entry("a.txt", 10)],
             cursor: 0,
             scroll_offset: 0,

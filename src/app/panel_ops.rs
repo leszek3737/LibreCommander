@@ -234,7 +234,7 @@ pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     let path = path.clone();
     let panel = state.active_panel_mut();
     panel.history.push(panel.path.clone());
-    panel.path = path;
+    panel.set_path(path);
     panel.cursor = 0;
     panel.scroll_offset = 0;
     panel.filter = None;

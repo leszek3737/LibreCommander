@@ -6,7 +6,7 @@ use app::types::PickerKind;
 fn history_dedup_consecutive() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.command_history.push_back("echo hi".to_string());
     let cmd = "echo hi";
     if state.command_history.back().is_none_or(|l| l != cmd) {
