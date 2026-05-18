@@ -138,6 +138,8 @@ Prefer small, focused files — but **not at the cost of idiomatic Rust**. The
 - One logical change per commit. Don't bundle formatting churn with logic.
 - Don't bump the version in `Cargo.toml` unless explicitly asked.
 - Never commit `target/`, editor swap files, or worktree dirs.
+- **Never amend existing commits** (`git commit --amend`) unless the user
+  explicitly asks for it. Always create a new commit for each logical change.
 
 ## Safety Rails
 
@@ -204,7 +206,7 @@ because `src/main.rs` is **~3000 lines** — reading it linearly is wasteful.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **LibreCommander** (2876 symbols, 8673 relationships, 255 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **LibreCommander** (2904 symbols, 8761 relationships, 258 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

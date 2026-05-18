@@ -5,6 +5,7 @@ use ratatui::{
     style::Style,
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
+use std::borrow::Cow;
 use std::fmt::Write;
 use unicode_width::UnicodeWidthStr;
 
@@ -111,31 +112,118 @@ pub fn get_file_icon_with_theme(category: &FileCategory, theme: IconTheme) -> &'
     }
 }
 
-fn truncate_to_width(s: &str, max_width: usize) -> String {
+fn truncate_to_width<'a>(s: &'a str, max_width: usize) -> Cow<'a, str> {
     if max_width == 0 {
-        return String::new();
-    }
-    let full_width = UnicodeWidthStr::width(s);
-    if full_width <= max_width {
-        return s.to_string();
+        return Cow::Borrowed("");
     }
     let truncate_to = max_width.saturating_sub(1);
-    let mut result = String::new();
     let mut taken = 0;
-    for ch in s.chars() {
+    let mut truncate_byte = None;
+    let mut truncate_width = 0;
+    for (byte_idx, ch) in s.char_indices() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if taken + cw > truncate_to {
-            break;
+        if truncate_byte.is_none() && taken + cw > truncate_to {
+            truncate_byte = Some(byte_idx);
+            truncate_width = taken;
         }
-        result.push(ch);
+        if taken + cw > max_width {
+            if taken == max_width && truncate_width + 1 < max_width {
+                return Cow::Borrowed(&s[..byte_idx]);
+            }
+            let tb = truncate_byte.unwrap_or(byte_idx);
+            let mut result = String::with_capacity(tb + 3);
+            result.push_str(&s[..tb]);
+            result.push('\u{2026}');
+            return Cow::Owned(result);
+        }
         taken += cw;
     }
-    result.push('…');
-    result
+    Cow::Borrowed(s)
 }
 
-fn truncate_name(name: &str, max_width: usize) -> String {
+fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     truncate_to_width(name, max_width)
+}
+
+fn sanitize_for_display(s: &str) -> Cow<'_, str> {
+    if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) {
+        return Cow::Borrowed(s);
+    }
+
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            0x1B => {
+                if i + 1 < bytes.len() {
+                    match bytes[i + 1] {
+                        b'[' => {
+                            // CSI sequence: ESC [ ... final_byte(@-~)
+                            let mut j = i + 2;
+                            while j < bytes.len() {
+                                let b = bytes[j];
+                                if (b'@'..=b'~').contains(&b) {
+                                    j += 1;
+                                    break;
+                                }
+                                if b <= 0x1F {
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            i = j;
+                            continue;
+                        }
+                        b']' | b'P' | b'_' | b'^' => {
+                            // OSC/DCS/APC/PM — consume until ST (ESC \) or BEL
+                            let mut j = i + 2;
+                            while j < bytes.len() {
+                                if bytes[j] == 0x07 {
+                                    j += 1;
+                                    break;
+                                }
+                                if bytes[j] == 0x1B && j + 1 < bytes.len() && bytes[j + 1] == b'\\'
+                                {
+                                    j += 2;
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            i = j;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                result.push('\u{00b7}');
+                i += 1;
+            }
+            b'\n' => {
+                result.push('\u{23ce}');
+                i += 1;
+            }
+            b'\r' => {
+                i += 1;
+            }
+            b'\t' => {
+                result.push_str("  ");
+                i += 1;
+            }
+            0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => {
+                result.push('\u{00b7}');
+                i += 1;
+            }
+            _ => {
+                let ch = s[i..].chars().next().unwrap_or('\u{fffd}');
+                result.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+
+    Cow::Owned(result)
 }
 
 pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
@@ -244,15 +332,11 @@ pub fn render_panel_with_colors(
     }
 }
 
-fn build_suffix(
-    entry: &FileEntry,
-    size_str: &str,
-    date_str: &str,
-    width: usize,
-    show_permissions: bool,
-) -> Suffix {
-    let size_width = UnicodeWidthStr::width(size_str);
-    let date_width = UnicodeWidthStr::width(date_str);
+fn build_suffix(entry: &FileEntry, width: usize, show_permissions: bool) -> Suffix {
+    let size_width = entry.size_width;
+    let date_width = entry.time_width;
+    let size_str = &entry.size_str;
+    let date_str = &entry.time_str;
     let size_date_width = size_width + date_width + 2;
 
     if show_permissions {
@@ -303,33 +387,30 @@ fn format_entry_line(
         return format!("{marker}");
     }
 
+    let display_name = sanitize_for_display(&entry.name);
+    let display_name_width = UnicodeWidthStr::width(&*display_name);
+
     let icon = get_file_icon_with_theme(category, icon_theme);
     let icon_width = icon_display_width(category, icon_theme);
-    let suffix = build_suffix(
-        entry,
-        &entry.size_str,
-        &entry.time_str,
-        width,
-        show_permissions,
-    );
+    let suffix = build_suffix(entry, width, show_permissions);
 
     let available_name_width = width.saturating_sub(1 + suffix.width);
     if available_name_width == 0 {
         return format!("{marker}");
     }
 
-    let name_with_icon = format!("{icon} {}", entry.name);
-    let name_width = icon_width + 1 + entry.name_width;
+    let name_with_icon = format!("{icon} {display_name}");
+    let name_width = icon_width + 1 + display_name_width;
     let (name, name_actual_width) = if name_width <= available_name_width {
         (name_with_icon, name_width)
     } else if available_name_width <= icon_width + 1 {
         let truncated = truncate_to_width(icon, available_name_width);
-        let w = UnicodeWidthStr::width(truncated.as_str());
-        (truncated, w)
+        let w = UnicodeWidthStr::width(&*truncated);
+        (truncated.into_owned(), w)
     } else {
         let name_budget = available_name_width.saturating_sub(icon_width + 1);
-        let truncated = truncate_to_width(&entry.name, name_budget);
-        let w = icon_width + 1 + UnicodeWidthStr::width(truncated.as_str());
+        let truncated = truncate_to_width(&display_name, name_budget);
+        let w = icon_width + 1 + UnicodeWidthStr::width(&*truncated);
         (format!("{icon} {truncated}"), w)
     };
 
@@ -353,6 +434,9 @@ fn format_brief_entry_line(
     icon_theme: IconTheme,
 ) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
+    let display_name = sanitize_for_display(&entry.name);
+    let display_name_width = UnicodeWidthStr::width(&*display_name);
+
     let icon = get_file_icon_with_theme(category, icon_theme);
     let icon_width = icon_display_width(category, icon_theme) + 1;
     let available = width.saturating_sub(1);
@@ -362,15 +446,14 @@ fn format_brief_entry_line(
     if available < icon_width {
         return format!("{marker}");
     }
-    let name_width = entry.name_width;
     let name_available = available - icon_width;
-    if name_available >= name_width {
-        return format!("{marker}{icon} {}", entry.name);
+    if name_available >= display_name_width {
+        return format!("{marker}{icon} {display_name}");
     }
     if name_available == 0 {
         return format!("{marker}{icon}");
     }
-    let truncated = truncate_name(&entry.name, name_available);
+    let truncated = truncate_name(&display_name, name_available);
     format!("{marker}{icon} {truncated}")
 }
 
@@ -475,8 +558,9 @@ pub fn render_status_bar_with_colors(
 
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
+        let display_name = sanitize_for_display(&entry.name);
         let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions);
-        let full_info = format!("{} | {metadata}", entry.name);
+        let full_info = format!("{display_name} | {metadata}");
         let full_width = UnicodeWidthStr::width(full_info.as_str());
 
         if full_width <= remaining {
@@ -487,10 +571,10 @@ pub fn render_status_bar_with_colors(
             let name_budget = remaining.saturating_sub(meta_width);
 
             if name_budget >= 3 {
-                let truncated = truncate_to_width(&entry.name, name_budget);
+                let truncated = truncate_to_width(&display_name, name_budget);
                 format!("{truncated}{meta}")
             } else if remaining > 0 {
-                truncate_to_width(&full_info, remaining)
+                truncate_to_width(&full_info, remaining).into_owned()
             } else {
                 String::new()
             }
@@ -505,7 +589,7 @@ pub fn render_status_bar_with_colors(
 
     let paragraph = Paragraph::new(full_text)
         .style(Theme::status_bar_with_colors(colors))
-        .block(Block::default().borders(Borders::TOP));
+        .block(Block::default());
 
     f.render_widget(paragraph, area);
 }

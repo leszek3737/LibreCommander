@@ -792,6 +792,7 @@ dependencies = [
  "shlex 2.0.1",
  "tempfile",
  "toml",
+ "unicode-segmentation",
  "unicode-width",
  "users",
 ]

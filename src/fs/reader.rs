@@ -112,7 +112,8 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
     let (owner, group) = lookup_owner_group(uid, gid);
 
     let name = file_name.to_string();
-    let (time_str, size_str, name_width) = FileEntry::cached_fields(&cha, &name);
+    let (time_str, size_str, name_width, size_width, time_width) =
+        FileEntry::cached_fields(&cha, &name);
 
     Ok(FileEntry {
         name,
@@ -125,6 +126,8 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
         time_str,
         size_str,
         name_width,
+        size_width,
+        time_width,
     })
 }
 
@@ -161,7 +164,8 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             })
             .unwrap_or_default();
         let dummy_cha = Cha::dummy_dir();
-        let (time_str, size_str, name_width) = FileEntry::cached_fields(&dummy_cha, "..");
+        let (time_str, size_str, name_width, size_width, time_width) =
+            FileEntry::cached_fields(&dummy_cha, "..");
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_path.to_path_buf(),
@@ -173,6 +177,8 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             time_str,
             size_str,
             name_width,
+            size_width,
+            time_width,
         });
     }
 

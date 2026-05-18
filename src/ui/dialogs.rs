@@ -13,6 +13,7 @@ use ratatui::{
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const DIALOG_WIDTH_PERCENT: u16 = 50;
@@ -437,18 +438,18 @@ pub fn render_input_dialog(
         return;
     }
 
-    let chars: Vec<char> = value.chars().collect();
-    let char_count = chars.len();
-    let clamped_cursor = cursor_pos.min(char_count);
+    let graphemes: Vec<&str> = value.graphemes(true).collect();
+    let grapheme_count = graphemes.len();
+    let clamped_cursor = cursor_pos.min(grapheme_count);
 
-    let char_widths: Vec<usize> = chars
+    let grapheme_widths: Vec<usize> = graphemes
         .iter()
-        .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
+        .map(|g| UnicodeWidthStr::width(*g))
         .collect();
 
-    let mut cum_widths = vec![0usize; char_count + 1];
-    for i in 0..char_count {
-        cum_widths[i + 1] = cum_widths[i] + char_widths[i];
+    let mut cum_widths = vec![0usize; grapheme_count + 1];
+    for i in 0..grapheme_count {
+        cum_widths[i + 1] = cum_widths[i] + grapheme_widths[i];
     }
 
     let cursor_display = cum_widths[clamped_cursor];
@@ -466,12 +467,12 @@ pub fn render_input_dialog(
 
     let mut visible = String::new();
     let mut vis_width = 0;
-    for i in start_idx..char_count {
-        if vis_width + char_widths[i] > visible_width {
+    for i in start_idx..grapheme_count {
+        if vis_width + grapheme_widths[i] > visible_width {
             break;
         }
-        visible.push(chars[i]);
-        vis_width += char_widths[i];
+        visible.push_str(graphemes[i]);
+        vis_width += grapheme_widths[i];
     }
 
     let display_cursor_col = cursor_display.saturating_sub(cum_widths[start_idx]);

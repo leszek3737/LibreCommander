@@ -529,14 +529,42 @@ fn test_truncate_name_no_truncation() {
 fn test_truncate_name_with_ellipsis() {
     let result = truncate_name("hello world", 8);
     assert!(result.ends_with('…'));
-    assert!(UnicodeWidthStr::width(result.as_str()) <= 8);
+    assert!(UnicodeWidthStr::width(&*result) <= 8);
 }
 
 #[test]
 fn test_truncate_name_unicode() {
     let result = truncate_name("日本語テストファイル", 6);
-    assert!(result.ends_with('…'));
-    assert!(UnicodeWidthStr::width(result.as_str()) <= 6);
+    assert_eq!(&*result, "日本語");
+    assert_eq!(UnicodeWidthStr::width(&*result), 6);
+}
+
+#[test]
+fn test_truncate_to_width_wide_char_fits_exactly() {
+    let result = truncate_to_width("中a", 2);
+    assert_eq!(&*result, "中");
+    assert_eq!(UnicodeWidthStr::width(&*result), 2);
+}
+
+#[test]
+fn test_truncate_to_width_wide_char_in_middle_fits_exactly() {
+    let result = truncate_to_width("a中b", 3);
+    assert_eq!(&*result, "a中");
+    assert_eq!(UnicodeWidthStr::width(&*result), 3);
+}
+
+#[test]
+fn test_truncate_to_width_narrow_chars_use_ellipsis() {
+    let result = truncate_to_width("abcde", 3);
+    assert_eq!(&*result, "ab…");
+    assert_eq!(UnicodeWidthStr::width(&*result), 3);
+}
+
+#[test]
+fn test_truncate_to_width_wide_char_doesnt_fit() {
+    let result = truncate_to_width("a中bc", 3);
+    assert_eq!(&*result, "a中");
+    assert_eq!(UnicodeWidthStr::width(&*result), 3);
 }
 
 #[test]
@@ -632,4 +660,65 @@ fn test_render_function_bar_no_panic() {
     let buffer = terminal.backend().buffer();
     let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
     assert!(content.contains("F1"));
+}
+
+#[test]
+fn test_sanitize_clean_string_unchanged() {
+    let input = "hello_world.txt";
+    let result = sanitize_for_display(input);
+    assert!(matches!(result, Cow::Borrowed("hello_world.txt")));
+}
+
+#[test]
+fn test_sanitize_newline_replaced() {
+    let result = sanitize_for_display("file\nname");
+    assert_eq!(&*result, "file⏎name");
+}
+
+#[test]
+fn test_sanitize_carriage_return_stripped() {
+    let result = sanitize_for_display("file\rname");
+    assert_eq!(&*result, "filename");
+}
+
+#[test]
+fn test_sanitize_tab_replaced() {
+    let result = sanitize_for_display("file\tname");
+    assert_eq!(&*result, "file  name");
+}
+
+#[test]
+fn test_sanitize_ansi_escape_stripped() {
+    let result = sanitize_for_display("\x1b[31mred\x1b[0m");
+    assert_eq!(&*result, "red");
+}
+
+#[test]
+fn test_sanitize_null_byte_replaced() {
+    let result = sanitize_for_display("file\x00name");
+    assert_eq!(&*result, "file·name");
+}
+
+#[test]
+fn test_sanitize_bare_escape_replaced() {
+    let result = sanitize_for_display("file\x1bname");
+    assert_eq!(&*result, "file·name");
+}
+
+#[test]
+fn test_sanitize_unicode_preserved() {
+    let result = sanitize_for_display("日本語.txt");
+    assert!(matches!(result, Cow::Borrowed("日本語.txt")));
+}
+
+#[test]
+fn test_sanitize_del_replaced() {
+    let result = sanitize_for_display("file\x7F");
+    assert_eq!(&*result, "file·");
+}
+
+#[test]
+fn test_sanitize_mixed_control_chars() {
+    let result = sanitize_for_display("a\nb\rc\x1b[32md\x00e\tf");
+    assert_eq!(&*result, "a⏎bcd·e  f");
 }

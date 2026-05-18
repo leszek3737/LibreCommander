@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ struct SearchLineMatch {
     start_byte: usize,
     end_byte: usize,
 }
+
+const HEX_OFFSET_PREFIX_WIDTH: usize = 10; // "{:08x}: " = 8 chars + ": " = 10
 
 pub struct ViewerState {
     pub file_path: PathBuf,
@@ -44,9 +47,9 @@ pub struct ViewerState {
     pub file_size: usize,
     pub has_invalid_utf8: bool,
     originally_binary: bool,
-    visual_heights: Vec<usize>,
-    visual_offsets: Vec<usize>,
-    cached_content_width: usize,
+    visual_heights: RefCell<Vec<usize>>,
+    visual_offsets: RefCell<Vec<usize>>,
+    cached_content_width: RefCell<usize>,
     file_truncated: bool,
 }
 
@@ -234,9 +237,9 @@ impl ViewerState {
             file_size,
             has_invalid_utf8,
             originally_binary: !open_as_text,
-            visual_heights: Vec::new(),
-            visual_offsets: Vec::new(),
-            cached_content_width: 0,
+            visual_heights: RefCell::new(Vec::new()),
+            visual_offsets: RefCell::new(Vec::new()),
+            cached_content_width: RefCell::new(0),
             file_truncated,
         })
     }
@@ -256,20 +259,21 @@ impl ViewerState {
 
     #[must_use]
     fn is_visual_scroll(&self) -> bool {
-        self.wrap_lines && !self.is_hex_mode() && !self.visual_heights.is_empty()
+        self.wrap_lines && !self.is_hex_mode() && !self.visual_heights.borrow().is_empty()
     }
 
     #[must_use]
     fn total_visual_rows(&self) -> usize {
-        self.visual_offsets.last().copied().unwrap_or(0)
+        self.visual_offsets.borrow().last().copied().unwrap_or(0)
     }
 
     #[must_use]
     fn visual_row_to_logical(&self, visual_row: usize) -> (usize, usize) {
         const LINEAR_SEARCH_THRESHOLD: usize = 24;
-        if self.visual_heights.len() <= LINEAR_SEARCH_THRESHOLD {
+        let heights = self.visual_heights.borrow();
+        if heights.len() <= LINEAR_SEARCH_THRESHOLD {
             let mut acc = 0usize;
-            for (i, &h) in self.visual_heights.iter().enumerate() {
+            for (i, &h) in heights.iter().enumerate() {
                 if acc + h > visual_row {
                     return (i, visual_row - acc);
                 }
@@ -277,17 +281,13 @@ impl ViewerState {
             }
             return (self.line_count.saturating_sub(1), 0);
         }
-        let idx = self
-            .visual_offsets
-            .partition_point(|&offset| offset <= visual_row);
-        if idx >= self.visual_offsets.len() {
+        drop(heights);
+        let offsets = self.visual_offsets.borrow();
+        let idx = offsets.partition_point(|&offset| offset <= visual_row);
+        if idx >= offsets.len() {
             return (self.line_count.saturating_sub(1), 0);
         }
-        let acc_before = if idx == 0 {
-            0
-        } else {
-            self.visual_offsets[idx - 1]
-        };
+        let acc_before = if idx == 0 { 0 } else { offsets[idx - 1] };
         (idx, visual_row - acc_before)
     }
 
@@ -297,6 +297,7 @@ impl ViewerState {
             0
         } else {
             self.visual_offsets
+                .borrow()
                 .get(logical_line - 1)
                 .copied()
                 .unwrap_or_else(|| self.total_visual_rows())
@@ -444,6 +445,7 @@ impl ViewerState {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn search_hex(&mut self, query: &str) {
         let bpl = HEX_BYTES_PER_LINE;
         let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
@@ -453,21 +455,34 @@ impl ViewerState {
             let mut pos = 0;
             while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
                 let abs_offset = pos + idx;
-                let line_idx = abs_offset / bpl;
-                let byte_in_line = abs_offset % bpl;
-
-                let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
-                let match_len = needle.len().min(bpl - byte_in_line);
-
                 let global_idx = self.search_matches.len();
-                self.search_matches
-                    .push((line_idx, hex_col, match_len * 3 - 1));
-                self.search_matches_by_line.push(SearchLineMatch {
-                    line: line_idx,
-                    global_idx,
-                    start_byte: hex_col,
-                    end_byte: hex_col + match_len * 3 - 1,
-                });
+                let mut remaining = needle.len();
+                let mut byte_offset = abs_offset;
+                let mut first_segment = true;
+
+                while remaining > 0 {
+                    let line_idx = byte_offset / bpl;
+                    let byte_in_line = byte_offset % bpl;
+                    let hex_col = HEX_OFFSET_PREFIX_WIDTH
+                        + byte_in_line * 3
+                        + if byte_in_line >= 8 { 1 } else { 0 };
+                    let segment_len = remaining.min(bpl - byte_in_line);
+                    let match_hex_len = segment_len * 3 - 1;
+
+                    if first_segment {
+                        self.search_matches.push((line_idx, hex_col, match_hex_len));
+                        first_segment = false;
+                    }
+                    self.search_matches_by_line.push(SearchLineMatch {
+                        line: line_idx,
+                        global_idx,
+                        start_byte: hex_col,
+                        end_byte: hex_col + match_hex_len,
+                    });
+
+                    byte_offset += segment_len;
+                    remaining -= segment_len;
+                }
 
                 pos = abs_offset + 1;
             }
@@ -493,25 +508,66 @@ impl ViewerState {
                 search_start = abs_pos + advance;
 
                 let orig_byte = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
-                let line_idx = orig_byte / bpl;
-                let byte_in_line = orig_byte % bpl;
-                let hex_col = byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
-                let match_byte_len = lower_query
-                    .len()
-                    .min(self.raw_bytes.len().saturating_sub(orig_byte));
+                let match_end_in_lower = abs_pos + lower_query.len();
+                let orig_byte_end = byte_map
+                    .get(match_end_in_lower)
+                    .copied()
+                    .unwrap_or(lossy.len());
+                let match_byte_len = if orig_byte_end > orig_byte {
+                    (orig_byte_end - orig_byte).min(self.raw_bytes.len().saturating_sub(orig_byte))
+                } else {
+                    // Fallback: snap to next UTF-8 char boundary for accurate highlight
+                    let max_len = self.raw_bytes.len().saturating_sub(orig_byte);
+                    if max_len == 0 {
+                        0
+                    } else {
+                        let first = self.raw_bytes[orig_byte];
+                        let char_len = if first & 0x80 == 0 {
+                            1
+                        } else if first & 0xE0 == 0xC0 {
+                            2
+                        } else if first & 0xF0 == 0xE0 {
+                            3
+                        } else if first & 0xF8 == 0xF0 {
+                            4
+                        } else {
+                            1
+                        };
+                        char_len.min(max_len)
+                    }
+                };
                 if match_byte_len == 0 {
                     continue;
                 }
-                let match_hex_len = match_byte_len * 3 - 1;
 
                 let global_idx = self.search_matches.len();
-                self.search_matches.push((line_idx, hex_col, match_hex_len));
-                self.search_matches_by_line.push(SearchLineMatch {
-                    line: line_idx,
-                    global_idx,
-                    start_byte: hex_col,
-                    end_byte: hex_col + match_hex_len,
-                });
+                let mut remaining = match_byte_len;
+                let mut byte_off = orig_byte;
+                let mut first_segment = true;
+
+                while remaining > 0 {
+                    let line_idx = byte_off / bpl;
+                    let byte_in_line = byte_off % bpl;
+                    let hex_col = HEX_OFFSET_PREFIX_WIDTH
+                        + byte_in_line * 3
+                        + if byte_in_line >= 8 { 1 } else { 0 };
+                    let segment_len = remaining.min(bpl - byte_in_line);
+                    let match_hex_len = segment_len * 3 - 1;
+
+                    if first_segment {
+                        self.search_matches.push((line_idx, hex_col, match_hex_len));
+                        first_segment = false;
+                    }
+                    self.search_matches_by_line.push(SearchLineMatch {
+                        line: line_idx,
+                        global_idx,
+                        start_byte: hex_col,
+                        end_byte: hex_col + match_hex_len,
+                    });
+
+                    byte_off += segment_len;
+                    remaining -= segment_len;
+                }
             }
         }
 
@@ -574,9 +630,9 @@ impl ViewerState {
 
     pub fn toggle_line_numbers(&mut self) {
         self.show_line_numbers = !self.show_line_numbers;
-        self.visual_heights.clear();
-        self.visual_offsets.clear();
-        self.cached_content_width = 0;
+        self.visual_heights.borrow_mut().clear();
+        self.visual_offsets.borrow_mut().clear();
+        *self.cached_content_width.borrow_mut() = 0;
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
@@ -587,9 +643,9 @@ impl ViewerState {
         if self.wrap_lines {
             self.horizontal_offset = 0;
         }
-        self.visual_heights.clear();
-        self.visual_offsets.clear();
-        self.cached_content_width = 0;
+        self.visual_heights.borrow_mut().clear();
+        self.visual_offsets.borrow_mut().clear();
+        *self.cached_content_width.borrow_mut() = 0;
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
@@ -623,16 +679,18 @@ impl ViewerState {
         }
     }
 
-    pub fn update_wrap_layout(&mut self, content_width: usize) {
+    pub fn update_wrap_layout(&self, content_width: usize) {
         if !self.wrap_lines || self.is_hex_mode() || self.line_count == 0 {
-            if !self.visual_heights.is_empty() {
-                self.visual_heights.clear();
-                self.visual_offsets.clear();
-                self.cached_content_width = 0;
+            if !self.visual_heights.borrow().is_empty() {
+                self.visual_heights.borrow_mut().clear();
+                self.visual_offsets.borrow_mut().clear();
+                *self.cached_content_width.borrow_mut() = 0;
             }
             return;
         }
-        if self.cached_content_width == content_width && !self.visual_heights.is_empty() {
+        if *self.cached_content_width.borrow() == content_width
+            && !self.visual_heights.borrow().is_empty()
+        {
             return;
         }
         let line_num_width = if self.show_line_numbers {
@@ -642,7 +700,7 @@ impl ViewerState {
         };
         let width = content_width.max(1);
         const MAX_VISUAL_LINES: usize = 1_000_000;
-        self.visual_heights = (0..self.line_count)
+        let new_heights: Vec<usize> = (0..self.line_count)
             .map(|i| {
                 let line = self.get_line(i);
                 let text_width = unicode_width::UnicodeWidthStr::width(line.as_ref());
@@ -651,19 +709,24 @@ impl ViewerState {
             })
             .take(MAX_VISUAL_LINES)
             .collect();
-        if self.visual_heights.len() < self.line_count {
-            self.visual_heights.clear();
-            self.visual_offsets.clear();
-            self.cached_content_width = 0;
+        if new_heights.len() < self.line_count {
+            self.visual_heights.borrow_mut().clear();
+            self.visual_offsets.borrow_mut().clear();
+            *self.cached_content_width.borrow_mut() = 0;
             return;
         }
-        self.visual_offsets = Vec::with_capacity(self.visual_heights.len());
+        let mut new_offsets = Vec::with_capacity(new_heights.len());
         let mut acc = 0usize;
-        for &h in &self.visual_heights {
+        for &h in &new_heights {
             acc += h;
-            self.visual_offsets.push(acc);
+            new_offsets.push(acc);
         }
-        self.cached_content_width = content_width;
+        *self.visual_heights.borrow_mut() = new_heights;
+        *self.visual_offsets.borrow_mut() = new_offsets;
+        *self.cached_content_width.borrow_mut() = content_width;
+    }
+
+    pub fn clamp_scroll(&mut self) {
         let max = self.max_scroll();
         if self.scroll_offset > max {
             self.scroll_offset = max;
@@ -929,6 +992,75 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     render_viewer_with_colors(f, area, state, &ColorPalette::default());
 }
 
+#[allow(clippy::too_many_lines)]
+fn compute_visible_range(state: &ViewerState, visible_height: usize) -> (usize, usize, usize) {
+    if state.is_visual_scroll() {
+        let heights = state.visual_heights.borrow();
+        let (logical_start, sub) = state.visual_row_to_logical(state.scroll_offset);
+        let mut visual_budget = visible_height.saturating_add(sub);
+        let mut end = logical_start;
+        while end < state.line_count && visual_budget > 0 {
+            visual_budget = visual_budget.saturating_sub(heights[end]);
+            end += 1;
+        }
+        (logical_start, sub, end)
+    } else {
+        let start = state.scroll_offset;
+        let end = (start + visible_height).min(state.line_count);
+        (start, 0, end)
+    }
+}
+
+fn render_content_paragraph(
+    f: &mut Frame,
+    state: &ViewerState,
+    lines: Vec<Line<'_>>,
+    line_num_lines: Vec<Line<'_>>,
+    content_area: Rect,
+    use_visual: bool,
+    sub_row: usize,
+) {
+    let separate_line_nums = !state.wrap_lines && state.show_line_numbers;
+
+    if separate_line_nums {
+        let num_col_width = line_number_column_width(state.line_count) as u16;
+        let actual_num_width = num_col_width.min(content_area.width);
+        let line_num_area = Rect {
+            x: content_area.x,
+            y: content_area.y,
+            width: actual_num_width,
+            height: content_area.height,
+        };
+        let text_area = Rect {
+            x: content_area.x + actual_num_width,
+            y: content_area.y,
+            width: content_area.width.saturating_sub(actual_num_width),
+            height: content_area.height,
+        };
+
+        let line_num_para = Paragraph::new(line_num_lines);
+        f.render_widget(line_num_para, line_num_area);
+
+        if text_area.width > 0 {
+            let text_para = Paragraph::new(lines)
+                .scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
+            f.render_widget(text_para, text_area);
+        }
+    } else {
+        let mut paragraph = Paragraph::new(lines);
+        if state.wrap_lines {
+            paragraph = paragraph.wrap(Wrap { trim: false });
+            if use_visual && sub_row > 0 {
+                paragraph = paragraph.scroll((sub_row as u16, 0));
+            }
+        } else {
+            paragraph = paragraph.scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
+        }
+
+        f.render_widget(paragraph, content_area);
+    }
+}
+
 pub fn render_viewer_with_colors(
     f: &mut Frame,
     area: Rect,
@@ -958,28 +1090,24 @@ pub fn render_viewer_with_colors(
         height: inner_area.height.saturating_sub(1),
     };
 
+    if content_area.width == 0 {
+        return;
+    }
+
+    state.update_wrap_layout(content_area.width as usize);
+
     let mut lines: Vec<Line> = Vec::new();
+    let mut line_num_lines: Vec<Line> = Vec::new();
     let visible_height = content_area.height as usize;
 
     let use_visual = state.is_visual_scroll();
 
-    let (start_idx, sub_row, end_idx) = if use_visual {
-        let (logical_start, sub) = state.visual_row_to_logical(state.scroll_offset);
-        let mut visual_budget = visible_height.saturating_add(sub);
-        let mut end = logical_start;
-        while end < state.line_count && visual_budget > 0 {
-            visual_budget = visual_budget.saturating_sub(state.visual_heights[end]);
-            end += 1;
-        }
-        (logical_start, sub, end)
-    } else {
-        let start = state.scroll_offset;
-        let end = (start + visible_height).min(state.line_count);
-        (start, 0, end)
-    };
+    let (start_idx, sub_row, end_idx) = compute_visible_range(state, visible_height);
 
+    let separate_line_nums = !state.wrap_lines && state.show_line_numbers;
     let visible_matches = &state.search_matches_by_line;
     let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
+
     for i in start_idx..end_idx {
         let line_content = state.get_line(i).into_owned();
         let line_match_start = match_start;
@@ -987,29 +1115,8 @@ pub fn render_viewer_with_colors(
             match_start += 1;
         }
         let line_matches = &visible_matches[line_match_start..match_start];
-        let spans: Vec<Span> = if state.show_line_numbers {
-            let line_num = format!(
-                "{:>width$}  ",
-                i + 1,
-                width = line_number_digits(state.line_count)
-            );
-            let mut line_spans = vec![Span::raw(line_num)];
-            if line_matches.is_empty() {
-                line_spans.push(Span::raw(line_content));
-            } else {
-                line_spans.extend(
-                    format_line_with_highlight(
-                        &line_content,
-                        line_matches,
-                        state.current_match,
-                        colors,
-                    )
-                    .into_iter()
-                    .map(|s| Span::styled(s.content.into_owned(), s.style)),
-                );
-            }
-            line_spans
-        } else if line_matches.is_empty() {
+
+        let text_spans: Vec<Span> = if line_matches.is_empty() {
             vec![Span::raw(line_content)]
         } else {
             format_line_with_highlight(&line_content, line_matches, state.current_match, colors)
@@ -1018,20 +1125,37 @@ pub fn render_viewer_with_colors(
                 .collect()
         };
 
-        lines.push(Line::from(spans));
-    }
-
-    let mut paragraph = Paragraph::new(lines);
-    if state.wrap_lines {
-        paragraph = paragraph.wrap(Wrap { trim: false });
-        if use_visual && sub_row > 0 {
-            paragraph = paragraph.scroll((sub_row as u16, 0));
+        if separate_line_nums {
+            let line_num = format!(
+                "{:>width$}  ",
+                i + 1,
+                width = line_number_digits(state.line_count)
+            );
+            line_num_lines.push(Line::from(Span::raw(line_num)));
+            lines.push(Line::from(text_spans));
+        } else if state.show_line_numbers {
+            let line_num = format!(
+                "{:>width$}  ",
+                i + 1,
+                width = line_number_digits(state.line_count)
+            );
+            let mut combined = vec![Span::raw(line_num)];
+            combined.extend(text_spans);
+            lines.push(Line::from(combined));
+        } else {
+            lines.push(Line::from(text_spans));
         }
-    } else {
-        paragraph = paragraph.scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
     }
 
-    f.render_widget(paragraph, content_area);
+    render_content_paragraph(
+        f,
+        state,
+        lines,
+        line_num_lines,
+        content_area,
+        use_visual,
+        sub_row,
+    );
 
     let current_line = if use_visual {
         state.visual_row_to_logical(state.scroll_offset).0
@@ -1787,17 +1911,17 @@ mod tests {
         assert!(state.wrap_lines);
 
         state.update_wrap_layout(80);
-        assert!(!state.visual_heights.is_empty());
+        assert!(!state.visual_heights.borrow().is_empty());
 
-        let short_height = state.visual_heights[0];
-        let long_height = state.visual_heights[1];
+        let short_height = state.visual_heights.borrow()[0];
+        let long_height = state.visual_heights.borrow()[1];
         assert_eq!(short_height, 1);
         assert!(
             long_height > 1,
             "long line should wrap to multiple visual rows"
         );
 
-        let total_visual: usize = state.visual_heights.iter().sum();
+        let total_visual: usize = state.visual_heights.borrow().iter().sum();
         assert!(total_visual > state.line_count);
 
         state.scroll_down(1);
@@ -1821,8 +1945,8 @@ mod tests {
         let mut state = ViewerState::open(file.path()).unwrap();
         state.update_wrap_layout(5);
 
-        assert_eq!(state.visual_heights.len(), 1);
-        assert_eq!(state.visual_heights[0], 2);
+        assert_eq!(state.visual_heights.borrow().len(), 1);
+        assert_eq!(state.visual_heights.borrow()[0], 2);
 
         state.scroll_down(1);
         assert_eq!(state.scroll_offset, 1);
@@ -1839,7 +1963,7 @@ mod tests {
         let mut state = ViewerState::open(file.path()).unwrap();
         state.update_wrap_layout(80);
 
-        let total_visual: usize = state.visual_heights.iter().sum();
+        let total_visual: usize = state.visual_heights.borrow().iter().sum();
         state.go_to_bottom(3);
         assert_eq!(
             state.scroll_offset,
@@ -1853,11 +1977,11 @@ mod tests {
         let file = create_test_file(content);
         let mut state = ViewerState::open(file.path()).unwrap();
         state.update_wrap_layout(80);
-        assert!(!state.visual_heights.is_empty());
+        assert!(!state.visual_heights.borrow().is_empty());
 
         state.toggle_wrap();
-        assert!(state.visual_heights.is_empty());
-        assert_eq!(state.cached_content_width, 0);
+        assert!(state.visual_heights.borrow().is_empty());
+        assert_eq!(*state.cached_content_width.borrow(), 0);
     }
 
     #[test]
@@ -1878,10 +2002,10 @@ mod tests {
     fn test_visual_row_to_logical_roundtrip() {
         let content = "short\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nend";
         let file = create_test_file(content);
-        let mut state = ViewerState::open(file.path()).unwrap();
+        let state = ViewerState::open(file.path()).unwrap();
         state.update_wrap_layout(10);
 
-        let total_visual: usize = state.visual_heights.iter().sum();
+        let total_visual: usize = state.visual_heights.borrow().iter().sum();
         for row in 0..total_visual {
             let (logical, sub) = state.visual_row_to_logical(row);
             let back = state.logical_to_visual_row(logical);
@@ -1964,24 +2088,24 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let file = create_test_file(&content);
-        let mut state = ViewerState::open(file.path()).unwrap();
+        let state = ViewerState::open(file.path()).unwrap();
         state.update_wrap_layout(10);
 
         assert!(
-            state.visual_heights.len() > 24,
+            state.visual_heights.borrow().len() > 24,
             "need > 24 visual heights to exercise binary search path"
         );
 
-        let total_visual: usize = state.visual_heights.iter().sum();
+        let total_visual: usize = state.visual_heights.borrow().iter().sum();
 
         assert_eq!(state.visual_row_to_logical(0), (0, 0));
 
         let (last_logical, last_sub) = state.visual_row_to_logical(total_visual.saturating_sub(1));
-        assert_eq!(last_logical, state.visual_heights.len() - 1);
+        assert_eq!(last_logical, state.visual_heights.borrow().len() - 1);
         let expected_last_line = state.line_count - 1;
         assert_eq!(last_logical, expected_last_line);
         assert!(
-            last_sub < state.visual_heights[last_logical],
+            last_sub < state.visual_heights.borrow()[last_logical],
             "sub-row should be within line height"
         );
 
