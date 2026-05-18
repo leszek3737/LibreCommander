@@ -241,6 +241,7 @@ pub fn open_user_menu(state: &mut AppState) {
             }
             state.user_menu_source = loaded.source;
             state.user_menu_entries = loaded.entries;
+            state.rebuild_user_menu_cache();
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::UserMenu);
         }

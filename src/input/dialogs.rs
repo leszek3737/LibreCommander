@@ -307,6 +307,7 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
         refresh_active(state);
         if !state.directory_hotlist.iter().any(|p| p == &expanded) {
             state.directory_hotlist.push(expanded);
+            state.rebuild_hotlist_cache();
         }
     } else if expanded.exists() {
         state.status_message = Some(format!("Not a directory: {input}"));

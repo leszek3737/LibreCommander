@@ -783,6 +783,7 @@ dependencies = [
  "dirs",
  "filetime",
  "infer",
+ "memchr",
  "notify",
  "ratatui",
  "rayon",

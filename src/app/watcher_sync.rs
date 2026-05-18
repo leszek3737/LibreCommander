@@ -19,15 +19,15 @@ pub fn sync_watcher_paths(
         return;
     };
 
-    let left = state.left_panel.path.clone();
-    let right = state.right_panel.path.clone();
-
     if let Some((l, r)) = last_synced.as_ref()
-        && l == &left
-        && r == &right
+        && l == &state.left_panel.path
+        && r == &state.right_panel.path
     {
         return;
     }
+
+    let left = state.left_panel.path.clone();
+    let right = state.right_panel.path.clone();
 
     let (desired, _all_paths_present) = canonical_desired_paths(&left, &right);
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();

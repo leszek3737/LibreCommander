@@ -5,9 +5,7 @@ use ratatui::{
     style::Style,
     widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
-use std::borrow::Cow;
 use std::fmt::Write;
-use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::IconTheme;
@@ -16,6 +14,14 @@ use super::theme::{ColorPalette, Theme};
 use crate::app::types::{
     FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
 };
+
+const FN_KEY_TEXTS: [&str; 10] = [
+    " F1 ", " F2 ", " F3 ", " F4 ", " F5 ", " F6 ", " F7 ", " F8 ", " F9 ", " F10 ",
+];
+
+const FN_LABEL_TEXTS: [&str; 10] = [
+    "Help ", "Menu ", "View ", "Edit ", "Copy ", "Move ", "Mkdir ", "Delete ", "Menu ", "Quit ",
+];
 
 struct Suffix {
     text: String,
@@ -103,27 +109,6 @@ pub fn get_file_icon_with_theme(category: &FileCategory, theme: IconTheme) -> &'
             FileCategory::Other => "📄",
         },
     }
-}
-
-pub fn format_time(modified: SystemTime) -> Cow<'static, str> {
-    use chrono::{DateTime, Datelike, Timelike};
-
-    if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-        let timestamp = duration.as_secs();
-
-        if let Some(dt) = DateTime::from_timestamp(timestamp as i64, 0) {
-            let local = dt.with_timezone(&chrono::Local);
-            return Cow::Owned(format!(
-                "{:02}-{:02}-{:02} {:02}:{:02}",
-                local.day(),
-                local.month(),
-                local.year() % 100,
-                local.hour(),
-                local.minute()
-            ));
-        }
-    }
-    Cow::Borrowed("??-??-?? ??:??")
 }
 
 fn truncate_to_width(s: &str, max_width: usize) -> String {
@@ -314,13 +299,13 @@ fn format_entry_line(
 
     let icon = get_file_icon_with_theme(category, icon_theme);
     let icon_width = icon_display_width(category, icon_theme);
-    let size_str = if entry.is_dir() {
-        String::from("     <DIR>")
-    } else {
-        format!("{:>10}", format_size(entry.size()))
-    };
-    let date_str = format_time(entry.mtime());
-    let suffix = build_suffix(entry, &size_str, &date_str, width, show_permissions);
+    let suffix = build_suffix(
+        entry,
+        &entry.size_str,
+        &entry.time_str,
+        width,
+        show_permissions,
+    );
 
     let available_name_width = width.saturating_sub(1 + suffix.width);
     if available_name_width == 0 {
@@ -328,7 +313,7 @@ fn format_entry_line(
     }
 
     let name_with_icon = format!("{icon} {}", entry.name);
-    let name_width = icon_width + 1 + UnicodeWidthStr::width(entry.name.as_str());
+    let name_width = icon_width + 1 + entry.name_width;
     let (name, name_actual_width) = if name_width <= available_name_width {
         (name_with_icon, name_width)
     } else if available_name_width <= icon_width + 1 {
@@ -371,7 +356,7 @@ fn format_brief_entry_line(
     if available < icon_width {
         return format!("{marker}");
     }
-    let name_width = UnicodeWidthStr::width(entry.name.as_str());
+    let name_width = entry.name_width;
     let name_available = available - icon_width;
     if name_available >= name_width {
         return format!("{marker}{icon} {}", entry.name);
@@ -527,19 +512,6 @@ pub fn render_function_bar(f: &mut Frame, area: Rect) {
 pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {
     const CONSTRAINTS: [Constraint; 10] = [Constraint::Percentage(10); 10];
 
-    let keys = [
-        ("F1", "Help"),
-        ("F2", "Menu"),
-        ("F3", "View"),
-        ("F4", "Edit"),
-        ("F5", "Copy"),
-        ("F6", "Move"),
-        ("F7", "Mkdir"),
-        ("F8", "Delete"),
-        ("F9", "Menu"),
-        ("F10", "Quit"),
-    ];
-
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(CONSTRAINTS)
@@ -553,10 +525,10 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
         .fg(Theme::function_bar_fg_with_colors(colors))
         .bg(Theme::function_bar_bg_with_colors(colors));
 
-    for (i, (key, label)) in keys.iter().enumerate() {
+    for i in 0..10 {
         let line = Line::from(vec![
-            Span::styled(format!(" {key} "), key_style),
-            Span::styled(format!("{label} "), label_style),
+            Span::styled(FN_KEY_TEXTS[i], key_style),
+            Span::styled(FN_LABEL_TEXTS[i], label_style),
         ]);
         let paragraph =
             Paragraph::new(line).block(Block::default().padding(Padding::new(1, 1, 0, 0)));

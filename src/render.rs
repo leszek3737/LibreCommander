@@ -169,16 +169,13 @@ fn render_list_picker_overlay(
             );
         }
         PickerKind::Hotlist => {
-            let items: Vec<String> = state
-                .directory_hotlist
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect();
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = state
+                .picker_selected
+                .min(state.cached_hotlist_strings.len().saturating_sub(1));
             dialogs::render_list_picker_with_colors(
                 f,
                 "Directory Hotlist",
-                &items,
+                &state.cached_hotlist_strings,
                 selected,
                 "Enter: cd  a: add current  d: delete  Esc: close",
                 colors,
@@ -199,16 +196,13 @@ fn render_list_picker_overlay(
             );
         }
         PickerKind::UserMenu => {
-            let items: Vec<String> = state
-                .user_menu_entries
-                .iter()
-                .map(|e| format!("{}  {}", e.hotkey, e.title))
-                .collect();
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = state
+                .picker_selected
+                .min(state.cached_user_menu_strings.len().saturating_sub(1));
             dialogs::render_list_picker_with_colors(
                 f,
                 "User Menu",
-                &items,
+                &state.cached_user_menu_strings,
                 selected,
                 "Enter: run  Esc: cancel",
                 colors,
