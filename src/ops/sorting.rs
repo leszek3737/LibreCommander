@@ -79,49 +79,53 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
                 })
                 .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::SizeAsc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                entry.size(),
-                name_key(entry, sensitive),
-            )
+        SortMode::SizeAsc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| a.size().cmp(&b.size()))
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::SizeDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(entry.size()),
-                name_key(entry, sensitive),
-            )
+        SortMode::SizeDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| a.size().cmp(&b.size()).reverse())
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::ModTimeAsc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                entry.mtime(),
-                name_key(entry, sensitive),
-            )
+        SortMode::ModTimeAsc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| a.mtime().cmp(&b.mtime()))
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::ModTimeDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(entry.mtime()),
-                name_key(entry, sensitive),
-            )
+        SortMode::ModTimeDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| a.mtime().cmp(&b.mtime()).reverse())
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::BtimeAsc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(entry.cha.btime.is_some()),
-                entry.btime(),
-                name_key(entry, sensitive),
-            )
+        SortMode::BtimeAsc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| {
+                    b.cha
+                        .btime
+                        .is_some()
+                        .cmp(&a.cha.btime.is_some())
+                        .then_with(|| a.btime().cmp(&b.btime()))
+                })
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
-        SortMode::BtimeDesc => entries.sort_by_cached_key(|entry| {
-            (
-                entry_group(entry, dir_first),
-                Reverse(entry.cha.btime.is_some()),
-                Reverse(entry.btime()),
-                name_key(entry, sensitive),
-            )
+        SortMode::BtimeDesc => entries.sort_by(|a, b| {
+            entry_group(a, dir_first)
+                .cmp(&entry_group(b, dir_first))
+                .then_with(|| {
+                    b.cha
+                        .btime
+                        .is_some()
+                        .cmp(&a.cha.btime.is_some())
+                        .then_with(|| a.btime().cmp(&b.btime()).reverse())
+                })
+                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
         }),
         // NOTE: natsort uses ASCII-only case folding; regular Name sort uses full Unicode
         // via str::to_lowercase(). NaturalName and Name sorts may disagree on non-ASCII filenames.
@@ -160,25 +164,23 @@ fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
     }
 }
 
-fn name_key(entry: &FileEntry, sensitive: bool) -> (String, String) {
-    if sensitive {
-        (entry.name.clone(), String::new())
-    } else {
-        let lower = entry.name.to_lowercase();
-        if lower == entry.name {
-            (lower, String::new())
-        } else {
-            (lower, entry.name.clone())
-        }
-    }
-}
-
 fn cmp_name(a: &str, b: &str, sensitive: bool) -> Ordering {
     if sensitive {
         a.cmp(b)
     } else {
-        cmp_ignore_case(a, b).then_with(|| a.as_bytes().cmp(b.as_bytes()))
+        cmp_name_insensitive(a, b)
     }
+}
+
+fn cmp_name_insensitive(a: &str, b: &str) -> Ordering {
+    let a_lower = a.to_lowercase();
+    let b_lower = b.to_lowercase();
+
+    a_lower.cmp(&b_lower).then_with(|| {
+        let a_tie = if a_lower == a { "" } else { a };
+        let b_tie = if b_lower == b { "" } else { b };
+        a_tie.cmp(b_tie)
+    })
 }
 
 fn cmp_extension(a: &str, b: &str, sensitive: bool) -> Ordering {
@@ -311,16 +313,18 @@ mod tests {
         let mut entries = vec![
             create_test_entry("zebra", false, 100, 1000),
             create_test_entry("Apple", false, 200, 1500),
+            create_test_entry("apple", false, 220, 1600),
             create_test_entry("banana", false, 150, 1200),
             create_test_entry("Cherry", false, 180, 1300),
         ];
 
         sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
 
-        assert_eq!(entries[0].name, "Apple");
-        assert_eq!(entries[1].name, "banana");
-        assert_eq!(entries[2].name, "Cherry");
-        assert_eq!(entries[3].name, "zebra");
+        assert_eq!(entries[0].name, "apple");
+        assert_eq!(entries[1].name, "Apple");
+        assert_eq!(entries[2].name, "banana");
+        assert_eq!(entries[3].name, "Cherry");
+        assert_eq!(entries[4].name, "zebra");
     }
 
     #[test]

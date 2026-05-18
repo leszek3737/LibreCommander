@@ -261,7 +261,7 @@ impl ViewerState {
 
     #[must_use]
     fn total_visual_rows(&self) -> usize {
-        self.visual_heights.iter().sum()
+        self.visual_offsets.last().copied().unwrap_or(0)
     }
 
     #[must_use]
@@ -293,7 +293,14 @@ impl ViewerState {
 
     #[must_use]
     fn logical_to_visual_row(&self, logical_line: usize) -> usize {
-        self.visual_heights.iter().take(logical_line).sum()
+        if logical_line == 0 {
+            0
+        } else {
+            self.visual_offsets
+                .get(logical_line - 1)
+                .copied()
+                .unwrap_or_else(|| self.total_visual_rows())
+        }
     }
 
     fn total_rows(&self) -> usize {
@@ -1171,18 +1178,9 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     if needle.len() == 1 {
-        return haystack.iter().position(|&b| b == needle[0]);
+        return memchr::memchr(needle[0], haystack);
     }
-    let first = needle[0];
-    let end = haystack.len() - needle.len() + 1;
-    let mut i = 0;
-    while i < end {
-        if haystack[i] == first && &haystack[i..i + needle.len()] == needle {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
+    memchr::memmem::find(haystack, needle)
 }
 
 pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {

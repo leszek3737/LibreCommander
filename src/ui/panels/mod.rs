@@ -260,21 +260,27 @@ fn build_suffix(
         let perms_width = UnicodeWidthStr::width(perms_str.as_str());
         let full_width = size_date_width + perms_width + 1;
         if 2 + full_width <= width {
+            let mut text = String::with_capacity(full_width);
+            write!(text, " {size_str} {date_str} {perms_str}").ok();
             return Suffix {
-                text: format!(" {size_str} {date_str} {perms_str}"),
+                text,
                 width: full_width,
             };
         }
     }
 
     if 2 + size_date_width <= width {
+        let mut text = String::with_capacity(size_date_width);
+        write!(text, " {size_str} {date_str}").ok();
         Suffix {
-            text: format!(" {size_str} {date_str}"),
+            text,
             width: size_date_width,
         }
     } else if 2 + size_width <= width {
+        let mut text = String::with_capacity(size_width + 1);
+        write!(text, " {size_str}").ok();
         Suffix {
-            text: format!(" {size_str}"),
+            text,
             width: size_width + 1,
         }
     } else {
@@ -469,8 +475,7 @@ pub fn render_status_bar_with_colors(
 
     let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
         let entry = &panel.entries[panel.cursor];
-        let size_str = format_size(entry.size());
-        let metadata = status_metadata(&size_str, entry, panel.show_permissions);
+        let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions);
         let full_info = format!("{} | {metadata}", entry.name);
         let full_width = UnicodeWidthStr::width(full_info.as_str());
 

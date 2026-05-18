@@ -556,8 +556,7 @@ pub fn render_help_dialog(
     let total_lines = wrapped_line_count(message, message_area.width);
     let clamped_offset = scroll_offset.min(total_lines.saturating_sub(max_lines));
 
-    let all_lines: Vec<Line> = message.lines().map(Line::from).collect();
-    let message_paragraph = Paragraph::new(all_lines)
+    let message_paragraph = Paragraph::new(message)
         .wrap(Wrap { trim: true })
         .scroll((clamped_offset as u16, 0))
         .alignment(Alignment::Left)

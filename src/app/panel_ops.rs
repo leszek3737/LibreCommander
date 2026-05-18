@@ -125,6 +125,21 @@ pub fn filtered_sorted_entries(
     sort_entries
 }
 
+pub fn rebuild_visible_entries(panel: &mut PanelState) {
+    panel.sync_unfiltered_selection();
+    let current_name = current_panel_entry_name(panel);
+    panel.entries = filtered_sorted_entries(
+        &panel.unfiltered_entries,
+        panel.filter.as_deref(),
+        panel.sort_mode,
+        panel.sort_options,
+        panel.show_hidden,
+    );
+    panel.recalculate_selection_stats();
+    restore_panel_cursor(panel, current_name.as_deref());
+    panel.ensure_cursor_visible(current_visible_height());
+}
+
 pub(crate) fn entry_matches_panel(
     entry: &reader::FileEntry,
     compiled_filter: Option<&ops::search::CompiledPattern>,

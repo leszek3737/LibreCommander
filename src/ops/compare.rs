@@ -58,50 +58,40 @@ pub fn compare_entries(
     right: &[FileEntry],
     mode: CompareMode,
 ) -> CompareReport {
-    let right_meta: HashMap<&str, EntryMeta> = right
-        .iter()
-        .filter(|e| e.name != "..")
-        .map(|e| {
-            (
-                e.name.as_str(),
-                EntryMeta {
-                    is_dir: e.is_dir(),
-                    size: e.size(),
-                    mtime: e.cha.mtime(),
-                },
-            )
-        })
-        .collect();
-
-    let left_meta: HashMap<&str, EntryMeta> = left
-        .iter()
-        .filter(|e| e.name != "..")
-        .map(|e| {
-            (
-                e.name.as_str(),
-                EntryMeta {
-                    is_dir: e.is_dir(),
-                    size: e.size(),
-                    mtime: e.cha.mtime(),
-                },
-            )
-        })
-        .collect();
+    let mut right_meta: HashMap<&str, EntryMeta> = HashMap::with_capacity(right.len());
+    for entry in right.iter().filter(|e| e.name != "..") {
+        right_meta.insert(
+            entry.name.as_str(),
+            EntryMeta {
+                is_dir: entry.is_dir(),
+                size: entry.size(),
+                mtime: entry.cha.mtime(),
+            },
+        );
+    }
 
     let mut unique_left: usize = 0;
     let mut unique_right: usize = 0;
     let mut differing: usize = 0;
-    let mut left_to_mark: HashSet<String> = HashSet::new();
-    let mut right_to_mark: HashSet<String> = HashSet::new();
+    let mut left_to_mark: HashSet<String> = HashSet::with_capacity(left.len());
+    let mut right_to_mark: HashSet<String> = HashSet::with_capacity(right.len());
+    let mut seen_right: HashSet<&str> = HashSet::with_capacity(right_meta.len());
 
-    for (name, left_m) in &left_meta {
+    for entry in left.iter().filter(|e| e.name != "..") {
+        let name = entry.name.as_str();
+        let left_m = EntryMeta {
+            is_dir: entry.is_dir(),
+            size: entry.size(),
+            mtime: entry.cha.mtime(),
+        };
         match right_meta.get(name) {
             None => {
                 unique_left += 1;
                 left_to_mark.insert(name.to_string());
             }
             Some(right_m) => {
-                if !meta_matches(left_m, right_m, mode) {
+                seen_right.insert(name);
+                if !meta_matches(&left_m, right_m, mode) {
                     differing += 1;
                     left_to_mark.insert(name.to_string());
                     right_to_mark.insert(name.to_string());
@@ -111,7 +101,7 @@ pub fn compare_entries(
     }
 
     for name in right_meta.keys() {
-        if !left_meta.contains_key(name) {
+        if !seen_right.contains(name) {
             unique_right += 1;
             right_to_mark.insert(name.to_string());
         }

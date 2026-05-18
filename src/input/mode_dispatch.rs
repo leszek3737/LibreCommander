@@ -7,7 +7,7 @@ use lc::menu::{menu_item_count, menu_total_count};
 use lc::ui::viewer;
 
 use crate::{
-    apply_search_filter, handle_alt_keys, handle_ctrl_keys, handle_enter_key, handle_function_keys,
+    handle_alt_keys, handle_ctrl_keys, handle_enter_key, handle_function_keys,
     handle_navigation_keys,
 };
 
@@ -20,7 +20,11 @@ pub(crate) fn clear_search_state(state: &mut AppState) {
     state.search_cursor = 0;
     let panel = state.active_panel_mut();
     panel.filter = None;
-    panel_ops::refresh_active(state);
+    if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
+        panel_ops::refresh_active(state);
+    } else {
+        panel_ops::rebuild_visible_entries(panel);
+    }
 }
 
 pub(crate) fn initiate_search(state: &mut AppState, prev_mode: AppMode, c: char) {
@@ -30,18 +34,11 @@ pub(crate) fn initiate_search(state: &mut AppState, prev_mode: AppMode, c: char)
     let filter_query = state.search_query.clone();
     state.mode = AppMode::Search;
     let panel = state.active_panel_mut();
-    if panel.unfiltered_entries.is_empty() {
-        panel.unfiltered_entries = panel.entries.clone();
-        panel.path_index.clear();
-    }
     panel.filter = Some(filter_query);
-    panel.cursor = 0;
-    panel.scroll_offset = 0;
-    if panel.unfiltered_dirty {
-        panel.unfiltered_dirty = false;
+    if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
         panel_ops::refresh_active(state);
     } else {
-        apply_search_filter(panel);
+        panel_ops::rebuild_visible_entries(panel);
     }
 }
 
@@ -162,7 +159,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
                 let filter_query = Some(state.search_query.clone());
                 let panel = state.active_panel_mut();
                 panel.filter = filter_query;
-                apply_search_filter(panel);
+                panel_ops::rebuild_visible_entries(panel);
             }
         }
         KeyCode::Char(c) => {
@@ -171,7 +168,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, _terminal_h
             let filter_query = state.search_query.clone();
             let panel = state.active_panel_mut();
             panel.filter = Some(filter_query);
-            apply_search_filter(panel);
+            panel_ops::rebuild_visible_entries(panel);
         }
         _ => {}
     }

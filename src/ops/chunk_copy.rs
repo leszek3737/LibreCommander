@@ -7,8 +7,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-const BUFFER_SIZE: usize = 64 * 1024;
+const BUFFER_SIZE: usize = 256 * 1024;
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(50);
+const PROGRESS_CHECK_BYTES: usize = 64 * 1024;
 
 pub fn copy_with_progress(
     src: &Path,
@@ -72,6 +73,7 @@ fn copy_to_temp(
     let mut total_written = 0_u64;
     let mut pending_delta = 0_u64;
     let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
+    let mut bytes_since_progress_check = 0_usize;
 
     loop {
         let bytes_read = reader.read(&mut buffer)?;
@@ -83,12 +85,16 @@ fn copy_to_temp(
         let bytes_written = bytes_read as u64;
         total_written += bytes_written;
         pending_delta += bytes_written;
+        bytes_since_progress_check += bytes_read;
 
-        let now = Instant::now();
-        if now.duration_since(last_progress) >= PROGRESS_THROTTLE {
-            let _ = progress_tx.send(pending_delta);
-            pending_delta = 0;
-            last_progress = now;
+        if bytes_since_progress_check >= PROGRESS_CHECK_BYTES {
+            bytes_since_progress_check = 0;
+            let now = Instant::now();
+            if now.duration_since(last_progress) >= PROGRESS_THROTTLE {
+                let _ = progress_tx.send(pending_delta);
+                pending_delta = 0;
+                last_progress = now;
+            }
         }
 
         if cancel.load(Ordering::Relaxed) {
