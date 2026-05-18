@@ -6,7 +6,7 @@ use lc::menu::{MenuAction, menu_action_at};
 use lc::ops;
 
 use super::directory_tree::set_tree_diagnostic_status;
-use crate::app::panel_ops::{rebuild_visible_entries, with_menu_panel};
+use crate::app::panel_ops::{current_visible_height, rebuild_visible_entries, with_menu_panel};
 
 #[allow(clippy::too_many_lines)]
 pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifiers, bool)> {
@@ -27,7 +27,7 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             with_menu_panel(state, |state| {
                 let p = state.active_panel_mut();
                 p.sort_mode = ops::cycle_sort_mode(p.sort_mode);
-                rebuild_visible_entries(p);
+                rebuild_visible_entries(p, current_visible_height());
             });
             None
         }
@@ -48,7 +48,7 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
                 panel.filter = None;
-                rebuild_visible_entries(panel);
+                rebuild_visible_entries(panel, current_visible_height());
                 state.status_message = Some("Panel filter reset".to_string());
             });
             None

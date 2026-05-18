@@ -308,7 +308,10 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
         .map(|entry| entry.name.clone())
         .or_else(|| preferred_name.map(str::to_string));
 
-    crate::app::panel_ops::rebuild_visible_entries(panel);
+    crate::app::panel_ops::rebuild_visible_entries(
+        panel,
+        crate::app::panel_ops::current_visible_height(),
+    );
 
     if let Some(name) = current_name.as_deref()
         && let Some(pos) = panel.entries.iter().position(|entry| entry.name == name)

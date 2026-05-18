@@ -61,7 +61,7 @@ fn ctrl_alt_h_toggles_hidden_back() {
     state.left_panel.path = temp_dir.path().to_path_buf();
     state.left_panel.show_hidden = true;
     state.active_panel = ActivePanel::Left;
-    super::super::handle_ctrl_keys(&mut state, KeyCode::Char('h'));
+    super::super::handle_ctrl_keys(&mut state, KeyCode::Char('h'), 24);
     assert!(!state.left_panel.show_hidden);
 }
 

@@ -401,7 +401,7 @@ fn handle_input_action(
             if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
                 refresh_active(state);
             } else {
-                rebuild_visible_entries(panel);
+                rebuild_visible_entries(panel, panel_visible_height(terminal_height));
             }
         }
         InputAction::QuickCd => handle_quick_cd(state, &input),

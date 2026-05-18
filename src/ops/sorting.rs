@@ -52,81 +52,32 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
     let sensitive = options.sensitive;
 
     match mode {
-        SortMode::NameAsc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::NameDesc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive).reverse())
-        }),
-        SortMode::ExtensionAsc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| {
-                    cmp_extension(get_extension(&a.name), get_extension(&b.name), sensitive)
-                })
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::ExtensionDesc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| {
-                    cmp_extension(get_extension(&a.name), get_extension(&b.name), sensitive)
-                        .reverse()
-                })
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::SizeAsc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| a.size().cmp(&b.size()))
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::SizeDesc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| a.size().cmp(&b.size()).reverse())
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::ModTimeAsc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| a.mtime().cmp(&b.mtime()))
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::ModTimeDesc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| a.mtime().cmp(&b.mtime()).reverse())
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::BtimeAsc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| {
-                    b.cha
-                        .btime
-                        .is_some()
-                        .cmp(&a.cha.btime.is_some())
-                        .then_with(|| a.btime().cmp(&b.btime()))
-                })
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
-        SortMode::BtimeDesc => entries.sort_by(|a, b| {
-            entry_group(a, dir_first)
-                .cmp(&entry_group(b, dir_first))
-                .then_with(|| {
-                    b.cha
-                        .btime
-                        .is_some()
-                        .cmp(&a.cha.btime.is_some())
-                        .then_with(|| a.btime().cmp(&b.btime()).reverse())
-                })
-                .then_with(|| cmp_name(a.name.as_str(), b.name.as_str(), sensitive))
-        }),
+        SortMode::NameAsc => entries.sort_by_cached_key(|e| name_sort_key(e, dir_first, sensitive)),
+        SortMode::NameDesc => {
+            entries.sort_by_cached_key(|e| reverse_name_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::ExtensionAsc => {
+            entries.sort_by_cached_key(|e| ext_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::ExtensionDesc => {
+            entries.sort_by_cached_key(|e| reverse_ext_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::SizeAsc => entries.sort_by_cached_key(|e| size_sort_key(e, dir_first, sensitive)),
+        SortMode::SizeDesc => {
+            entries.sort_by_cached_key(|e| reverse_size_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::ModTimeAsc => {
+            entries.sort_by_cached_key(|e| mtime_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::ModTimeDesc => {
+            entries.sort_by_cached_key(|e| reverse_mtime_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::BtimeAsc => {
+            entries.sort_by_cached_key(|e| btime_sort_key(e, dir_first, sensitive))
+        }
+        SortMode::BtimeDesc => {
+            entries.sort_by_cached_key(|e| reverse_btime_sort_key(e, dir_first, sensitive))
+        }
         // NOTE: natsort uses ASCII-only case folding; regular Name sort uses full Unicode
         // via str::to_lowercase(). NaturalName and Name sorts may disagree on non-ASCII filenames.
         // Raw bytes serve as deterministic tiebreaker for case-variant names (a1.txt vs A1.txt).
@@ -164,31 +115,156 @@ fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
     }
 }
 
-fn cmp_name(a: &str, b: &str, sensitive: bool) -> Ordering {
-    if sensitive {
-        a.cmp(b)
-    } else {
-        cmp_name_insensitive(a, b)
+type NameKey = (u8, String, String);
+type NameKeyReverse = (u8, Reverse<(String, String)>);
+
+fn insensitive_name_key(name: &str) -> (String, String) {
+    if name.bytes().all(|b| b.is_ascii_lowercase()) {
+        return (name.to_string(), String::new());
     }
+    let lower = name.to_lowercase();
+    let tiebreak = if lower == name {
+        String::new()
+    } else {
+        name.to_string()
+    };
+    (lower, tiebreak)
 }
 
-fn cmp_name_insensitive(a: &str, b: &str) -> Ordering {
-    let a_lower = a.to_lowercase();
-    let b_lower = b.to_lowercase();
-
-    a_lower.cmp(&b_lower).then_with(|| {
-        let a_tie = if a_lower == a { "" } else { a };
-        let b_tie = if b_lower == b { "" } else { b };
-        a_tie.cmp(b_tie)
-    })
+fn name_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> NameKey {
+    let key = if sensitive {
+        (entry.name.clone(), String::new())
+    } else {
+        insensitive_name_key(&entry.name)
+    };
+    (entry_group(entry, dir_first), key.0, key.1)
 }
 
-fn cmp_extension(a: &str, b: &str, sensitive: bool) -> Ordering {
-    if sensitive {
-        a.cmp(b)
+fn reverse_name_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> NameKeyReverse {
+    let (_, lower, tie) = name_sort_key(entry, dir_first, sensitive);
+    (entry_group(entry, dir_first), Reverse((lower, tie)))
+}
+
+type ExtKey = (u8, String, String, String, String);
+
+fn ext_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> ExtKey {
+    let ext = get_extension(&entry.name).to_string();
+    let ext_key = if sensitive || ext.is_empty() {
+        (ext, String::new())
     } else {
-        cmp_ignore_case(a, b).then_with(|| a.as_bytes().cmp(b.as_bytes()))
-    }
+        let lower = ext.to_lowercase();
+        let tie = if lower == ext { String::new() } else { ext };
+        (lower, tie)
+    };
+    let name_key = if sensitive {
+        (entry.name.clone(), String::new())
+    } else {
+        insensitive_name_key(&entry.name)
+    };
+    (
+        entry_group(entry, dir_first),
+        ext_key.0,
+        ext_key.1,
+        name_key.0,
+        name_key.1,
+    )
+}
+
+fn reverse_ext_sort_key(
+    entry: &FileEntry,
+    dir_first: bool,
+    sensitive: bool,
+) -> (u8, Reverse<(String, String, String, String)>) {
+    let (_, ek0, ek1, nk0, nk1) = ext_sort_key(entry, dir_first, sensitive);
+    (entry_group(entry, dir_first), Reverse((ek0, ek1, nk0, nk1)))
+}
+
+type SizeKey = (u8, u64, String, String);
+
+fn size_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> SizeKey {
+    let name_key = if sensitive {
+        (entry.name.clone(), String::new())
+    } else {
+        insensitive_name_key(&entry.name)
+    };
+    (
+        entry_group(entry, dir_first),
+        entry.size(),
+        name_key.0,
+        name_key.1,
+    )
+}
+
+fn reverse_size_sort_key(
+    entry: &FileEntry,
+    dir_first: bool,
+    sensitive: bool,
+) -> (u8, Reverse<u64>, String, String) {
+    let (_, size, nk0, nk1) = size_sort_key(entry, dir_first, sensitive);
+    (entry_group(entry, dir_first), Reverse(size), nk0, nk1)
+}
+
+type MtimeKey = (u8, std::time::SystemTime, String, String);
+
+fn mtime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> MtimeKey {
+    let name_key = if sensitive {
+        (entry.name.clone(), String::new())
+    } else {
+        insensitive_name_key(&entry.name)
+    };
+    (
+        entry_group(entry, dir_first),
+        entry.mtime(),
+        name_key.0,
+        name_key.1,
+    )
+}
+
+fn reverse_mtime_sort_key(
+    entry: &FileEntry,
+    dir_first: bool,
+    sensitive: bool,
+) -> (u8, Reverse<std::time::SystemTime>, String, String) {
+    let (_, mtime, nk0, nk1) = mtime_sort_key(entry, dir_first, sensitive);
+    (entry_group(entry, dir_first), Reverse(mtime), nk0, nk1)
+}
+
+type BtimeKey = (u8, Reverse<bool>, std::time::SystemTime, String, String);
+
+fn btime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> BtimeKey {
+    let name_key = if sensitive {
+        (entry.name.clone(), String::new())
+    } else {
+        insensitive_name_key(&entry.name)
+    };
+    (
+        entry_group(entry, dir_first),
+        Reverse(entry.cha.btime.is_some()),
+        entry.btime(),
+        name_key.0,
+        name_key.1,
+    )
+}
+
+fn reverse_btime_sort_key(
+    entry: &FileEntry,
+    dir_first: bool,
+    sensitive: bool,
+) -> (
+    u8,
+    Reverse<bool>,
+    Reverse<std::time::SystemTime>,
+    String,
+    String,
+) {
+    let (_, has_btime, bt, nk0, nk1) = btime_sort_key(entry, dir_first, sensitive);
+    (
+        entry_group(entry, dir_first),
+        has_btime,
+        Reverse(bt),
+        nk0,
+        nk1,
+    )
 }
 
 pub fn cycle_sort_mode(current: SortMode) -> SortMode {

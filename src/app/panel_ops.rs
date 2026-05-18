@@ -125,7 +125,7 @@ pub fn filtered_sorted_entries(
     sort_entries
 }
 
-pub fn rebuild_visible_entries(panel: &mut PanelState) {
+pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
     panel.sync_unfiltered_selection();
     let current_name = current_panel_entry_name(panel);
     panel.entries = filtered_sorted_entries(
@@ -137,7 +137,7 @@ pub fn rebuild_visible_entries(panel: &mut PanelState) {
     );
     panel.recalculate_selection_stats();
     restore_panel_cursor(panel, current_name.as_deref());
-    panel.ensure_cursor_visible(current_visible_height());
+    panel.ensure_cursor_visible(visible_height);
 }
 
 pub(crate) fn entry_matches_panel(
@@ -169,7 +169,7 @@ fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
 
 const FALLBACK_VISIBLE_HEIGHT: usize = 18;
 
-fn current_visible_height() -> usize {
+pub fn current_visible_height() -> usize {
     crossterm::terminal::size()
         .map(|(_, h)| panel_visible_height(h))
         .unwrap_or(FALLBACK_VISIBLE_HEIGHT)

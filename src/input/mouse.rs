@@ -573,7 +573,8 @@ fn handle_mouse_panels(
         let path = entry.path.clone();
         if is_dir {
             if matches!(state.mode, AppMode::Search) {
-                super::mode_dispatch::clear_search_state(state);
+                let visible = crate::app::panel_ops::panel_visible_height(height);
+                super::mode_dispatch::clear_search_state(state, visible);
             }
             let panel_mut = state.active_panel_mut();
             panel_mut.history.push(panel_mut.path.clone());
