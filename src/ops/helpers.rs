@@ -1,5 +1,9 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use crate::app::types::PendingAction;
 use crate::debug_log;
@@ -24,7 +28,28 @@ pub(crate) fn path_starts_with(parent: &Path, child: &Path) -> bool {
 
 const MAX_RECURSION_DEPTH: u32 = 256;
 
-fn dir_size_rec(path: &Path, depth: u32) -> io::Result<u64> {
+#[cfg(unix)]
+/// Return a stable filesystem identity for cycle detection.
+pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+/// Non-Unix `std` metadata does not expose a portable inode key.
+pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.is_dir()
+        && let Some(key) = get_inode_key(&meta)
+    {
+        visited.insert(key);
+    }
+}
+
+fn dir_size_rec(path: &Path, depth: u32, visited: &mut HashSet<(u64, u64)>) -> io::Result<u64> {
     if depth >= MAX_RECURSION_DEPTH {
         debug_log!(
             "dir_size: depth limit ({MAX_RECURSION_DEPTH}) reached at {}",
@@ -55,7 +80,17 @@ fn dir_size_rec(path: &Path, depth: u32) -> io::Result<u64> {
             continue;
         }
         if ft.is_dir() {
-            let child = dir_size_rec(&entry.path(), depth + 1).unwrap_or_else(|e| {
+            if let Ok(meta) = entry.metadata()
+                && let Some(key) = get_inode_key(&meta)
+                && !visited.insert(key)
+            {
+                debug_log!(
+                    "dir_size: cycle detected, skipping {}",
+                    entry.path().display()
+                );
+                continue;
+            }
+            let child = dir_size_rec(&entry.path(), depth + 1, visited).unwrap_or_else(|e| {
                 debug_log!("dir_size: subdir failed {}: {e}", entry.path().display());
                 0
             });
@@ -82,7 +117,9 @@ fn dir_size_rec(path: &Path, depth: u32) -> io::Result<u64> {
 ///
 /// Symlinks are intentionally skipped to avoid cycles.
 pub(crate) fn dir_size(path: &Path) -> io::Result<u64> {
-    dir_size_rec(path, 0)
+    let mut visited = HashSet::new();
+    seed_visited_dir(path, &mut visited);
+    dir_size_rec(path, 0, &mut visited)
 }
 
 /// Compute the size of a single path (file or directory).
@@ -166,6 +203,21 @@ mod tests {
 
         let size = dir_size(&dir).unwrap();
         assert_eq!(size, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dir_size_seeds_root_inode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("size_dir");
+        fs::create_dir(&dir).unwrap();
+
+        let meta = fs::metadata(&dir).unwrap();
+        let key = get_inode_key(&meta).unwrap();
+        let mut visited = HashSet::new();
+
+        seed_visited_dir(&dir, &mut visited);
+        assert!(visited.contains(&key));
     }
 
     #[test]

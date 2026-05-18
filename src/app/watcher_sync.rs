@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
+use crate::app::panel_ops::entry_matches_panel;
 use crate::app::types::{AppState, PanelState};
 use crate::debug_log;
 use crate::fs::reader;
@@ -346,22 +347,13 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     panel.recalculate_selection_stats();
 }
 
-fn entry_matches_panel(
-    entry: &reader::FileEntry,
-    compiled_filter: Option<&search::CompiledPattern>,
-    show_hidden: bool,
-) -> bool {
-    entry.name == ".."
-        || (show_hidden || !entry.cha.is_hidden())
-            && compiled_filter.is_none_or(|pat| pat.matches(&entry.name))
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::app::types::SortMode;
     use std::fs;
+    use std::sync::Arc;
     use std::sync::mpsc;
 
     fn test_panel(path: &Path) -> PanelState {
@@ -506,8 +498,8 @@ mod tests {
     fn sync_watcher_paths_keeps_existing_panel_when_other_panel_missing() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
-        let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Some(Watcher::new(event_tx).expect("create watcher"));
+        let (event_tx, _event_rx) = mpsc::sync_channel(2048);
+        let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
         let mut state = AppState::new();
         state.left_panel.path = dir.path().to_path_buf();
         state.right_panel.path = missing;

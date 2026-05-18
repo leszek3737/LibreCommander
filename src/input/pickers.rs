@@ -26,8 +26,8 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
             }
             let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
             if let Some(cmd) = state.command_history.get(idx).cloned() {
-                state.command_cursor = cmd.len();
-                state.command_line = cmd;
+                state.command_line.text = cmd;
+                state.command_line.cursor_end();
                 state.mode = AppMode::CommandLine;
             } else {
                 state.mode = AppMode::Normal;

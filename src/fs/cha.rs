@@ -64,7 +64,6 @@ bitflags::bitflags! {
     pub struct ChaKind: u8 {
         const FOLLOW = 0b0000_0001;
         const HIDDEN = 0b0000_0010;
-        const DUMMY      = 0b0000_1000;
         const DIR_TARGET = 0b0001_0000;
     }
 }
@@ -211,7 +210,7 @@ impl Cha {
 
     pub fn dummy_dir() -> Self {
         Self {
-            kind: ChaKind::DUMMY,
+            kind: ChaKind::empty(),
             mode: ChaMode::new(0o040755),
             len: 0,
             mtime: Some(DIR_SENTINEL_MTIME),
@@ -447,7 +446,6 @@ mod tests {
     fn cha_dummy_dir() {
         let cha = Cha::dummy_dir();
         assert!(cha.is_dir());
-        assert!(cha.kind.contains(ChaKind::DUMMY));
         assert_eq!(cha.mtime, Some(DIR_SENTINEL_MTIME));
         assert_eq!(cha.btime, Some(DIR_SENTINEL_MTIME));
         assert_eq!(cha.len, 0);

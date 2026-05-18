@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -173,8 +174,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut viewer_loader: Option<viewer::ViewerLoader> = None;
     let mut running_job: Option<RunningJob> = None;
-    let (watch_tx, watch_rx) = mpsc::channel();
-    let mut watcher = match fs::watcher::Watcher::new(watch_tx) {
+    let (watch_tx, watch_rx) = mpsc::sync_channel(2048);
+    let mut watcher = match fs::watcher::Watcher::new(Arc::new(watch_tx)) {
         Ok(w) => Some(w),
         Err(err) => {
             let msg = format!("watcher disabled: {err}");
@@ -481,7 +482,6 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
                 action: InputAction::CreateDirectory,
             });
             state.dialog_input.clear();
-            state.dialog_cursor_pos = 0;
         }
         KeyCode::F(8) => {
             confirm_delete(state);
@@ -805,8 +805,8 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                 default_text: state.active_panel().path.display().to_string(),
                 action: InputAction::QuickCd,
             });
-            state.dialog_input = state.active_panel().path.display().to_string();
-            state.dialog_cursor_pos = state.dialog_input.chars().count();
+            state.dialog_input.text = state.active_panel().path.display().to_string();
+            state.dialog_input.cursor_end();
         }
         KeyCode::Char('x' | 'X') => state.enter_command_line_mode(),
         _ => {}

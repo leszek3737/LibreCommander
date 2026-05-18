@@ -118,21 +118,21 @@ pub fn filtered_sorted_entries(
     let compiled = filter.map(|f| ops::search::CompiledPattern::new(f, false));
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
-        .filter(|e| {
-            if e.name == ".." {
-                true
-            } else if !show_hidden && e.cha.is_hidden() {
-                false
-            } else if let Some(ref pat) = compiled {
-                pat.matches(&e.name)
-            } else {
-                true
-            }
-        })
+        .filter(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden))
         .cloned()
         .collect();
     ops::sort_entries(&mut sort_entries, sort_mode, sort_options);
     sort_entries
+}
+
+pub(crate) fn entry_matches_panel(
+    entry: &reader::FileEntry,
+    compiled_filter: Option<&ops::search::CompiledPattern>,
+    show_hidden: bool,
+) -> bool {
+    entry.name == ".."
+        || (show_hidden || !entry.cha.is_hidden())
+            && compiled_filter.is_none_or(|pat| pat.matches(&entry.name))
 }
 
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {

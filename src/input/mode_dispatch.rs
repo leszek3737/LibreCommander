@@ -1,9 +1,8 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
 
-use lc::app;
 use lc::app::panel_ops;
-use lc::app::types::{AppMode, AppState, InputAction};
+use lc::app::types::{AppMode, AppState, DialogKind, InputAction};
 use lc::menu::{menu_item_count, menu_total_count};
 use lc::ui::viewer;
 
@@ -131,11 +130,11 @@ pub(crate) fn handle_viewer_mode(
             KeyCode::Char('n') => vs.next_match(page_height),
             KeyCode::Char('N') => vs.prev_match(page_height),
             KeyCode::Char('/') => {
-                state.dialog_input = vs.search_query.clone().unwrap_or_default();
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
-                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
-                    prompt: "Viewer search:".to_string(),
-                    default_text: state.dialog_input.clone(),
+                state.dialog_input.text = vs.search_query.clone().unwrap_or_default();
+                state.dialog_input.cursor_end();
+                state.mode = AppMode::Dialog(DialogKind::Input {
+                    prompt: "Find in viewer:".to_string(),
+                    default_text: state.dialog_input.text.clone(),
                     action: InputAction::ViewerSearch,
                 });
             }

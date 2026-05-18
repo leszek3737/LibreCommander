@@ -9,6 +9,121 @@ use super::user_menu::{MenuEntry, MenuSource};
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
 use crate::ui::theme::ColorPalette;
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TextInput {
+    pub text: String,
+    pub cursor: usize,
+}
+
+impl TextInput {
+    pub fn clamp_cursor(&mut self) {
+        self.cursor = self.cursor.min(self.char_count());
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
+    pub fn char_count(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    pub fn byte_pos(&self) -> usize {
+        self.text
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.text.len())
+    }
+
+    pub fn insert_char(&mut self, c: char) -> bool {
+        self.clamp_cursor();
+        let pos = self.byte_pos();
+        self.text.insert(pos, c);
+        self.cursor += 1;
+        true
+    }
+
+    pub fn backspace(&mut self) -> bool {
+        self.clamp_cursor();
+        if self.cursor == 0 {
+            return false;
+        }
+        self.cursor -= 1;
+        let pos = self.byte_pos();
+        let next = self.text[pos..]
+            .chars()
+            .next()
+            .map(|c| pos + c.len_utf8())
+            .unwrap_or_else(|| self.text.len());
+        self.text.drain(pos..next);
+        true
+    }
+
+    pub fn delete_forward(&mut self) -> bool {
+        self.clamp_cursor();
+        let pos = self.byte_pos();
+        if pos >= self.text.len() {
+            return false;
+        }
+        let next = self.text[pos..]
+            .chars()
+            .next()
+            .map(|c| pos + c.len_utf8())
+            .unwrap_or_else(|| self.text.len());
+        self.text.drain(pos..next);
+        true
+    }
+
+    pub fn cursor_left(&mut self) {
+        self.clamp_cursor();
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn cursor_right(&mut self) {
+        self.clamp_cursor();
+        if self.cursor < self.char_count() {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn cursor_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn cursor_end(&mut self) {
+        self.cursor = self.char_count();
+    }
+
+    pub fn delete_word_backward(&mut self) -> bool {
+        self.clamp_cursor();
+        let pos = self.byte_pos();
+        if pos == 0 {
+            return false;
+        }
+        let text = &self.text[..pos];
+        let word_start = text
+            .char_indices()
+            .rev()
+            .skip_while(|&(_, c)| c.is_whitespace())
+            .find(|&(_, c)| c.is_whitespace())
+            .map(|(i, _)| i + 1)
+            .unwrap_or(0);
+        let removed_chars = text[word_start..].chars().count();
+        self.text.drain(word_start..pos);
+        self.cursor = self.cursor.saturating_sub(removed_chars);
+        removed_chars > 0
+    }
+
+    pub fn drain_to_start(&mut self) {
+        self.clamp_cursor();
+        let pos = self.byte_pos();
+        self.text.drain(..pos);
+        self.cursor = 0;
+    }
+}
+
 // ============================================================================
 // 1b. FileSize newtype
 // ============================================================================
@@ -302,14 +417,12 @@ pub struct AppState {
     pub right_panel: PanelState,
     pub active_panel: ActivePanel,
     pub mode: AppMode,
-    pub command_line: String,
-    pub command_cursor: usize,
+    pub command_line: TextInput,
     pub search_query: String,
     pub search_cursor: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
-    pub dialog_input: String,
-    pub dialog_cursor_pos: usize,
+    pub dialog_input: TextInput,
     pub command_history: VecDeque<String>,
     pub history_index: Option<usize>,
     pub command_draft: String,
@@ -860,14 +973,12 @@ impl AppState {
             right_panel: PanelState::new(current_dir.clone()),
             active_panel: ActivePanel::Left,
             mode: AppMode::Normal,
-            command_line: String::new(),
-            command_cursor: 0,
+            command_line: TextInput::default(),
             search_query: String::new(),
             search_cursor: 0,
             should_quit: false,
             status_message: None,
-            dialog_input: String::new(),
-            dialog_cursor_pos: 0,
+            dialog_input: TextInput::default(),
             command_history: VecDeque::new(),
             history_index: None,
             command_draft: String::new(),
@@ -925,7 +1036,6 @@ impl AppState {
 
     pub fn enter_command_line_mode(&mut self) {
         self.command_line.clear();
-        self.command_cursor = 0;
         self.history_index = None;
         self.prev_mode = None;
         self.mode = AppMode::CommandLine;
@@ -964,14 +1074,6 @@ mod tests {
                 active_panel: ActivePanel::Left,
             }
         }
-    }
-
-    #[derive(Debug, Clone, PartialEq, Default)]
-    struct DialogState {
-        dialog_input: String,
-        dialog_cursor_pos: usize,
-        dialog_selection: usize,
-        pending_action: Option<PendingAction>,
     }
 
     #[derive(Debug, Clone, PartialEq, Default)]
@@ -1333,9 +1435,30 @@ mod tests {
         assert_eq!(panels.right_panel.path, PathBuf::from("/tmp"));
         assert_eq!(panels.active_panel, ActivePanel::Left);
         assert_eq!(menu.directory_hotlist, vec![PathBuf::from("/tmp")]);
-        assert_eq!(DialogState::default().dialog_cursor_pos, 0);
+        assert_eq!(TextInput::default().cursor, 0);
         assert_eq!(PickerState::default().picker_selected, 0);
         assert!(DirectoryTreeState::default().tree_entries.is_empty());
+    }
+
+    #[test]
+    fn test_text_input_mutations_clamp_cursor() {
+        let mut input = TextInput {
+            text: "ąb".to_string(),
+            cursor: 99,
+        };
+
+        assert!(input.backspace());
+        assert_eq!(input.text, "ą");
+        assert_eq!(input.cursor, 1);
+
+        assert!(input.insert_char('x'));
+        assert_eq!(input.text, "ąx");
+        assert_eq!(input.cursor, 2);
+
+        input.cursor = 99;
+        assert!(input.delete_word_backward());
+        assert_eq!(input.text, "");
+        assert_eq!(input.cursor, 0);
     }
 
     #[test]

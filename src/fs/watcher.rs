@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
@@ -26,17 +26,29 @@ struct PendingEntry {
     coalesced: Option<WatchEvent>,
 }
 
+struct ExpiredDebouncedEvent {
+    path: PathBuf,
+    last_seen: Instant,
+    event: WatchEvent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WhichWatcher {
     Primary,
     Fallback,
 }
 
+enum SendStatus {
+    Sent,
+    Full(WatchEvent),
+    Disconnected,
+}
+
 pub struct Watcher {
     primary: RecommendedWatcher,
     fallback: Option<PollWatcher>,
     watchers: HashMap<PathBuf, WhichWatcher>,
-    event_tx: Sender<WatchEvent>,
+    event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
@@ -45,14 +57,14 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn new(event_tx: Sender<WatchEvent>) -> io::Result<Self> {
+    pub fn new(event_tx: Arc<SyncSender<WatchEvent>>) -> io::Result<Self> {
         let paused = Arc::new(AtomicBool::new(false));
         let debounce_state = Arc::new(Mutex::new(HashMap::new()));
         let pending_from = Arc::new(Mutex::new(None));
         let pending_from_time = Arc::new(Mutex::new(None));
         let primary = RecommendedWatcher::new(
             make_handler(
-                event_tx.clone(),
+                Arc::clone(&event_tx),
                 Arc::clone(&paused),
                 Arc::clone(&debounce_state),
                 Arc::clone(&pending_from),
@@ -79,7 +91,7 @@ impl Watcher {
         if self.fallback.is_none() {
             let fallback = PollWatcher::new(
                 make_handler(
-                    self.event_tx.clone(),
+                    Arc::clone(&self.event_tx),
                     Arc::clone(&self.paused),
                     Arc::clone(&self.debounce_state),
                     Arc::clone(&self.pending_from),
@@ -202,32 +214,56 @@ impl Watcher {
         let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
         let flushed = flush_expired(&mut debounce);
         drop(debounce);
-        for evt in flushed {
-            if let Err(e) = self.event_tx.send(evt) {
-                debug_log!("watcher send failed: {e}");
-            }
-        }
+        send_expired_events(&self.event_tx, &self.debounce_state, flushed);
 
-        let mut pending = lock_or_recover(&self.pending_from, "pending_from");
-        let mut pending_time = lock_or_recover(&self.pending_from_time, "pending_from_time");
-        if let (Some(path), Some(time)) = (pending.as_ref(), pending_time.as_ref())
-            && time.elapsed() >= PENDING_FROM_TIMEOUT
-        {
+        let stale_from = {
+            let pending = lock_or_recover(&self.pending_from, "pending_from");
+            let pending_time = lock_or_recover(&self.pending_from_time, "pending_from_time");
+            if let (Some(path), Some(time)) = (pending.as_ref(), pending_time.as_ref())
+                && time.elapsed() >= PENDING_FROM_TIMEOUT
+            {
+                Some((path.clone(), *time))
+            } else {
+                None
+            }
+        };
+
+        if let Some((path, time)) = stale_from {
             debug_log!(
                 "stale rename From timed out: emitting Deleted for {}",
                 path.display(),
             );
-            if let Err(e) = self.event_tx.send(WatchEvent::Deleted(path.clone())) {
-                debug_log!("watcher send failed: {e}");
+            match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
+                SendStatus::Full(_) => {}
+                SendStatus::Sent | SendStatus::Disconnected => {
+                    clear_pending_from_if_unchanged(
+                        &self.pending_from,
+                        &self.pending_from_time,
+                        &path,
+                        time,
+                    );
+                }
             }
-            *pending = None;
-            *pending_time = None;
+        }
+    }
+}
+
+fn try_send_event(event_tx: &SyncSender<WatchEvent>, event: WatchEvent) -> SendStatus {
+    match event_tx.try_send(event) {
+        Ok(()) => SendStatus::Sent,
+        Err(TrySendError::Full(event)) => {
+            debug_log!("watcher event queue full; dropping event");
+            SendStatus::Full(event)
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            debug_log!("watcher send failed: receiver disconnected");
+            SendStatus::Disconnected
         }
     }
 }
 
 fn make_handler(
-    event_tx: Sender<WatchEvent>,
+    event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     pending_from: Arc<Mutex<Option<PathBuf>>>,
@@ -260,14 +296,8 @@ fn make_handler(
                         None,
                         true,
                     );
-                    for evt in flushed {
-                        if let Err(e) = event_tx.send(evt) {
-                            debug_log!("watcher send failed: {e}");
-                        }
-                    }
-                    if let Err(e) = event_tx.send(watch_event) {
-                        debug_log!("watcher send failed: {e}");
-                    }
+                    send_expired_events(&event_tx, &debounce_state, flushed);
+                    let _ = try_send_event(&event_tx, watch_event);
                     continue;
                 }
             };
@@ -284,45 +314,90 @@ fn make_handler(
                     },
                     skip_debounce,
                 );
-                for evt in flushed {
-                    if let Err(e) = event_tx.send(evt) {
-                        debug_log!("watcher send failed: {e}");
-                    }
-                }
+                send_expired_events(&event_tx, &debounce_state, flushed);
                 if !emit {
                     continue;
                 }
             }
 
-            if let Err(e) = event_tx.send(watch_event) {
-                debug_log!("watcher send failed: {e}");
+            let _ = try_send_event(&event_tx, watch_event);
+        }
+    }
+}
+
+fn flush_expired(debounce: &mut HashMap<PathBuf, PendingEntry>) -> Vec<ExpiredDebouncedEvent> {
+    let now = Instant::now();
+    let mut flushed = Vec::new();
+
+    let expired_paths = debounce
+        .iter()
+        .filter(|(_, entry)| now.duration_since(entry.last_seen) >= DEBOUNCE_DURATION)
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+
+    for path in expired_paths {
+        if let Some(mut entry) = debounce.remove(&path)
+            && let Some(event) = entry.coalesced.take()
+        {
+            flushed.push(ExpiredDebouncedEvent {
+                path,
+                last_seen: entry.last_seen,
+                event,
+            });
+        }
+    }
+
+    flushed
+}
+
+fn send_expired_events(
+    event_tx: &SyncSender<WatchEvent>,
+    debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
+    flushed: Vec<ExpiredDebouncedEvent>,
+) {
+    for expired in flushed {
+        let path = expired.path;
+        let last_seen = expired.last_seen;
+        match try_send_event(event_tx, expired.event) {
+            SendStatus::Sent | SendStatus::Disconnected => {}
+            SendStatus::Full(event) => {
+                let mut debounce = lock_or_recover(debounce_state, "watcher");
+                debounce.entry(path).or_insert(PendingEntry {
+                    last_seen,
+                    coalesced: Some(event),
+                });
             }
         }
     }
 }
 
-fn flush_expired(debounce: &mut HashMap<PathBuf, PendingEntry>) -> Vec<WatchEvent> {
-    let now = Instant::now();
-    let mut flushed = Vec::new();
-    debounce.retain(|_, entry| {
-        if now.duration_since(entry.last_seen) >= DEBOUNCE_DURATION {
-            if let Some(evt) = entry.coalesced.take() {
-                flushed.push(evt);
-            }
-            false
-        } else {
-            true
-        }
-    });
-    flushed
+fn clear_pending_from_if_unchanged(
+    pending_from: &Mutex<Option<PathBuf>>,
+    pending_from_time: &Mutex<Option<Instant>>,
+    path: &Path,
+    time: Instant,
+) {
+    let mut pending = lock_or_recover(pending_from, "pending_from");
+    let mut pending_time = lock_or_recover(pending_from_time, "pending_from_time");
+    if pending.as_deref() == Some(path) && pending_time.as_ref() == Some(&time) {
+        *pending = None;
+        *pending_time = None;
+    }
 }
 
+/// Process debounce for watched paths.
+///
+/// Returns `(should_emit, expired_events)` where:
+/// - `should_emit`: caller should forward the current event downstream
+///   (`false` means the event was suppressed/coalesced by debounce)
+/// - `expired_events`: entries whose debounce window has elapsed;
+///   these should always be sent regardless of `should_emit`
 fn process_debounce(
     debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
     paths: &[&Path],
     event: Option<&WatchEvent>,
     skip_debounce: bool,
-) -> (bool, Vec<WatchEvent>) {
+) -> (bool, Vec<ExpiredDebouncedEvent>) {
     let now = Instant::now();
     let mut debounce = lock_or_recover(debounce_state, "watcher");
 
@@ -333,7 +408,11 @@ fn process_debounce(
             if let Some(mut old) = debounce.remove(*p)
                 && let Some(evt) = old.coalesced.take()
             {
-                flushed.push(evt);
+                flushed.push(ExpiredDebouncedEvent {
+                    path: p.to_path_buf(),
+                    last_seen: old.last_seen,
+                    event: evt,
+                });
             }
             debounce.insert(
                 p.to_path_buf(),
@@ -495,8 +574,8 @@ mod tests {
     #[test]
     fn watcher_can_watch_and_unwatch_directory() -> TestResult {
         let tempdir = tempfile::tempdir()?;
-        let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Watcher::new(event_tx)?;
+        let (event_tx, _event_rx) = mpsc::sync_channel(2048);
+        let mut watcher = Watcher::new(Arc::new(event_tx))?;
         let watched_path = tempdir.path().canonicalize()?;
 
         watcher.watch(tempdir.path())?;
@@ -512,8 +591,8 @@ mod tests {
         let tempdir = tempfile::tempdir()?;
         let watched_path = tempdir.path().to_path_buf();
         let canonical = watched_path.canonicalize()?;
-        let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Watcher::new(event_tx)?;
+        let (event_tx, _event_rx) = mpsc::sync_channel(2048);
+        let mut watcher = Watcher::new(Arc::new(event_tx))?;
 
         watcher.watch(&watched_path)?;
         std::fs::remove_dir_all(&watched_path)?;
@@ -534,8 +613,8 @@ mod tests {
         std::fs::create_dir(&target)?;
         std::os::unix::fs::symlink(&target, &link)?;
 
-        let (event_tx, _event_rx) = mpsc::channel();
-        let mut watcher = Watcher::new(event_tx)?;
+        let (event_tx, _event_rx) = mpsc::sync_channel(2048);
+        let mut watcher = Watcher::new(Arc::new(event_tx))?;
         watcher.watch(&link)?;
         std::fs::remove_dir_all(&target)?;
 
@@ -548,8 +627,8 @@ mod tests {
 
     #[test]
     fn watcher_pause_and_resume_do_not_panic() -> TestResult {
-        let (event_tx, _event_rx) = mpsc::channel();
-        let watcher = Watcher::new(event_tx)?;
+        let (event_tx, _event_rx) = mpsc::sync_channel(2048);
+        let watcher = Watcher::new(Arc::new(event_tx))?;
 
         watcher.pause();
         watcher.resume();
@@ -596,8 +675,8 @@ mod tests {
 
     #[test]
     fn watcher_created_with_primary_only_no_fallback() -> TestResult {
-        let (event_tx, _event_rx) = mpsc::channel();
-        let watcher = Watcher::new(event_tx)?;
+        let (event_tx, _event_rx) = mpsc::sync_channel(2048);
+        let watcher = Watcher::new(Arc::new(event_tx))?;
         assert!(watcher.fallback.is_none());
         assert!(watcher.watchers.is_empty());
         Ok(())
@@ -605,8 +684,8 @@ mod tests {
 
     #[test]
     fn flush_pending_emits_coalesced_event_after_debounce_window() -> TestResult {
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx)?;
+        let (tx, rx) = mpsc::sync_channel(2048);
+        let watcher = Watcher::new(Arc::new(tx))?;
 
         let path = PathBuf::from("/tmp/test_file.txt");
         {
@@ -632,8 +711,8 @@ mod tests {
 
     #[test]
     fn flush_pending_does_not_emit_while_paused() -> TestResult {
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx)?;
+        let (tx, rx) = mpsc::sync_channel(2048);
+        let watcher = Watcher::new(Arc::new(tx))?;
 
         let path = PathBuf::from("/tmp/test_file.txt");
         {
@@ -660,6 +739,112 @@ mod tests {
 
         let flushed = rx.try_recv()?;
         assert!(matches!(flushed, WatchEvent::Modified(p) if p == path));
+        Ok(())
+    }
+
+    #[test]
+    fn flush_pending_does_not_block_when_queue_is_full() -> TestResult {
+        let (tx, rx) = mpsc::sync_channel(0);
+        let watcher = Watcher::new(Arc::new(tx))?;
+
+        let first = PathBuf::from("/tmp/first.txt");
+        {
+            let mut debounce = watcher
+                .debounce_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let expired = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
+            debounce.insert(
+                first.clone(),
+                PendingEntry {
+                    last_seen: expired,
+                    coalesced: Some(WatchEvent::Modified(first)),
+                },
+            );
+        }
+
+        watcher.flush_pending();
+
+        assert!(rx.try_recv().is_err());
+        let debounce = watcher
+            .debounce_state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let Some(entry) = debounce.get(&PathBuf::from("/tmp/first.txt")) else {
+            assert!(debounce.contains_key(&PathBuf::from("/tmp/first.txt")));
+            return Ok(());
+        };
+        assert!(matches!(entry.coalesced, Some(WatchEvent::Modified(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn flush_pending_retries_full_debounced_event() -> TestResult {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.try_send(WatchEvent::Modified(PathBuf::from("/tmp/fill.txt")))?;
+        let watcher = Watcher::new(Arc::new(tx))?;
+
+        let path = PathBuf::from("/tmp/retry.txt");
+        {
+            let mut debounce = watcher
+                .debounce_state
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            debounce.insert(
+                path.clone(),
+                PendingEntry {
+                    last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
+                    coalesced: Some(WatchEvent::Modified(path.clone())),
+                },
+            );
+        }
+
+        watcher.flush_pending();
+        let filler = rx.try_recv()?;
+        assert!(
+            matches!(filler, WatchEvent::Modified(p) if p.as_path() == Path::new("/tmp/fill.txt"))
+        );
+
+        watcher.flush_pending();
+
+        let retried = rx.try_recv()?;
+        assert!(matches!(retried, WatchEvent::Modified(p) if p == path));
+        Ok(())
+    }
+
+    #[test]
+    fn flush_pending_keeps_stale_from_when_queue_is_full() -> TestResult {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.try_send(WatchEvent::Modified(PathBuf::from("/tmp/fill.txt")))?;
+        let watcher = Watcher::new(Arc::new(tx))?;
+        let stale = PathBuf::from("/tmp/stale_file.txt");
+
+        {
+            let mut pending = watcher
+                .pending_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            *pending = Some(stale.clone());
+        }
+        {
+            let mut pending_time = watcher
+                .pending_from_time
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            *pending_time = Some(Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1));
+        }
+
+        watcher.flush_pending();
+
+        assert_eq!(
+            watcher
+                .pending_from
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .as_ref(),
+            Some(&stale)
+        );
+        drop(rx);
         Ok(())
     }
 
@@ -722,9 +907,10 @@ mod tests {
 
     #[test]
     fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx)?;
+        let (tx, rx) = mpsc::sync_channel(2048);
+        let watcher = Watcher::new(Arc::new(tx))?;
 
+        let stale_time = Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1);
         {
             let mut pending = watcher
                 .pending_from
@@ -737,7 +923,7 @@ mod tests {
                 .pending_from_time
                 .lock()
                 .unwrap_or_else(|err| err.into_inner());
-            *pending_time = Some(Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1));
+            *pending_time = Some(stale_time);
         }
 
         watcher.flush_pending();
@@ -765,9 +951,36 @@ mod tests {
     }
 
     #[test]
+    fn clear_pending_from_keeps_new_from_for_same_path() {
+        let pending: Mutex<Option<PathBuf>> = Mutex::new(Some(PathBuf::from("/tmp/rename.txt")));
+        let old_time = Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1);
+        let new_time = Instant::now();
+        let pending_time: Mutex<Option<Instant>> = Mutex::new(Some(new_time));
+
+        clear_pending_from_if_unchanged(
+            &pending,
+            &pending_time,
+            Path::new("/tmp/rename.txt"),
+            old_time,
+        );
+
+        assert_eq!(
+            pending
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .as_deref(),
+            Some(Path::new("/tmp/rename.txt"))
+        );
+        assert_eq!(
+            *pending_time.lock().unwrap_or_else(|err| err.into_inner()),
+            Some(new_time)
+        );
+    }
+
+    #[test]
     fn flush_pending_keeps_fresh_from() -> TestResult {
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::new(tx)?;
+        let (tx, rx) = mpsc::sync_channel(2048);
+        let watcher = Watcher::new(Arc::new(tx))?;
 
         {
             let mut pending = watcher

@@ -1,3 +1,4 @@
+use crate::debug_log;
 use crate::ops::chunk_copy;
 use crate::ops::helpers::path_starts_with;
 
@@ -909,7 +910,9 @@ fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     fs::set_permissions(target, mode)?;
     let atime = filetime::FileTime::from_last_access_time(src_meta);
     let mtime = filetime::FileTime::from_last_modification_time(src_meta);
-    let _ = filetime::set_file_times(target, atime, mtime);
+    if let Err(e) = filetime::set_file_times(target, atime, mtime) {
+        debug_log!("set_file_times failed for {}: {e}", target.display());
+    }
     Ok(())
 }
 
