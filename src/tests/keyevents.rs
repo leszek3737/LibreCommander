@@ -56,7 +56,7 @@ fn dispatch_mouse_click_moves_cursor() {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![
         TestEntry::new("a.txt")
             .path(tmp.path().join("a.txt"))
@@ -107,7 +107,7 @@ fn key_press_triggers_search_initiation() {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![
         TestEntry::new("alpha.txt")
             .path(tmp.path().join("alpha.txt"))
@@ -146,7 +146,7 @@ fn key_release_is_ignored() {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![
         TestEntry::new("alpha.txt")
             .path(tmp.path().join("alpha.txt"))
@@ -192,7 +192,7 @@ fn key_repeat_navigation_moves_cursor() {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![
         TestEntry::new("a.txt")
             .path(tmp.path().join("a.txt"))
@@ -271,7 +271,7 @@ fn key_repeat_destructive_is_ignored() {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
     state.left_panel.entries = vec![
         TestEntry::new("victim.txt")
             .path(tmp.path().join("victim.txt"))

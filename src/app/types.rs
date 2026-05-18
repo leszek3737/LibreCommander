@@ -279,6 +279,7 @@ pub enum ListingMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelState {
     pub path: PathBuf,
+    pub canonical_path: Option<PathBuf>,
     pub entries: Vec<FileEntry>,
     pub cursor: usize,
     pub scroll_offset: usize,
@@ -799,8 +800,10 @@ impl FileEntry {
 
 impl PanelState {
     pub fn new(path: PathBuf) -> Self {
+        let canonical_path = path.canonicalize().ok();
         Self {
             path,
+            canonical_path,
             entries: Vec::new(),
             cursor: 0,
             scroll_offset: 0,
@@ -820,6 +823,11 @@ impl PanelState {
             path_index: HashMap::new(),
             needs_rebuild: false,
         }
+    }
+
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.canonical_path = path.canonicalize().ok();
+        self.path = path;
     }
 
     fn update_selection_stats(&mut self, size: u64, selected: bool) {
@@ -1559,7 +1567,7 @@ mod tests {
     fn test_app_state_active_panel_mut_left() {
         let mut state = AppState::new();
         let panel = state.active_panel_mut();
-        panel.path = PathBuf::from("/modified");
+        panel.set_path(PathBuf::from("/modified"));
         assert_eq!(state.left_panel.path, PathBuf::from("/modified"));
     }
 
@@ -1568,7 +1576,7 @@ mod tests {
         let mut state = AppState::new();
         state.active_panel = ActivePanel::Right;
         let panel = state.active_panel_mut();
-        panel.path = PathBuf::from("/modified");
+        panel.set_path(PathBuf::from("/modified"));
         assert_eq!(state.right_panel.path, PathBuf::from("/modified"));
     }
 

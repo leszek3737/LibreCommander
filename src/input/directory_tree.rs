@@ -84,7 +84,7 @@ pub(crate) fn handle_directory_tree(
                     .unwrap_or(entry_path)
             };
             if target.is_dir() {
-                state.active_panel_mut().path = target;
+                state.active_panel_mut().set_path(target);
                 state.active_panel_mut().cursor = 0;
                 state.active_panel_mut().scroll_offset = 0;
                 state.tree_selected = 0;

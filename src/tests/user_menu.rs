@@ -61,7 +61,7 @@ fn user_menu_file_menu_no_menu_file_shows_error() {
         menu_item_selected: 0,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
 
     handle_menu_mode(
         &mut state,
@@ -98,7 +98,7 @@ fn user_menu_file_menu_with_entries_opens_picker() {
         menu_item_selected: 0,
         ..Default::default()
     };
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
 
     handle_menu_mode(
         &mut state,
@@ -131,7 +131,7 @@ fn f2_loads_user_menu_file_with_entries() {
 
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
 
     handle_normal_mode(
         &mut state,
@@ -153,7 +153,7 @@ fn f2_no_user_menu_file_shows_error() {
     let tmp = tempfile::tempdir().unwrap();
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.path = tmp.path().to_path_buf();
+    state.left_panel.set_path(tmp.path().to_path_buf());
 
     handle_normal_mode(
         &mut state,

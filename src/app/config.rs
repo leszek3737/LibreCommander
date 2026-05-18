@@ -236,7 +236,8 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
         let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
         let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if resolved.is_dir() {
-            panel.path = resolved;
+            panel.path = resolved.clone();
+            panel.canonical_path = Some(resolved);
         }
     }
     panel.listing_mode = persisted.listing_mode;

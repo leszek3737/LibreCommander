@@ -751,7 +751,7 @@ pub(crate) fn handle_enter_key(state: &mut AppState, visible: usize) {
         };
         let p = state.active_panel_mut();
         p.history.push(p.path.clone());
-        p.path = path;
+        p.set_path(path);
         p.cursor = 0;
         p.scroll_offset = 0;
         panel_ops::refresh_active(state);
@@ -822,7 +822,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             if let Some(prev_path) = panel.history.pop()
                 && prev_path.is_dir()
             {
-                panel.path = prev_path.clone();
+                panel.set_path(prev_path.clone());
                 panel.cursor = 0;
                 panel.scroll_offset = 0;
                 panel_ops::refresh_active(state);

@@ -12,7 +12,7 @@ fn menu_toggle_hidden_files_refreshes_active_panel() {
     };
     let mut terminal = test_terminal();
     let mut state = state;
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.show_hidden = false;
     state.mode = AppMode::Menu;
     state.menu_selected = 3;
@@ -39,7 +39,7 @@ fn menu_toggle_hidden_files_reverse_refreshes_active_panel() {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.show_hidden = true;
     state.mode = AppMode::Menu;
     state.menu_selected = 3;
