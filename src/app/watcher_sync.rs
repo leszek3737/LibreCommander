@@ -3,12 +3,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
-use crate::app::panel_ops::entry_matches_panel;
 use crate::app::types::{AppState, PanelState};
 use crate::debug_log;
 use crate::fs::reader;
 use crate::fs::watcher::{WatchEvent, Watcher};
-use crate::ops::{search, sorting};
 
 pub fn sync_watcher_paths(
     watcher: &mut Option<Watcher>,
@@ -310,19 +308,10 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
         .map(|entry| entry.name.clone())
         .or_else(|| preferred_name.map(str::to_string));
 
-    let compiled_filter = panel
-        .filter
-        .as_deref()
-        .map(|f| search::CompiledPattern::new(f, false));
-
-    panel.sync_unfiltered_selection();
-    panel.entries = panel
-        .unfiltered_entries
-        .iter()
-        .filter(|entry| entry_matches_panel(entry, compiled_filter.as_ref(), panel.show_hidden))
-        .cloned()
-        .collect();
-    sorting::sort_entries(&mut panel.entries, panel.sort_mode, panel.sort_options);
+    crate::app::panel_ops::rebuild_visible_entries(
+        panel,
+        crate::app::panel_ops::current_visible_height(),
+    );
 
     if let Some(name) = current_name.as_deref()
         && let Some(pos) = panel.entries.iter().position(|entry| entry.name == name)

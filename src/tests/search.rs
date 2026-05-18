@@ -43,6 +43,72 @@ fn search_enter_clears_filter_and_refreshes_from_disk() {
 }
 
 #[test]
+fn search_enter_preserves_current_entry_focus() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let alpha = temp_dir.path().join("alpha.txt");
+    let beta = temp_dir.path().join("beta.txt");
+    std::fs::write(&alpha, b"alpha").unwrap();
+    std::fs::write(&beta, b"beta").unwrap();
+    let mut state = AppState {
+        mode: AppMode::Search,
+        search_query: "beta".to_string(),
+        search_cursor: 4,
+        ..Default::default()
+    };
+    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.entries = vec![TestEntry::new("beta.txt").path(&beta).size(1).build()];
+    state.left_panel.unfiltered_entries = vec![
+        TestEntry::new("alpha.txt").path(&alpha).size(1).build(),
+        TestEntry::new("beta.txt").path(&beta).size(1).build(),
+    ];
+    state.left_panel.filter = Some("beta".to_string());
+
+    handle_search_mode(&mut state, KeyCode::Enter, 24);
+
+    assert_eq!(
+        state
+            .left_panel
+            .current_entry()
+            .map(|entry| entry.name.as_str()),
+        Some("beta.txt")
+    );
+}
+
+#[test]
+fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    std::fs::write(temp_dir.path().join("fresh.txt"), b"fresh").unwrap();
+    let mut state = AppState {
+        mode: AppMode::Search,
+        search_query: "fresh".to_string(),
+        search_cursor: 5,
+        ..Default::default()
+    };
+    state.left_panel.path = temp_dir.path().to_path_buf();
+    state.left_panel.entries = vec![TestEntry::new("stale.txt").size(1).build()];
+    state.left_panel.unfiltered_entries = vec![TestEntry::new("stale.txt").size(1).build()];
+    state.left_panel.unfiltered_dirty = true;
+    state.left_panel.filter = Some("fresh".to_string());
+
+    handle_search_mode(&mut state, KeyCode::Enter, 24);
+
+    assert!(
+        state
+            .left_panel
+            .entries
+            .iter()
+            .any(|entry| entry.name == "fresh.txt")
+    );
+    assert!(
+        !state
+            .left_panel
+            .entries
+            .iter()
+            .any(|entry| entry.name == "stale.txt")
+    );
+}
+
+#[test]
 fn search_enter_clears_filter_and_restores_unfiltered_entries() {
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("alpha.txt"), b"alpha").unwrap();

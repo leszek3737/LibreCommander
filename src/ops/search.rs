@@ -11,6 +11,7 @@ use std::io::{BufRead, BufReader};
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
 use crate::ops::helpers::get_inode_key;
+use memchr::{memchr, memmem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TruncationReason {
@@ -712,7 +713,7 @@ impl FileSearch {
             }
         };
 
-        let mut reader = BufReader::new(file);
+        let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES, file);
         let mut line_buf = Vec::new();
         let mut line_no = 0_usize;
         loop {
@@ -732,7 +733,7 @@ impl FileSearch {
                         }
                         return;
                     }
-                    if line.contains(&0) {
+                    if memchr(0, line).is_some() {
                         if outcome.truncated.is_none() {
                             outcome.truncated = Some(TruncationReason::BinaryFile);
                         }
@@ -744,6 +745,10 @@ impl FileSearch {
                         }
                         continue;
                     }
+                    if case_sensitive && memmem::find(line, pattern.as_bytes()).is_none() {
+                        continue;
+                    }
+
                     let line_text = match std::str::from_utf8(line) {
                         Ok(s) => s.strip_suffix('\r').unwrap_or(s).to_owned(),
                         Err(_) => continue,

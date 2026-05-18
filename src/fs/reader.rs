@@ -133,6 +133,7 @@ pub fn ensure_path_index(panel: &mut PanelState) {
         return;
     }
     panel.path_index.clear();
+    panel.path_index.reserve(panel.unfiltered_entries.len());
     for (i, entry) in panel.unfiltered_entries.iter().enumerate() {
         panel.path_index.insert(entry.path.clone(), i);
     }

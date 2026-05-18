@@ -179,6 +179,65 @@ fn menu_hotlist_opens_picker() {
 }
 
 #[test]
+fn menu_sort_preserves_current_entry_focus() {
+    let mut state = AppState {
+        mode: AppMode::Menu,
+        menu_selected: 0,
+        menu_item_selected: 1,
+        ..Default::default()
+    };
+    state.left_panel.entries = vec![
+        TestEntry::new("zeta.txt").build(),
+        TestEntry::new("alpha.txt").build(),
+    ];
+    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.cursor = 0;
+    state.left_panel.sort_mode = lc::app::types::SortMode::NameDesc;
+
+    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+
+    assert_eq!(
+        state.left_panel.sort_mode,
+        lc::app::types::SortMode::NaturalNameAsc
+    );
+    assert_eq!(state.left_panel.entries[0].name, "alpha.txt");
+    assert_eq!(state.left_panel.entries[1].name, "zeta.txt");
+    assert_eq!(
+        state
+            .left_panel
+            .current_entry()
+            .map(|entry| entry.name.as_str()),
+        Some("zeta.txt")
+    );
+}
+
+#[test]
+fn menu_reset_filter_preserves_current_entry_focus() {
+    let mut state = AppState {
+        mode: AppMode::Menu,
+        menu_selected: 0,
+        menu_item_selected: 4,
+        ..Default::default()
+    };
+    state.left_panel.entries = vec![TestEntry::new("beta.txt").build()];
+    state.left_panel.unfiltered_entries = vec![
+        TestEntry::new("alpha.txt").build(),
+        TestEntry::new("beta.txt").build(),
+    ];
+    state.left_panel.filter = Some("beta".to_string());
+
+    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+
+    assert_eq!(
+        state
+            .left_panel
+            .current_entry()
+            .map(|entry| entry.name.as_str()),
+        Some("beta.txt")
+    );
+}
+
+#[test]
 #[allow(clippy::field_reassign_with_default)]
 fn run_selected_menu_action_fallback_to_normal() {
     let mut state = AppState::default();

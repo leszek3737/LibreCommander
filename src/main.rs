@@ -21,7 +21,9 @@ mod input;
 mod render;
 
 use app::job_runner::{RunningJob, poll_running_job};
-use app::types::{ActivePanel, AppMode, AppState, InputAction, PanelState};
+#[cfg(test)]
+use app::types::PanelState;
+use app::types::{ActivePanel, AppMode, AppState, InputAction};
 use app::{panel_ops, paths, shell, watcher_sync};
 
 use ui::viewer;
@@ -206,14 +208,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
 
         if poll_running_job(&mut state, &mut running_job, panel_ops::refresh_both) {
-            let resumed = panel_ops::sync_watcher_job_state(
-                &watcher,
-                running_job.is_some(),
-                &mut watcher_paused,
-            );
-            if resumed {
-                panel_ops::refresh_both(&mut state);
-            }
+            panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
             dirty = true;
         }
 
@@ -281,12 +276,12 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     key: &KeyEvent,
 ) -> Result<bool, B::Error> {
-    let size = terminal.size()?;
     match key.kind {
         KeyEventKind::Press => {}
         KeyEventKind::Repeat if key_repeat_allowed(&state.mode, key.code) => {}
         _ => return Ok(true),
     }
+    let size = terminal.size()?;
     match &state.mode {
         AppMode::Normal => {
             input::mode_dispatch::handle_normal_mode(
@@ -315,7 +310,8 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
             input::dialogs::handle_dialog(state, viewer_state, running_job, key.code, size);
         }
         AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
-            input::mode_dispatch::clear_search_state(state);
+            let visible = panel_ops::panel_visible_height(size.height);
+            input::mode_dispatch::clear_search_state(state, visible);
             input::mode_dispatch::handle_normal_mode(
                 state,
                 viewer_state,
@@ -401,7 +397,8 @@ fn dispatch_mouse_event<B: ratatui::backend::Backend>(
             input::mouse::MouseOutcome::Consumed => {}
             input::mouse::MouseOutcome::NormalKey(key) => {
                 if matches!(state.mode, AppMode::Search) {
-                    input::mode_dispatch::clear_search_state(state);
+                    let visible = panel_ops::panel_visible_height(size.height);
+                    input::mode_dispatch::clear_search_state(state, visible);
                 }
                 input::mode_dispatch::handle_normal_mode(
                     state,
@@ -740,7 +737,7 @@ pub(crate) fn handle_enter_key(state: &mut AppState, visible: usize) {
     }
 }
 
-pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode) {
+pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_height: u16) {
     match key {
         KeyCode::Char('u') => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
@@ -760,11 +757,12 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode) {
             state.search_cursor = 0;
         }
         KeyCode::Char('h') => {
+            let visible = panel_ops::panel_visible_height(terminal_height);
             let p = state.active_panel_mut();
             p.show_hidden = !p.show_hidden;
             p.cursor = 0;
             p.scroll_offset = 0;
-            panel_ops::refresh_active(state);
+            panel_ops::rebuild_visible_entries(p, visible);
         }
         KeyCode::Char('r') => {
             panel_ops::refresh_active(state);
@@ -848,18 +846,11 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn apply_search_filter(panel: &mut PanelState) {
-    panel.sync_unfiltered_selection();
-    panel.entries = panel_ops::filtered_sorted_entries(
-        &panel.unfiltered_entries,
-        panel.filter.as_deref(),
-        panel.sort_mode,
-        panel.sort_options,
-        panel.show_hidden,
-    );
+    panel_ops::rebuild_visible_entries(panel, panel_ops::current_visible_height());
     panel.cursor = 0;
     panel.scroll_offset = 0;
-    panel.recalculate_selection_stats();
 }
 
 #[cfg(test)]

@@ -10,7 +10,9 @@ use lc::fs;
 use lc::ops;
 use lc::ui::{dialogs, viewer};
 
-use crate::app::panel_ops::{panel_visible_height, refresh_active, refresh_both, set_active_panel};
+use crate::app::panel_ops::{
+    panel_visible_height, rebuild_visible_entries, refresh_active, refresh_both, set_active_panel,
+};
 
 const MAX_DIALOG_INPUT_BYTES: usize = 4096;
 
@@ -396,13 +398,20 @@ fn handle_input_action(
             } else {
                 Some(input)
             };
+            if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
+                refresh_active(state);
+            } else {
+                rebuild_visible_entries(panel, panel_visible_height(terminal_height));
+            }
         }
         InputAction::QuickCd => handle_quick_cd(state, &input),
         InputAction::FindFile => handle_find_file(state, &input, terminal_height),
     }
     state.mode = AppMode::Normal;
     state.dialog_input.clear();
-    refresh_active(state);
+    if !matches!(action, InputAction::Filter) {
+        refresh_active(state);
+    }
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
