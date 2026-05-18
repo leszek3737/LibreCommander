@@ -196,7 +196,10 @@ fn menu_sort_preserves_current_entry_focus() {
 
     run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
 
-    assert_eq!(state.left_panel.sort_mode, lc::app::types::SortMode::NaturalNameAsc);
+    assert_eq!(
+        state.left_panel.sort_mode,
+        lc::app::types::SortMode::NaturalNameAsc
+    );
     assert_eq!(state.left_panel.entries[0].name, "alpha.txt");
     assert_eq!(state.left_panel.entries[1].name, "zeta.txt");
     assert_eq!(
