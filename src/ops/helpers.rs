@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -164,6 +165,27 @@ pub(crate) fn sum_sizes(sizes: &[u64]) -> u64 {
 /// Borrow the path at `idx` from a slice, returning `None` when out of bounds.
 pub(crate) fn next_path(paths: &[PathBuf], idx: usize) -> Option<&Path> {
     paths.get(idx).map(PathBuf::as_path)
+}
+
+/// Remove a file, logging failures via `debug_log!` instead of silently discarding.
+pub(crate) fn cleanup_file(path: &Path) {
+    if let Err(e) = fs::remove_file(path) {
+        debug_log!("failed to clean up file {}: {e}", path.display());
+    }
+}
+
+/// Remove an empty directory, logging failures via `debug_log!`.
+pub(crate) fn cleanup_dir(path: &Path) {
+    if let Err(e) = fs::remove_dir(path) {
+        debug_log!("failed to clean up directory {}: {e}", path.display());
+    }
+}
+
+/// Remove a directory tree, logging failures via `debug_log!`.
+pub(crate) fn cleanup_dir_all(path: &Path) {
+    if let Err(e) = fs::remove_dir_all(path) {
+        debug_log!("failed to clean up directory tree {}: {e}", path.display());
+    }
 }
 
 #[cfg(test)]

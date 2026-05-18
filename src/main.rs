@@ -23,7 +23,7 @@ mod render;
 use app::job_runner::{RunningJob, poll_running_job};
 #[cfg(test)]
 use app::types::PanelState;
-use app::types::{ActivePanel, AppMode, AppState, InputAction};
+use app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction};
 use app::{panel_ops, paths, shell, watcher_sync};
 
 use ui::viewer;
@@ -352,7 +352,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
 }
 
 fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
-    matches!(
+    let is_nav = matches!(
         key,
         KeyCode::Up
             | KeyCode::Down
@@ -363,17 +363,39 @@ fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
             | KeyCode::PageUp
             | KeyCode::PageDown
             | KeyCode::Char('j' | 'k')
-    ) || matches!(
+    );
+    if is_nav {
+        return true;
+    }
+
+    let is_text_edit = matches!(key, KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_));
+    let is_text_mode = matches!(
         mode,
-        AppMode::CommandLine
-            | AppMode::Dialog(_)
-            | AppMode::Search
-            | AppMode::Menu
-            | AppMode::ListPicker(_)
-    ) && matches!(
-        key,
-        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_) | KeyCode::Enter
-    )
+        AppMode::CommandLine | AppMode::Search | AppMode::Menu | AppMode::ListPicker(_)
+    );
+    if is_text_edit && is_text_mode {
+        return true;
+    }
+
+    if is_text_edit && matches!(mode, AppMode::Dialog(DialogKind::Input { .. })) {
+        return true;
+    }
+
+    if key == KeyCode::Enter {
+        return matches!(
+            mode,
+            AppMode::Dialog(
+                DialogKind::Input { .. }
+                    | DialogKind::Error(_)
+                    | DialogKind::Progress(_, _, _)
+                    | DialogKind::Properties { .. }
+                    | DialogKind::CopyMove { .. }
+                    | DialogKind::Help { .. }
+            )
+        );
+    }
+
+    false
 }
 
 fn dispatch_mouse_event<B: ratatui::backend::Backend>(
