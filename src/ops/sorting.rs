@@ -164,7 +164,12 @@ fn name_key(entry: &FileEntry, sensitive: bool) -> (String, String) {
     if sensitive {
         (entry.name.clone(), String::new())
     } else {
-        (entry.name.to_lowercase(), entry.name.clone())
+        let lower = entry.name.to_lowercase();
+        if lower == entry.name {
+            (lower, String::new())
+        } else {
+            (lower, entry.name.clone())
+        }
     }
 }
 

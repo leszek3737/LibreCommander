@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use chrono::{DateTime, Datelike, Timelike};
 use serde::{Deserialize, Serialize};
+use unicode_width::UnicodeWidthStr;
 
 use super::dir_tree::TreeEntry;
 use super::user_menu::{MenuEntry, MenuSource};
@@ -177,6 +179,25 @@ pub fn format_size(size: u64) -> String {
     FileSize(size).to_string()
 }
 
+pub fn format_time(modified: SystemTime) -> String {
+    if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+        let timestamp = duration.as_secs();
+
+        if let Some(dt) = DateTime::from_timestamp(timestamp as i64, 0) {
+            let local = dt.with_timezone(&chrono::Local);
+            return format!(
+                "{:02}-{:02}-{:02} {:02}:{:02}",
+                local.day(),
+                local.month(),
+                local.year() % 100,
+                local.hour(),
+                local.minute()
+            );
+        }
+    }
+    "??-??-?? ??:??".to_string()
+}
+
 // ============================================================================
 // 1. FileEntry struct definition
 // ============================================================================
@@ -190,6 +211,9 @@ pub struct FileEntry {
     pub group: String,
     pub selected: bool,
     pub mime_type: Option<String>,
+    pub time_str: String,
+    pub size_str: String,
+    pub name_width: usize,
 }
 
 // ============================================================================
@@ -432,6 +456,8 @@ pub struct AppState {
     pub picker_selected: usize,
     pub user_menu_entries: Vec<MenuEntry>,
     pub user_menu_source: MenuSource,
+    pub cached_hotlist_strings: Vec<String>,
+    pub cached_user_menu_strings: Vec<String>,
     pub pending_menu_command: Option<String>,
     pub tree_root: PathBuf,
     pub tree_entries: Vec<TreeEntry>,
@@ -582,6 +608,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn build(self) -> FileEntry {
+        let (time_str, size_str, name_width) = FileEntry::cached_fields(&self.cha, &self.name);
         FileEntry {
             name: self.name,
             path: self.path,
@@ -590,6 +617,9 @@ impl FileEntryBuilder {
             group: self.group,
             selected: self.selected,
             mime_type: self.mime_type,
+            time_str,
+            size_str,
+            name_width,
         }
     }
 }
@@ -599,6 +629,17 @@ impl FileEntryBuilder {
 // ============================================================================
 
 impl FileEntry {
+    pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize) {
+        let time_str = format_time(cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
+        let size_str = if cha.is_dir() {
+            "     <DIR>".to_string()
+        } else {
+            format!("{:>10}", format_size(cha.len()))
+        };
+        let name_width = UnicodeWidthStr::width(name);
+        (time_str, size_str, name_width)
+    }
+
     pub fn builder() -> FileEntryBuilder {
         FileEntryBuilder {
             name: String::new(),
@@ -982,12 +1023,14 @@ impl AppState {
             command_history: VecDeque::new(),
             history_index: None,
             command_draft: String::new(),
-            directory_hotlist: vec![current_dir],
+            directory_hotlist: vec![current_dir.clone()],
             menu_selected: 0,
             menu_item_selected: 0,
             picker_selected: 0,
             user_menu_entries: Vec::new(),
             user_menu_source: MenuSource::Global,
+            cached_hotlist_strings: vec![current_dir.display().to_string()],
+            cached_user_menu_strings: Vec::new(),
             pending_menu_command: None,
             tree_root: PathBuf::new(),
             tree_entries: Vec::new(),
@@ -1032,6 +1075,42 @@ impl AppState {
             ActivePanel::Left => &self.right_panel,
             ActivePanel::Right => &self.left_panel,
         }
+    }
+
+    pub fn rebuild_hotlist_cache(&mut self) {
+        self.cached_hotlist_strings = self
+            .directory_hotlist
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+    }
+
+    pub fn rebuild_user_menu_cache(&mut self) {
+        self.cached_user_menu_strings = self
+            .user_menu_entries
+            .iter()
+            .map(|e| format!("{}  {}", e.hotkey, e.title))
+            .collect();
+    }
+
+    pub fn hotlist_push(&mut self, path: PathBuf) {
+        self.directory_hotlist.push(path);
+        self.rebuild_hotlist_cache();
+    }
+
+    pub fn hotlist_remove(&mut self, index: usize) {
+        self.directory_hotlist.remove(index);
+        self.rebuild_hotlist_cache();
+    }
+
+    pub fn hotlist_set(&mut self, hotlist: Vec<PathBuf>) {
+        self.directory_hotlist = hotlist;
+        self.rebuild_hotlist_cache();
+    }
+
+    pub fn user_menu_set(&mut self, entries: Vec<MenuEntry>) {
+        self.user_menu_entries = entries;
+        self.rebuild_user_menu_cache();
     }
 
     pub fn enter_command_line_mode(&mut self) {

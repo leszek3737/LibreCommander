@@ -240,7 +240,7 @@ pub fn open_user_menu(state: &mut AppState) {
                     Some("Local .mc.menu loaded — commands require confirmation".to_string());
             }
             state.user_menu_source = loaded.source;
-            state.user_menu_entries = loaded.entries;
+            state.user_menu_set(loaded.entries);
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::UserMenu);
         }

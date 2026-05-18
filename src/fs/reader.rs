@@ -59,7 +59,7 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
             .entry(uid)
             .or_insert_with(|| {
                 users::get_user_by_uid(uid)
-                    .map(|u| u.name().to_string_lossy().to_string())
+                    .map(|u| u.name().to_string_lossy().into_owned())
                     .unwrap_or_else(|| uid.to_string())
             })
             .clone();
@@ -68,7 +68,7 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
             .entry(gid)
             .or_insert_with(|| {
                 users::get_group_by_gid(gid)
-                    .map(|g| g.name().to_string_lossy().to_string())
+                    .map(|g| g.name().to_string_lossy().into_owned())
                     .unwrap_or_else(|| gid.to_string())
             })
             .clone();
@@ -111,14 +111,20 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
     let (uid, gid) = (cha.uid, cha.gid);
     let (owner, group) = lookup_owner_group(uid, gid);
 
+    let name = file_name.to_string();
+    let (time_str, size_str, name_width) = FileEntry::cached_fields(&cha, &name);
+
     Ok(FileEntry {
-        name: file_name.to_string(),
+        name,
         path: path.to_path_buf(),
         cha,
         owner,
         group,
         selected: false,
         mime_type: None,
+        time_str,
+        size_str,
+        name_width,
     })
 }
 
@@ -153,14 +159,19 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
                 lookup_owner_group(cha.uid, cha.gid)
             })
             .unwrap_or_default();
+        let dummy_cha = Cha::dummy_dir();
+        let (time_str, size_str, name_width) = FileEntry::cached_fields(&dummy_cha, "..");
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_path.to_path_buf(),
-            cha: Cha::dummy_dir(),
+            cha: dummy_cha,
             owner,
             group,
             selected: false,
             mime_type: None,
+            time_str,
+            size_str,
+            name_width,
         });
     }
 
@@ -184,7 +195,7 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             }
         };
         let entry_path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().to_string();
+        let file_name = entry.file_name().to_string_lossy().into_owned();
 
         match build_file_entry(&entry_path, &file_name) {
             Ok(file_entry) => entries.push(file_entry),

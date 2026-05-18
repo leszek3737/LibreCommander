@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::file_type::*;
+use crate::app::types::format_time;
 use ratatui::style::Color;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -231,10 +232,10 @@ fn test_format_time_deterministic() {
 }
 
 #[test]
-fn test_format_time_returns_cow() {
+fn test_format_time_returns_string() {
     let time = SystemTime::UNIX_EPOCH;
     let result = format_time(time);
-    assert!(matches!(result, Cow::Owned(_)));
+    assert!(!result.is_empty());
 }
 
 #[test]

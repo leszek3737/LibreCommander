@@ -904,6 +904,9 @@ mod tests {
             group: String::new(),
             selected: false,
             mime_type: None,
+            time_str: String::new(),
+            size_str: String::new(),
+            name_width: unicode_width::UnicodeWidthStr::width(name),
         };
         let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
         let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));

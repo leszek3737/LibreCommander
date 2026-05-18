@@ -97,21 +97,15 @@ impl ViewerState {
     }
 
     fn compute_line_offsets(bytes: &[u8]) -> Vec<usize> {
-        let mut offsets = Vec::new();
         if bytes.is_empty() {
-            return offsets;
+            return Vec::new();
         }
-        offsets.push(0);
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'\n' {
-                let next = i + 1;
-                if next < bytes.len() {
-                    offsets.push(next);
-                }
-            }
-            i += 1;
-        }
+        let mut offsets = vec![0];
+        offsets.extend(
+            memchr::memchr_iter(b'\n', bytes)
+                .filter(|&pos| pos + 1 < bytes.len())
+                .map(|pos| pos + 1),
+        );
         offsets
     }
 
@@ -374,9 +368,11 @@ impl ViewerState {
 
         let mut lower_buf = String::new();
         let mut byte_map_buf = Vec::new();
+        let mut local_matches: Vec<(usize, usize, usize)> = Vec::new();
+        let mut local_by_line: Vec<SearchLineMatch> = Vec::new();
 
         for line_idx in 0..self.line_count {
-            let line = self.get_line(line_idx).into_owned();
+            let line = self.get_line(line_idx);
             build_lowercase_mapping(&line, &mut lower_buf, &mut byte_map_buf);
             let mut search_start = 0;
             while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
@@ -397,12 +393,20 @@ impl ViewerState {
                 } else {
                     mapped_end
                 };
-                let char_pos = line[..orig_byte_start].chars().count();
-                let match_char_len = line[orig_byte_start..orig_byte_end].chars().count().max(1);
-                let global_idx = self.search_matches.len();
-                self.search_matches
-                    .push((line_idx, char_pos, match_char_len));
-                self.search_matches_by_line.push(SearchLineMatch {
+                let line_is_ascii = line.is_ascii();
+                let char_pos = if line_is_ascii {
+                    orig_byte_start
+                } else {
+                    line[..orig_byte_start].chars().count()
+                };
+                let match_char_len = if line_is_ascii {
+                    orig_byte_end.saturating_sub(orig_byte_start).max(1)
+                } else {
+                    line[orig_byte_start..orig_byte_end].chars().count().max(1)
+                };
+                let global_idx = local_matches.len();
+                local_matches.push((line_idx, char_pos, match_char_len));
+                local_by_line.push(SearchLineMatch {
                     line: line_idx,
                     global_idx,
                     start_byte: orig_byte_start,
@@ -411,6 +415,9 @@ impl ViewerState {
                 search_start = match_byte_end;
             }
         }
+
+        self.search_matches = local_matches;
+        self.search_matches_by_line = local_by_line;
 
         let current_logical = if self.is_visual_scroll() {
             self.visual_row_to_logical(self.scroll_offset).0
@@ -627,6 +634,7 @@ impl ViewerState {
             0
         };
         let width = content_width.max(1);
+        const MAX_VISUAL_LINES: usize = 1_000_000;
         self.visual_heights = (0..self.line_count)
             .map(|i| {
                 let line = self.get_line(i);
@@ -634,7 +642,14 @@ impl ViewerState {
                 let total_width = line_num_width.saturating_add(text_width);
                 total_width.div_ceil(width).max(1)
             })
+            .take(MAX_VISUAL_LINES)
             .collect();
+        if self.visual_heights.len() < self.line_count {
+            self.visual_heights.clear();
+            self.visual_offsets.clear();
+            self.cached_content_width = 0;
+            return;
+        }
         self.visual_offsets = Vec::with_capacity(self.visual_heights.len());
         let mut acc = 0usize;
         for &h in &self.visual_heights {

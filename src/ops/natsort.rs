@@ -113,8 +113,8 @@ pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NatKeySegment {
-    Text(Vec<u8>),
-    Num(Vec<u8>),
+    Text(Box<[u8]>),
+    Num(Box<[u8]>),
 }
 
 fn strip_leading_zeros(digits: &[u8]) -> &[u8] {
@@ -161,7 +161,9 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
             while i < name.len() && name[i].is_ascii_digit() {
                 i += 1;
             }
-            segments.push(NatKeySegment::Num(name[start..i].to_vec()));
+            segments.push(NatKeySegment::Num(
+                name[start..i].to_vec().into_boxed_slice(),
+            ));
         } else {
             let start = i;
             while i < name.len() && !name[i].is_ascii_digit() {
@@ -171,7 +173,7 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
             if insensitive {
                 text.make_ascii_lowercase();
             }
-            segments.push(NatKeySegment::Text(text));
+            segments.push(NatKeySegment::Text(text.into_boxed_slice()));
         }
     }
 
@@ -444,8 +446,14 @@ mod tests {
 
     #[test]
     fn test_nat_key_segment_cross_variant() {
-        assert!(NatKeySegment::Text(b"a".to_vec()) < NatKeySegment::Num(b"1".to_vec()));
-        assert!(NatKeySegment::Num(b"1".to_vec()) > NatKeySegment::Text(b"a".to_vec()));
+        assert!(
+            NatKeySegment::Text(b"a".to_vec().into_boxed_slice())
+                < NatKeySegment::Num(b"1".to_vec().into_boxed_slice())
+        );
+        assert!(
+            NatKeySegment::Num(b"1".to_vec().into_boxed_slice())
+                > NatKeySegment::Text(b"a".to_vec().into_boxed_slice())
+        );
     }
 
     #[test]
@@ -560,14 +568,14 @@ mod tests {
 
     #[test]
     fn test_nat_key_segment_text_case_sensitive_direct() {
-        let foo = NatKeySegment::Text(b"Foo".to_vec());
-        let foo_lower = NatKeySegment::Text(b"foo".to_vec());
+        let foo = NatKeySegment::Text(b"Foo".to_vec().into_boxed_slice());
+        let foo_lower = NatKeySegment::Text(b"foo".to_vec().into_boxed_slice());
         assert_ne!(
             foo, foo_lower,
             "Text segments are compared bytewise, no case folding"
         );
-        let bar = NatKeySegment::Text(b"Bar".to_vec());
-        let bar_lower = NatKeySegment::Text(b"bar".to_vec());
+        let bar = NatKeySegment::Text(b"Bar".to_vec().into_boxed_slice());
+        let bar_lower = NatKeySegment::Text(b"bar".to_vec().into_boxed_slice());
         assert_ne!(bar, bar_lower);
         assert!(bar < foo);
     }
