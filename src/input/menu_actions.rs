@@ -33,11 +33,11 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
         }
         MenuAction::OpenFilter => {
             with_menu_panel(state, |state| {
-                state.dialog_input = state.active_panel().filter.clone().unwrap_or_default();
-                state.dialog_cursor_pos = state.dialog_input.chars().count();
+                state.dialog_input.text = state.active_panel().filter.clone().unwrap_or_default();
+                state.dialog_input.cursor_end();
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Filter:".to_string(),
-                    default_text: state.dialog_input.clone(),
+                    default_text: state.dialog_input.text.clone(),
                     action: InputAction::Filter,
                 });
             });
@@ -81,7 +81,6 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
         }
         MenuAction::FindFile => {
             state.dialog_input.clear();
-            state.dialog_cursor_pos = 0;
             state.mode = AppMode::Dialog(DialogKind::Input {
                 prompt: "Find file:".to_string(),
                 default_text: String::new(),
@@ -147,8 +146,8 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
                 if let Some(name) = entry_name
                     && name != ".."
                 {
-                    state.dialog_input = name.clone();
-                    state.dialog_cursor_pos = state.dialog_input.chars().count();
+                    state.dialog_input.text = name.clone();
+                    state.dialog_input.cursor_end();
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Rename to:".to_string(),
                         default_text: name,
@@ -167,11 +166,11 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
                 if let Some((name, permissions)) = entry_info
                     && name != ".."
                 {
-                    state.dialog_input = format!("{:o}", permissions & 0o7777);
-                    state.dialog_cursor_pos = state.dialog_input.chars().count();
+                    state.dialog_input.text = format!("{:o}", permissions & 0o7777);
+                    state.dialog_input.cursor_end();
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Chmod (octal):".to_string(),
-                        default_text: state.dialog_input.clone(),
+                        default_text: state.dialog_input.text.clone(),
                         action: InputAction::Chmod,
                     });
                 }

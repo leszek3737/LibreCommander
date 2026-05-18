@@ -2,6 +2,7 @@
 //!
 //! Full file search by name pattern or content.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use std::fs::File;
@@ -9,6 +10,7 @@ use std::io::{BufRead, BufReader};
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
+use crate::ops::helpers::get_inode_key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TruncationReason {
@@ -357,6 +359,8 @@ impl FileSearch {
         let mut outcome = SearchOutcome::default();
         let mut item_count: usize = 0;
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
+        let mut visited = HashSet::new();
+        Self::seed_visited_dir(path, &mut visited);
         Self::search_files_recursive(
             path,
             &compiled_pattern,
@@ -364,8 +368,54 @@ impl FileSearch {
             &mut outcome,
             0,
             &mut item_count,
+            &mut visited,
         );
         outcome
+    }
+
+    fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.is_dir()
+            && let Some(key) = get_inode_key(&meta)
+        {
+            visited.insert(key);
+        }
+    }
+
+    fn prepare_dir_scan<T>(
+        path: &Path,
+        depth: usize,
+        max_depth: usize,
+        max_items: usize,
+        item_count: &mut usize,
+        outcome: &mut SearchOutcome<T>,
+        extra_guard: impl Fn(&SearchOutcome<T>) -> bool,
+    ) -> Option<std::fs::ReadDir> {
+        if !extra_guard(outcome) {
+            outcome
+                .truncated
+                .get_or_insert(TruncationReason::ContentResultLimit);
+            return None;
+        }
+        if depth >= max_depth {
+            outcome
+                .truncated
+                .get_or_insert(TruncationReason::DepthLimit);
+            return None;
+        }
+        if *item_count >= max_items {
+            outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
+            return None;
+        }
+        match std::fs::read_dir(path) {
+            Ok(entries) => Some(entries),
+            Err(err) => {
+                outcome
+                    .errors
+                    .push(format!("Failed to read {}: {err}", path.display()));
+                None
+            }
+        }
     }
 
     fn search_files_recursive(
@@ -375,35 +425,29 @@ impl FileSearch {
         outcome: &mut SearchOutcome<FileEntry>,
         depth: usize,
         item_count: &mut usize,
+        visited: &mut HashSet<(u64, u64)>,
     ) {
-        if depth >= MAX_SEARCH_DEPTH {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::DepthLimit);
-            }
-            return;
-        }
         if !path.is_dir() {
             outcome
                 .errors
                 .push(format!("Not a directory: {}", path.display()));
             return;
         }
-
-        let entries = match std::fs::read_dir(path) {
-            Ok(entries) => entries,
-            Err(err) => {
-                outcome
-                    .errors
-                    .push(format!("Failed to read {}: {err}", path.display()));
-                return;
-            }
+        let Some(entries) = Self::prepare_dir_scan(
+            path,
+            depth,
+            MAX_SEARCH_DEPTH,
+            MAX_SEARCH_ITEMS,
+            item_count,
+            outcome,
+            |_| true,
+        ) else {
+            return;
         };
 
         for entry in entries {
             if *item_count >= MAX_SEARCH_ITEMS {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = Some(TruncationReason::ItemLimit);
-                }
+                outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
                 return;
             }
 
@@ -447,6 +491,12 @@ impl FileSearch {
             }
 
             if recursive && file_type.is_dir() {
+                if let Ok(meta) = entry.metadata()
+                    && let Some(key) = get_inode_key(&meta)
+                    && !visited.insert(key)
+                {
+                    continue;
+                }
                 Self::search_files_recursive(
                     &entry_path,
                     pattern,
@@ -454,11 +504,11 @@ impl FileSearch {
                     outcome,
                     depth + 1,
                     item_count,
+                    visited,
                 );
             }
         }
     }
-
     #[allow(dead_code)]
     fn search_content(
         path: &Path,
@@ -500,33 +550,13 @@ impl FileSearch {
         outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
         item_count: &mut usize,
     ) {
-        if !path.is_dir() {
-            return;
-        }
-        if depth >= MAX_SEARCH_DEPTH {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::DepthLimit);
-            }
-            return;
-        }
-        if *item_count >= MAX_SEARCH_ITEMS {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::ItemLimit);
-            }
-            return;
-        }
-        if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::ContentResultLimit);
-            }
-            return;
-        }
-
         let pattern_lower: Vec<char> = if !case_sensitive {
             pattern.chars().flat_map(|c| c.to_lowercase()).collect()
         } else {
             Vec::new()
         };
+        let mut visited = HashSet::new();
+        Self::seed_visited_dir(path, &mut visited);
 
         Self::search_content_recursive_inner(
             path,
@@ -537,6 +567,7 @@ impl FileSearch {
             depth,
             outcome,
             item_count,
+            &mut visited,
         );
     }
 
@@ -552,48 +583,32 @@ impl FileSearch {
         depth: usize,
         outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
         item_count: &mut usize,
+        visited: &mut HashSet<(u64, u64)>,
     ) {
         if !path.is_dir() {
             return;
         }
-        if depth >= MAX_SEARCH_DEPTH {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::DepthLimit);
-            }
+        let Some(entries) = Self::prepare_dir_scan(
+            path,
+            depth,
+            MAX_SEARCH_DEPTH,
+            MAX_SEARCH_ITEMS,
+            item_count,
+            outcome,
+            |o| o.matches.len() < MAX_CONTENT_RESULTS,
+        ) else {
             return;
-        }
-        if *item_count >= MAX_SEARCH_ITEMS {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::ItemLimit);
-            }
-            return;
-        }
-        if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-            if outcome.truncated.is_none() {
-                outcome.truncated = Some(TruncationReason::ContentResultLimit);
-            }
-            return;
-        }
-
-        let entries = match std::fs::read_dir(path) {
-            Ok(entries) => entries,
-            Err(err) => {
-                outcome
-                    .errors
-                    .push(format!("Failed to read {}: {err}", path.display()));
-                return;
-            }
         };
 
         for entry in entries {
             if *item_count >= MAX_SEARCH_ITEMS || outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                if outcome.truncated.is_none() {
-                    outcome.truncated = if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                        Some(TruncationReason::ContentResultLimit)
+                outcome
+                    .truncated
+                    .get_or_insert(if outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                        TruncationReason::ContentResultLimit
                     } else {
-                        Some(TruncationReason::ItemLimit)
-                    };
-                }
+                        TruncationReason::ItemLimit
+                    });
                 return;
             }
             let entry = match entry {
@@ -625,6 +640,12 @@ impl FileSearch {
 
             if file_type.is_dir() {
                 if recursive {
+                    if let Ok(meta) = entry.metadata()
+                        && let Some(key) = get_inode_key(&meta)
+                        && !visited.insert(key)
+                    {
+                        continue;
+                    }
                     Self::search_content_recursive_inner(
                         &entry_path,
                         pattern,
@@ -634,6 +655,7 @@ impl FileSearch {
                         depth + 1,
                         outcome,
                         item_count,
+                        visited,
                     );
                 }
             } else {
@@ -1525,6 +1547,28 @@ mod tests {
         let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"real.txt"));
         assert!(names.contains(&"link.txt"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_files_seeds_root_inode() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let id = CTR.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("lc_search_root_seed_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let meta = fs::metadata(&dir).unwrap();
+        let key = get_inode_key(&meta).unwrap();
+        let mut visited = HashSet::new();
+
+        FileSearch::seed_visited_dir(&dir, &mut visited);
+        assert!(visited.contains(&key));
 
         let _ = fs::remove_dir_all(dir);
     }

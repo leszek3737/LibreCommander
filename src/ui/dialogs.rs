@@ -35,7 +35,7 @@ pub enum DialogKind<'a> {
         title: Cow<'a, str>,
         message: Cow<'a, str>,
         selection: usize,
-        files: Option<Vec<String>>,
+        files: Cow<'a, [String]>,
     },
     Input {
         title: Cow<'a, str>,
@@ -63,7 +63,7 @@ pub enum DialogKind<'a> {
     },
     OverwriteConfirm {
         selection: usize,
-        files: &'a [String],
+        files: Cow<'a, [String]>,
     },
 }
 
@@ -93,10 +93,10 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
             render_confirm_dialog(
                 f,
                 dialog_area,
-                title,
-                message,
+                title.as_ref(),
+                message.as_ref(),
                 *selection,
-                files.as_deref().unwrap_or_default(),
+                files,
                 colors,
             );
         }
@@ -106,17 +106,32 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
             value,
             cursor_pos,
         } => {
-            render_input_dialog(f, dialog_area, title, prompt, value, *cursor_pos, colors);
+            render_input_dialog(
+                f,
+                dialog_area,
+                title.as_ref(),
+                prompt.as_ref(),
+                value.as_ref(),
+                *cursor_pos,
+                colors,
+            );
         }
         DialogKind::Error { title, message } => {
-            render_error_dialog(f, dialog_area, title, message, colors);
+            render_error_dialog(f, dialog_area, title.as_ref(), message.as_ref(), colors);
         }
         DialogKind::Help {
             title,
             message,
             scroll_offset,
         } => {
-            render_help_dialog(f, dialog_area, title, message, *scroll_offset, colors);
+            render_help_dialog(
+                f,
+                dialog_area,
+                title.as_ref(),
+                message.as_ref(),
+                *scroll_offset,
+                colors,
+            );
         }
         DialogKind::Progress {
             title,
@@ -127,8 +142,8 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
             render_progress_dialog(
                 f,
                 dialog_area,
-                title,
-                message,
+                title.as_ref(),
+                message.as_ref(),
                 *percent,
                 *cancellable,
                 colors,
@@ -138,7 +153,7 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
             render_properties_dialog(f, dialog_area, info, colors);
         }
         DialogKind::OverwriteConfirm { selection, files } => {
-            render_overwrite_dialog(f, dialog_area, *selection, files, colors);
+            render_overwrite_dialog(f, dialog_area, *selection, files.as_ref(), colors);
         }
     }
 }
@@ -941,7 +956,7 @@ mod tests {
                     f,
                     &DialogKind::OverwriteConfirm {
                         selection: 0,
-                        files: &[],
+                        files: Cow::Borrowed(&[]),
                     },
                 );
             })

@@ -1,3 +1,4 @@
+use crate::debug_log;
 use filetime::FileTime;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -44,7 +45,9 @@ pub fn copy_with_progress(
 
             let accessed = FileTime::from_last_access_time(&metadata);
             let modified = FileTime::from_last_modification_time(&metadata);
-            let _ = filetime::set_file_times(dest, accessed, modified);
+            if let Err(e) = filetime::set_file_times(dest, accessed, modified) {
+                debug_log!("set_file_times failed for {}: {e}", dest.display());
+            }
 
             Ok(total_written)
         }
@@ -164,7 +167,9 @@ fn publish_temp(
     let atime = filetime::FileTime::from_last_access_time(src_metadata);
     let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
     let _ = fs::remove_file(temp_dest);
-    let _ = filetime::set_file_times(dest, atime, mtime);
+    if let Err(e) = filetime::set_file_times(dest, atime, mtime) {
+        debug_log!("set_file_times failed for {}: {e}", dest.display());
+    }
 
     Ok(())
 }

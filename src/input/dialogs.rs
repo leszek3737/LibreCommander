@@ -74,9 +74,11 @@ fn dismiss_dialog_and_restore(state: &mut AppState) {
     }
 }
 
-fn finish_confirmed_action(state: &mut AppState) {
+pub(crate) fn finish_confirmed_action(state: &mut AppState) {
     state.dialog_selection = 0;
-    if state.status_message.is_some() {
+    if state.status_message.is_some()
+        && !matches!(state.mode, AppMode::Dialog(DialogKind::Progress(_, _, _)))
+    {
         let msg = state.status_message.take();
         dismiss_dialog(state);
         state.status_message = msg;
@@ -319,7 +321,7 @@ fn handle_input_action(
     action: &InputAction,
     terminal_height: u16,
 ) -> bool {
-    let input = state.dialog_input.clone();
+    let input = state.dialog_input.text.clone();
     match action {
         InputAction::ViewerSearch => {
             if let Some(vs) = viewer_state.as_mut() {
@@ -327,7 +329,6 @@ fn handle_input_action(
             }
             state.mode = AppMode::Viewing;
             state.dialog_input.clear();
-            state.dialog_cursor_pos = 0;
             return true;
         }
         InputAction::CreateDirectory => {
@@ -400,7 +401,6 @@ fn handle_input_action(
     }
     state.mode = AppMode::Normal;
     state.dialog_input.clear();
-    state.dialog_cursor_pos = 0;
     refresh_active(state);
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
@@ -410,60 +410,29 @@ fn handle_input_action(
 
 fn apply_text_edit(state: &mut AppState, key: KeyCode) {
     match key {
-        KeyCode::Backspace if state.dialog_cursor_pos > 0 => {
-            state.dialog_cursor_pos -= 1;
-            let byte_pos = state
-                .dialog_input
-                .char_indices()
-                .nth(state.dialog_cursor_pos)
-                .map(|(i, _)| i)
-                .unwrap_or(state.dialog_input.len());
-            let next_byte = state.dialog_input[byte_pos..]
-                .chars()
-                .next()
-                .map(|c| byte_pos + c.len_utf8())
-                .unwrap_or(state.dialog_input.len());
-            state.dialog_input.drain(byte_pos..next_byte);
+        KeyCode::Backspace => {
+            state.dialog_input.backspace();
         }
         KeyCode::Delete => {
-            let byte_pos = state
-                .dialog_input
-                .char_indices()
-                .nth(state.dialog_cursor_pos)
-                .map(|(i, _)| i);
-            if let Some(pos) = byte_pos {
-                let next_char_end = state.dialog_input[pos..]
-                    .chars()
-                    .next()
-                    .map(|c| pos + c.len_utf8())
-                    .unwrap_or(state.dialog_input.len());
-                state.dialog_input.drain(pos..next_char_end);
-            }
+            state.dialog_input.delete_forward();
         }
         KeyCode::Char(c) => {
-            if state.dialog_input.len() >= MAX_DIALOG_INPUT_BYTES {
+            if state.dialog_input.text.len() + c.len_utf8() > MAX_DIALOG_INPUT_BYTES {
                 return;
             }
-            let byte_pos = state
-                .dialog_input
-                .char_indices()
-                .nth(state.dialog_cursor_pos)
-                .map(|(i, _)| i)
-                .unwrap_or(state.dialog_input.len());
-            state.dialog_input.insert(byte_pos, c);
-            state.dialog_cursor_pos += 1;
+            state.dialog_input.insert_char(c);
         }
-        KeyCode::Left if state.dialog_cursor_pos > 0 => {
-            state.dialog_cursor_pos -= 1;
+        KeyCode::Left => {
+            state.dialog_input.cursor_left();
         }
-        KeyCode::Right if state.dialog_cursor_pos < state.dialog_input.chars().count() => {
-            state.dialog_cursor_pos += 1;
+        KeyCode::Right => {
+            state.dialog_input.cursor_right();
         }
         KeyCode::Home => {
-            state.dialog_cursor_pos = 0;
+            state.dialog_input.cursor_start();
         }
         KeyCode::End => {
-            state.dialog_cursor_pos = state.dialog_input.chars().count();
+            state.dialog_input.cursor_end();
         }
         _ => {}
     }
@@ -485,7 +454,6 @@ fn handle_input_dialog(
                 state.mode = AppMode::Normal;
             }
             state.dialog_input.clear();
-            state.dialog_cursor_pos = 0;
             if let Some(panel) = state.menu_restore_panel.take() {
                 set_active_panel(state, panel);
             }
@@ -668,8 +636,10 @@ mod tests {
 
     fn make_input_state(text: &str, cursor: usize) -> AppState {
         AppState {
-            dialog_input: text.to_string(),
-            dialog_cursor_pos: cursor,
+            dialog_input: TextInput {
+                text: text.to_string(),
+                cursor,
+            },
             ..Default::default()
         }
     }
@@ -678,97 +648,113 @@ mod tests {
     fn text_edit_insert_char() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Char('!'));
-        assert_eq!(state.dialog_input, "hello!");
-        assert_eq!(state.dialog_cursor_pos, 6);
+        assert_eq!(state.dialog_input.text, "hello!");
+        assert_eq!(state.dialog_input.cursor, 6);
     }
 
     #[test]
     fn text_edit_insert_middle() {
         let mut state = make_input_state("helo", 2);
         apply_text_edit(&mut state, KeyCode::Char('l'));
-        assert_eq!(state.dialog_input, "hello");
-        assert_eq!(state.dialog_cursor_pos, 3);
+        assert_eq!(state.dialog_input.text, "hello");
+        assert_eq!(state.dialog_input.cursor, 3);
     }
 
     #[test]
     fn text_edit_backspace() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input, "hell");
-        assert_eq!(state.dialog_cursor_pos, 4);
+        assert_eq!(state.dialog_input.text, "hell");
+        assert_eq!(state.dialog_input.cursor, 4);
     }
 
     #[test]
     fn text_edit_backspace_at_start() {
         let mut state = make_input_state("hello", 0);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input, "hello");
-        assert_eq!(state.dialog_cursor_pos, 0);
+        assert_eq!(state.dialog_input.text, "hello");
+        assert_eq!(state.dialog_input.cursor, 0);
     }
 
     #[test]
     fn text_edit_delete() {
         let mut state = make_input_state("hello", 0);
         apply_text_edit(&mut state, KeyCode::Delete);
-        assert_eq!(state.dialog_input, "ello");
-        assert_eq!(state.dialog_cursor_pos, 0);
+        assert_eq!(state.dialog_input.text, "ello");
+        assert_eq!(state.dialog_input.cursor, 0);
     }
 
     #[test]
     fn text_edit_delete_at_end() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Delete);
-        assert_eq!(state.dialog_input, "hello");
-        assert_eq!(state.dialog_cursor_pos, 5);
+        assert_eq!(state.dialog_input.text, "hello");
+        assert_eq!(state.dialog_input.cursor, 5);
     }
 
     #[test]
     fn text_edit_left_right() {
         let mut state = make_input_state("hello", 3);
         apply_text_edit(&mut state, KeyCode::Left);
-        assert_eq!(state.dialog_cursor_pos, 2);
+        assert_eq!(state.dialog_input.cursor, 2);
         apply_text_edit(&mut state, KeyCode::Right);
-        assert_eq!(state.dialog_cursor_pos, 3);
+        assert_eq!(state.dialog_input.cursor, 3);
     }
 
     #[test]
     fn text_edit_home_end() {
         let mut state = make_input_state("hello", 3);
         apply_text_edit(&mut state, KeyCode::Home);
-        assert_eq!(state.dialog_cursor_pos, 0);
+        assert_eq!(state.dialog_input.cursor, 0);
         apply_text_edit(&mut state, KeyCode::End);
-        assert_eq!(state.dialog_cursor_pos, 5);
+        assert_eq!(state.dialog_input.cursor, 5);
     }
 
     #[test]
     fn text_edit_multibyte_insert() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Char('ą'));
-        assert_eq!(state.dialog_input, "helloą");
-        assert_eq!(state.dialog_cursor_pos, 6);
+        assert_eq!(state.dialog_input.text, "helloą");
+        assert_eq!(state.dialog_input.cursor, 6);
     }
 
     #[test]
     fn text_edit_multibyte_backspace() {
         let mut state = make_input_state("helloą", 6);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input, "hello");
-        assert_eq!(state.dialog_cursor_pos, 5);
+        assert_eq!(state.dialog_input.text, "hello");
+        assert_eq!(state.dialog_input.cursor, 5);
     }
 
     #[test]
     fn text_edit_emoji_insert() {
         let mut state = make_input_state("test", 4);
         apply_text_edit(&mut state, KeyCode::Char('🎉'));
-        assert_eq!(state.dialog_input, "test🎉");
-        assert_eq!(state.dialog_cursor_pos, 5);
+        assert_eq!(state.dialog_input.text, "test🎉");
+        assert_eq!(state.dialog_input.cursor, 5);
+    }
+
+    #[test]
+    fn text_edit_rejects_multibyte_char_past_byte_limit() {
+        let mut state = make_input_state(&"a".repeat(MAX_DIALOG_INPUT_BYTES - 1), 4095);
+        apply_text_edit(&mut state, KeyCode::Char('ą'));
+        assert_eq!(state.dialog_input.text.len(), MAX_DIALOG_INPUT_BYTES - 1);
+        assert_eq!(state.dialog_input.cursor, 4095);
+    }
+
+    #[test]
+    fn text_edit_allows_char_at_exact_byte_limit() {
+        let mut state = make_input_state(&"a".repeat(MAX_DIALOG_INPUT_BYTES - 1), 4095);
+        apply_text_edit(&mut state, KeyCode::Char('!'));
+        assert_eq!(state.dialog_input.text.len(), MAX_DIALOG_INPUT_BYTES);
+        assert_eq!(state.dialog_input.cursor, 4096);
     }
 
     #[test]
     fn text_edit_emoji_backspace() {
         let mut state = make_input_state("test🎉", 5);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input, "test");
-        assert_eq!(state.dialog_cursor_pos, 4);
+        assert_eq!(state.dialog_input.text, "test");
+        assert_eq!(state.dialog_input.cursor, 4);
     }
 }

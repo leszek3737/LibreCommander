@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     prelude::*,
@@ -16,6 +14,7 @@ fn safe_split_at(s: &str, mut byte_idx: usize) -> (&str, &str) {
 use lc::{app, ui};
 
 use app::types::{ActivePanel, AppMode, AppState, PickerKind};
+use std::borrow::Cow;
 use ui::theme::{ColorPalette, Theme};
 use ui::{dialogs, panels, viewer};
 
@@ -102,14 +101,15 @@ pub(crate) fn render_ui(
     };
     panels::render_status_bar_with_colors(f, main_layout[2], active, colors);
 
-    let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
-        let (before, after) = safe_split_at(&state.command_line, state.command_cursor);
+    let cmd_text: std::borrow::Cow<'_, str> = if state.mode == AppMode::CommandLine {
+        let (before, after) =
+            safe_split_at(&state.command_line.text, state.command_line.byte_pos());
         format!("$ {before}_{after}").into()
     } else if state.mode == AppMode::Search {
         let (before, after) = safe_split_at(&state.search_query, state.search_cursor);
         format!("Search: {before}_{after}").into()
     } else if let Some(ref msg) = state.status_message {
-        Cow::Borrowed(msg.as_str())
+        std::borrow::Cow::Borrowed(msg.as_str())
     } else {
         let ap = state.active_panel();
         ap.path.to_string_lossy()
@@ -229,13 +229,14 @@ fn to_ui_dialog<'a>(
             files: cd
                 .files
                 .as_ref()
-                .map(|fps| fps.iter().map(|p| p.display().to_string()).collect()),
+                .map(|fps| fps.iter().map(|p| p.display().to_string()).collect())
+                .map_or_else(|| Cow::Borrowed(&[][..]), Cow::Owned),
         },
         app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
             title: Cow::Borrowed("Input"),
             prompt: Cow::Borrowed(prompt),
-            value: Cow::Borrowed(&state.dialog_input),
-            cursor_pos: state.dialog_cursor_pos,
+            value: Cow::Borrowed(&state.dialog_input.text),
+            cursor_pos: state.dialog_input.cursor,
         },
         app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
             title: Cow::Borrowed("Error"),
@@ -272,17 +273,21 @@ fn to_ui_dialog<'a>(
                 dest.display(),
             );
             dialogs::DialogKind::Confirm {
-                title: Cow::Owned(format!("{action} Confirm")),
+                title: Cow::Borrowed(if *is_move {
+                    "Move Confirm"
+                } else {
+                    "Copy Confirm"
+                }),
                 message: Cow::Owned(msg),
                 selection: state.dialog_selection,
-                files: Some(source.iter().map(|p| p.display().to_string()).collect()),
+                files: Cow::Owned(source.iter().map(|p| p.display().to_string()).collect()),
             }
         }
         app::types::DialogKind::Properties { .. } => properties_to_ui_dialog(dialog_kind),
         app::types::DialogKind::OverwriteConfirm { conflicting } => {
             dialogs::DialogKind::OverwriteConfirm {
                 selection: state.dialog_selection,
-                files: conflicting.as_slice(),
+                files: Cow::Borrowed(conflicting),
             }
         }
     }

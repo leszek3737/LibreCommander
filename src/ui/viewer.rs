@@ -84,6 +84,10 @@ impl ViewerLoader {
 impl Drop for ViewerLoader {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
+        // Do not join here: a worker can be stuck in a blocking read, and a
+        // per-drop joiner thread would leak in the same case. Dropping the
+        // JoinHandle detaches the worker and lets it exit when the read returns.
+        let _ = self._handle.take();
     }
 }
 
@@ -1234,6 +1238,34 @@ mod tests {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol())
             .collect::<String>()
+    }
+
+    #[test]
+    fn test_viewer_loader_drop_cancels_worker() {
+        let (_tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_worker = Arc::clone(&cancel);
+        let (done_tx, done_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            while !cancel_for_worker.load(Ordering::Relaxed) {
+                thread::yield_now();
+            }
+            let _ = done_tx.send(());
+        });
+
+        let loader = ViewerLoader {
+            receiver: rx,
+            cancel: Arc::clone(&cancel),
+            path: PathBuf::new(),
+            _handle: Some(handle),
+        };
+
+        drop(loader);
+
+        assert!(cancel.load(Ordering::Relaxed));
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
     }
 
     #[test]
