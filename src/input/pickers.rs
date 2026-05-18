@@ -68,14 +68,12 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
             if state.directory_hotlist.iter().any(|p| p == &cur) {
                 state.status_message = Some("Directory already in hotlist".to_string());
             } else {
-                state.directory_hotlist.push(cur);
-                state.rebuild_hotlist_cache();
+                state.hotlist_push(cur);
                 state.status_message = Some("Added current directory to hotlist".to_string());
             }
         }
         KeyCode::Char('d') if state.picker_selected < state.directory_hotlist.len() => {
-            state.directory_hotlist.remove(state.picker_selected);
-            state.rebuild_hotlist_cache();
+            state.hotlist_remove(state.picker_selected);
             if state.picker_selected > 0 && state.picker_selected >= state.directory_hotlist.len() {
                 state.picker_selected -= 1;
             }

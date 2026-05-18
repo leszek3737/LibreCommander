@@ -608,13 +608,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn build(self) -> FileEntry {
-        let time_str = format_time(self.cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
-        let size_str = if self.cha.is_dir() {
-            "     <DIR>".to_string()
-        } else {
-            format!("{:>10}", format_size(self.cha.len()))
-        };
-        let name_width = UnicodeWidthStr::width(self.name.as_str());
+        let (time_str, size_str, name_width) = FileEntry::cached_fields(&self.cha, &self.name);
         FileEntry {
             name: self.name,
             path: self.path,
@@ -635,6 +629,17 @@ impl FileEntryBuilder {
 // ============================================================================
 
 impl FileEntry {
+    pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize) {
+        let time_str = format_time(cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
+        let size_str = if cha.is_dir() {
+            "     <DIR>".to_string()
+        } else {
+            format!("{:>10}", format_size(cha.len()))
+        };
+        let name_width = UnicodeWidthStr::width(name);
+        (time_str, size_str, name_width)
+    }
+
     pub fn builder() -> FileEntryBuilder {
         FileEntryBuilder {
             name: String::new(),
@@ -1086,6 +1091,26 @@ impl AppState {
             .iter()
             .map(|e| format!("{}  {}", e.hotkey, e.title))
             .collect();
+    }
+
+    pub fn hotlist_push(&mut self, path: PathBuf) {
+        self.directory_hotlist.push(path);
+        self.rebuild_hotlist_cache();
+    }
+
+    pub fn hotlist_remove(&mut self, index: usize) {
+        self.directory_hotlist.remove(index);
+        self.rebuild_hotlist_cache();
+    }
+
+    pub fn hotlist_set(&mut self, hotlist: Vec<PathBuf>) {
+        self.directory_hotlist = hotlist;
+        self.rebuild_hotlist_cache();
+    }
+
+    pub fn user_menu_set(&mut self, entries: Vec<MenuEntry>) {
+        self.user_menu_entries = entries;
+        self.rebuild_user_menu_cache();
     }
 
     pub fn enter_command_line_mode(&mut self) {

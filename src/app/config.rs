@@ -99,8 +99,7 @@ impl Settings {
         state.left_panel.sort_options = sort_opts;
         state.right_panel.sort_options = sort_opts;
         if !self.hotlist.is_empty() || state.directory_hotlist.is_empty() {
-            state.directory_hotlist = self.hotlist.clone();
-            state.rebuild_hotlist_cache();
+            state.hotlist_set(self.hotlist.clone());
         }
     }
 }

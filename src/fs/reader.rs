@@ -11,9 +11,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::app::types::PanelState;
-use crate::app::types::{format_size, format_time};
 use crate::fs::cha::Cha;
-use unicode_width::UnicodeWidthStr;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
 /// 1024 covers typical multi-user systems; entries are evicted arbitrarily when exceeded.
@@ -114,13 +112,7 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
     let (owner, group) = lookup_owner_group(uid, gid);
 
     let name = file_name.to_string();
-    let time_str = format_time(cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
-    let size_str = if cha.is_dir() {
-        "     <DIR>".to_string()
-    } else {
-        format!("{:>10}", format_size(cha.len()))
-    };
-    let name_width = UnicodeWidthStr::width(name.as_str());
+    let (time_str, size_str, name_width) = FileEntry::cached_fields(&cha, &name);
 
     Ok(FileEntry {
         name,
@@ -167,17 +159,19 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
                 lookup_owner_group(cha.uid, cha.gid)
             })
             .unwrap_or_default();
+        let dummy_cha = Cha::dummy_dir();
+        let (time_str, size_str, name_width) = FileEntry::cached_fields(&dummy_cha, "..");
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_path.to_path_buf(),
-            cha: Cha::dummy_dir(),
+            cha: dummy_cha,
             owner,
             group,
             selected: false,
             mime_type: None,
-            time_str: "??-??-?? ??:??".to_string(),
-            size_str: "     <DIR>".to_string(),
-            name_width: UnicodeWidthStr::width(".."),
+            time_str,
+            size_str,
+            name_width,
         });
     }
 

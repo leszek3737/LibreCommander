@@ -646,6 +646,8 @@ impl ViewerState {
             .collect();
         if self.visual_heights.len() < self.line_count {
             self.visual_heights.clear();
+            self.visual_offsets.clear();
+            self.cached_content_width = 0;
             return;
         }
         self.visual_offsets = Vec::with_capacity(self.visual_heights.len());
