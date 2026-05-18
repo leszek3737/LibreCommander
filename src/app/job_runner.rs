@@ -25,7 +25,11 @@ impl Drop for RunningJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            std::thread::spawn(move || {
+                if let Err(e) = handle.join() {
+                    debug_log!("worker thread panicked during tear-down: {:?}", e);
+                }
+            });
         }
     }
 }

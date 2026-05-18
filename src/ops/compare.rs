@@ -28,7 +28,7 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
             left.size == right.size
                 && match (left.mtime, right.mtime) {
                     (Some(l), Some(r)) => mtime_matches(l, r),
-                    (None, None) => true,
+                    (None, None) => false,
                     _ => false,
                 }
         }
@@ -382,15 +382,15 @@ mod tests {
     }
 
     #[test]
-    fn thorough_both_mtime_none_same_size_match() {
+    fn thorough_both_mtime_none_same_size_marks_differing() {
         let left = vec![entry("a.txt", 100)];
         let right = vec![entry("a.txt", 100)];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
 
-        assert_eq!(report.differing, 0);
-        assert!(report.left_marks.is_empty());
-        assert!(report.right_marks.is_empty());
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("a.txt"));
+        assert!(report.right_marks.contains("a.txt"));
     }
 
     #[test]

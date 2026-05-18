@@ -52,6 +52,9 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/lib",
     "/lib64",
     "/nix",
+    "/private/etc",
+    "/private/tmp",
+    "/private/var",
     "/proc",
     "/sbin",
     "/sys",
@@ -510,7 +513,7 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
     };
     let original_str = path.to_string_lossy();
     for critical in CRITICAL_DIR_PREFIXES {
-        if canonical_str.starts_with(&format!("{critical}/")) {
+        if !is_under_temp && canonical_str.starts_with(&format!("{critical}/")) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
@@ -528,7 +531,24 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
     fs::remove_dir(path)
 }
 
+const DELETE_MAX_DEPTH: usize = 256;
+
 fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    delete_dir_contents_impl(root, path, cancel, 0)
+}
+
+fn delete_dir_contents_impl(
+    root: &Path,
+    path: &Path,
+    cancel: Option<&AtomicBool>,
+    depth: usize,
+) -> io::Result<()> {
+    if depth > DELETE_MAX_DEPTH {
+        return Err(io::Error::other(format!(
+            "directory nesting depth {depth} exceeds maximum allowed {DELETE_MAX_DEPTH}",
+        )));
+    }
+
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         return Err(io::Error::new(
@@ -558,7 +578,7 @@ fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) ->
         if file_type.is_symlink() {
             fs::remove_file(&entry_path)?;
         } else if file_type.is_dir() {
-            delete_dir_contents(root, &entry_path, cancel)?;
+            delete_dir_contents_impl(root, &entry_path, cancel, depth + 1)?;
             check_optional_canceled(cancel)?;
             fs::remove_dir(&entry_path)?;
         } else {

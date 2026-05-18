@@ -108,24 +108,37 @@ fn poll_viewer_loader(
     let Some(loader) = viewer_loader.as_ref() else {
         return false;
     };
+    let mut changed = false;
     match loader.receiver.try_recv() {
         Ok(Ok(vs)) => {
             *viewer_state = Some(vs);
             *viewer_loader = None;
+            changed = true;
         }
         Ok(Err(e)) => {
             state.status_message = Some(format!("Failed to open file: {e}"));
             state.mode = AppMode::Normal;
             *viewer_loader = None;
+            changed = true;
         }
-        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            let now = std::time::Instant::now();
+            let should_redraw = state.viewer_spinner_frame.is_none_or(|last| {
+                now.duration_since(last) >= std::time::Duration::from_millis(200)
+            });
+            if should_redraw {
+                state.viewer_spinner_frame = Some(now);
+                changed = true;
+            }
+        }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             state.status_message = Some("Viewer load failed: thread panicked".to_string());
             state.mode = AppMode::Normal;
             *viewer_loader = None;
+            changed = true;
         }
     }
-    true
+    changed
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {

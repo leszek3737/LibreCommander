@@ -343,6 +343,7 @@ pub struct AppState {
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
     pub theme_colors: ColorPalette,
+    pub viewer_spinner_frame: Option<std::time::Instant>,
 }
 
 // ============================================================================
@@ -604,20 +605,7 @@ impl FileEntry {
     }
 
     pub fn format_size(size: u64) -> String {
-        const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-        let mut size = size as f64;
-        let mut unit_idx = 0;
-
-        while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit_idx += 1;
-        }
-
-        if unit_idx == 0 {
-            format!("{:>6} {}", size as u64, UNITS[unit_idx])
-        } else {
-            format!("{:>6.1} {}", size, UNITS[unit_idx])
-        }
+        format!("{:>6}", crate::app::types::format_size(size))
     }
 
     pub fn display_permissions(&self) -> String {
@@ -836,8 +824,8 @@ impl PanelState {
         if self.scroll_offset > self.cursor {
             self.scroll_offset = self.cursor;
         }
-        if visible_height > 0 && self.cursor >= self.scroll_offset + visible_height {
-            self.scroll_offset = self.cursor.saturating_sub(visible_height) + 1;
+        if visible_height > 0 && self.cursor >= self.scroll_offset.saturating_add(visible_height) {
+            self.scroll_offset = self.cursor.saturating_sub(visible_height).saturating_add(1);
         }
     }
 
@@ -851,6 +839,7 @@ impl PanelState {
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.unfiltered_entries = entries.clone();
         self.entries = entries;
         self.cursor = 0;
         self.scroll_offset = 0;
@@ -909,6 +898,7 @@ impl AppState {
             last_scroll_time: None,
             drag_anchor_index: None,
             theme_colors: crate::ui::theme::DEFAULT_COLORS,
+            viewer_spinner_frame: None,
         }
     }
 
@@ -1041,31 +1031,31 @@ mod tests {
     #[test]
     fn test_file_entry_display_size_bytes() {
         let entry = create_test_entry("test.txt", false, 500, 0o644, false);
-        assert_eq!(entry.display_size(), "   500 B");
+        assert_eq!(entry.display_size(), " 500 B");
     }
 
     #[test]
     fn test_file_entry_display_size_kilobytes() {
         let entry = create_test_entry("test.txt", false, 1500, 0o644, false);
-        assert_eq!(entry.display_size(), "   1.5 KB");
+        assert_eq!(entry.display_size(), "1.5 KB");
     }
 
     #[test]
     fn test_file_entry_display_size_megabytes() {
         let entry = create_test_entry("test.txt", false, 1_500_000, 0o644, false);
-        assert_eq!(entry.display_size(), "   1.4 MB");
+        assert_eq!(entry.display_size(), "1.4 MB");
     }
 
     #[test]
     fn test_file_entry_display_size_gigabytes() {
         let entry = create_test_entry("test.txt", false, 1_500_000_000, 0o644, false);
-        assert_eq!(entry.display_size(), "   1.4 GB");
+        assert_eq!(entry.display_size(), "1.4 GB");
     }
 
     #[test]
     fn test_file_entry_display_size_zero() {
         let entry = create_test_entry("test.txt", false, 0, 0o644, false);
-        assert_eq!(entry.display_size(), "     0 B");
+        assert_eq!(entry.display_size(), "   0 B");
     }
 
     #[test]
