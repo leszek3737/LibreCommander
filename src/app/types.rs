@@ -4,6 +4,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Datelike, Timelike};
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::dir_tree::TreeEntry;
@@ -19,12 +20,16 @@ pub struct TextInput {
 
 impl TextInput {
     pub fn clamp_cursor(&mut self) {
-        self.cursor = self.cursor.min(self.char_count());
+        self.cursor = self.cursor.min(self.grapheme_count());
     }
 
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+    }
+
+    pub fn grapheme_count(&self) -> usize {
+        self.text.graphemes(true).count()
     }
 
     pub fn char_count(&self) -> usize {
@@ -33,7 +38,7 @@ impl TextInput {
 
     pub fn byte_pos(&self) -> usize {
         self.text
-            .char_indices()
+            .grapheme_indices(true)
             .nth(self.cursor)
             .map(|(i, _)| i)
             .unwrap_or(self.text.len())
@@ -54,12 +59,12 @@ impl TextInput {
         }
         self.cursor -= 1;
         let pos = self.byte_pos();
-        let next = self.text[pos..]
-            .chars()
+        let end = self.text[pos..]
+            .graphemes(true)
             .next()
-            .map(|c| pos + c.len_utf8())
+            .map(|g| pos + g.len())
             .unwrap_or_else(|| self.text.len());
-        self.text.drain(pos..next);
+        self.text.drain(pos..end);
         true
     }
 
@@ -69,12 +74,12 @@ impl TextInput {
         if pos >= self.text.len() {
             return false;
         }
-        let next = self.text[pos..]
-            .chars()
+        let end = self.text[pos..]
+            .graphemes(true)
             .next()
-            .map(|c| pos + c.len_utf8())
+            .map(|g| pos + g.len())
             .unwrap_or_else(|| self.text.len());
-        self.text.drain(pos..next);
+        self.text.drain(pos..end);
         true
     }
 
@@ -85,7 +90,7 @@ impl TextInput {
 
     pub fn cursor_right(&mut self) {
         self.clamp_cursor();
-        if self.cursor < self.char_count() {
+        if self.cursor < self.grapheme_count() {
             self.cursor += 1;
         }
     }
@@ -95,7 +100,7 @@ impl TextInput {
     }
 
     pub fn cursor_end(&mut self) {
-        self.cursor = self.char_count();
+        self.cursor = self.grapheme_count();
     }
 
     pub fn delete_word_backward(&mut self) -> bool {
@@ -106,16 +111,16 @@ impl TextInput {
         }
         let text = &self.text[..pos];
         let word_start = text
-            .char_indices()
+            .grapheme_indices(true)
             .rev()
-            .skip_while(|&(_, c)| c.is_whitespace())
-            .find(|&(_, c)| c.is_whitespace())
-            .map(|(i, _)| i + 1)
+            .skip_while(|&(_, g)| g.chars().all(|c| c.is_whitespace()))
+            .find(|&(_, g)| g.chars().all(|c| c.is_whitespace()))
+            .map(|(i, g)| i + g.len())
             .unwrap_or(0);
-        let removed_chars = text[word_start..].chars().count();
+        let removed_graphemes = text[word_start..].graphemes(true).count();
         self.text.drain(word_start..pos);
-        self.cursor = self.cursor.saturating_sub(removed_chars);
-        removed_chars > 0
+        self.cursor = self.cursor.saturating_sub(removed_graphemes);
+        removed_graphemes > 0
     }
 
     pub fn drain_to_start(&mut self) {
@@ -214,6 +219,8 @@ pub struct FileEntry {
     pub time_str: String,
     pub size_str: String,
     pub name_width: usize,
+    pub size_width: usize,
+    pub time_width: usize,
 }
 
 // ============================================================================
@@ -609,7 +616,8 @@ impl FileEntryBuilder {
         self
     }
     pub fn build(self) -> FileEntry {
-        let (time_str, size_str, name_width) = FileEntry::cached_fields(&self.cha, &self.name);
+        let (time_str, size_str, name_width, size_width, time_width) =
+            FileEntry::cached_fields(&self.cha, &self.name);
         FileEntry {
             name: self.name,
             path: self.path,
@@ -621,6 +629,8 @@ impl FileEntryBuilder {
             time_str,
             size_str,
             name_width,
+            size_width,
+            time_width,
         }
     }
 }
@@ -630,7 +640,7 @@ impl FileEntryBuilder {
 // ============================================================================
 
 impl FileEntry {
-    pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize) {
+    pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize, usize, usize) {
         let time_str = format_time(cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
         let size_str = if cha.is_dir() {
             "     <DIR>".to_string()
@@ -638,7 +648,9 @@ impl FileEntry {
             format!("{:>10}", format_size(cha.len()))
         };
         let name_width = UnicodeWidthStr::width(name);
-        (time_str, size_str, name_width)
+        let size_width = UnicodeWidthStr::width(size_str.as_str());
+        let time_width = UnicodeWidthStr::width(time_str.as_str());
+        (time_str, size_str, name_width, size_width, time_width)
     }
 
     pub fn builder() -> FileEntryBuilder {

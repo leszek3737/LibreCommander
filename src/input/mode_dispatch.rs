@@ -113,6 +113,7 @@ pub(crate) fn handle_viewer_mode(
         let page_height = terminal_size.height.saturating_sub(VIEWER_CHROME_HEIGHT) as usize;
         let content_width = terminal_size.width as usize;
         vs.update_wrap_layout(content_width);
+        vs.clamp_scroll();
         match key {
             KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
                 state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);

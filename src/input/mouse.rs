@@ -908,6 +908,8 @@ mod tests {
             time_str: String::new(),
             size_str: String::new(),
             name_width: unicode_width::UnicodeWidthStr::width(name),
+            size_width: 0,
+            time_width: 0,
         };
         let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
         let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
