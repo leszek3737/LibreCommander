@@ -178,9 +178,9 @@ impl Watcher {
         let unwatch_result = match self.watchers.get(&path) {
             Some(WhichWatcher::Primary) => self.primary.unwatch(&path).or_else(|e| {
                 // On Linux (inotify), the OS removes watches automatically when the
-                // directory is deleted. Treat "not found" as success since the watch
-                // is already gone — which is the desired outcome.
-                if e.to_string().contains("No watch was found") {
+                // directory is deleted. Subsequent unwatch calls may fail with
+                // "No watch was found" or EINVAL. Either way the watch is gone.
+                if is_watch_already_gone_error(&e) {
                     Ok(())
                 } else {
                     Err(io::Error::other(format!(
@@ -192,7 +192,7 @@ impl Watcher {
             Some(WhichWatcher::Fallback) => {
                 if let Some(fb) = self.fallback.as_mut() {
                     fb.unwatch(&path).or_else(|e| {
-                        if e.to_string().contains("No watch was found") {
+                        if is_watch_already_gone_error(&e) {
                             Ok(())
                         } else {
                             Err(io::Error::other(format!(
@@ -620,6 +620,14 @@ fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
 
 fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<WatchEvent> {
     paths.into_iter().map(map).collect()
+}
+
+/// Returns true if the unwatch error indicates the watch is already gone.
+/// On Linux (inotify), the OS auto-removes watches when a directory is deleted,
+/// so subsequent unwatch calls fail with "No watch was found" or EINVAL.
+fn is_watch_already_gone_error(e: &notify::Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("No watch was found") || msg.contains("Invalid argument")
 }
 
 fn notify_to_io(err: &notify::Error) -> io::Error {
