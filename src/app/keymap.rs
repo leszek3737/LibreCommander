@@ -82,6 +82,12 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
     },
     KeyBinding {
         mode: "Normal",
+        key: "F11",
+        action: "Rename",
+        description: "Rename file or directory",
+    },
+    KeyBinding {
+        mode: "Normal",
         key: "Tab",
         action: "SwitchPanel",
         description: "Switch active panel",

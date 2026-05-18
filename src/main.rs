@@ -494,6 +494,20 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
         KeyCode::F(10) => {
             state.should_quit = true;
         }
+        KeyCode::F(11) => {
+            let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
+            if let Some(name) = entry_name
+                && name != ".."
+            {
+                state.dialog_input.text = name.clone();
+                state.dialog_input.cursor_end();
+                state.mode = AppMode::Dialog(app::types::DialogKind::Input {
+                    prompt: "Rename to:".to_string(),
+                    default_text: name,
+                    action: InputAction::Rename,
+                });
+            }
+        }
         _ => {}
     }
 }

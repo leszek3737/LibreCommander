@@ -363,6 +363,7 @@ fn handle_input_action(
                 _ => return false,
             }
             if let Some(entry) = state.active_panel().current_entry()
+                && input != entry.name
                 && let Err(err) = ops::rename_entry(&entry.path, &input)
             {
                 state.status_message = Some(format!("Rename failed: {err}"));
