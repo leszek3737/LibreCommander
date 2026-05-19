@@ -101,12 +101,18 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
     }
     let dir = state.active_panel().path.clone();
     let pattern_owned = pattern.to_string();
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(64);
     let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = Arc::clone(&cancel);
 
     let handle = thread::spawn(move || {
-        let outcome =
-            ops::FileSearch::search_files_with_diagnostics(&dir, &pattern_owned, true, false);
+        let outcome = ops::FileSearch::search_files_with_diagnostics_cancellable(
+            &dir,
+            &pattern_owned,
+            true,
+            false,
+            &cancel_clone,
+        );
         let _ = sender.send(JobMessage::SearchFinished {
             outcome: Box::new(outcome),
             pattern: pattern_owned,
@@ -285,13 +291,14 @@ fn finish_search_job(
     if let Some(first) = outcome.matches.first()
         && let Some(parent) = first.path.parent()
     {
-        let panel = match search_origin {
-            Some(ActivePanel::Left) => &mut state.left_panel,
-            Some(ActivePanel::Right) => &mut state.right_panel,
-            None => state.active_panel_mut(),
+        let path = parent.to_path_buf();
+        match search_origin {
+            Some(ActivePanel::Left) => state.left_panel.set_path(path),
+            Some(ActivePanel::Right) => state.right_panel.set_path(path),
+            None => state.active_panel_mut().set_path(path),
         };
-        panel.set_path(parent.to_path_buf());
         refresh_both(state);
+
         let panel = match search_origin {
             Some(ActivePanel::Left) => &mut state.left_panel,
             Some(ActivePanel::Right) => &mut state.right_panel,
@@ -299,6 +306,7 @@ fn finish_search_job(
         };
         if let Some(pos) = panel.entries.iter().position(|e| e.path == first.path) {
             panel.cursor = pos;
+            panel.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
         }
     } else {
         refresh_both(state);
