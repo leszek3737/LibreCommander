@@ -529,6 +529,7 @@ impl ViewerState {
                 let match_byte_len = if orig_byte_end > orig_byte {
                     (orig_byte_end - orig_byte).min(self.raw_bytes.len().saturating_sub(orig_byte))
                 } else {
+                    // Fallback: snap to next UTF-8 char boundary for accurate highlight
                     let max_len = self.raw_bytes.len().saturating_sub(orig_byte);
                     if max_len == 0 {
                         0

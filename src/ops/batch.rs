@@ -202,6 +202,17 @@ struct ProgressCtx<'a> {
     sources: &'a [PathBuf],
     sizes: &'a [u64],
     start_time: Instant,
+    dest_dir: &'a Path,
+    dest_dir_normalized: &'a Path,
+}
+
+struct BatchState {
+    used_dests: HashSet<PathBuf>,
+    bytes_done: u64,
+    bytes_total: u64,
+    errors: Vec<String>,
+    success_count: usize,
+    canceled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -408,14 +419,16 @@ fn execute_batch_generic<F>(
 where
     F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
 {
-    let mut errors: Vec<String> = Vec::new();
-    let mut used_dests: HashSet<PathBuf> = HashSet::new();
-    let mut success_count: usize = 0;
-    let mut canceled = false;
     let total = sources.len();
     let sizes = helpers::path_sizes(sources);
-    let mut bytes_total = helpers::sum_sizes(&sizes);
-    let mut bytes_done = 0_u64;
+    let mut state = BatchState {
+        used_dests: HashSet::new(),
+        bytes_done: 0,
+        bytes_total: helpers::sum_sizes(&sizes),
+        errors: Vec::new(),
+        success_count: 0,
+        canceled: false,
+    };
     let start_time = Instant::now();
     let dest_dir_normalized = dest_dir
         .canonicalize()
@@ -425,76 +438,53 @@ where
         sources,
         sizes: &sizes,
         start_time,
+        dest_dir,
+        dest_dir_normalized: &dest_dir_normalized,
     };
 
-    report_transition(progress, &ctx, 0, bytes_done, bytes_total);
+    report_transition(progress, &ctx, 0, state.bytes_done, state.bytes_total);
 
     for (idx, src) in sources.iter().enumerate() {
         if is_canceled(cancel) {
-            canceled = true;
+            state.canceled = true;
             break;
         }
 
-        process_batch_entry(
-            idx,
-            src,
-            dest_dir,
-            &dest_dir_normalized,
-            &sizes,
-            &ctx,
-            cancel,
-            &mut action,
-            progress,
-            &mut used_dests,
-            &mut bytes_done,
-            &mut bytes_total,
-            &mut errors,
-            &mut success_count,
-            &mut canceled,
-        );
+        process_batch_entry(idx, src, &ctx, cancel, &mut action, progress, &mut state);
 
-        if canceled {
+        if state.canceled {
             break;
         }
     }
 
     BatchReport {
-        errors,
-        success_count,
-        canceled,
+        errors: state.errors,
+        success_count: state.success_count,
+        canceled: state.canceled,
         action_label: "Unknown",
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn process_batch_entry<F>(
     idx: usize,
     src: &Path,
-    dest_dir: &Path,
-    dest_dir_normalized: &Path,
-    sizes: &[u64],
     ctx: &ProgressCtx<'_>,
     cancel: &Option<Arc<AtomicBool>>,
     action: &mut F,
     progress: &mut impl FnMut(BatchProgress),
-    used_dests: &mut HashSet<PathBuf>,
-    bytes_done: &mut u64,
-    bytes_total: &mut u64,
-    errors: &mut Vec<String>,
-    success_count: &mut usize,
-    canceled: &mut bool,
+    state: &mut BatchState,
 ) where
     F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
 {
-    let current_total = sizes[idx];
+    let current_total = ctx.sizes[idx];
     report_file_active(
         progress,
         ctx,
         FileProgress {
             idx,
             src,
-            bytes_done: *bytes_done,
-            bytes_total: *bytes_total,
+            bytes_done: state.bytes_done,
+            bytes_total: state.bytes_total,
             file_bytes: 0,
             file_total: current_total,
         },
@@ -502,61 +492,67 @@ fn process_batch_entry<F>(
 
     let file_name = src.file_name().unwrap_or_default();
     if file_name.is_empty() {
-        errors.push(format!(
+        state.errors.push(format!(
             "{}: cannot copy/move root or parent directory",
             src.display()
         ));
-        *bytes_done = bytes_done.saturating_add(sizes[idx]);
-        report_transition(progress, ctx, idx + 1, *bytes_done, *bytes_total);
+        state.bytes_done = state.bytes_done.saturating_add(ctx.sizes[idx]);
+        report_transition(progress, ctx, idx + 1, state.bytes_done, state.bytes_total);
         return;
     }
-    let target = dest_dir.join(file_name);
-    let dedup_key = dest_dir_normalized.join(file_name);
-    if !used_dests.insert(dedup_key) {
-        errors.push(format!(
+    let target = ctx.dest_dir.join(file_name);
+    let dedup_key = ctx.dest_dir_normalized.join(file_name);
+    if !state.used_dests.insert(dedup_key) {
+        state.errors.push(format!(
             "{}: duplicate destination {}",
             src.display(),
             target.display()
         ));
-        *bytes_done = bytes_done.saturating_add(sizes[idx]);
-        report_transition(progress, ctx, idx + 1, *bytes_done, *bytes_total);
+        state.bytes_done = state.bytes_done.saturating_add(ctx.sizes[idx]);
+        report_transition(progress, ctx, idx + 1, state.bytes_done, state.bytes_total);
         return;
     }
 
     let mut file_bytes_so_far = 0_u64;
-    let result = action(src, &target, &mut |byte_delta: u64| {
-        file_bytes_so_far = file_bytes_so_far.saturating_add(byte_delta);
-        if current_total > 0 {
-            file_bytes_so_far = file_bytes_so_far.min(current_total);
-        }
-        let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
-        *bytes_total = (*bytes_total).max(current_bytes_done);
-        report_file_active(
-            progress,
-            ctx,
-            FileProgress {
-                idx,
-                src,
-                bytes_done: current_bytes_done,
-                bytes_total: *bytes_total,
-                file_bytes: file_bytes_so_far,
-                file_total: current_total.max(file_bytes_so_far),
-            },
-        );
-    });
+    let result = {
+        let bytes_done = &mut state.bytes_done;
+        let bytes_total = &mut state.bytes_total;
+        action(src, &target, &mut |byte_delta: u64| {
+            file_bytes_so_far = file_bytes_so_far.saturating_add(byte_delta);
+            if current_total > 0 {
+                file_bytes_so_far = file_bytes_so_far.min(current_total);
+            }
+            let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
+            *bytes_total = (*bytes_total).max(current_bytes_done);
+            report_file_active(
+                progress,
+                ctx,
+                FileProgress {
+                    idx,
+                    src,
+                    bytes_done: current_bytes_done,
+                    bytes_total: *bytes_total,
+                    file_bytes: file_bytes_so_far,
+                    file_total: current_total.max(file_bytes_so_far),
+                },
+            );
+        })
+    };
 
     if let Err(e) = result {
         if e.kind() == io::ErrorKind::Interrupted && is_canceled(cancel) {
-            *canceled = true;
+            state.canceled = true;
         }
-        errors.push(format!("{}: {}", src.display(), e));
+        state.errors.push(format!("{}: {}", src.display(), e));
     } else {
-        *success_count += 1;
-        *bytes_done = bytes_done.saturating_add(current_total.max(file_bytes_so_far));
-        *bytes_total = (*bytes_total).max(*bytes_done);
+        state.success_count += 1;
+        state.bytes_done = state
+            .bytes_done
+            .saturating_add(current_total.max(file_bytes_so_far));
+        state.bytes_total = state.bytes_total.max(state.bytes_done);
     }
 
-    report_transition(progress, ctx, idx + 1, *bytes_done, *bytes_total);
+    report_transition(progress, ctx, idx + 1, state.bytes_done, state.bytes_total);
 }
 
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {

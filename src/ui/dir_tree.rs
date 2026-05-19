@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::Path;
 
 use ratatui::{
@@ -111,22 +112,14 @@ pub fn render_directory_tree(
 fn render_tree_entries(
     f: &mut Frame,
     entries: &[TreeEntry],
-    start: usize,
-    end: usize,
+    row_range: Range<usize>,
     selected: usize,
     inner: Rect,
+    content_width: u16,
     colors: &ColorPalette,
 ) {
-    let visible_height = inner.height.saturating_sub(1) as usize;
-    let has_scrollbar = entries.len() > visible_height && inner.width > 1;
-    let content_width = if has_scrollbar {
-        inner.width.saturating_sub(1)
-    } else {
-        inner.width
-    };
-
-    for (offset, entry) in entries[start..end].iter().enumerate() {
-        let row = start + offset;
+    for (offset, entry) in entries[row_range.clone()].iter().enumerate() {
+        let row = row_range.start + offset;
         let y = inner.y + offset as u16;
         if y >= inner.y + inner.height.saturating_sub(1) {
             break;
@@ -237,7 +230,20 @@ pub fn render_directory_tree_with_colors(
         );
     }
 
-    render_tree_entries(f, entries, start, end, selected, inner, colors);
+    let content_width = if has_scrollbar {
+        inner.width.saturating_sub(1)
+    } else {
+        inner.width
+    };
+    render_tree_entries(
+        f,
+        entries,
+        start..end,
+        selected,
+        inner,
+        content_width,
+        colors,
+    );
 
     let bottom_y = inner.y + inner.height.saturating_sub(1);
     let bottom_area = Rect::new(inner.x, bottom_y, inner.width, 1);

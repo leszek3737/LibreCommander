@@ -84,11 +84,11 @@ fn handle_left_down(
         return Some(outcome);
     }
 
-    if let Some(outcome) = handle_mouse_menu_bar(state, pos.col, pos.row, pos.width) {
+    if let Some(outcome) = handle_mouse_menu_bar(state, pos) {
         return Some(outcome);
     }
 
-    if let Some(outcome) = handle_mouse_menu_dropdown(state, pos.col, pos.row, pos.width) {
+    if let Some(outcome) = handle_mouse_menu_dropdown(state, pos) {
         return Some(outcome);
     }
 
@@ -378,13 +378,8 @@ fn handle_progress_click(
     Some(MouseOutcome::Consumed)
 }
 
-fn handle_mouse_menu_bar(
-    state: &mut AppState,
-    col: u16,
-    row: u16,
-    width: u16,
-) -> Option<MouseOutcome> {
-    if row != 0
+fn handle_mouse_menu_bar(state: &mut AppState, pos: &MousePosition) -> Option<MouseOutcome> {
+    if pos.row != 0
         || !matches!(
             state.mode,
             AppMode::Normal | AppMode::Menu | AppMode::DirectoryTree | AppMode::Search
@@ -393,9 +388,9 @@ fn handle_mouse_menu_bar(
         return None;
     }
     for (i, title) in MENU_TITLES.iter().enumerate() {
-        let x_offset = menu_title_x(width, i);
+        let x_offset = menu_title_x(pos.width, i);
         let title_width = menu_title_width(title);
-        if col >= x_offset && col < x_offset + title_width {
+        if pos.col >= x_offset && pos.col < x_offset + title_width {
             state.menu_selected = i;
             state.menu_item_selected = 0;
             if state.mode != AppMode::Menu {
@@ -408,13 +403,8 @@ fn handle_mouse_menu_bar(
     Some(MouseOutcome::Consumed)
 }
 
-fn handle_mouse_menu_dropdown(
-    state: &mut AppState,
-    col: u16,
-    row: u16,
-    width: u16,
-) -> Option<MouseOutcome> {
-    if !matches!(state.mode, AppMode::Menu) || row < 1 {
+fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Option<MouseOutcome> {
+    if !matches!(state.mode, AppMode::Menu) || pos.row < 1 {
         return None;
     }
     let items = MENU_ITEMS[state.menu_selected];
@@ -424,15 +414,15 @@ fn handle_mouse_menu_dropdown(
         .max()
         .unwrap_or(10) as u16
         + 4;
-    let menu_bar_area = Rect::new(0, 0, width, 1);
+    let menu_bar_area = Rect::new(0, 0, pos.width, 1);
     let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
 
     let inner_x = dropdown_x + 1;
     let inner_y = 2u16;
     let inner_width = dropdown_width.saturating_sub(2);
 
-    if col >= inner_x && col < inner_x + inner_width && row >= inner_y {
-        let item_idx = (row - inner_y) as usize;
+    if pos.col >= inner_x && pos.col < inner_x + inner_width && pos.row >= inner_y {
+        let item_idx = (pos.row - inner_y) as usize;
         if item_idx < items.len() {
             state.menu_item_selected = item_idx;
             return Some(MouseOutcome::MenuAction);
@@ -1035,7 +1025,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = handle_mouse_menu_dropdown(&mut state, 79, 23, 80);
+        let outcome = handle_mouse_menu_dropdown(
+            &mut state,
+            &MousePosition {
+                col: 79,
+                row: 23,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
         assert!(matches!(state.mode, AppMode::Search));

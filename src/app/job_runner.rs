@@ -68,13 +68,12 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     let cancel_for_worker = Arc::clone(&cancel);
     let handle = thread::spawn(move || {
         let progress_sender = sender.clone();
-        let cancel_opt = Some(cancel_for_worker);
         let report = ops::batch::execute_batch_with_byte_progress(
             action,
             move |progress| {
                 let _ = progress_sender.send(JobMessage::Progress(progress));
             },
-            &cancel_opt,
+            &Some(cancel_for_worker),
             action_label,
         );
         let _ = sender.send(JobMessage::Finished { report });
