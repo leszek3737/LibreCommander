@@ -687,20 +687,21 @@ pub fn build_help_message() -> &'static str {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
     fn no_duplicate_keys_per_mode() {
         let duplicates = find_duplicate_keys();
-        if !duplicates.is_empty() {
-            let msg: Vec<String> = duplicates
-                .iter()
-                .map(|(m, k)| format!("  mode={m} key={k}"))
-                .collect();
-            panic!("Duplicate key bindings found:\n{}", msg.join("\n"));
-        }
+        let msg: Vec<String> = duplicates
+            .iter()
+            .map(|(m, k)| format!("  mode={m} key={k}"))
+            .collect();
+        assert!(
+            duplicates.is_empty(),
+            "Duplicate key bindings found:\n{}",
+            msg.join("\n")
+        );
     }
 
     #[test]

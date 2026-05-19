@@ -125,11 +125,12 @@ fn picker_clamp_down_at_bottom_stays() {
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn picker_wrap_empty_list_does_nothing() {
-    let mut state = AppState::default();
-    state.mode = AppMode::ListPicker(PickerKind::History);
-    state.picker_selected = 0;
+    let mut state = AppState {
+        mode: AppMode::ListPicker(PickerKind::History),
+        picker_selected: 0,
+        ..Default::default()
+    };
     pickers::handle_list_picker(&mut state, KeyCode::Up);
     assert_eq!(state.picker_selected, 0);
     pickers::handle_list_picker(&mut state, KeyCode::Down);

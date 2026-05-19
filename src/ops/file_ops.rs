@@ -69,7 +69,7 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
     "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
 ];
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     reject_same_file(src, dest)?;
     if !overwrite {
@@ -138,7 +138,7 @@ pub fn copy_file_with_progress(
     chunk_copy::copy_with_progress(src, dest, progress_tx, cancel, overwrite)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     let src_root = canonicalize_existing_path(src)?;
     let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
@@ -244,7 +244,7 @@ pub fn copy_dir_recursive_with_progress(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn copy_dir_recursive_inner(
     src: &Path,
     dest: &Path,
@@ -403,7 +403,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
 ///   is performed via `fs::rename`, which handles the case change atomically.
 /// - On case-sensitive filesystems, `dest.canonicalize()` fails (target does
 ///   not exist), so the function proceeds as a normal move.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
@@ -986,6 +986,7 @@ fn remove_any(path: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(test)]
 fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     let mode = src_meta.permissions();
     fs::set_permissions(target, mode)?;
@@ -1093,14 +1094,6 @@ fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
         io::ErrorKind::AlreadyExists,
         "could not reserve temporary file (exhausted 1024 attempts)",
     ))
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn temp_file_path_for(dest: &Path, seq: u64) -> PathBuf {
-    let dir = dest.parent().unwrap_or(Path::new("."));
-    let name = dest.file_name().unwrap_or_default();
-    dir.join(format!("{}.{}.tmp", name.to_string_lossy(), seq))
 }
 
 #[cfg(test)]

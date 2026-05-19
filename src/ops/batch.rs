@@ -130,14 +130,14 @@ impl BatchProgress {
 #[cfg(test)]
 pub fn execute_batch(action: PendingAction) -> BatchReport {
     let label = helpers::action_label(&action);
-    execute_batch_with_progress(action, |_| {}, None, label)
+    execute_batch_with_progress(action, |_| {}, &None, label)
 }
 
 #[cfg(test)]
 pub fn execute_batch_with_progress(
     action: PendingAction,
     progress: impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Option<Arc<AtomicBool>>,
     action_label: &'static str,
 ) -> BatchReport {
     execute_batch_with_byte_progress(action, progress, cancel, action_label)
@@ -146,7 +146,7 @@ pub fn execute_batch_with_progress(
 pub fn execute_batch_with_byte_progress(
     action: PendingAction,
     mut progress: impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Option<Arc<AtomicBool>>,
     action_label: &'static str,
 ) -> BatchReport {
     let mut report = match action {
@@ -184,8 +184,7 @@ struct ProgressSnapshot<'a> {
 }
 
 #[inline]
-#[allow(clippy::needless_pass_by_value)]
-fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: ProgressSnapshot<'_>) {
+fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: &ProgressSnapshot<'_>) {
     progress(BatchProgress {
         completed: snapshot.completed,
         total: snapshot.total,
@@ -224,7 +223,7 @@ fn report_transition(
 ) {
     report_progress(
         progress,
-        ProgressSnapshot {
+        &ProgressSnapshot {
             completed,
             total: ctx.total,
             current: helpers::next_path(ctx.sources, completed),
@@ -244,7 +243,7 @@ fn report_file_active(
 ) {
     report_progress(
         progress,
-        ProgressSnapshot {
+        &ProgressSnapshot {
             completed: file.idx,
             total: ctx.total,
             current: Some(file.src),
@@ -283,7 +282,7 @@ fn copy_entry(
                     );
                     let _ = result_tx.send(result);
                 });
-                wait_for_result_with_progress(result_rx, progress_rx, on_progress).map(|_| ())
+                wait_for_result_with_progress(&result_rx, &progress_rx, on_progress).map(|_| ())
             })
         }
         Ok(_) => {
@@ -301,7 +300,7 @@ fn copy_entry(
                     );
                     let _ = result_tx.send(result);
                 });
-                wait_for_result_with_progress(result_rx, progress_rx, on_progress).map(|_| ())
+                wait_for_result_with_progress(&result_rx, &progress_rx, on_progress).map(|_| ())
             })
         }
         Err(e) => Err(e),
@@ -329,14 +328,13 @@ fn move_entry(
             );
             let _ = result_tx.send(result);
         });
-        wait_for_result_with_progress(result_rx, progress_rx, on_progress)
+        wait_for_result_with_progress(&result_rx, &progress_rx, on_progress)
     })
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn wait_for_result_with_progress<T>(
-    result_rx: mpsc::Receiver<io::Result<T>>,
-    progress_rx: mpsc::Receiver<u64>,
+    result_rx: &mpsc::Receiver<io::Result<T>>,
+    progress_rx: &mpsc::Receiver<u64>,
     on_progress: &mut dyn FnMut(u64),
 ) -> io::Result<T> {
     loop {
@@ -366,7 +364,7 @@ fn batch_copy(
     paths: &[PathBuf],
     dest_dir: &Path,
     progress: &mut impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Option<Arc<AtomicBool>>,
     overwrite: bool,
 ) -> BatchReport {
     let operation_cancel = cancel.clone();
@@ -385,7 +383,7 @@ fn batch_move(
     paths: &[PathBuf],
     dest_dir: &Path,
     progress: &mut impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Option<Arc<AtomicBool>>,
     overwrite: bool,
 ) -> BatchReport {
     let operation_cancel = cancel.clone();
@@ -400,13 +398,12 @@ fn batch_move(
     )
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn execute_batch_generic<F>(
     sources: &[PathBuf],
     dest_dir: &Path,
     mut action: F,
     progress: &mut impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Option<Arc<AtomicBool>>,
 ) -> BatchReport
 where
     F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
@@ -433,82 +430,28 @@ where
     report_transition(progress, &ctx, 0, bytes_done, bytes_total);
 
     for (idx, src) in sources.iter().enumerate() {
-        if is_canceled(&cancel) {
+        if is_canceled(cancel) {
             canceled = true;
             break;
         }
-        let current_total = sizes[idx];
-        report_file_active(
-            progress,
+
+        process_batch_entry(
+            idx,
+            src,
+            dest_dir,
+            &dest_dir_normalized,
+            &sizes,
             &ctx,
-            FileProgress {
-                idx,
-                src,
-                bytes_done,
-                bytes_total,
-                file_bytes: 0,
-                file_total: current_total,
-            },
+            cancel,
+            &mut action,
+            progress,
+            &mut used_dests,
+            &mut bytes_done,
+            &mut bytes_total,
+            &mut errors,
+            &mut success_count,
+            &mut canceled,
         );
-
-        let file_name = src.file_name().unwrap_or_default();
-        if file_name.is_empty() {
-            errors.push(format!(
-                "{}: cannot copy/move root or parent directory",
-                src.display()
-            ));
-            bytes_done = bytes_done.saturating_add(sizes[idx]);
-            report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
-            continue;
-        }
-        let target = dest_dir.join(file_name);
-        let dedup_key = dest_dir_normalized.join(file_name);
-        if !used_dests.insert(dedup_key) {
-            errors.push(format!(
-                "{}: duplicate destination {}",
-                src.display(),
-                target.display()
-            ));
-            bytes_done = bytes_done.saturating_add(sizes[idx]);
-            report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
-            continue;
-        }
-
-        let mut file_bytes_so_far = 0_u64;
-        let result = action(src, &target, &mut |byte_delta: u64| {
-            file_bytes_so_far = file_bytes_so_far.saturating_add(byte_delta);
-            if current_total > 0 {
-                file_bytes_so_far = file_bytes_so_far.min(current_total);
-            }
-            let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
-            // Files can grow between pre-scan size and copy; .max() prevents progress > 100%.
-            bytes_total = bytes_total.max(current_bytes_done);
-            report_file_active(
-                progress,
-                &ctx,
-                FileProgress {
-                    idx,
-                    src,
-                    bytes_done: current_bytes_done,
-                    bytes_total,
-                    file_bytes: file_bytes_so_far,
-                    file_total: current_total.max(file_bytes_so_far),
-                },
-            );
-        });
-
-        if let Err(e) = result {
-            if e.kind() == io::ErrorKind::Interrupted && is_canceled(&cancel) {
-                canceled = true;
-            }
-            errors.push(format!("{}: {}", src.display(), e));
-        } else {
-            success_count += 1;
-            bytes_done = bytes_done.saturating_add(current_total.max(file_bytes_so_far));
-            bytes_total = bytes_total.max(bytes_done);
-        }
-
-        report_transition(progress, &ctx, idx + 1, bytes_done, bytes_total);
 
         if canceled {
             break;
@@ -521,6 +464,99 @@ where
         canceled,
         action_label: "Unknown",
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_batch_entry<F>(
+    idx: usize,
+    src: &Path,
+    dest_dir: &Path,
+    dest_dir_normalized: &Path,
+    sizes: &[u64],
+    ctx: &ProgressCtx<'_>,
+    cancel: &Option<Arc<AtomicBool>>,
+    action: &mut F,
+    progress: &mut impl FnMut(BatchProgress),
+    used_dests: &mut HashSet<PathBuf>,
+    bytes_done: &mut u64,
+    bytes_total: &mut u64,
+    errors: &mut Vec<String>,
+    success_count: &mut usize,
+    canceled: &mut bool,
+) where
+    F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
+{
+    let current_total = sizes[idx];
+    report_file_active(
+        progress,
+        ctx,
+        FileProgress {
+            idx,
+            src,
+            bytes_done: *bytes_done,
+            bytes_total: *bytes_total,
+            file_bytes: 0,
+            file_total: current_total,
+        },
+    );
+
+    let file_name = src.file_name().unwrap_or_default();
+    if file_name.is_empty() {
+        errors.push(format!(
+            "{}: cannot copy/move root or parent directory",
+            src.display()
+        ));
+        *bytes_done = bytes_done.saturating_add(sizes[idx]);
+        report_transition(progress, ctx, idx + 1, *bytes_done, *bytes_total);
+        return;
+    }
+    let target = dest_dir.join(file_name);
+    let dedup_key = dest_dir_normalized.join(file_name);
+    if !used_dests.insert(dedup_key) {
+        errors.push(format!(
+            "{}: duplicate destination {}",
+            src.display(),
+            target.display()
+        ));
+        *bytes_done = bytes_done.saturating_add(sizes[idx]);
+        report_transition(progress, ctx, idx + 1, *bytes_done, *bytes_total);
+        return;
+    }
+
+    let mut file_bytes_so_far = 0_u64;
+    let result = action(src, &target, &mut |byte_delta: u64| {
+        file_bytes_so_far = file_bytes_so_far.saturating_add(byte_delta);
+        if current_total > 0 {
+            file_bytes_so_far = file_bytes_so_far.min(current_total);
+        }
+        let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
+        *bytes_total = (*bytes_total).max(current_bytes_done);
+        report_file_active(
+            progress,
+            ctx,
+            FileProgress {
+                idx,
+                src,
+                bytes_done: current_bytes_done,
+                bytes_total: *bytes_total,
+                file_bytes: file_bytes_so_far,
+                file_total: current_total.max(file_bytes_so_far),
+            },
+        );
+    });
+
+    if let Err(e) = result {
+        if e.kind() == io::ErrorKind::Interrupted && is_canceled(cancel) {
+            *canceled = true;
+        }
+        errors.push(format!("{}: {}", src.display(), e));
+    } else {
+        *success_count += 1;
+        *bytes_done = bytes_done.saturating_add(current_total.max(file_bytes_so_far));
+        *bytes_total = (*bytes_total).max(*bytes_done);
+    }
+
+    report_transition(progress, ctx, idx + 1, *bytes_done, *bytes_total);
 }
 
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -574,11 +610,10 @@ fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     filtered
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn batch_delete(
     paths: &[PathBuf],
     progress: &mut impl FnMut(BatchProgress),
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Option<Arc<AtomicBool>>,
 ) -> BatchReport {
     let mut errors: Vec<String> = Vec::new();
     let mut success_count: usize = 0;
@@ -594,7 +629,7 @@ fn batch_delete(
 
     report_progress(
         progress,
-        ProgressSnapshot {
+        &ProgressSnapshot {
             completed: 0,
             total,
             current: helpers::next_path(&filtered, 0),
@@ -606,14 +641,14 @@ fn batch_delete(
         },
     );
     for (idx, path) in filtered.iter().enumerate() {
-        if is_canceled(&cancel) {
+        if is_canceled(cancel) {
             canceled = true;
             break;
         }
         let current_total = sizes[idx];
         report_progress(
             progress,
-            ProgressSnapshot {
+            &ProgressSnapshot {
                 completed: idx,
                 total,
                 current: Some(path),
@@ -634,7 +669,7 @@ fn batch_delete(
             Err(e) => Err(e),
         };
         if let Err(e) = result {
-            if e.kind() == io::ErrorKind::Interrupted && is_canceled(&cancel) {
+            if e.kind() == io::ErrorKind::Interrupted && is_canceled(cancel) {
                 canceled = true;
             }
             errors.push(format!("{}: {}", path.display(), e));
@@ -644,7 +679,7 @@ fn batch_delete(
         }
         report_progress(
             progress,
-            ProgressSnapshot {
+            &ProgressSnapshot {
                 completed: idx + 1,
                 total,
                 current: helpers::next_path(&filtered, idx + 1),
@@ -796,7 +831,7 @@ mod tests {
         let mut updates = Vec::new();
 
         let report =
-            execute_batch_with_progress(action, |progress| updates.push(progress), None, "Delete");
+            execute_batch_with_progress(action, |progress| updates.push(progress), &None, "Delete");
 
         assert_eq!(report.success_count, 2);
         assert!(!report.canceled);
@@ -829,7 +864,7 @@ mod tests {
                     cancel_for_progress.store(true, Ordering::Relaxed);
                 }
             },
-            Some(cancel),
+            &Some(cancel),
             "Copy",
         );
 
@@ -855,7 +890,7 @@ mod tests {
         let report = execute_batch_with_byte_progress(
             action,
             |progress| updates.push(progress),
-            None,
+            &None,
             "Copy",
         );
 
@@ -887,7 +922,7 @@ mod tests {
             dest: dest_dir.path().to_path_buf(),
             overwrite: false,
         };
-        let report = execute_batch_with_progress(action, |_| {}, Some(cancel), "Copy");
+        let report = execute_batch_with_progress(action, |_| {}, &Some(cancel), "Copy");
         assert!(report.canceled);
         assert_eq!(report.success_count, 0);
         assert!(!dest_dir.path().join("a.txt").exists());
@@ -903,7 +938,7 @@ mod tests {
         let action = PendingAction::Delete {
             paths: vec![f1.clone(), f2.clone()],
         };
-        let report = execute_batch_with_progress(action, |_| {}, Some(cancel), "Delete");
+        let report = execute_batch_with_progress(action, |_| {}, &Some(cancel), "Delete");
         assert!(report.canceled);
         assert!(f1.exists());
         assert!(f2.exists());
@@ -998,7 +1033,7 @@ mod tests {
             overwrite: false,
         };
         let mut updates = Vec::new();
-        let report = execute_batch_with_byte_progress(action, |p| updates.push(p), None, "Copy");
+        let report = execute_batch_with_byte_progress(action, |p| updates.push(p), &None, "Copy");
         assert_eq!(report.success_count, 2);
         assert!(updates.iter().all(|p| p.bytes_done <= p.bytes_total));
         assert!(
@@ -1029,7 +1064,7 @@ mod tests {
         let report = execute_batch_with_byte_progress(
             action,
             |progress| updates.push(progress),
-            None,
+            &None,
             "Copy",
         );
 
@@ -1062,7 +1097,7 @@ mod tests {
         let report = execute_batch_with_byte_progress(
             action,
             |progress| updates.push(progress),
-            None,
+            &None,
             "Delete",
         );
 

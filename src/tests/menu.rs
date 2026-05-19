@@ -238,23 +238,25 @@ fn menu_reset_filter_preserves_current_entry_focus() {
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn run_selected_menu_action_fallback_to_normal() {
-    let mut state = AppState::default();
-    state.mode = AppMode::Menu;
-    state.menu_item_selected = 99;
+    let mut state = AppState {
+        mode: AppMode::Menu,
+        menu_item_selected: 99,
+        ..Default::default()
+    };
     run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
     assert!(matches!(state.mode, AppMode::Normal));
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn menu_command_line_clears_stale_prev_mode() {
-    let mut state = AppState::default();
-    state.mode = AppMode::Menu;
-    state.prev_mode = Some(AppMode::Search);
-    state.menu_selected = 2;
-    state.menu_item_selected = 7;
+    let mut state = AppState {
+        mode: AppMode::Menu,
+        prev_mode: Some(AppMode::Search),
+        menu_selected: 2,
+        menu_item_selected: 7,
+        ..Default::default()
+    };
 
     run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
 

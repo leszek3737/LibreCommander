@@ -20,6 +20,13 @@ pub enum MouseOutcome {
     MenuAction,
 }
 
+pub(crate) struct MousePosition {
+    pub(crate) col: u16,
+    pub(crate) row: u16,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+}
+
 pub fn handle_mouse_event(
     state: &mut AppState,
     _viewer_state: &mut Option<viewer::ViewerState>,
@@ -28,29 +35,23 @@ pub fn handle_mouse_event(
     mouse_event: crossterm::event::MouseEvent,
     terminal_size: ratatui::layout::Size,
 ) -> Option<MouseOutcome> {
-    let col = mouse_event.column;
-    let row = mouse_event.row;
-    let height = terminal_size.height;
-    let width = terminal_size.width;
+    let pos = MousePosition {
+        col: mouse_event.column,
+        row: mouse_event.row,
+        width: terminal_size.width,
+        height: terminal_size.height,
+    };
 
     if matches!(
         mouse_event.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) {
-        handle_mouse_scroll(
-            state,
-            _viewer_state,
-            mouse_event.kind,
-            col,
-            row,
-            width,
-            height,
-        );
+        handle_mouse_scroll(state, _viewer_state, mouse_event.kind, &pos);
         return None;
     }
 
     if matches!(mouse_event.kind, MouseEventKind::Drag(MouseButton::Left)) {
-        handle_mouse_drag(state, col, row, width, height);
+        handle_mouse_drag(state, &pos);
         return None;
     }
 
@@ -64,66 +65,52 @@ pub fn handle_mouse_event(
     };
 
     match button {
-        MouseButton::Left => handle_left_down(
-            state,
-            _viewer_state,
-            viewer_loader,
-            running_job,
-            col,
-            row,
-            width,
-            height,
-        ),
-        MouseButton::Middle => handle_middle_down(state, col, row, width, height),
-        MouseButton::Right => handle_right_down(state, col, row, width, height),
+        MouseButton::Left => {
+            handle_left_down(state, _viewer_state, viewer_loader, running_job, &pos)
+        }
+        MouseButton::Middle => handle_middle_down(state, &pos),
+        MouseButton::Right => handle_right_down(state, &pos),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_left_down(
     state: &mut AppState,
     _viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
     running_job: &mut Option<RunningJob>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
+    pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    if let Some(outcome) = handle_mouse_dialog(state, running_job, col, row, width, height) {
+    if let Some(outcome) = handle_mouse_dialog(state, running_job, pos) {
         return Some(outcome);
     }
 
-    if let Some(outcome) = handle_mouse_menu_bar(state, col, row, width) {
+    if let Some(outcome) = handle_mouse_menu_bar(state, pos.col, pos.row, pos.width) {
         return Some(outcome);
     }
 
-    if let Some(outcome) = handle_mouse_menu_dropdown(state, col, row, width) {
+    if let Some(outcome) = handle_mouse_menu_dropdown(state, pos.col, pos.row, pos.width) {
         return Some(outcome);
     }
 
-    if let Some(outcome) = handle_mouse_function_bar(state, col, row, width, height) {
+    if let Some(outcome) = handle_mouse_function_bar(state, pos) {
         return Some(outcome);
     }
 
-    handle_mouse_panels(state, _viewer_state, viewer_loader, col, row, width, height);
+    handle_mouse_panels(state, _viewer_state, viewer_loader, pos);
     None
 }
 
-fn handle_middle_down(
-    state: &mut AppState,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-) -> Option<MouseOutcome> {
-    let (panel_start_row, panel_end_row) = panel_bounds(height);
-    if row > panel_start_row && row < panel_end_row && !matches!(state.mode, AppMode::Dialog(_)) {
+fn handle_middle_down(state: &mut AppState, pos: &MousePosition) -> Option<MouseOutcome> {
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
+    if pos.row > panel_start_row
+        && pos.row < panel_end_row
+        && !matches!(state.mode, AppMode::Dialog(_))
+    {
         if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
             return Some(MouseOutcome::Consumed);
         }
-        let mid_col = width / 2;
-        if col < mid_col {
+        let mid_col = pos.width / 2;
+        if pos.col < mid_col {
             state.active_panel = ActivePanel::Left;
         } else {
             state.active_panel = ActivePanel::Right;
@@ -134,21 +121,15 @@ fn handle_middle_down(
     }
 }
 
-fn handle_right_down(
-    state: &mut AppState,
-    _col: u16,
-    row: u16,
-    _width: u16,
-    height: u16,
-) -> Option<MouseOutcome> {
+fn handle_right_down(state: &mut AppState, pos: &MousePosition) -> Option<MouseOutcome> {
     if let AppMode::Dialog(_) = state.mode {
         return Some(MouseOutcome::NormalKey(KeyCode::Esc));
     }
     if matches!(state.mode, AppMode::Menu) {
         return Some(MouseOutcome::NormalKey(KeyCode::Esc));
     }
-    let (panel_start_row, panel_end_row) = panel_bounds(height);
-    if row > panel_start_row && row < panel_end_row {
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
+    if pos.row > panel_start_row && pos.row < panel_end_row {
         return Some(MouseOutcome::NormalKey(KeyCode::Esc));
     }
     Some(MouseOutcome::Consumed)
@@ -162,10 +143,7 @@ fn handle_mouse_scroll(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     kind: crossterm::event::MouseEventKind,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
+    pos: &MousePosition,
 ) {
     use crossterm::event::MouseEventKind;
 
@@ -180,7 +158,7 @@ fn handle_mouse_scroll(
             message,
             scroll_offset: off,
         }) => {
-            let term_rect = Rect::new(0, 0, width, height);
+            let term_rect = Rect::new(0, 0, pos.width, pos.height);
             let visible = crate::ui::dialogs::help_visible_height(term_rect);
             let total_lines = crate::ui::dialogs::wrapped_line_count(
                 message,
@@ -208,14 +186,14 @@ fn handle_mouse_scroll(
     if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return;
     }
-    let (panel_start_row, panel_end_row) = panel_bounds(height);
-    if row < panel_start_row || row > panel_end_row {
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
+    if pos.row < panel_start_row || pos.row > panel_end_row {
         return;
     }
     let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
     let visible_rows = panel_height.saturating_sub(2) as usize;
-    let mid_col = width / 2;
-    if col < mid_col {
+    let mid_col = pos.width / 2;
+    if pos.col < mid_col {
         state.active_panel = ActivePanel::Left;
     } else {
         state.active_panel = ActivePanel::Right;
@@ -254,13 +232,10 @@ fn apply_scroll_delta(current: usize, delta: isize, visible: usize, total: usize
 fn handle_mouse_dialog(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
+    pos: &MousePosition,
 ) -> Option<MouseOutcome> {
     if let AppMode::Dialog(DialogKind::Progress(_, _, _)) = state.mode {
-        return handle_progress_click(state, running_job, col, row, width, height);
+        return handle_progress_click(state, running_job, pos);
     }
 
     if let AppMode::Dialog(DialogKind::Input { .. }) = state.mode {
@@ -268,11 +243,11 @@ fn handle_mouse_dialog(
     }
 
     if let AppMode::Dialog(DialogKind::Confirm(_)) = state.mode {
-        return handle_confirm_click(state, running_job, width, height, col, row);
+        return handle_confirm_click(state, running_job, pos);
     }
 
     if let AppMode::Dialog(DialogKind::OverwriteConfirm { .. }) = state.mode {
-        return handle_overwrite_click(state, running_job, width, height, col, row);
+        return handle_overwrite_click(state, running_job, pos);
     }
 
     if let AppMode::Dialog(_) = state.mode {
@@ -294,19 +269,16 @@ fn dialog_left(width: u16, dialog_width: u16) -> u16 {
 fn handle_confirm_click(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
-    width: u16,
-    height: u16,
-    col: u16,
-    row: u16,
+    pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let dialog_height = height * 40 / 100;
-    let btn_row = dialog_button_row(height, dialog_height);
-    let dialog_width = width / 2;
-    let dialog_left = dialog_left(width, dialog_width);
+    let dialog_height = pos.height * 40 / 100;
+    let btn_row = dialog_button_row(pos.height, dialog_height);
+    let dialog_width = pos.width / 2;
+    let dialog_left = dialog_left(pos.width, dialog_width);
 
-    if row == btn_row && col >= dialog_left && col < dialog_left + dialog_width {
+    if pos.row == btn_row && pos.col >= dialog_left && pos.col < dialog_left + dialog_width {
         let btn_center = dialog_left + dialog_width / 2;
-        let new_sel = if col < btn_center { 0 } else { 1 };
+        let new_sel = if pos.col < btn_center { 0 } else { 1 };
         if state.dialog_selection == new_sel {
             if new_sel == 0 {
                 if state.pending_action.is_some() {
@@ -343,19 +315,16 @@ fn handle_confirm_click(
 fn handle_overwrite_click(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
-    width: u16,
-    height: u16,
-    col: u16,
-    row: u16,
+    pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let dialog_height = height * 40 / 100;
-    let btn_row = dialog_button_row(height, dialog_height);
-    let dialog_width = width / 2;
-    let dialog_left = dialog_left(width, dialog_width);
+    let dialog_height = pos.height * 40 / 100;
+    let btn_row = dialog_button_row(pos.height, dialog_height);
+    let dialog_width = pos.width / 2;
+    let dialog_left = dialog_left(pos.width, dialog_width);
 
-    if row == btn_row && col >= dialog_left && col < dialog_left + dialog_width {
+    if pos.row == btn_row && pos.col >= dialog_left && pos.col < dialog_left + dialog_width {
         let btn_center = dialog_left + dialog_width / 2;
-        let new_sel = if col < btn_center { 0 } else { 1 };
+        let new_sel = if pos.col < btn_center { 0 } else { 1 };
         if state.dialog_selection == new_sel {
             match new_sel {
                 0 => {
@@ -390,20 +359,17 @@ fn set_pending_overwrite(state: &mut AppState) {
 fn handle_progress_click(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
+    pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let dialog_height = height * 40 / 100;
-    let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+    let dialog_height = pos.height * 40 / 100;
+    let dialog_y = (pos.height.saturating_sub(dialog_height)) / 2;
     let cancel_row = dialog_y + dialog_height.saturating_sub(2);
-    let dialog_width = width / 2;
-    let dialog_left = dialog_left(width, dialog_width);
+    let dialog_width = pos.width / 2;
+    let dialog_left = dialog_left(pos.width, dialog_width);
 
-    if row == cancel_row
-        && col >= dialog_left
-        && col < dialog_left + dialog_width
+    if pos.row == cancel_row
+        && pos.col >= dialog_left
+        && pos.col < dialog_left + dialog_width
         && let Some(job) = running_job.as_ref()
     {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -476,20 +442,16 @@ fn handle_mouse_menu_dropdown(
     Some(MouseOutcome::Consumed)
 }
 
-fn handle_mouse_function_bar(
-    state: &mut AppState,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
-) -> Option<MouseOutcome> {
-    if row != height.saturating_sub(1) || !matches!(state.mode, AppMode::Normal | AppMode::Search) {
+fn handle_mouse_function_bar(state: &mut AppState, pos: &MousePosition) -> Option<MouseOutcome> {
+    if pos.row != pos.height.saturating_sub(1)
+        || !matches!(state.mode, AppMode::Normal | AppMode::Search)
+    {
         return None;
     }
-    if width == 0 {
+    if pos.width == 0 {
         return Some(MouseOutcome::Consumed);
     }
-    let btn_idx = (col * 10 / width).min(9);
+    let btn_idx = (pos.col * 10 / pos.width).min(9);
     let fkey = match btn_idx {
         0 => KeyCode::F(1),
         1 => KeyCode::F(2),
@@ -509,10 +471,7 @@ fn handle_mouse_panels(
     state: &mut AppState,
     _viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
-    col: u16,
-    row: u16,
-    width: u16,
-    height: u16,
+    pos: &MousePosition,
 ) {
     use std::time::Duration;
 
@@ -520,15 +479,15 @@ fn handle_mouse_panels(
         return;
     }
 
-    let (panel_start_row, panel_end_row) = panel_bounds(height);
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
 
-    if row <= panel_start_row || row >= panel_end_row {
+    if pos.row <= panel_start_row || pos.row >= panel_end_row {
         return;
     }
 
     let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
-    let mid_col = width / 2;
-    let clicked_left = col < mid_col;
+    let mid_col = pos.width / 2;
+    let clicked_left = pos.col < mid_col;
 
     if clicked_left {
         state.active_panel = ActivePanel::Left;
@@ -543,7 +502,7 @@ fn handle_mouse_panels(
     };
 
     let list_start_row = panel_start_row + 1;
-    let relative_row = row.saturating_sub(list_start_row);
+    let relative_row = pos.row.saturating_sub(list_start_row);
     let clicked_index = panel.scroll_offset + relative_row as usize;
 
     if clicked_index >= panel.entries.len() {
@@ -553,8 +512,8 @@ fn handle_mouse_panels(
     let now = std::time::Instant::now();
     let is_double_click = if let Some(last_time) = state.last_click_time {
         if let Some(last_pos) = state.last_click_position {
-            last_pos.0 == col
-                && last_pos.1 == row
+            last_pos.0 == pos.col
+                && last_pos.1 == pos.row
                 && now.duration_since(last_time) < Duration::from_millis(DOUBLE_CLICK_THRESHOLD_MS)
         } else {
             false
@@ -573,7 +532,7 @@ fn handle_mouse_panels(
         let path = entry.path.clone();
         if is_dir {
             if matches!(state.mode, AppMode::Search) {
-                let visible = crate::app::panel_ops::panel_visible_height(height);
+                let visible = crate::app::panel_ops::panel_visible_height(pos.height);
                 super::mode_dispatch::clear_search_state(state, visible);
             }
             let panel_mut = state.active_panel_mut();
@@ -589,7 +548,7 @@ fn handle_mouse_panels(
         }
     } else {
         state.last_click_time = Some(now);
-        state.last_click_position = Some((col, row));
+        state.last_click_position = Some((pos.col, pos.row));
         state.drag_anchor_index = Some(clicked_index);
 
         let panel_mut = state.active_panel_mut();
@@ -598,13 +557,13 @@ fn handle_mouse_panels(
     }
 }
 
-fn handle_mouse_drag(state: &mut AppState, col: u16, row: u16, width: u16, height: u16) {
+fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
     if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return;
     }
 
-    let (panel_start_row, panel_end_row) = panel_bounds(height);
-    if row <= panel_start_row || row >= panel_end_row {
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
+    if pos.row <= panel_start_row || pos.row >= panel_end_row {
         return;
     }
 
@@ -613,8 +572,8 @@ fn handle_mouse_drag(state: &mut AppState, col: u16, row: u16, width: u16, heigh
         None => return,
     };
 
-    let mid_col = width / 2;
-    let clicked_left = col < mid_col;
+    let mid_col = pos.width / 2;
+    let clicked_left = pos.col < mid_col;
     let same_panel = clicked_left == matches!(state.active_panel, ActivePanel::Left);
     if !same_panel {
         return;
@@ -627,7 +586,7 @@ fn handle_mouse_drag(state: &mut AppState, col: u16, row: u16, width: u16, heigh
     };
 
     let list_start_row = panel_start_row + 1;
-    let relative_row = row.saturating_sub(list_start_row);
+    let relative_row = pos.row.saturating_sub(list_start_row);
     let current_index = panel.scroll_offset + relative_row as usize;
 
     if current_index >= panel.entries.len() {
@@ -680,7 +639,16 @@ mod tests {
         };
 
         let mut running_job = None;
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 0, 0, 100, 40);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 0,
+                row: 0,
+                width: 100,
+                height: 40,
+            },
+        );
 
         assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
         assert!(matches!(
@@ -707,7 +675,16 @@ mod tests {
         };
 
         let mut running_job = None;
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 50, 20, 100, 40);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 50,
+                row: 20,
+                width: 100,
+                height: 40,
+            },
+        );
 
         assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
         assert!(matches!(
@@ -721,7 +698,15 @@ mod tests {
     fn mouse_function_bar_zero_width_does_not_panic() {
         let mut state = AppState::default();
 
-        let outcomes = handle_mouse_function_bar(&mut state, 0, 0, 0, 1);
+        let outcomes = handle_mouse_function_bar(
+            &mut state,
+            &MousePosition {
+                col: 0,
+                row: 0,
+                width: 0,
+                height: 1,
+            },
+        );
 
         assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
     }
@@ -734,7 +719,16 @@ mod tests {
         };
         let mut running_job = None;
 
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 1,
+                row: 1,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(outcomes.is_some());
         assert!(matches!(state.mode, AppMode::Dialog(DialogKind::Error(_))));
@@ -757,7 +751,16 @@ mod tests {
         };
         let mut running_job = None;
 
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 1,
+                row: 1,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(outcomes.is_some());
         assert!(matches!(
@@ -777,7 +780,16 @@ mod tests {
         };
         let mut running_job = None;
 
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 1,
+                row: 1,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(outcomes.is_some());
         assert!(matches!(
@@ -797,7 +809,16 @@ mod tests {
         };
         let mut running_job = None;
 
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 79, 23, 80, 24);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 79,
+                row: 23,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(outcomes.is_some());
         assert!(matches!(
@@ -817,7 +838,16 @@ mod tests {
         };
         let mut running_job = None;
 
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 1, 1, 80, 24);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 1,
+                row: 1,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(outcomes.is_some());
         assert!(matches!(
@@ -834,7 +864,16 @@ mod tests {
         };
         let mut running_job = None;
 
-        let outcomes = handle_mouse_dialog(&mut state, &mut running_job, 40, 21, 80, 24);
+        let outcomes = handle_mouse_dialog(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 40,
+                row: 21,
+                width: 80,
+                height: 24,
+            },
+        );
 
         assert!(outcomes.is_some());
         assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
@@ -858,10 +897,12 @@ mod tests {
             &mut state,
             &mut None,
             MouseEventKind::ScrollDown,
-            0,
-            0,
-            80,
-            40,
+            &MousePosition {
+                col: 0,
+                row: 0,
+                width: 80,
+                height: 40,
+            },
         );
 
         assert!(
@@ -923,7 +964,15 @@ mod tests {
             ..Default::default()
         };
 
-        handle_mouse_drag(&mut state, 1, 5, 80, 24);
+        handle_mouse_drag(
+            &mut state,
+            &MousePosition {
+                col: 1,
+                row: 5,
+                width: 80,
+                height: 24,
+            },
+        );
 
         let selected: Vec<_> = state
             .left_panel
@@ -941,7 +990,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = handle_right_down(&mut state, 40, 10, 80, 24);
+        let outcome = handle_right_down(
+            &mut state,
+            &MousePosition {
+                col: 40,
+                row: 10,
+                width: 80,
+                height: 24,
+            },
+        );
         assert!(matches!(
             outcome,
             Some(MouseOutcome::NormalKey(KeyCode::Esc))
@@ -955,7 +1012,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = handle_right_down(&mut state, 40, 10, 80, 24);
+        let outcome = handle_right_down(
+            &mut state,
+            &MousePosition {
+                col: 40,
+                row: 10,
+                width: 80,
+                height: 24,
+            },
+        );
         assert!(matches!(
             outcome,
             Some(MouseOutcome::NormalKey(KeyCode::Esc))
@@ -981,7 +1046,15 @@ mod tests {
     fn handle_right_click_in_panel_emits_esc() {
         let mut state = AppState::default();
 
-        let outcome = handle_right_down(&mut state, 10, 10, 80, 24);
+        let outcome = handle_right_down(
+            &mut state,
+            &MousePosition {
+                col: 10,
+                row: 10,
+                width: 80,
+                height: 24,
+            },
+        );
         assert!(matches!(
             outcome,
             Some(MouseOutcome::NormalKey(KeyCode::Esc))
@@ -992,7 +1065,15 @@ mod tests {
     fn handle_middle_click_in_panel_emits_f5() {
         let mut state = AppState::default();
 
-        let outcome = handle_middle_down(&mut state, 10, 10, 80, 24);
+        let outcome = handle_middle_down(
+            &mut state,
+            &MousePosition {
+                col: 10,
+                row: 10,
+                width: 80,
+                height: 24,
+            },
+        );
         assert!(matches!(
             outcome,
             Some(MouseOutcome::NormalKey(KeyCode::F(5)))
@@ -1006,7 +1087,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = handle_middle_down(&mut state, 40, 10, 80, 24);
+        let outcome = handle_middle_down(
+            &mut state,
+            &MousePosition {
+                col: 40,
+                row: 10,
+                width: 80,
+                height: 24,
+            },
+        );
         assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
     }
 
@@ -1042,8 +1131,16 @@ mod tests {
             dialog_y + dialog_height.saturating_sub(2)
         };
 
-        let _outcome =
-            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+        let _outcome = handle_confirm_click(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 30,
+                row: btn_row,
+                width,
+                height,
+            },
+        );
 
         assert!(matches!(
             state.mode,
@@ -1083,8 +1180,16 @@ mod tests {
             dialog_y + dialog_height.saturating_sub(2)
         };
 
-        let _outcome =
-            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+        let _outcome = handle_confirm_click(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 30,
+                row: btn_row,
+                width,
+                height,
+            },
+        );
 
         assert!(!matches!(
             state.mode,
@@ -1128,8 +1233,16 @@ mod tests {
             dialog_y + dialog_height.saturating_sub(2)
         };
 
-        let _outcome =
-            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+        let _outcome = handle_confirm_click(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 30,
+                row: btn_row,
+                width,
+                height,
+            },
+        );
 
         assert_eq!(state.status_message.as_deref(), Some("Queued"));
         assert!(matches!(
@@ -1172,8 +1285,16 @@ mod tests {
             dialog_y + dialog_height.saturating_sub(2)
         };
 
-        let _outcome =
-            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+        let _outcome = handle_confirm_click(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 30,
+                row: btn_row,
+                width,
+                height,
+            },
+        );
 
         state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Copy", "Proceed?",
@@ -1185,8 +1306,16 @@ mod tests {
             overwrite: false,
         });
 
-        let _outcome =
-            handle_confirm_click(&mut state, &mut running_job, width, height, 30, btn_row);
+        let _outcome = handle_confirm_click(
+            &mut state,
+            &mut running_job,
+            &MousePosition {
+                col: 30,
+                row: btn_row,
+                width,
+                height,
+            },
+        );
 
         assert_eq!(
             state.status_message.as_deref(),

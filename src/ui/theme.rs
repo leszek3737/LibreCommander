@@ -509,21 +509,20 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(deprecated)]
     fn category_color_maps_file_categories_to_theme_colors() {
         let cases = [
-            (FileCategory::Dir, Theme::DIRECTORY),
-            (FileCategory::Archive, Theme::ARCHIVE),
-            (FileCategory::Image, Theme::IMAGE),
-            (FileCategory::Video, Theme::VIDEO),
-            (FileCategory::Audio, Theme::AUDIO),
-            (FileCategory::Document, Theme::DOCUMENT),
-            (FileCategory::Code, Theme::SOURCE_CODE),
-            (FileCategory::Config, Theme::CONFIG),
-            (FileCategory::Font, Theme::FONT),
-            (FileCategory::Executable, Theme::EXECUTABLE),
-            (FileCategory::Symlink, Theme::SYMLINK),
-            (FileCategory::Other, Theme::REGULAR_FILE),
+            (FileCategory::Dir, Theme::directory()),
+            (FileCategory::Archive, Theme::archive()),
+            (FileCategory::Image, Theme::image()),
+            (FileCategory::Video, Theme::video()),
+            (FileCategory::Audio, Theme::audio()),
+            (FileCategory::Document, Theme::document()),
+            (FileCategory::Code, Theme::source_code()),
+            (FileCategory::Config, Theme::config()),
+            (FileCategory::Font, Theme::font()),
+            (FileCategory::Executable, Theme::executable()),
+            (FileCategory::Symlink, Theme::symlink()),
+            (FileCategory::Other, Theme::regular_file()),
         ];
 
         for (category, color) in cases {

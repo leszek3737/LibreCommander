@@ -8,6 +8,7 @@
 
 use std::cmp::Ordering;
 
+#[cfg(test)]
 macro_rules! return_unless_equal {
     ($ord:expr) => {
         match $ord {
@@ -17,8 +18,8 @@ macro_rules! return_unless_equal {
     };
 }
 
+#[cfg(test)]
 #[inline]
-#[allow(dead_code)]
 fn compare_left(left: &[u8], right: &[u8], li: &mut usize, ri: &mut usize) -> Ordering {
     loop {
         let lb = left.get(*li).copied();
@@ -38,8 +39,8 @@ fn compare_left(left: &[u8], right: &[u8], li: &mut usize, ri: &mut usize) -> Or
     }
 }
 
+#[cfg(test)]
 #[inline]
-#[allow(dead_code)]
 fn compare_right(left: &[u8], right: &[u8], li: &mut usize, ri: &mut usize) -> Ordering {
     let mut bias = Ordering::Equal;
 
@@ -63,7 +64,7 @@ fn compare_right(left: &[u8], right: &[u8], li: &mut usize, ri: &mut usize) -> O
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
     let mut li = 0;
     let mut ri = 0;

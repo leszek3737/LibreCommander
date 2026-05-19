@@ -445,9 +445,43 @@ impl ViewerState {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn search_hex(&mut self, query: &str) {
+    fn push_match_segments(
+        search_matches: &mut Vec<(usize, usize, usize)>,
+        search_matches_by_line: &mut Vec<SearchLineMatch>,
+        start_byte: usize,
+        match_byte_len: usize,
+        global_idx: usize,
+    ) {
         let bpl = HEX_BYTES_PER_LINE;
+        let mut remaining = match_byte_len;
+        let mut byte_offset = start_byte;
+        let mut first_segment = true;
+
+        while remaining > 0 {
+            let line_idx = byte_offset / bpl;
+            let byte_in_line = byte_offset % bpl;
+            let hex_col =
+                HEX_OFFSET_PREFIX_WIDTH + byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
+            let segment_len = remaining.min(bpl - byte_in_line);
+            let match_hex_len = segment_len * 3 - 1;
+
+            if first_segment {
+                search_matches.push((line_idx, hex_col, match_hex_len));
+                first_segment = false;
+            }
+            search_matches_by_line.push(SearchLineMatch {
+                line: line_idx,
+                global_idx,
+                start_byte: hex_col,
+                end_byte: hex_col + match_hex_len,
+            });
+
+            byte_offset += segment_len;
+            remaining -= segment_len;
+        }
+    }
+
+    fn search_hex(&mut self, query: &str) {
         let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
         let query_bytes = Self::parse_hex_query(&lower_query);
 
@@ -456,34 +490,13 @@ impl ViewerState {
             while let Some(idx) = find_bytes(&self.raw_bytes[pos..], needle) {
                 let abs_offset = pos + idx;
                 let global_idx = self.search_matches.len();
-                let mut remaining = needle.len();
-                let mut byte_offset = abs_offset;
-                let mut first_segment = true;
-
-                while remaining > 0 {
-                    let line_idx = byte_offset / bpl;
-                    let byte_in_line = byte_offset % bpl;
-                    let hex_col = HEX_OFFSET_PREFIX_WIDTH
-                        + byte_in_line * 3
-                        + if byte_in_line >= 8 { 1 } else { 0 };
-                    let segment_len = remaining.min(bpl - byte_in_line);
-                    let match_hex_len = segment_len * 3 - 1;
-
-                    if first_segment {
-                        self.search_matches.push((line_idx, hex_col, match_hex_len));
-                        first_segment = false;
-                    }
-                    self.search_matches_by_line.push(SearchLineMatch {
-                        line: line_idx,
-                        global_idx,
-                        start_byte: hex_col,
-                        end_byte: hex_col + match_hex_len,
-                    });
-
-                    byte_offset += segment_len;
-                    remaining -= segment_len;
-                }
-
+                Self::push_match_segments(
+                    &mut self.search_matches,
+                    &mut self.search_matches_by_line,
+                    abs_offset,
+                    needle.len(),
+                    global_idx,
+                );
                 pos = abs_offset + 1;
             }
         } else {
@@ -516,7 +529,6 @@ impl ViewerState {
                 let match_byte_len = if orig_byte_end > orig_byte {
                     (orig_byte_end - orig_byte).min(self.raw_bytes.len().saturating_sub(orig_byte))
                 } else {
-                    // Fallback: snap to next UTF-8 char boundary for accurate highlight
                     let max_len = self.raw_bytes.len().saturating_sub(orig_byte);
                     if max_len == 0 {
                         0
@@ -541,33 +553,13 @@ impl ViewerState {
                 }
 
                 let global_idx = self.search_matches.len();
-                let mut remaining = match_byte_len;
-                let mut byte_off = orig_byte;
-                let mut first_segment = true;
-
-                while remaining > 0 {
-                    let line_idx = byte_off / bpl;
-                    let byte_in_line = byte_off % bpl;
-                    let hex_col = HEX_OFFSET_PREFIX_WIDTH
-                        + byte_in_line * 3
-                        + if byte_in_line >= 8 { 1 } else { 0 };
-                    let segment_len = remaining.min(bpl - byte_in_line);
-                    let match_hex_len = segment_len * 3 - 1;
-
-                    if first_segment {
-                        self.search_matches.push((line_idx, hex_col, match_hex_len));
-                        first_segment = false;
-                    }
-                    self.search_matches_by_line.push(SearchLineMatch {
-                        line: line_idx,
-                        global_idx,
-                        start_byte: hex_col,
-                        end_byte: hex_col + match_hex_len,
-                    });
-
-                    byte_off += segment_len;
-                    remaining -= segment_len;
-                }
+                Self::push_match_segments(
+                    &mut self.search_matches,
+                    &mut self.search_matches_by_line,
+                    orig_byte,
+                    match_byte_len,
+                    global_idx,
+                );
             }
         }
 
@@ -992,7 +984,6 @@ pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     render_viewer_with_colors(f, area, state, &ColorPalette::default());
 }
 
-#[allow(clippy::too_many_lines)]
 fn compute_visible_range(state: &ViewerState, visible_height: usize) -> (usize, usize, usize) {
     if state.is_visual_scroll() {
         let heights = state.visual_heights.borrow();

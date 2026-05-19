@@ -354,6 +354,23 @@ impl CompiledPattern {
 
 pub struct FileSearch;
 
+struct FileSearchContext<'a> {
+    outcome: &'a mut SearchOutcome<FileEntry>,
+    item_count: &'a mut usize,
+    visited: &'a mut HashSet<(u64, u64)>,
+    cancel: &'a AtomicBool,
+}
+
+struct ContentSearchContext<'a> {
+    pattern: &'a str,
+    case_sensitive: bool,
+    pattern_lower: &'a [char],
+    recursive: bool,
+    outcome: &'a mut SearchOutcome<(PathBuf, usize, String)>,
+    item_count: &'a mut usize,
+    visited: &'a mut HashSet<(u64, u64)>,
+}
+
 impl FileSearch {
     pub fn search_files(
         path: &Path,
@@ -399,16 +416,13 @@ impl FileSearch {
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
         let mut visited = HashSet::new();
         Self::seed_visited_dir(path, &mut visited);
-        Self::search_files_recursive_cancellable(
-            path,
-            &compiled_pattern,
-            recursive,
-            &mut outcome,
-            0,
-            &mut item_count,
-            &mut visited,
+        let mut ctx = FileSearchContext {
+            outcome: &mut outcome,
+            item_count: &mut item_count,
+            visited: &mut visited,
             cancel,
-        );
+        };
+        Self::search_files_recursive_cancellable(path, &compiled_pattern, recursive, 0, &mut ctx);
         outcome
     }
 
@@ -549,22 +563,18 @@ impl FileSearch {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn search_files_recursive_cancellable(
         path: &Path,
         pattern: &CompiledPattern,
         recursive: bool,
-        outcome: &mut SearchOutcome<FileEntry>,
         depth: usize,
-        item_count: &mut usize,
-        visited: &mut HashSet<(u64, u64)>,
-        cancel: &AtomicBool,
+        ctx: &mut FileSearchContext<'_>,
     ) {
-        if cancel.load(Ordering::Relaxed) {
+        if ctx.cancel.load(Ordering::Relaxed) {
             return;
         }
         if !path.is_dir() {
-            outcome
+            ctx.outcome
                 .errors
                 .push(format!("Not a directory: {}", path.display()));
             return;
@@ -574,26 +584,28 @@ impl FileSearch {
             depth,
             MAX_SEARCH_DEPTH,
             MAX_SEARCH_ITEMS,
-            item_count,
-            outcome,
+            ctx.item_count,
+            ctx.outcome,
             |_| true,
         ) else {
             return;
         };
 
         for entry in entries {
-            if cancel.load(Ordering::Relaxed) {
+            if ctx.cancel.load(Ordering::Relaxed) {
                 return;
             }
-            if *item_count >= MAX_SEARCH_ITEMS {
-                outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
+            if *ctx.item_count >= MAX_SEARCH_ITEMS {
+                ctx.outcome
+                    .truncated
+                    .get_or_insert(TruncationReason::ItemLimit);
                 return;
             }
 
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
-                    outcome
+                    ctx.outcome
                         .errors
                         .push(format!("Failed to read entry in {}: {err}", path.display()));
                     continue;
@@ -603,7 +615,7 @@ impl FileSearch {
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
                 Err(err) => {
-                    outcome.errors.push(format!(
+                    ctx.outcome.errors.push(format!(
                         "Failed to read type for {}: {err}",
                         entry_path.display()
                     ));
@@ -611,14 +623,14 @@ impl FileSearch {
                 }
             };
 
-            *item_count += 1;
+            *ctx.item_count += 1;
 
             let name = entry.file_name();
             let name_lossy = name.to_string_lossy();
             if pattern.matches(&name_lossy) {
                 match get_file_info(&entry_path) {
-                    Ok(file_entry) => outcome.matches.push(file_entry),
-                    Err(err) => outcome.errors.push(format!(
+                    Ok(file_entry) => ctx.outcome.matches.push(file_entry),
+                    Err(err) => ctx.outcome.errors.push(format!(
                         "Failed to read metadata for {}: {err}",
                         entry_path.display()
                     )),
@@ -632,7 +644,7 @@ impl FileSearch {
             if recursive && file_type.is_dir() {
                 if let Ok(meta) = entry.metadata()
                     && let Some(key) = get_inode_key(&meta)
-                    && !visited.insert(key)
+                    && !ctx.visited.insert(key)
                 {
                     continue;
                 }
@@ -640,17 +652,14 @@ impl FileSearch {
                     &entry_path,
                     pattern,
                     recursive,
-                    outcome,
                     depth + 1,
-                    item_count,
-                    visited,
-                    cancel,
+                    ctx,
                 );
             }
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn search_content(
         path: &Path,
         pattern: &str,
@@ -697,31 +706,23 @@ impl FileSearch {
         let mut visited = HashSet::new();
         Self::seed_visited_dir(path, &mut visited);
 
-        Self::search_content_recursive_inner(
-            path,
+        let mut ctx = ContentSearchContext {
             pattern,
             case_sensitive,
-            &pattern_lower,
+            pattern_lower: &pattern_lower,
             recursive,
-            depth,
             outcome,
             item_count,
-            &mut visited,
-        );
+            visited: &mut visited,
+        };
+        Self::search_content_recursive_inner(path, depth, &mut ctx);
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
     fn search_content_recursive_inner(
         path: &Path,
-        pattern: &str,
-        case_sensitive: bool,
-        pattern_lower: &[char],
-        recursive: bool,
         depth: usize,
-        outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
-        item_count: &mut usize,
-        visited: &mut HashSet<(u64, u64)>,
+        ctx: &mut ContentSearchContext<'_>,
     ) {
         if !path.is_dir() {
             return;
@@ -731,94 +732,96 @@ impl FileSearch {
             depth,
             MAX_SEARCH_DEPTH,
             MAX_SEARCH_ITEMS,
-            item_count,
-            outcome,
+            ctx.item_count,
+            ctx.outcome,
             |o| o.matches.len() < MAX_CONTENT_RESULTS,
         ) else {
             return;
         };
 
         for entry in entries {
-            if *item_count >= MAX_SEARCH_ITEMS || outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                outcome
-                    .truncated
-                    .get_or_insert(if outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                        TruncationReason::ContentResultLimit
-                    } else {
-                        TruncationReason::ItemLimit
-                    });
+            if Self::process_content_entry(entry, path, depth, ctx) {
                 return;
             }
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => {
-                    outcome
-                        .errors
-                        .push(format!("Failed to read entry in {}: {err}", path.display()));
-                    continue;
+        }
+    }
+
+    fn process_content_entry(
+        entry: std::io::Result<std::fs::DirEntry>,
+        path: &Path,
+        depth: usize,
+        ctx: &mut ContentSearchContext<'_>,
+    ) -> bool {
+        if *ctx.item_count >= MAX_SEARCH_ITEMS || ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS {
+            ctx.outcome.truncated.get_or_insert(
+                if ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS {
+                    TruncationReason::ContentResultLimit
+                } else {
+                    TruncationReason::ItemLimit
+                },
+            );
+            return true;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                ctx.outcome
+                    .errors
+                    .push(format!("Failed to read entry in {}: {err}", path.display()));
+                return false;
+            }
+        };
+        let entry_path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) => {
+                ctx.outcome.errors.push(format!(
+                    "Failed to read type for {}: {err}",
+                    entry_path.display()
+                ));
+                return false;
+            }
+        };
+
+        *ctx.item_count += 1;
+
+        if file_type.is_symlink() {
+            return false;
+        }
+
+        if file_type.is_dir() {
+            if ctx.recursive {
+                if let Ok(meta) = entry.metadata()
+                    && let Some(key) = get_inode_key(&meta)
+                    && !ctx.visited.insert(key)
+                {
+                    return false;
                 }
-            };
-            let entry_path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
+                Self::search_content_recursive_inner(&entry_path, depth + 1, ctx);
+            }
+        } else {
+            let target_meta = match std::fs::metadata(&entry_path) {
+                Ok(meta) => meta,
                 Err(err) => {
-                    outcome.errors.push(format!(
-                        "Failed to read type for {}: {err}",
+                    ctx.outcome.errors.push(format!(
+                        "Failed to read metadata for {}: {err}",
                         entry_path.display()
                     ));
-                    continue;
+                    return false;
                 }
             };
-
-            *item_count += 1;
-
-            if file_type.is_symlink() {
-                continue;
-            }
-
-            if file_type.is_dir() {
-                if recursive {
-                    if let Ok(meta) = entry.metadata()
-                        && let Some(key) = get_inode_key(&meta)
-                        && !visited.insert(key)
-                    {
-                        continue;
-                    }
-                    Self::search_content_recursive_inner(
-                        &entry_path,
-                        pattern,
-                        case_sensitive,
-                        pattern_lower,
-                        recursive,
-                        depth + 1,
-                        outcome,
-                        item_count,
-                        visited,
-                    );
-                }
-            } else {
-                let target_meta = match std::fs::metadata(&entry_path) {
-                    Ok(meta) => meta,
-                    Err(err) => {
-                        outcome.errors.push(format!(
-                            "Failed to read metadata for {}: {err}",
-                            entry_path.display()
-                        ));
-                        continue;
-                    }
-                };
-                if target_meta.is_file() {
-                    Self::search_in_file(
-                        &entry_path,
-                        pattern,
-                        case_sensitive,
-                        pattern_lower,
-                        target_meta.len(),
-                        outcome,
-                    );
-                }
+            if target_meta.is_file() {
+                Self::search_in_file(
+                    &entry_path,
+                    ctx.pattern,
+                    ctx.case_sensitive,
+                    ctx.pattern_lower,
+                    target_meta.len(),
+                    ctx.outcome,
+                );
             }
         }
+        false
     }
 
     fn search_in_file(
