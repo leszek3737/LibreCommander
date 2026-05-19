@@ -23,7 +23,7 @@ pub(crate) fn action_label(action: &PendingAction) -> &'static str {
 ///
 /// Note: an empty `parent` matches any non-equal child because
 /// every path starts with the empty component sequence.
-pub(crate) fn path_starts_with(parent: &Path, child: &Path) -> bool {
+pub(crate) fn lexical_path_starts_with(parent: &Path, child: &Path) -> bool {
     child != parent && child.starts_with(parent)
 }
 
@@ -66,7 +66,14 @@ fn dir_size_rec(path: &Path, depth: u32, visited: &mut HashSet<(u64, u64)>) -> i
             return Err(e);
         }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                debug_log!("dir_size: entry read failed in {}: {e}", path.display());
+                continue;
+            }
+        };
         let ft = match entry.file_type() {
             Ok(ft) => ft,
             Err(e) => {
@@ -249,12 +256,12 @@ mod tests {
     }
 
     #[test]
-    fn test_path_starts_with() {
+    fn test_lexical_path_starts_with() {
         let parent = Path::new("/foo/bar");
         let child = Path::new("/foo/bar/baz");
-        assert!(path_starts_with(parent, child));
-        assert!(!path_starts_with(parent, parent));
-        assert!(path_starts_with(Path::new(""), child));
+        assert!(lexical_path_starts_with(parent, child));
+        assert!(!lexical_path_starts_with(parent, parent));
+        assert!(lexical_path_starts_with(Path::new(""), child));
     }
 
     #[test]

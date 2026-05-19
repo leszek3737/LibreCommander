@@ -135,7 +135,7 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
                     .map(|e| e.path.clone())
                     .collect();
                 let ctx = user_menu::SubstContext {
-                    current_file: &current_file,
+                    current_file: std::path::Path::new(&current_file),
                     active_dir: &active_dir,
                     other_dir: &other_dir,
                     tagged: &tagged,

@@ -369,9 +369,9 @@ Command menu > Compare dirs. Three modes:
 
 | Mode | Matching criteria |
 |------|-------------------|
-| Quick | Filename only |
-| Size | Filename + size |
-| Thorough | Filename + size + modification time |
+| Quick | Filename + entry type |
+| Size | Filename + size (dirs: name + type only) |
+| Thorough | Filename + size + modification time (dirs: name + type only) |
 
 Differing and unique entries are auto-selected in both panels.
 
