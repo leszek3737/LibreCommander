@@ -76,7 +76,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::Enter if !modifiers.contains(KeyModifiers::ALT) => {
             handle_enter_key(state, visible);
         }
-        KeyCode::Char('u' | 's' | 'h' | 'r' | 'o') if modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u' | 's' | 'h' | 'r' | 'o') if modifiers == KeyModifiers::CONTROL => {
             handle_ctrl_keys(state, key, terminal_height);
         }
         KeyCode::Enter | KeyCode::Backspace | KeyCode::Char(_)

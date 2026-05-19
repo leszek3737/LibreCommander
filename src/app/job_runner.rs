@@ -8,17 +8,35 @@ use std::time::Duration;
 
 use crate::ops;
 
-use super::types::{AppMode, AppState, DialogKind};
+use super::types::{ActivePanel, AppMode, AppState, DialogKind, FileEntry};
 
 enum JobMessage {
     Progress(ops::batch::BatchProgress),
-    Finished { report: ops::batch::BatchReport },
+    Finished {
+        report: ops::batch::BatchReport,
+    },
+    SearchFinished {
+        outcome: Box<ops::search::SearchOutcome<FileEntry>>,
+        pattern: String,
+    },
 }
 
 pub struct RunningJob {
     receiver: Receiver<JobMessage>,
     pub cancel: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    search_origin: Option<ActivePanel>,
+}
+
+impl RunningJob {
+    pub fn shutdown(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take()
+            && let Err(e) = handle.join()
+        {
+            debug_log!("worker thread panicked during shutdown: {:?}", e);
+        }
+    }
 }
 
 impl Drop for RunningJob {
@@ -72,6 +90,48 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
         receiver,
         cancel,
         handle: Some(handle),
+        search_origin: None,
+    });
+}
+
+pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJob>, pattern: &str) {
+    if running_job.is_some() {
+        state.status_message = Some("Another job is already running".to_string());
+        return;
+    }
+    let dir = state.active_panel().path.clone();
+    let pattern_owned = pattern.to_string();
+    let (sender, receiver) = mpsc::sync_channel(64);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = Arc::clone(&cancel);
+
+    let handle = thread::spawn(move || {
+        let outcome = ops::FileSearch::search_files_with_diagnostics_cancellable(
+            &dir,
+            &pattern_owned,
+            true,
+            false,
+            &cancel_clone,
+        );
+        let _ = sender.send(JobMessage::SearchFinished {
+            outcome: Box::new(outcome),
+            pattern: pattern_owned,
+        });
+    });
+
+    let search_origin = state.active_panel;
+    state.status_message = None;
+    state.mode = AppMode::Dialog(DialogKind::Progress(
+        format!("Searching for '{}'...", pattern),
+        0.0,
+        true,
+    ));
+    state.dialog_input.clear();
+    *running_job = Some(RunningJob {
+        receiver,
+        cancel,
+        handle: Some(handle),
+        search_origin: Some(search_origin),
     });
 }
 
@@ -85,6 +145,7 @@ pub fn poll_running_job(
     };
     let mut dirty = false;
     let mut finished = None;
+    let mut finished_search = None;
     let mut latest_progress: Option<ops::batch::BatchProgress> = None;
 
     while let Ok(message) = job.receiver.try_recv() {
@@ -104,6 +165,9 @@ pub fn poll_running_job(
                     dirty = true;
                 }
                 finished = Some(report);
+            }
+            JobMessage::SearchFinished { outcome, pattern } => {
+                finished_search = Some((outcome, pattern));
             }
         }
     }
@@ -126,6 +190,19 @@ pub fn poll_running_job(
             debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
         }
         finish_running_job(state, &report, refresh_both);
+        dirty = true;
+    } else if let Some((outcome, pattern)) = finished_search {
+        let search_origin = running_job.as_ref().and_then(|j| j.search_origin);
+        if let Some(mut job) = running_job.take()
+            && let Some(handle) = job.handle.take()
+            && let Err(panic_payload) = handle.join()
+        {
+            debug_log!(
+                "search worker panicked after SearchFinished: {:?}",
+                panic_payload
+            );
+        }
+        finish_search_job(state, &outcome, &pattern, search_origin, refresh_both);
         dirty = true;
     } else if let Some(job) = running_job.as_mut() {
         // No Finished received — check if worker died (panicked before sending)
@@ -201,6 +278,63 @@ fn finish_running_job(
         state.active_panel = panel;
     }
     refresh_both(state);
+}
+
+fn finish_search_job(
+    state: &mut AppState,
+    outcome: &ops::search::SearchOutcome<FileEntry>,
+    pattern: &str,
+    search_origin: Option<ActivePanel>,
+    refresh_both: fn(&mut AppState),
+) {
+    let result_count = outcome.matches.len();
+    if let Some(first) = outcome.matches.first()
+        && let Some(parent) = first.path.parent()
+    {
+        let path = parent.to_path_buf();
+        match search_origin {
+            Some(ActivePanel::Left) => state.left_panel.set_path(path),
+            Some(ActivePanel::Right) => state.right_panel.set_path(path),
+            None => state.active_panel_mut().set_path(path),
+        };
+        refresh_both(state);
+
+        let panel = match search_origin {
+            Some(ActivePanel::Left) => &mut state.left_panel,
+            Some(ActivePanel::Right) => &mut state.right_panel,
+            None => state.active_panel_mut(),
+        };
+        if let Some(pos) = panel.entries.iter().position(|e| e.path == first.path) {
+            panel.cursor = pos;
+            panel.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
+        }
+    } else {
+        refresh_both(state);
+    }
+    let mut msg = if result_count > 0 {
+        format!("Found {result_count} match(es) for '{pattern}'")
+    } else {
+        format!("No matches for '{pattern}'")
+    };
+    if !outcome.errors.is_empty() {
+        msg.push_str(&format!(", {} error(s)", outcome.errors.len()));
+    }
+    if let Some(reason) = outcome.truncated {
+        let label = match reason {
+            ops::search::TruncationReason::DepthLimit => "depth limit",
+            ops::search::TruncationReason::ItemLimit => "item limit",
+            ops::search::TruncationReason::ContentResultLimit => "result limit",
+            ops::search::TruncationReason::FileTooLarge => "file too large",
+            ops::search::TruncationReason::LineTooLong => "line too long",
+            ops::search::TruncationReason::BinaryFile => "binary file",
+        };
+        msg.push_str(&format!(", truncated ({label})"));
+    }
+    state.status_message = Some(msg);
+    state.mode = AppMode::Normal;
+    if let Some(panel) = state.menu_restore_panel.take() {
+        state.active_panel = panel;
+    }
 }
 
 #[cfg(test)]

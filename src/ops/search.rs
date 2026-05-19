@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
@@ -386,6 +387,31 @@ impl FileSearch {
         outcome
     }
 
+    pub fn search_files_with_diagnostics_cancellable(
+        path: &Path,
+        pattern: &str,
+        recursive: bool,
+        case_sensitive: bool,
+        cancel: &AtomicBool,
+    ) -> SearchOutcome<FileEntry> {
+        let mut outcome = SearchOutcome::default();
+        let mut item_count: usize = 0;
+        let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
+        let mut visited = HashSet::new();
+        Self::seed_visited_dir(path, &mut visited);
+        Self::search_files_recursive_cancellable(
+            path,
+            &compiled_pattern,
+            recursive,
+            &mut outcome,
+            0,
+            &mut item_count,
+            &mut visited,
+            cancel,
+        );
+        outcome
+    }
+
     fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
         if let Ok(meta) = std::fs::metadata(path)
             && meta.is_dir()
@@ -522,7 +548,110 @@ impl FileSearch {
             }
         }
     }
-    pub fn search_content(
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_files_recursive_cancellable(
+        path: &Path,
+        pattern: &CompiledPattern,
+        recursive: bool,
+        outcome: &mut SearchOutcome<FileEntry>,
+        depth: usize,
+        item_count: &mut usize,
+        visited: &mut HashSet<(u64, u64)>,
+        cancel: &AtomicBool,
+    ) {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if !path.is_dir() {
+            outcome
+                .errors
+                .push(format!("Not a directory: {}", path.display()));
+            return;
+        }
+        let Some(entries) = Self::prepare_dir_scan(
+            path,
+            depth,
+            MAX_SEARCH_DEPTH,
+            MAX_SEARCH_ITEMS,
+            item_count,
+            outcome,
+            |_| true,
+        ) else {
+            return;
+        };
+
+        for entry in entries {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            if *item_count >= MAX_SEARCH_ITEMS {
+                outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
+                return;
+            }
+
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    outcome
+                        .errors
+                        .push(format!("Failed to read entry in {}: {err}", path.display()));
+                    continue;
+                }
+            };
+            let entry_path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(err) => {
+                    outcome.errors.push(format!(
+                        "Failed to read type for {}: {err}",
+                        entry_path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            *item_count += 1;
+
+            let name = entry.file_name();
+            let name_lossy = name.to_string_lossy();
+            if pattern.matches(&name_lossy) {
+                match get_file_info(&entry_path) {
+                    Ok(file_entry) => outcome.matches.push(file_entry),
+                    Err(err) => outcome.errors.push(format!(
+                        "Failed to read metadata for {}: {err}",
+                        entry_path.display()
+                    )),
+                }
+            }
+
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if recursive && file_type.is_dir() {
+                if let Ok(meta) = entry.metadata()
+                    && let Some(key) = get_inode_key(&meta)
+                    && !visited.insert(key)
+                {
+                    continue;
+                }
+                Self::search_files_recursive_cancellable(
+                    &entry_path,
+                    pattern,
+                    recursive,
+                    outcome,
+                    depth + 1,
+                    item_count,
+                    visited,
+                    cancel,
+                );
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn search_content(
         path: &Path,
         pattern: &str,
         recursive: bool,
