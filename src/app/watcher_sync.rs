@@ -154,13 +154,13 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
         full_refresh_panel(&mut state.right_panel);
     }
 
-    if state.left_panel.needs_rebuild {
-        state.left_panel.needs_rebuild = false;
+    if state.left_panel.listing.needs_rebuild {
+        state.left_panel.listing.needs_rebuild = false;
         rebuild_visible_entries(&mut state.left_panel, None);
         dirty = true;
     }
-    if state.right_panel.needs_rebuild {
-        state.right_panel.needs_rebuild = false;
+    if state.right_panel.listing.needs_rebuild {
+        state.right_panel.listing.needs_rebuild = false;
         rebuild_visible_entries(&mut state.right_panel, None);
         dirty = true;
     }
@@ -256,9 +256,10 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
 
     reader::ensure_path_index(panel);
     let existing = panel
+        .listing
         .path_index
         .get(&entry.path)
-        .and_then(|&idx| panel.unfiltered_entries.get(idx));
+        .and_then(|&idx| panel.listing.unfiltered_entries.get(idx));
     if let Some(existing) = existing {
         if existing.cha.hits(&entry.cha) {
             return false;
@@ -267,18 +268,19 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
     }
 
     reader::upsert_entry(panel, entry);
-    panel.needs_rebuild = true;
+    panel.listing.mark_dirty();
     true
 }
 
 fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     let existed = panel
+        .listing
         .unfiltered_entries
         .iter()
         .any(|entry| entry.path == path);
     if existed {
         reader::remove_entry(panel, path);
-        panel.needs_rebuild = true;
+        panel.listing.mark_dirty();
     }
 
     existed
@@ -286,6 +288,7 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
 
 fn full_refresh_panel(panel: &mut PanelState) {
     let current_name = panel
+        .listing
         .entries
         .get(panel.cursor)
         .filter(|entry| entry.name != "..")
@@ -298,23 +301,16 @@ fn full_refresh_panel(panel: &mut PanelState) {
 
     match reader::read_directory(&panel.path) {
         Ok((entries, _errors)) => {
-            panel.unfiltered_entries = entries;
-            panel.unfiltered_dirty = false;
-            panel.path_index.clear();
-            panel.needs_rebuild = false;
+            panel.listing.set_unfiltered(entries);
             panel.last_error = None;
             panel.canonical_path = panel.path.canonicalize().ok();
-            for entry in &mut panel.unfiltered_entries {
+            for entry in &mut panel.listing.unfiltered_entries {
                 entry.selected = saved.contains(&entry.path);
             }
             rebuild_visible_entries(panel, current_name.as_deref());
         }
         Err(err) => {
-            panel.entries.clear();
-            panel.unfiltered_entries.clear();
-            panel.unfiltered_dirty = true;
-            panel.path_index.clear();
-            panel.needs_rebuild = false;
+            panel.listing.clear();
             // Do NOT set needs_full_refresh here — that would cause
             // poll_watcher_events to retry on every tick, creating an
             // infinite loop when the directory is permanently gone.
@@ -328,6 +324,7 @@ fn full_refresh_panel(panel: &mut PanelState) {
 
 fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>) {
     let current_name = panel
+        .listing
         .entries
         .get(panel.cursor)
         .filter(|entry| entry.name != "..")
@@ -340,19 +337,23 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     );
 
     if let Some(name) = current_name.as_deref()
-        && let Some(pos) = panel.entries.iter().position(|entry| entry.name == name)
+        && let Some(pos) = panel
+            .listing
+            .entries
+            .iter()
+            .position(|entry| entry.name == name)
     {
         panel.cursor = pos;
     }
 
-    if panel.entries.is_empty() {
+    if panel.listing.entries.is_empty() {
         panel.cursor = 0;
         panel.scroll_offset = 0;
-    } else if panel.cursor >= panel.entries.len() {
-        panel.cursor = panel.entries.len() - 1;
+    } else if panel.cursor >= panel.listing.entries.len() {
+        panel.cursor = panel.listing.entries.len() - 1;
     }
 
-    let max_scroll = panel.entries.len().saturating_sub(1);
+    let max_scroll = panel.listing.entries.len().saturating_sub(1);
     if panel.scroll_offset > max_scroll {
         panel.scroll_offset = max_scroll;
     }
@@ -373,8 +374,8 @@ mod tests {
 
     fn test_panel(path: &Path) -> PanelState {
         let mut panel = PanelState::new(path.to_path_buf());
-        panel.unfiltered_entries = vec![parent_entry(path)];
-        panel.entries = panel.unfiltered_entries.clone();
+        panel.listing.unfiltered_entries = vec![parent_entry(path)];
+        panel.listing.entries = panel.listing.unfiltered_entries.clone();
         panel.recalculate_selection_stats();
         panel
     }
@@ -403,6 +404,7 @@ mod tests {
         rebuild_visible_entries(&mut panel, None);
 
         let names: Vec<_> = panel
+            .listing
             .entries
             .iter()
             .map(|entry| entry.name.as_str())
@@ -423,7 +425,7 @@ mod tests {
         panel.filter = Some("*.txt".to_string());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
         rebuild_visible_entries(&mut panel, None);
-        panel.entries[1].selected = true;
+        panel.listing.entries[1].selected = true;
         panel.sync_unfiltered_selection();
 
         fs::write(&keep, b"updated").unwrap();
@@ -431,9 +433,9 @@ mod tests {
         assert!(apply_watcher_upsert_if_matches(&mut panel, &drop));
         rebuild_visible_entries(&mut panel, None);
 
-        assert_eq!(panel.entries.len(), 2);
-        assert_eq!(panel.entries[1].name, "keep.txt");
-        assert!(panel.entries[1].selected);
+        assert_eq!(panel.listing.entries.len(), 2);
+        assert_eq!(panel.listing.entries[1].name, "keep.txt");
+        assert!(panel.listing.entries[1].selected);
         assert_eq!(panel.selected_count, 1);
         assert_eq!(panel.selected_size, 7);
         assert_eq!(panel.total_size, 11);
@@ -449,8 +451,8 @@ mod tests {
         panel.show_hidden = false;
 
         assert!(!apply_watcher_upsert_if_matches(&mut panel, &hidden));
-        assert_eq!(panel.entries.len(), 1);
-        assert_eq!(panel.unfiltered_entries.len(), 1);
+        assert_eq!(panel.listing.entries.len(), 1);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 1);
     }
 
     #[test]
@@ -471,6 +473,7 @@ mod tests {
         rebuild_visible_entries(&mut panel, None);
 
         let names: Vec<_> = panel
+            .listing
             .entries
             .iter()
             .map(|entry| entry.name.as_str())
@@ -493,8 +496,8 @@ mod tests {
 
         assert!(apply_watcher_remove_if_matches(&mut panel, &file));
         rebuild_visible_entries(&mut panel, None);
-        assert_eq!(panel.entries.len(), 1);
-        assert_eq!(panel.unfiltered_entries.len(), 1);
+        assert_eq!(panel.listing.entries.len(), 1);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 1);
     }
 
     #[test]
@@ -554,6 +557,7 @@ mod tests {
         rebuild_visible_entries(&mut panel, None);
 
         let names: Vec<_> = panel
+            .listing
             .entries
             .iter()
             .map(|entry| entry.name.as_str())
@@ -570,11 +574,11 @@ mod tests {
         let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
         rebuild_visible_entries(&mut panel, None);
-        assert_eq!(panel.entries.len(), 2);
+        assert_eq!(panel.listing.entries.len(), 2);
 
         assert!(!apply_watcher_upsert_if_matches(&mut panel, &file));
-        assert_eq!(panel.entries.len(), 2);
-        assert_eq!(panel.unfiltered_entries.len(), 2);
+        assert_eq!(panel.listing.entries.len(), 2);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 2);
     }
 
     #[test]
@@ -590,7 +594,7 @@ mod tests {
         assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
         rebuild_visible_entries(&mut panel, None);
 
-        assert_eq!(panel.entries.len(), 2);
+        assert_eq!(panel.listing.entries.len(), 2);
         assert_eq!(panel.total_size, 18);
     }
 
@@ -612,11 +616,12 @@ mod tests {
 
         let left_names: Vec<_> = state
             .left_panel
+            .listing
             .unfiltered_entries
             .iter()
             .map(|entry| entry.name.as_str())
             .collect();
-        assert_eq!(state.left_panel.unfiltered_entries.len(), 257);
+        assert_eq!(state.left_panel.listing.unfiltered_entries.len(), 257);
         assert!(left_names.contains(&".."));
         assert!(left_names.contains(&"file0.txt"));
         assert!(!left_names.contains(&"file256.txt"));
@@ -632,13 +637,14 @@ mod tests {
         let mut panel = test_panel(dir.path());
         assert!(apply_watcher_upsert_if_matches(&mut panel, &selected));
         rebuild_visible_entries(&mut panel, None);
-        panel.entries[1].selected = true;
+        panel.listing.entries[1].selected = true;
         panel.sync_unfiltered_selection();
 
         full_refresh_panel(&mut panel);
 
         assert!(
             panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.path == selected && entry.selected)
@@ -666,6 +672,7 @@ mod tests {
         assert!(
             state
                 .left_panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|e| e.name == "existing.txt"),
@@ -674,6 +681,7 @@ mod tests {
         assert!(
             state
                 .right_panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|e| e.name == "existing.txt"),
@@ -708,7 +716,7 @@ mod tests {
             parent.path().canonicalize().ok()
         );
         assert!(
-            !state.left_panel.unfiltered_entries.is_empty(),
+            !state.left_panel.listing.unfiltered_entries.is_empty(),
             "panel should have refreshed entries from parent"
         );
     }
@@ -750,16 +758,16 @@ mod tests {
         fs::write(&file, b"data").unwrap();
         assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
         rebuild_visible_entries(&mut panel, None);
-        assert!(panel.entries.len() > 1);
+        assert!(panel.listing.entries.len() > 1);
 
         panel.set_path(PathBuf::from("/nonexistent_dir_for_test_12345"));
         full_refresh_panel(&mut panel);
 
-        assert!(panel.entries.is_empty());
-        assert!(panel.unfiltered_entries.is_empty());
-        assert!(panel.path_index.is_empty());
-        assert!(panel.unfiltered_dirty);
-        assert!(!panel.needs_rebuild);
+        assert!(panel.listing.entries.is_empty());
+        assert!(panel.listing.unfiltered_entries.is_empty());
+        assert!(panel.listing.path_index.is_empty());
+        assert!(panel.listing.unfiltered_dirty);
+        assert!(!panel.listing.needs_rebuild);
         assert!(
             panel.last_error.is_some(),
             "should set last_error on read failure"
@@ -775,13 +783,13 @@ mod tests {
 
         panel.set_path(PathBuf::from("/nonexistent_for_error_test_xyz"));
         full_refresh_panel(&mut panel);
-        assert!(panel.entries.is_empty());
+        assert!(panel.listing.entries.is_empty());
 
         panel.set_path(dir.path().to_path_buf());
         full_refresh_panel(&mut panel);
 
         assert!(
-            !panel.entries.is_empty(),
+            !panel.listing.entries.is_empty(),
             "should have entries after recovery"
         );
         assert!(
@@ -790,6 +798,7 @@ mod tests {
         );
         assert!(
             panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|e| e.name == "recovery.txt"),
@@ -888,6 +897,7 @@ mod tests {
         assert!(
             state
                 .left_panel
+                .listing
                 .entries
                 .iter()
                 .any(|e| e.name == "to_delete.txt")
@@ -901,6 +911,7 @@ mod tests {
         assert!(
             !state
                 .left_panel
+                .listing
                 .entries
                 .iter()
                 .any(|e| e.name == "to_delete.txt"),
@@ -925,6 +936,7 @@ mod tests {
         assert!(
             state
                 .left_panel
+                .listing
                 .entries
                 .iter()
                 .any(|e| e.name == "new_file.txt"),

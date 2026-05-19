@@ -41,7 +41,7 @@ fn confirm_enter_with_pending_action_starts_action() {
         active_panel: app::types::ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.entries = vec![TestEntry::new("delme.txt").build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("delme.txt").build()];
     state.left_panel.cursor = 0;
 
     dialogs::handle_dialog(
@@ -61,7 +61,7 @@ fn confirm_enter_with_pending_action_starts_action() {
 #[test]
 fn confirm_file_transfer_copy_opens_dialog() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").build(),
         TestEntry::new("b.txt").build(),
     ];
@@ -83,7 +83,7 @@ fn confirm_file_transfer_copy_opens_dialog() {
 #[test]
 fn confirm_delete_opens_dialog() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("delme.txt").build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("delme.txt").build()];
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
     confirm_delete(&mut state);

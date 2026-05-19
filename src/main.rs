@@ -671,7 +671,7 @@ pub(crate) fn handle_navigation_keys(
     match key {
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
             let panel = state.active_panel_mut();
-            if panel.entries.is_empty() {
+            if panel.listing.entries.is_empty() {
                 return;
             }
             panel.toggle_selection_at(panel.cursor);
@@ -679,7 +679,7 @@ pub(crate) fn handle_navigation_keys(
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
             let panel = state.active_panel_mut();
-            if panel.entries.is_empty() {
+            if panel.listing.entries.is_empty() {
                 return;
             }
             panel.toggle_selection_at(panel.cursor);
@@ -699,7 +699,7 @@ pub(crate) fn handle_navigation_keys(
             p.scroll_offset = 0;
         }
         KeyCode::End => {
-            let len = state.active_panel().entries.len();
+            let len = state.active_panel().listing.entries.len();
             if len > 0 {
                 let p = state.active_panel_mut();
                 p.cursor = len - 1;
@@ -712,7 +712,7 @@ pub(crate) fn handle_navigation_keys(
             p.scroll_offset = p.scroll_offset.saturating_sub(visible);
         }
         KeyCode::PageDown => {
-            let len = state.active_panel().entries.len();
+            let len = state.active_panel().listing.entries.len();
             let p = state.active_panel_mut();
             p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
             p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
@@ -723,17 +723,17 @@ pub(crate) fn handle_navigation_keys(
                 ActivePanel::Right => ActivePanel::Left,
             };
             let p = state.active_panel_mut();
-            let max = p.entries.len().saturating_sub(1);
+            let max = p.listing.entries.len().saturating_sub(1);
             p.cursor = p.cursor.min(max);
             p.ensure_cursor_visible(visible);
         }
         KeyCode::Insert => {
             let panel = state.active_panel_mut();
-            if panel.entries.is_empty() {
+            if panel.listing.entries.is_empty() {
                 return;
             }
             panel.toggle_selection();
-            if panel.cursor < panel.entries.len() - 1 {
+            if panel.cursor < panel.listing.entries.len() - 1 {
                 panel.move_cursor_down(visible);
             }
         }
@@ -745,6 +745,7 @@ fn reposition_cursor_to_entry(state: &mut AppState, prev_dir_name: Option<&str>,
     if let Some(name) = prev_dir_name
         && let Some(idx) = state
             .active_panel()
+            .listing
             .entries
             .iter()
             .position(|e| e.name == name)
@@ -789,9 +790,8 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_heig
         }
         KeyCode::Char('s') => {
             let panel = state.active_panel_mut();
-            if panel.unfiltered_entries.is_empty() {
-                panel.unfiltered_entries = panel.entries.clone();
-                panel.path_index.clear();
+            if panel.listing.unfiltered_entries.is_empty() {
+                panel.listing.set_unfiltered(panel.listing.entries.clone());
             }
             state.mode = AppMode::Search;
             state.search_query.clear();

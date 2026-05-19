@@ -57,7 +57,7 @@ fn dispatch_mouse_click_moves_cursor() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt")
             .path(tmp.path().join("a.txt"))
             .build(),
@@ -65,10 +65,11 @@ fn dispatch_mouse_click_moves_cursor() {
             .path(tmp.path().join("b.txt"))
             .build(),
     ];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
     state.left_panel.cursor = 1;
-    state.left_panel.path_index = state
+    state.left_panel.listing.path_index = state
         .left_panel
+        .listing
         .entries
         .iter()
         .enumerate()
@@ -108,14 +109,15 @@ fn key_press_triggers_search_initiation() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("alpha.txt")
             .path(tmp.path().join("alpha.txt"))
             .build(),
     ];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
-    state.left_panel.path_index = state
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
+    state.left_panel.listing.path_index = state
         .left_panel
+        .listing
         .entries
         .iter()
         .enumerate()
@@ -147,14 +149,15 @@ fn key_release_is_ignored() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("alpha.txt")
             .path(tmp.path().join("alpha.txt"))
             .build(),
     ];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
-    state.left_panel.path_index = state
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
+    state.left_panel.listing.path_index = state
         .left_panel
+        .listing
         .entries
         .iter()
         .enumerate()
@@ -193,7 +196,7 @@ fn key_repeat_navigation_moves_cursor() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt")
             .path(tmp.path().join("a.txt"))
             .build(),
@@ -204,9 +207,10 @@ fn key_repeat_navigation_moves_cursor() {
             .path(tmp.path().join("c.txt"))
             .build(),
     ];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
-    state.left_panel.path_index = state
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
+    state.left_panel.listing.path_index = state
         .left_panel
+        .listing
         .entries
         .iter()
         .enumerate()
@@ -272,14 +276,15 @@ fn key_repeat_destructive_is_ignored() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("victim.txt")
             .path(tmp.path().join("victim.txt"))
             .build(),
     ];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
-    state.left_panel.path_index = state
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
+    state.left_panel.listing.path_index = state
         .left_panel
+        .listing
         .entries
         .iter()
         .enumerate()

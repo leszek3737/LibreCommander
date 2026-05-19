@@ -20,7 +20,7 @@ pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
     state.search_cursor = 0;
     let panel = state.active_panel_mut();
     panel.filter = None;
-    if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
+    if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
         panel_ops::refresh_active(state);
     } else {
         panel_ops::rebuild_visible_entries(panel, visible_height);
@@ -40,7 +40,7 @@ pub(crate) fn initiate_search(
     state.mode = AppMode::Search;
     let panel = state.active_panel_mut();
     panel.filter = Some(filter_query);
-    if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
+    if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
         panel_ops::refresh_active(state);
     } else {
         panel_ops::rebuild_visible_entries(panel, visible_height);

@@ -267,12 +267,16 @@ pub fn render_panel_with_colors(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner_area);
 
-    let start_idx = panel.scroll_offset.min(panel.entries.len());
-    let end_idx = std::cmp::min(panel.entries.len(), start_idx + inner_area.height as usize);
+    let start_idx = panel.scroll_offset.min(panel.listing.entries.len());
+    let end_idx = std::cmp::min(
+        panel.listing.entries.len(),
+        start_idx + inner_area.height as usize,
+    );
 
     let mut list_items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
 
     for entry in panel
+        .listing
         .entries
         .iter()
         .skip(start_idx)
@@ -319,7 +323,7 @@ pub fn render_panel_with_colors(
 
     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
-    if panel.entries.is_empty()
+    if panel.listing.entries.is_empty()
         && let Some(ref err) = panel.last_error
     {
         let err_text =
@@ -327,7 +331,7 @@ pub fn render_panel_with_colors(
         f.render_widget(err_text, chunks[0]);
     }
 
-    if !panel.entries.is_empty() {
+    if !panel.listing.entries.is_empty() {
         render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors);
     }
 }
@@ -468,11 +472,11 @@ pub fn render_scrollbar_with_colors(
     is_active: bool,
     colors: &ColorPalette,
 ) {
-    if panel.entries.is_empty() {
+    if panel.listing.entries.is_empty() {
         return;
     }
 
-    let total_entries = panel.entries.len();
+    let total_entries = panel.listing.entries.len();
     let height = area.height as usize;
     let max_scroll = total_entries.saturating_sub(height);
     let scroll_offset = panel.scroll_offset.min(max_scroll);
@@ -515,7 +519,7 @@ pub fn render_scrollbar_with_colors(
 }
 
 pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
-    let total = panel.entries.len();
+    let total = panel.listing.entries.len();
     if total == 0 {
         return (String::new(), 0);
     }
@@ -556,8 +560,10 @@ pub fn render_status_bar_with_colors(
     let (right_info, right_width) = panel_status_summary(panel);
     let remaining = available.saturating_sub(right_width);
 
-    let info_line = if !panel.entries.is_empty() && panel.cursor < panel.entries.len() {
-        let entry = &panel.entries[panel.cursor];
+    let info_line = if !panel.listing.entries.is_empty()
+        && panel.cursor < panel.listing.entries.len()
+    {
+        let entry = &panel.listing.entries[panel.cursor];
         let display_name = sanitize_for_display(&entry.name);
         let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions);
         let full_info = format!("{display_name} | {metadata}");

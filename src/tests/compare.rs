@@ -7,14 +7,14 @@ use app::types::CompareMode;
 fn compare_directories_reports_summary() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         app::types::FileEntry::builder()
             .name("a.txt")
             .path(tmp.path().join("a.txt"))
             .cha(crate::fs::cha::Cha::dummy_dir())
             .build(),
     ];
-    state.right_panel.entries = vec![
+    state.right_panel.listing.entries = vec![
         app::types::FileEntry::builder()
             .name("b.txt")
             .path(tmp.path().join("b.txt"))
@@ -39,7 +39,7 @@ fn compare_directories_reports_summary() {
 fn compare_directories_marks_unique_entries_selected() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("same.txt")
             .path(tmp.path().join("same.txt"))
             .build(),
@@ -47,7 +47,7 @@ fn compare_directories_marks_unique_entries_selected() {
             .path(tmp.path().join("left.txt"))
             .build(),
     ];
-    state.right_panel.entries = vec![
+    state.right_panel.listing.entries = vec![
         TestEntry::new("same.txt")
             .path(tmp.path().join("same.txt"))
             .build(),
@@ -58,10 +58,10 @@ fn compare_directories_marks_unique_entries_selected() {
 
     pickers::compare_directories(&mut state, CompareMode::Quick);
 
-    assert!(!state.left_panel.entries[0].selected);
-    assert!(state.left_panel.entries[1].selected);
-    assert!(!state.right_panel.entries[0].selected);
-    assert!(state.right_panel.entries[1].selected);
+    assert!(!state.left_panel.listing.entries[0].selected);
+    assert!(state.left_panel.listing.entries[1].selected);
+    assert!(!state.right_panel.listing.entries[0].selected);
+    assert!(state.right_panel.listing.entries[1].selected);
 }
 
 #[test]
@@ -73,13 +73,13 @@ fn compare_directories_size_mode_reports_mismatches() {
     let mut state = AppState::default();
     state.left_panel.set_path(left_dir.path().to_path_buf());
     state.right_panel.set_path(right_dir.path().to_path_buf());
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("file.txt")
             .path(left_dir.path().join("file.txt"))
             .size(5)
             .build(),
     ];
-    state.right_panel.entries = vec![
+    state.right_panel.listing.entries = vec![
         TestEntry::new("file.txt")
             .path(right_dir.path().join("file.txt"))
             .size(20)
@@ -88,6 +88,7 @@ fn compare_directories_size_mode_reports_mismatches() {
     pickers::compare_directories(&mut state, CompareMode::Size);
     let left_selected: Vec<_> = state
         .left_panel
+        .listing
         .entries
         .iter()
         .filter(|e| e.name != ".." && e.selected)
@@ -109,7 +110,7 @@ fn compare_directories_by_content_zero_length() {
 fn compare_mode_picker_maps_index_to_mode() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt")
             .path(tmp.path().join("a.txt"))
             .build(),
@@ -152,7 +153,7 @@ fn compare_mode_picker_esc_cancels() {
 fn compare_mode_picker_enter_runs_quick_by_default() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt")
             .path(tmp.path().join("a.txt"))
             .build(),
@@ -181,7 +182,7 @@ fn compare_mode_picker_navigate_and_select_thorough() {
         picker_selected: 0,
         ..Default::default()
     };
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("x.txt")
             .size(42)
             .path(tmp.path().join("x.txt"))

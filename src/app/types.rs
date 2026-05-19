@@ -280,31 +280,103 @@ pub enum ListingMode {
 }
 
 // ============================================================================
-// 3. PanelState struct definition
+// 3. PanelListing struct definition
 // ============================================================================
 
+/// Listing state for one file panel — entries, unfiltered set, and cache.
+///
+/// Tracks both the filtered (visible) entries and the full unfiltered set,
+/// along with a path→index lookup and dirty flags for lazy rebuild.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelListing {
+    pub entries: Vec<FileEntry>,
+    pub unfiltered_entries: Vec<FileEntry>,
+    pub path_index: HashMap<PathBuf, usize>,
+    pub needs_rebuild: bool,
+    pub unfiltered_dirty: bool,
+}
+
+impl PanelListing {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            unfiltered_entries: Vec::new(),
+            path_index: HashMap::new(),
+            needs_rebuild: false,
+            unfiltered_dirty: true,
+        }
+    }
+
+    pub fn set_unfiltered(&mut self, entries: Vec<FileEntry>) {
+        self.path_index.clear();
+        for (i, entry) in entries.iter().enumerate() {
+            self.path_index.insert(entry.path.clone(), i);
+        }
+        self.unfiltered_entries = entries;
+        self.unfiltered_dirty = false;
+        self.needs_rebuild = false;
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.entries = entries;
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.unfiltered_entries.clear();
+        self.path_index.clear();
+        self.needs_rebuild = false;
+        self.unfiltered_dirty = true;
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.needs_rebuild = true;
+    }
+
+    pub fn mark_unfiltered_dirty(&mut self) {
+        self.unfiltered_dirty = true;
+    }
+}
+
+impl Default for PanelListing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// State for one file panel (left or right).
+///
+/// Combines listing state (entries, path), navigation (cursor, scroll),
+/// display options (sort, hidden, permissions), filter, and selection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelState {
+    // --- Listing state ---
     pub path: PathBuf,
     pub canonical_path: Option<PathBuf>,
-    pub entries: Vec<FileEntry>,
+    pub listing: PanelListing,
+
+    // --- Navigation state ---
     pub cursor: usize,
     pub scroll_offset: usize,
+    pub history: Vec<PathBuf>,
+
+    // --- Display options ---
     pub sort_mode: SortMode,
     pub sort_options: SortOptions,
     pub listing_mode: ListingMode,
     pub show_hidden: bool,
     pub show_permissions: bool,
+
+    // --- Filter ---
     pub filter: Option<String>,
+
+    // --- Selection ---
     pub selected_count: usize,
     pub selected_size: u64,
     pub total_size: u64,
+
+    // --- Error ---
     pub last_error: Option<String>,
-    pub history: Vec<PathBuf>,
-    pub unfiltered_entries: Vec<FileEntry>,
-    pub unfiltered_dirty: bool,
-    pub path_index: HashMap<PathBuf, usize>,
-    pub needs_rebuild: bool,
 }
 
 // ============================================================================
@@ -443,22 +515,57 @@ pub enum AppMode {
 // 7. AppState struct definition
 // ============================================================================
 
+/// Top-level application state.
+///
+/// Fields are grouped into domain sections. Each section represents a
+/// cohesive concern; future refactoring may extract some sections into
+/// dedicated types.
+///
+/// # Sections
+///
+/// | Section              | Purpose                                          |
+/// |----------------------|--------------------------------------------------|
+/// | Panels               | Left/right panels, active selection              |
+/// | Mode                 | Current mode, previous mode, quit flag           |
+/// | Dialog               | Input, selection, pending action                 |
+/// | Command line         | Input, history, draft                            |
+/// | Search               | Query string, cursor                             |
+/// | Status               | Status bar message                               |
+/// | Menu                 | User menu, hotlist picker, cached strings        |
+/// | Directory tree       | Tree root, entries, selection, scroll            |
+/// | Mouse / drag         | Click detection, drag state, scroll acceleration |
+/// | Theme                | Color palette, viewer animation                  |
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppState {
+    // --- Panels ---
     pub left_panel: PanelState,
     pub right_panel: PanelState,
     pub active_panel: ActivePanel,
+
+    // --- Mode ---
     pub mode: AppMode,
-    pub command_line: TextInput,
-    pub search_query: String,
-    pub search_cursor: usize,
+    pub prev_mode: Option<AppMode>,
     pub should_quit: bool,
-    pub status_message: Option<String>,
+
+    // --- Dialog ---
     pub dialog_input: TextInput,
+    pub dialog_selection: usize,
+    pub pending_action: Option<PendingAction>,
+
+    // --- Command line ---
+    pub command_line: TextInput,
     pub command_history: VecDeque<String>,
     pub history_index: Option<usize>,
     pub command_draft: String,
-    pub directory_hotlist: Vec<PathBuf>,
+
+    // --- Search ---
+    pub search_query: String,
+    pub search_cursor: usize,
+
+    // --- Status ---
+    pub status_message: Option<String>,
+
+    // --- Menu ---
     pub menu_selected: usize,
     pub menu_item_selected: usize,
     pub picker_selected: usize,
@@ -467,28 +574,29 @@ pub struct AppState {
     pub cached_hotlist_strings: Vec<String>,
     pub cached_user_menu_strings: Vec<String>,
     pub pending_menu_command: Option<String>,
+    pub menu_restore_panel: Option<ActivePanel>,
+    pub directory_hotlist: Vec<PathBuf>,
+
+    // --- Directory tree ---
     pub tree_root: PathBuf,
     pub tree_entries: Vec<TreeEntry>,
     pub tree_selected: usize,
     pub tree_scroll: usize,
-    pub prev_mode: Option<AppMode>,
-    pub menu_restore_panel: Option<ActivePanel>,
-    pub dialog_selection: usize,
-    pub pending_action: Option<PendingAction>,
-    // Mouse support fields
+
+    // --- Mouse / drag ---
     pub last_click_time: Option<std::time::Instant>,
-    pub last_click_position: Option<(u16, u16)>, // (column, row)
-    // Drag-and-drop state
+    pub last_click_position: Option<(u16, u16)>,
     pub drag_active: bool,
     pub drag_source_pane: ActivePanel,
     pub drag_source_path: PathBuf,
     pub drag_source_name: String,
     pub drag_current_row: u16,
     pub drag_current_col: u16,
-    // Scroll acceleration
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
+
+    // --- Theme ---
     pub theme_colors: ColorPalette,
     pub viewer_spinner_frame: Option<std::time::Instant>,
 }
@@ -816,9 +924,10 @@ impl PanelState {
         Self {
             path,
             canonical_path,
-            entries: Vec::new(),
+            listing: PanelListing::new(),
             cursor: 0,
             scroll_offset: 0,
+            history: Vec::new(),
             sort_mode: SortMode::default(),
             sort_options: SortOptions::default(),
             listing_mode: ListingMode::default(),
@@ -829,11 +938,6 @@ impl PanelState {
             selected_size: 0,
             total_size: 0,
             last_error: None,
-            history: Vec::new(),
-            unfiltered_entries: Vec::new(),
-            unfiltered_dirty: true,
-            path_index: HashMap::new(),
-            needs_rebuild: false,
         }
     }
 
@@ -853,15 +957,15 @@ impl PanelState {
     }
 
     pub fn current_entry(&self) -> Option<&FileEntry> {
-        if self.cursor < self.entries.len() {
-            Some(&self.entries[self.cursor])
+        if self.cursor < self.listing.entries.len() {
+            Some(&self.listing.entries[self.cursor])
         } else {
             None
         }
     }
 
     pub fn toggle_selection(&mut self) {
-        if let Some(entry) = self.entries.get_mut(self.cursor) {
+        if let Some(entry) = self.listing.entries.get_mut(self.cursor) {
             if entry.name == ".." {
                 return;
             }
@@ -875,7 +979,7 @@ impl PanelState {
     }
 
     pub fn set_selection_at(&mut self, index: usize, selected: bool) {
-        if let Some(entry) = self.entries.get_mut(index) {
+        if let Some(entry) = self.listing.entries.get_mut(index) {
             if entry.name == ".." || entry.selected == selected {
                 return;
             }
@@ -888,28 +992,34 @@ impl PanelState {
     }
 
     pub fn toggle_selection_at(&mut self, index: usize) {
-        let selected = self.entries.get(index).is_some_and(|e| !e.selected);
+        let selected = self.listing.entries.get(index).is_some_and(|e| !e.selected);
         self.set_selection_at(index, selected);
     }
 
     fn set_unfiltered_selection(&mut self, path: &Path, selected: bool) {
-        if let Some(ue) = self.unfiltered_entries.iter_mut().find(|e| e.path == *path) {
+        if let Some(ue) = self
+            .listing
+            .unfiltered_entries
+            .iter_mut()
+            .find(|e| e.path == *path)
+        {
             ue.selected = selected;
         }
     }
 
     pub fn sync_unfiltered_selection(&mut self) {
-        if self.unfiltered_entries.is_empty() {
+        if self.listing.unfiltered_entries.is_empty() {
             return;
         }
 
         let selection: HashMap<_, _> = self
+            .listing
             .entries
             .iter()
             .map(|entry| (entry.path.as_path(), entry.selected))
             .collect();
 
-        for entry in &mut self.unfiltered_entries {
+        for entry in &mut self.listing.unfiltered_entries {
             if let Some(selected) = selection.get(entry.path.as_path()) {
                 entry.selected = *selected;
             }
@@ -917,19 +1027,19 @@ impl PanelState {
     }
 
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
-        let source = if self.unfiltered_entries.is_empty() {
-            &self.entries
+        let source = if self.listing.unfiltered_entries.is_empty() {
+            &self.listing.entries
         } else {
-            &self.unfiltered_entries
+            &self.listing.unfiltered_entries
         };
         source.iter().filter(|e| e.selected).collect()
     }
 
     pub fn clear_selection(&mut self) {
-        for entry in &mut self.entries {
+        for entry in &mut self.listing.entries {
             entry.selected = false;
         }
-        for entry in &mut self.unfiltered_entries {
+        for entry in &mut self.listing.unfiltered_entries {
             entry.selected = false;
         }
         self.selected_count = 0;
@@ -940,10 +1050,10 @@ impl PanelState {
         self.selected_count = 0;
         self.selected_size = 0;
         self.total_size = 0;
-        let source = if self.unfiltered_entries.is_empty() {
-            &self.entries
+        let source = if self.listing.unfiltered_entries.is_empty() {
+            &self.listing.entries
         } else {
-            &self.unfiltered_entries
+            &self.listing.unfiltered_entries
         };
         for entry in source {
             self.total_size = self.total_size.saturating_add(entry.size());
@@ -955,14 +1065,14 @@ impl PanelState {
     }
 
     pub fn move_cursor_up(&mut self, max_height: usize) {
-        if self.entries.is_empty() {
+        if self.listing.entries.is_empty() {
             return;
         }
 
         if self.cursor == 0 {
-            self.cursor = self.entries.len().saturating_sub(1);
+            self.cursor = self.listing.entries.len().saturating_sub(1);
             if max_height > 0 {
-                self.scroll_offset = self.entries.len().saturating_sub(max_height);
+                self.scroll_offset = self.listing.entries.len().saturating_sub(max_height);
             }
         } else {
             self.cursor = self.cursor.saturating_sub(1);
@@ -973,11 +1083,11 @@ impl PanelState {
     }
 
     pub fn move_cursor_down(&mut self, max_height: usize) {
-        if self.entries.is_empty() {
+        if self.listing.entries.is_empty() {
             return;
         }
 
-        let max_index = self.entries.len().saturating_sub(1);
+        let max_index = self.listing.entries.len().saturating_sub(1);
 
         if self.cursor >= max_index {
             self.cursor = 0;
@@ -991,7 +1101,7 @@ impl PanelState {
     }
 
     pub fn ensure_cursor_visible(&mut self, visible_height: usize) {
-        let max_scroll = self.entries.len().saturating_sub(1);
+        let max_scroll = self.listing.entries.len().saturating_sub(1);
         if self.scroll_offset > max_scroll {
             self.scroll_offset = max_scroll;
         }
@@ -1004,20 +1114,41 @@ impl PanelState {
     }
 
     pub fn set_cursor(&mut self, idx: usize) {
-        if self.entries.is_empty() {
+        if self.listing.entries.is_empty() {
             self.cursor = 0;
             self.scroll_offset = 0;
         } else {
-            self.cursor = idx.min(self.entries.len() - 1);
+            self.cursor = idx.min(self.listing.entries.len() - 1);
         }
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
-        self.unfiltered_entries = entries.clone();
-        self.entries = entries;
+        self.listing.set_unfiltered(entries.clone());
+        self.listing.set_entries(entries);
         self.cursor = 0;
         self.scroll_offset = 0;
         self.recalculate_selection_stats();
+    }
+
+    pub fn reset_cursor(&mut self) {
+        self.cursor = 0;
+        self.scroll_offset = 0;
+    }
+
+    pub fn mark_unfiltered_dirty(&mut self) {
+        self.listing.mark_unfiltered_dirty();
+    }
+
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.last_error = Some(msg.into());
+    }
+
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listing.entries.is_empty()
     }
 }
 
@@ -1030,20 +1161,29 @@ impl AppState {
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
 
         Self {
+            // Panels
             left_panel: PanelState::new(current_dir.clone()),
             right_panel: PanelState::new(current_dir.clone()),
             active_panel: ActivePanel::Left,
+            // Mode
             mode: AppMode::Normal,
-            command_line: TextInput::default(),
-            search_query: String::new(),
-            search_cursor: 0,
+            prev_mode: None,
             should_quit: false,
-            status_message: None,
+            // Dialog
             dialog_input: TextInput::default(),
+            dialog_selection: 0,
+            pending_action: None,
+            // Command line
+            command_line: TextInput::default(),
             command_history: VecDeque::new(),
             history_index: None,
             command_draft: String::new(),
-            directory_hotlist: vec![current_dir.clone()],
+            // Search
+            search_query: String::new(),
+            search_cursor: 0,
+            // Status
+            status_message: None,
+            // Menu
             menu_selected: 0,
             menu_item_selected: 0,
             picker_selected: 0,
@@ -1052,16 +1192,16 @@ impl AppState {
             cached_hotlist_strings: vec![current_dir.display().to_string()],
             cached_user_menu_strings: Vec::new(),
             pending_menu_command: None,
+            menu_restore_panel: None,
+            directory_hotlist: vec![current_dir],
+            // Directory tree
             tree_root: PathBuf::new(),
             tree_entries: Vec::new(),
             tree_selected: 0,
             tree_scroll: 0,
-            prev_mode: None,
-            menu_restore_panel: None,
-            dialog_selection: 0,
+            // Mouse / drag
             last_click_time: None,
             last_click_position: None,
-            pending_action: None,
             drag_active: false,
             drag_source_pane: ActivePanel::Left,
             drag_source_path: PathBuf::new(),
@@ -1071,6 +1211,7 @@ impl AppState {
             scroll_accel: 0,
             last_scroll_time: None,
             drag_anchor_index: None,
+            // Theme
             theme_colors: crate::ui::theme::DEFAULT_COLORS,
             viewer_spinner_frame: None,
         }
@@ -1138,6 +1279,44 @@ impl AppState {
         self.history_index = None;
         self.prev_mode = None;
         self.mode = AppMode::CommandLine;
+    }
+
+    pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
+        match self.active_panel {
+            ActivePanel::Left => &mut self.right_panel,
+            ActivePanel::Right => &mut self.left_panel,
+        }
+    }
+
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+    }
+
+    pub fn clear_status(&mut self) {
+        self.status_message = None;
+    }
+
+    pub fn reset_drag_state(&mut self) {
+        self.drag_active = false;
+        self.drag_source_path.clear();
+        self.drag_source_name.clear();
+        self.drag_current_row = 0;
+        self.drag_current_col = 0;
+        self.drag_anchor_index = None;
+    }
+
+    pub fn panel_mut(&mut self, panel: ActivePanel) -> &mut PanelState {
+        match panel {
+            ActivePanel::Left => &mut self.left_panel,
+            ActivePanel::Right => &mut self.right_panel,
+        }
+    }
+
+    pub fn panel(&self, panel: ActivePanel) -> &PanelState {
+        match panel {
+            ActivePanel::Left => &self.left_panel,
+            ActivePanel::Right => &self.right_panel,
+        }
     }
 }
 
@@ -1304,7 +1483,7 @@ mod tests {
         let path = PathBuf::from("/test");
         let panel = PanelState::new(path.clone());
         assert_eq!(panel.path, path);
-        assert_eq!(panel.entries.len(), 0);
+        assert_eq!(panel.listing.entries.len(), 0);
         assert_eq!(panel.cursor, 0);
         assert_eq!(panel.scroll_offset, 0);
         assert_eq!(panel.sort_mode, SortMode::default());
@@ -1323,6 +1502,7 @@ mod tests {
     fn test_panel_state_current_entry_some() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel.cursor = 0;
@@ -1333,6 +1513,7 @@ mod tests {
     fn test_panel_state_current_entry_out_of_bounds() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel.cursor = 5;
@@ -1343,11 +1524,12 @@ mod tests {
     fn test_panel_state_toggle_selection_toggle_on() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel.cursor = 0;
         panel.toggle_selection();
-        assert!(panel.entries[0].selected);
+        assert!(panel.listing.entries[0].selected);
         assert_eq!(panel.selected_count, 1);
         assert_eq!(panel.selected_size, 100);
     }
@@ -1356,12 +1538,13 @@ mod tests {
     fn test_panel_state_toggle_selection_toggle_off() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, true));
         panel.cursor = 0;
-        assert!(panel.entries[0].selected);
+        assert!(panel.listing.entries[0].selected);
         panel.toggle_selection();
-        assert!(!panel.entries[0].selected);
+        assert!(!panel.listing.entries[0].selected);
         assert_eq!(panel.selected_count, 0);
         assert_eq!(panel.selected_size, 0);
     }
@@ -1370,12 +1553,13 @@ mod tests {
     fn test_panel_state_set_selection_at_on() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
 
         panel.set_selection_at(0, true);
 
-        assert!(panel.entries[0].selected);
+        assert!(panel.listing.entries[0].selected);
         assert_eq!(panel.selected_count, 1);
         assert_eq!(panel.selected_size, 100);
     }
@@ -1384,12 +1568,13 @@ mod tests {
     fn test_panel_state_set_selection_at_off() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, true));
 
         panel.set_selection_at(0, false);
 
-        assert!(!panel.entries[0].selected);
+        assert!(!panel.listing.entries[0].selected);
         assert_eq!(panel.selected_count, 0);
         assert_eq!(panel.selected_size, 0);
     }
@@ -1397,11 +1582,11 @@ mod tests {
     #[test]
     fn test_panel_state_sync_unfiltered_selection() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![
+        panel.listing.entries = vec![
             create_test_entry("file1.txt", false, 100, 0o644, true),
             create_test_entry("file2.txt", false, 200, 0o644, false),
         ];
-        panel.unfiltered_entries = vec![
+        panel.listing.unfiltered_entries = vec![
             create_test_entry("file1.txt", false, 100, 0o644, false),
             create_test_entry("file2.txt", false, 200, 0o644, true),
             create_test_entry("file3.txt", false, 300, 0o644, true),
@@ -1409,21 +1594,24 @@ mod tests {
 
         panel.sync_unfiltered_selection();
 
-        assert!(panel.unfiltered_entries[0].selected);
-        assert!(!panel.unfiltered_entries[1].selected);
-        assert!(panel.unfiltered_entries[2].selected);
+        assert!(panel.listing.unfiltered_entries[0].selected);
+        assert!(!panel.listing.unfiltered_entries[1].selected);
+        assert!(panel.listing.unfiltered_entries[2].selected);
     }
 
     #[test]
     fn test_panel_state_selected_entries() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, true));
         panel
+            .listing
             .entries
             .push(create_test_entry("file2.txt", false, 200, 0o644, false));
         panel
+            .listing
             .entries
             .push(create_test_entry("file3.txt", false, 300, 0o644, true));
 
@@ -1437,9 +1625,11 @@ mod tests {
     fn test_panel_state_move_cursor_up() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel
+            .listing
             .entries
             .push(create_test_entry("file2.txt", false, 200, 0o644, false));
         panel.cursor = 1;
@@ -1451,6 +1641,7 @@ mod tests {
     fn test_panel_state_move_cursor_up_at_top() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel.cursor = 0;
@@ -1462,9 +1653,11 @@ mod tests {
     fn test_panel_state_move_cursor_down() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel
+            .listing
             .entries
             .push(create_test_entry("file2.txt", false, 200, 0o644, false));
         panel.cursor = 0;
@@ -1476,9 +1669,11 @@ mod tests {
     fn test_panel_state_move_cursor_down_at_bottom() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file1.txt", false, 100, 0o644, false));
         panel
+            .listing
             .entries
             .push(create_test_entry("file2.txt", false, 200, 0o644, false));
         panel.cursor = 1;
@@ -1490,7 +1685,7 @@ mod tests {
     fn test_panel_state_move_cursor_down_scroll() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1753,7 +1948,7 @@ mod tests {
     fn test_panel_state_move_cursor_up_scroll_adjust() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1772,7 +1967,7 @@ mod tests {
     fn test_panel_state_move_cursor_up_no_scroll_when_visible() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1791,7 +1986,7 @@ mod tests {
     fn test_panel_state_move_cursor_down_scroll_new_formula() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1817,7 +2012,7 @@ mod tests {
     fn test_panel_state_move_cursor_down_no_scroll_when_visible() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1837,7 +2032,7 @@ mod tests {
     fn test_panel_state_ensure_cursor_visible_below() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1856,7 +2051,7 @@ mod tests {
     fn test_panel_state_ensure_cursor_visible_above() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1875,7 +2070,7 @@ mod tests {
     fn test_panel_state_ensure_cursor_visible_already_visible() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1894,7 +2089,7 @@ mod tests {
     fn test_panel_state_ensure_cursor_visible_edge_case() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..10 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{}.txt", i),
                 false,
                 100,
@@ -1918,7 +2113,7 @@ mod tests {
     #[test]
     fn test_total_size_computed_by_recalculate() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![
+        panel.listing.entries = vec![
             create_test_entry("a.txt", false, 100, 0o644, false),
             create_test_entry("b.txt", false, 200, 0o644, false),
             create_test_entry("c.txt", false, 300, 0o644, true),
@@ -1986,7 +2181,7 @@ mod tests {
     #[test]
     fn test_total_size_includes_all_entries() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![
+        panel.listing.entries = vec![
             create_test_entry("small.txt", false, 50, 0o644, false),
             create_test_entry("big.txt", false, 5000, 0o644, true),
         ];
@@ -1998,7 +2193,7 @@ mod tests {
     #[test]
     fn test_panel_state_empty_entries_cursor_scroll_zero() {
         let panel = PanelState::new(PathBuf::from("/test"));
-        assert_eq!(panel.entries.len(), 0);
+        assert_eq!(panel.listing.entries.len(), 0);
         assert_eq!(panel.cursor, 0);
         assert_eq!(panel.scroll_offset, 0);
     }
@@ -2006,7 +2201,7 @@ mod tests {
     #[test]
     fn test_panel_state_single_item_cursor() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![create_test_entry("only.txt", false, 10, 0o644, false)];
+        panel.listing.entries = vec![create_test_entry("only.txt", false, 10, 0o644, false)];
 
         assert_eq!(panel.cursor, 0);
         panel.move_cursor_down(10);
@@ -2018,16 +2213,16 @@ mod tests {
     #[test]
     fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![
+        panel.listing.entries = vec![
             create_test_entry("a.txt", false, 10, 0o644, false),
             create_test_entry("b.txt", false, 10, 0o644, false),
             create_test_entry("c.txt", false, 10, 0o644, false),
         ];
         panel.cursor = 2;
 
-        panel.entries.truncate(1);
+        panel.listing.entries.truncate(1);
 
-        let max_index = panel.entries.len().saturating_sub(1);
+        let max_index = panel.listing.entries.len().saturating_sub(1);
         panel.cursor = panel.cursor.min(max_index);
 
         assert_eq!(panel.cursor, 0);
@@ -2036,7 +2231,7 @@ mod tests {
     #[test]
     fn test_panel_state_move_cursor_down_clamped_at_last() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![
+        panel.listing.entries = vec![
             create_test_entry("a.txt", false, 10, 0o644, false),
             create_test_entry("b.txt", false, 10, 0o644, false),
         ];
@@ -2052,7 +2247,7 @@ mod tests {
     #[test]
     fn test_panel_state_move_cursor_up_clamped_at_zero() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = vec![create_test_entry("a.txt", false, 10, 0o644, false)];
+        panel.listing.entries = vec![create_test_entry("a.txt", false, 10, 0o644, false)];
         panel.cursor = 0;
 
         panel.move_cursor_up(10);
@@ -2070,7 +2265,7 @@ mod tests {
     #[test]
     fn test_panel_state_scroll_offset_with_many_entries() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
-        panel.entries = (0..100)
+        panel.listing.entries = (0..100)
             .map(|i| create_test_entry(&format!("file{i:03}.txt"), false, 10, 0o644, false))
             .collect();
         panel.cursor = 99;
@@ -2155,7 +2350,7 @@ mod tests {
     fn test_move_cursor_up_wraps_to_last_entry() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..5 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{i}.txt"),
                 false,
                 100,
@@ -2173,6 +2368,7 @@ mod tests {
     fn test_move_cursor_up_wraps_with_single_entry() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file.txt", false, 100, 0o644, false));
         panel.cursor = 0;
@@ -2184,7 +2380,7 @@ mod tests {
     fn test_move_cursor_down_wraps_to_first_entry() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..5 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{i}.txt"),
                 false,
                 100,
@@ -2202,6 +2398,7 @@ mod tests {
     fn test_move_cursor_down_wraps_with_single_entry() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         panel
+            .listing
             .entries
             .push(create_test_entry("file.txt", false, 100, 0o644, false));
         panel.cursor = 0;
@@ -2213,7 +2410,7 @@ mod tests {
     fn test_move_cursor_up_wrap_then_down_wrap() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..5 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{i}.txt"),
                 false,
                 100,
@@ -2232,7 +2429,7 @@ mod tests {
     fn test_move_cursor_down_wrap_with_many_entries_scroll_check() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..20 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{i}.txt"),
                 false,
                 100,
@@ -2250,7 +2447,7 @@ mod tests {
     fn test_move_cursor_up_wrap_with_many_entries_scroll_check() {
         let mut panel = PanelState::new(PathBuf::from("/test"));
         for i in 0..20 {
-            panel.entries.push(create_test_entry(
+            panel.listing.entries.push(create_test_entry(
                 &format!("file{i}.txt"),
                 false,
                 100,

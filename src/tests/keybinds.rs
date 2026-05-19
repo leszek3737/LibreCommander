@@ -10,7 +10,7 @@ use std::path::PathBuf;
 fn ctrl_alt_s_starts_search_mode() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
     ];
@@ -72,8 +72,8 @@ fn ctrl_alt_r_refreshes() {
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("existing.txt"), b"data").unwrap();
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.entries = vec![];
-    assert!(state.left_panel.entries.is_empty());
+    state.left_panel.listing.entries = vec![];
+    assert!(state.left_panel.listing.entries.is_empty());
 
     handle_normal_mode(
         &mut state,
@@ -89,6 +89,7 @@ fn ctrl_alt_r_refreshes() {
     assert!(
         state
             .left_panel
+            .listing
             .entries
             .iter()
             .any(|e| e.name == "existing.txt"),
@@ -123,7 +124,7 @@ fn ctrl_alt_u_swaps_panels() {
 fn alt_j_does_not_start_search_mode() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
     ];
@@ -146,7 +147,7 @@ fn alt_j_does_not_start_search_mode() {
 fn alt_k_does_not_move_cursor() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("a.txt").size(10).build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("a.txt").size(10).build()];
     state.left_panel.cursor = 0;
 
     handle_normal_mode(
@@ -167,7 +168,7 @@ fn alt_k_does_not_move_cursor() {
 fn shift_j_falls_through_to_navigation_down() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
     ];
@@ -189,7 +190,7 @@ fn shift_j_falls_through_to_navigation_down() {
 fn shift_k_falls_through_to_navigation_up() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
     ];
@@ -211,7 +212,7 @@ fn shift_k_falls_through_to_navigation_up() {
 #[test]
 fn alt_enter_shows_properties_dialog() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("file.txt").build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("file.txt").build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Enter, 20);
@@ -224,7 +225,7 @@ fn alt_enter_shows_properties_dialog() {
 #[test]
 fn alt_enter_on_dotdot_does_nothing() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("..").build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("..").build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Enter, 20);
@@ -357,7 +358,7 @@ fn launch_editor_no_current_entry_does_nothing() {
 #[test]
 fn launch_editor_directory_entry_does_not_launch() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("mydir").build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("mydir").build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     let mut terminal = test_terminal();
@@ -388,9 +389,10 @@ fn tab_switches_panel_right_to_left() {
 #[test]
 fn tab_clamps_cursor() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("a").build(); 10];
+    state.left_panel.listing.entries = vec![TestEntry::new("a").build(); 10];
     state.left_panel.cursor = 9;
-    state.right_panel.entries = vec![TestEntry::new("x").build(), TestEntry::new("y").build()];
+    state.right_panel.listing.entries =
+        vec![TestEntry::new("x").build(), TestEntry::new("y").build()];
     state.active_panel = ActivePanel::Left;
     handle_navigation_keys(&mut state, KeyCode::Tab, KeyModifiers::NONE, 20);
     assert_eq!(state.active_panel, ActivePanel::Right);

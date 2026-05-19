@@ -189,15 +189,15 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
 }
 
 pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
-    let left_entries = if state.left_panel.unfiltered_entries.is_empty() {
-        &state.left_panel.entries
+    let left_entries = if state.left_panel.listing.unfiltered_entries.is_empty() {
+        &state.left_panel.listing.entries
     } else {
-        &state.left_panel.unfiltered_entries
+        &state.left_panel.listing.unfiltered_entries
     };
-    let right_entries = if state.right_panel.unfiltered_entries.is_empty() {
-        &state.right_panel.entries
+    let right_entries = if state.right_panel.listing.unfiltered_entries.is_empty() {
+        &state.right_panel.listing.entries
     } else {
-        &state.right_panel.unfiltered_entries
+        &state.right_panel.listing.unfiltered_entries
     };
     let report = ops::compare_entries(left_entries, right_entries, mode);
     ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);

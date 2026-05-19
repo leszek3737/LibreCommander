@@ -62,7 +62,7 @@ fn menu_rename_opens_input_dialog_with_current_name() {
     let tmp = tempfile::tempdir().unwrap();
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries.push(
+    state.left_panel.listing.entries.push(
         app::types::FileEntry::builder()
             .name("old.txt")
             .path(tmp.path().join("old.txt"))
@@ -100,7 +100,7 @@ fn menu_rename_confirms_and_renames_file() {
     std::fs::write(&old_path, "content").unwrap();
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("old.txt").path(old_path).build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("old.txt").path(old_path).build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     state.mode = AppMode::Menu;
@@ -186,11 +186,11 @@ fn menu_sort_preserves_current_entry_focus() {
         menu_item_selected: 1,
         ..Default::default()
     };
-    state.left_panel.entries = vec![
+    state.left_panel.listing.entries = vec![
         TestEntry::new("zeta.txt").build(),
         TestEntry::new("alpha.txt").build(),
     ];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
     state.left_panel.cursor = 0;
     state.left_panel.sort_mode = lc::app::types::SortMode::NameDesc;
 
@@ -200,8 +200,8 @@ fn menu_sort_preserves_current_entry_focus() {
         state.left_panel.sort_mode,
         lc::app::types::SortMode::NaturalNameAsc
     );
-    assert_eq!(state.left_panel.entries[0].name, "alpha.txt");
-    assert_eq!(state.left_panel.entries[1].name, "zeta.txt");
+    assert_eq!(state.left_panel.listing.entries[0].name, "alpha.txt");
+    assert_eq!(state.left_panel.listing.entries[1].name, "zeta.txt");
     assert_eq!(
         state
             .left_panel
@@ -219,8 +219,8 @@ fn menu_reset_filter_preserves_current_entry_focus() {
         menu_item_selected: 4,
         ..Default::default()
     };
-    state.left_panel.entries = vec![TestEntry::new("beta.txt").build()];
-    state.left_panel.unfiltered_entries = vec![
+    state.left_panel.listing.entries = vec![TestEntry::new("beta.txt").build()];
+    state.left_panel.listing.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").build(),
         TestEntry::new("beta.txt").build(),
     ];

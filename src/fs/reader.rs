@@ -132,13 +132,16 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
 }
 
 pub fn ensure_path_index(panel: &mut PanelState) {
-    if !panel.path_index.is_empty() {
+    if !panel.listing.path_index.is_empty() {
         return;
     }
-    panel.path_index.clear();
-    panel.path_index.reserve(panel.unfiltered_entries.len());
-    for (i, entry) in panel.unfiltered_entries.iter().enumerate() {
-        panel.path_index.insert(entry.path.clone(), i);
+    panel.listing.path_index.clear();
+    panel
+        .listing
+        .path_index
+        .reserve(panel.listing.unfiltered_entries.len());
+    for (i, entry) in panel.listing.unfiltered_entries.iter().enumerate() {
+        panel.listing.path_index.insert(entry.path.clone(), i);
     }
 }
 
@@ -226,37 +229,39 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
         return;
     }
 
-    if panel.unfiltered_entries.is_empty() {
+    if panel.listing.unfiltered_entries.is_empty() {
         return;
     }
 
     ensure_path_index(panel);
 
-    if let Some(&idx) = panel.path_index.get(&entry.path) {
-        if let Some(existing) = panel.unfiltered_entries.get_mut(idx) {
+    if let Some(&idx) = panel.listing.path_index.get(&entry.path) {
+        if let Some(existing) = panel.listing.unfiltered_entries.get_mut(idx) {
             entry.selected = existing.selected;
             *existing = entry;
         }
     } else {
-        let new_idx = panel.unfiltered_entries.len();
-        panel.unfiltered_entries.push(entry);
-        panel
-            .path_index
-            .insert(panel.unfiltered_entries[new_idx].path.clone(), new_idx);
+        let new_idx = panel.listing.unfiltered_entries.len();
+        panel.listing.unfiltered_entries.push(entry);
+        panel.listing.path_index.insert(
+            panel.listing.unfiltered_entries[new_idx].path.clone(),
+            new_idx,
+        );
     }
 }
 
 pub fn remove_entry(panel: &mut PanelState, path: &Path) {
-    if panel.unfiltered_entries.is_empty() {
+    if panel.listing.unfiltered_entries.is_empty() {
         return;
     }
 
     panel
+        .listing
         .unfiltered_entries
         .retain(|e| is_parent_entry(e) || e.path != path);
 
-    if panel.path_index.len() != panel.unfiltered_entries.len() {
-        panel.path_index.clear();
+    if panel.listing.path_index.len() != panel.listing.unfiltered_entries.len() {
+        panel.listing.path_index.clear();
     }
 }
 
@@ -338,7 +343,7 @@ mod tests {
 
     fn test_panel(entries: Vec<FileEntry>) -> PanelState {
         let mut panel = PanelState::new(std::env::temp_dir());
-        panel.entries = entries;
+        panel.listing.entries = entries;
         panel.recalculate_selection_stats();
         panel
     }
@@ -571,30 +576,31 @@ mod tests {
     #[test]
     fn test_upsert_entry_adds_new_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("b.txt", false)]);
-        panel.unfiltered_entries = panel.entries.clone();
+        panel.listing.unfiltered_entries = panel.listing.entries.clone();
         upsert_entry(&mut panel, test_entry("a.txt", false));
 
         assert!(
             panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == "a.txt")
         );
-        assert_eq!(panel.unfiltered_entries.len(), 3);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 3);
     }
 
     #[test]
     fn test_upsert_entry_updates_existing_and_preserves_selection() {
         let mut panel = test_panel(vec![test_entry("file.txt", true)]);
-        panel.unfiltered_entries = panel.entries.clone();
+        panel.listing.unfiltered_entries = panel.listing.entries.clone();
         let mut updated = test_entry("file.txt", false);
         updated.cha.len = 99;
 
         upsert_entry(&mut panel, updated);
 
-        assert_eq!(panel.unfiltered_entries.len(), 1);
-        assert_eq!(panel.unfiltered_entries[0].cha.len, 99);
-        assert!(panel.unfiltered_entries[0].selected);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 1);
+        assert_eq!(panel.listing.unfiltered_entries[0].cha.len, 99);
+        assert!(panel.listing.unfiltered_entries[0].selected);
     }
 
     #[test]
@@ -605,18 +611,20 @@ mod tests {
             removed.clone(),
             test_entry("keep.txt", false),
         ]);
-        panel.unfiltered_entries = panel.entries.clone();
+        panel.listing.unfiltered_entries = panel.listing.entries.clone();
 
         remove_entry(&mut panel, &removed.path);
 
         assert!(
             !panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == "remove.txt")
         );
         assert!(
             panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == "keep.txt")
@@ -626,12 +634,13 @@ mod tests {
     #[test]
     fn test_upsert_adds_hidden_to_unfiltered() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("visible.txt", false)]);
-        panel.unfiltered_entries = panel.entries.clone();
+        panel.listing.unfiltered_entries = panel.listing.entries.clone();
         panel.show_hidden = false;
         upsert_entry(&mut panel, test_entry(".hidden", false));
 
         assert!(
             panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == ".hidden")
@@ -645,18 +654,19 @@ mod tests {
 
         upsert_entry(&mut panel, test_entry("notes.txt", false));
 
-        assert_eq!(panel.unfiltered_entries.len(), 0);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 0);
     }
 
     #[test]
     fn test_remove_entry_preserves_parent_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("file.txt", false)]);
-        panel.unfiltered_entries = panel.entries.clone();
+        panel.listing.unfiltered_entries = panel.listing.entries.clone();
 
         remove_entry(&mut panel, &std::env::temp_dir());
 
         assert!(
             panel
+                .listing
                 .unfiltered_entries
                 .iter()
                 .any(|entry| entry.name == "..")
