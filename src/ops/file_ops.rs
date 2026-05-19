@@ -1008,14 +1008,25 @@ fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()
         };
         #[cfg(windows)]
         if need_remove {
-            let backup = dest.with_extension("lc_bak");
+            let mut os = dest.as_os_str().to_os_string();
+            os.push(".lc_bak");
+            let backup = PathBuf::from(os);
+            if backup.exists() {
+                fs::remove_file(&backup)?;
+            }
             fs::rename(dest, &backup)?;
             match fs::rename(temp, dest) {
                 Ok(()) => {
                     let _ = fs::remove_file(&backup);
                 }
                 Err(err) => {
-                    let _ = fs::rename(&backup, dest);
+                    if let Err(restore_err) = fs::rename(&backup, dest) {
+                        debug_log!(
+                            "failed to restore backup {} to {}: {restore_err}",
+                            backup.display(),
+                            dest.display()
+                        );
+                    }
                     return Err(err);
                 }
             }

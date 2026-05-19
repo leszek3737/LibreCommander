@@ -723,6 +723,7 @@ impl FileSearch {
         let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES, file);
         let mut line_buf = Vec::new();
         let mut line_no = 0_usize;
+        let mut non_utf8_lines = 0usize;
         loop {
             line_buf.clear();
             match reader.read_until(b'\n', &mut line_buf) {
@@ -759,11 +760,14 @@ impl FileSearch {
                     let line_text = match std::str::from_utf8(line) {
                         Ok(s) => s.strip_suffix('\r').unwrap_or(s).to_owned(),
                         Err(_) => {
-                            outcome.errors.push(format!(
-                                "non-UTF-8 line {} in {}",
-                                line_no,
-                                path.display()
-                            ));
+                            non_utf8_lines += 1;
+                            if non_utf8_lines <= 3 {
+                                outcome.errors.push(format!(
+                                    "non-UTF-8 line {} in {}",
+                                    line_no,
+                                    path.display()
+                                ));
+                            }
                             continue;
                         }
                     };
@@ -786,6 +790,13 @@ impl FileSearch {
                     return;
                 }
             }
+        }
+        if non_utf8_lines > 3 {
+            outcome.errors.push(format!(
+                "... and {} more non-UTF-8 lines in {} (suppressed)",
+                non_utf8_lines - 3,
+                path.display()
+            ));
         }
     }
 

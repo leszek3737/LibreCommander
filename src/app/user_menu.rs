@@ -56,7 +56,7 @@ impl PartialEq for MenuEntry {
 ///
 /// Prevents shell metacharacter injection but does NOT protect
 /// against option injection (filenames starting with `-`).
-/// Menu templates should use `--` before `%f`/`%t`.
+/// Use `safe_file_arg` which prepends `./` to `-`-prefixed names.
 pub fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2 + 3 * s.chars().filter(|&c| c == '\'').count());
     out.push('\'');
@@ -73,7 +73,7 @@ pub fn shell_quote(s: &str) -> String {
 
 fn safe_file_arg(s: &str) -> String {
     if s.starts_with('-') {
-        format!("-- {}", shell_quote(s))
+        shell_quote(&format!("./{s}"))
     } else {
         shell_quote(s)
     }
