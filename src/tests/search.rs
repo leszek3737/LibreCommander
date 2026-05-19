@@ -14,8 +14,8 @@ fn search_enter_clears_filter_and_refreshes_from_disk() {
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
-    state.left_panel.unfiltered_entries = vec![
+    state.left_panel.listing.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
+    state.left_panel.listing.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").size(1).build(),
         TestEntry::new("beta.txt").size(2).build(),
     ];
@@ -29,6 +29,7 @@ fn search_enter_clears_filter_and_refreshes_from_disk() {
     assert!(
         state
             .left_panel
+            .listing
             .entries
             .iter()
             .any(|entry| entry.name == "alpha.txt")
@@ -36,6 +37,7 @@ fn search_enter_clears_filter_and_refreshes_from_disk() {
     assert!(
         state
             .left_panel
+            .listing
             .entries
             .iter()
             .any(|entry| entry.name == "beta.txt")
@@ -56,8 +58,8 @@ fn search_enter_preserves_current_entry_focus() {
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.entries = vec![TestEntry::new("beta.txt").path(&beta).size(1).build()];
-    state.left_panel.unfiltered_entries = vec![
+    state.left_panel.listing.entries = vec![TestEntry::new("beta.txt").path(&beta).size(1).build()];
+    state.left_panel.listing.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").path(&alpha).size(1).build(),
         TestEntry::new("beta.txt").path(&beta).size(1).build(),
     ];
@@ -85,9 +87,9 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.entries = vec![TestEntry::new("stale.txt").size(1).build()];
-    state.left_panel.unfiltered_entries = vec![TestEntry::new("stale.txt").size(1).build()];
-    state.left_panel.unfiltered_dirty = true;
+    state.left_panel.listing.entries = vec![TestEntry::new("stale.txt").size(1).build()];
+    state.left_panel.listing.unfiltered_entries = vec![TestEntry::new("stale.txt").size(1).build()];
+    state.left_panel.listing.unfiltered_dirty = true;
     state.left_panel.filter = Some("fresh".to_string());
 
     handle_search_mode(&mut state, KeyCode::Enter, 24);
@@ -95,6 +97,7 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
     assert!(
         state
             .left_panel
+            .listing
             .entries
             .iter()
             .any(|entry| entry.name == "fresh.txt")
@@ -102,6 +105,7 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
     assert!(
         !state
             .left_panel
+            .listing
             .entries
             .iter()
             .any(|entry| entry.name == "stale.txt")
@@ -121,8 +125,8 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
-    state.left_panel.unfiltered_entries = vec![
+    state.left_panel.listing.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
+    state.left_panel.listing.unfiltered_entries = vec![
         TestEntry::new("alpha.txt").size(1).build(),
         TestEntry::new("beta.txt").size(2).build(),
     ];
@@ -135,6 +139,7 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
     assert!(state.left_panel.filter.is_none());
     let names: Vec<&str> = state
         .left_panel
+        .listing
         .entries
         .iter()
         .map(|e| e.name.as_str())
@@ -148,7 +153,7 @@ fn search_mode_with_empty_panel_handles_enter_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![];
+    state.left_panel.listing.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
     handle_search_mode(&mut state, KeyCode::Enter, 20);
@@ -159,7 +164,7 @@ fn search_mode_with_empty_panel_handles_esc_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![];
+    state.left_panel.listing.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
     handle_search_mode(&mut state, KeyCode::Esc, 20);
@@ -171,7 +176,7 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![];
+    state.left_panel.listing.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
     handle_search_mode(&mut state, KeyCode::Char('x'), 20);
@@ -180,20 +185,28 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
 #[test]
 fn apply_search_filter_exact_match() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("foo").build(), TestEntry::new("bar").build()];
+    state.left_panel.listing.entries =
+        vec![TestEntry::new("foo").build(), TestEntry::new("bar").build()];
     state.left_panel.filter = Some("foo".to_string());
     apply_search_filter(&mut state.left_panel);
-    let names: Vec<_> = state.left_panel.entries.iter().map(|e| &e.name).collect();
+    let names: Vec<_> = state
+        .left_panel
+        .listing
+        .entries
+        .iter()
+        .map(|e| &e.name)
+        .collect();
     assert!(names.iter().all(|n| *n == "foo"));
 }
 
 #[test]
 fn apply_search_filter_no_match_clears_entries() {
     let mut state = AppState::default();
-    state.left_panel.entries = vec![TestEntry::new("a").build(), TestEntry::new("b").build()];
+    state.left_panel.listing.entries =
+        vec![TestEntry::new("a").build(), TestEntry::new("b").build()];
     state.left_panel.filter = Some("xyz".to_string());
     apply_search_filter(&mut state.left_panel);
-    assert!(state.left_panel.entries.is_empty());
+    assert!(state.left_panel.listing.entries.is_empty());
 }
 
 #[test]
@@ -201,11 +214,11 @@ fn apply_search_filter_empty_pattern_shows_all() {
     let mut state = AppState::default();
     let entries = vec![TestEntry::new("a").build(), TestEntry::new("b").build()];
     let count = entries.len();
-    state.left_panel.entries = entries.clone();
-    state.left_panel.unfiltered_entries = entries;
+    state.left_panel.listing.entries = entries.clone();
+    state.left_panel.listing.unfiltered_entries = entries;
     state.left_panel.filter = None;
     apply_search_filter(&mut state.left_panel);
-    assert_eq!(state.left_panel.entries.len(), count);
+    assert_eq!(state.left_panel.listing.entries.len(), count);
 }
 
 #[test]
@@ -216,9 +229,9 @@ fn apply_search_filter_partial_match() {
         TestEntry::new("baz").build(),
         TestEntry::new("foo").build(),
     ];
-    state.left_panel.entries = entries.clone();
-    state.left_panel.unfiltered_entries = entries;
+    state.left_panel.listing.entries = entries.clone();
+    state.left_panel.listing.unfiltered_entries = entries;
     state.left_panel.filter = Some("ba".to_string());
     apply_search_filter(&mut state.left_panel);
-    assert_eq!(state.left_panel.entries.len(), 2);
+    assert_eq!(state.left_panel.listing.entries.len(), 2);
 }

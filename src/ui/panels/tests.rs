@@ -470,7 +470,7 @@ fn test_panel_status_summary_empty_panel() {
 #[test]
 fn test_panel_status_summary_first_item() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.entries = vec![
+    panel.listing.entries = vec![
         create_test_entry("a.txt", false, false, false),
         create_test_entry("b.txt", false, false, false),
         create_test_entry("c.txt", false, false, false),
@@ -484,7 +484,7 @@ fn test_panel_status_summary_first_item() {
 #[test]
 fn test_panel_status_summary_last_item() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.entries = vec![
+    panel.listing.entries = vec![
         create_test_entry("a.txt", false, false, false),
         create_test_entry("b.txt", false, false, false),
         create_test_entry("c.txt", false, false, false),
@@ -498,7 +498,7 @@ fn test_panel_status_summary_last_item() {
 #[test]
 fn test_panel_status_summary_with_selection() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.entries = vec![
+    panel.listing.entries = vec![
         create_test_entry("a.txt", false, false, false),
         create_test_entry("b.txt", false, false, false),
     ];
@@ -513,7 +513,7 @@ fn test_panel_status_summary_with_selection() {
 #[test]
 fn test_panel_status_summary_no_selection_when_zero() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.entries = vec![create_test_entry("a.txt", false, false, false)];
+    panel.listing.entries = vec![create_test_entry("a.txt", false, false, false)];
     panel.cursor = 0;
     panel.selected_count = 0;
     let (summary, _) = panel_status_summary(&panel);
@@ -603,7 +603,7 @@ fn test_render_panel_no_panic() {
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.entries = vec![
+    panel.listing.entries = vec![
         create_test_entry("file.txt", false, false, false),
         create_test_entry("mydir", true, false, false),
     ];
@@ -637,7 +637,7 @@ fn test_render_status_bar_no_panic() {
     let backend = ratatui::backend::TestBackend::new(80, 2);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.entries = vec![create_test_entry("file.txt", false, false, false)];
+    panel.listing.entries = vec![create_test_entry("file.txt", false, false, false)];
     terminal
         .draw(|f| {
             render_status_bar(f, f.area(), &panel);

@@ -304,7 +304,12 @@ fn finish_search_job(
             Some(ActivePanel::Right) => &mut state.right_panel,
             None => state.active_panel_mut(),
         };
-        if let Some(pos) = panel.entries.iter().position(|e| e.path == first.path) {
+        if let Some(pos) = panel
+            .listing
+            .entries
+            .iter()
+            .position(|e| e.path == first.path)
+        {
             panel.cursor = pos;
             panel.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
         }

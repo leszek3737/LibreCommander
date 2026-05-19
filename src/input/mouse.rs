@@ -199,7 +199,7 @@ fn handle_mouse_scroll(
         state.active_panel = ActivePanel::Right;
     }
     let panel = state.active_panel_mut();
-    let len = panel.entries.len();
+    let len = panel.listing.entries.len();
     match kind {
         MouseEventKind::ScrollUp => {
             panel.cursor = panel.cursor.saturating_sub(SCROLL_LINES);
@@ -495,7 +495,7 @@ fn handle_mouse_panels(
     let relative_row = pos.row.saturating_sub(list_start_row);
     let clicked_index = panel.scroll_offset + relative_row as usize;
 
-    if clicked_index >= panel.entries.len() {
+    if clicked_index >= panel.listing.entries.len() {
         return;
     }
 
@@ -517,7 +517,7 @@ fn handle_mouse_panels(
         state.last_click_position = None;
         state.drag_anchor_index = None;
 
-        let entry = &panel.entries[clicked_index];
+        let entry = &panel.listing.entries[clicked_index];
         let is_dir = entry.is_dir();
         let path = entry.path.clone();
         if is_dir {
@@ -579,17 +579,18 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
     let relative_row = pos.row.saturating_sub(list_start_row);
     let current_index = panel.scroll_offset + relative_row as usize;
 
-    if current_index >= panel.entries.len() {
+    if current_index >= panel.listing.entries.len() {
         return;
     }
 
     let panel_mut = state.active_panel_mut();
     let start = anchor.min(current_index);
     let end = anchor.max(current_index);
-    for entry in panel_mut.entries.iter_mut() {
+    for entry in panel_mut.listing.entries.iter_mut() {
         entry.selected = false;
     }
     for entry in panel_mut
+        .listing
         .entries
         .iter_mut()
         .skip(start)
@@ -944,9 +945,9 @@ mod tests {
         };
         let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
         let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
-        left_panel.entries = entries.clone();
+        left_panel.listing.entries = entries.clone();
         let mut right_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
-        right_panel.entries = entries;
+        right_panel.listing.entries = entries;
         let mut state = AppState {
             left_panel,
             right_panel,
@@ -966,6 +967,7 @@ mod tests {
 
         let selected: Vec<_> = state
             .left_panel
+            .listing
             .entries
             .iter()
             .filter(|e| e.selected)

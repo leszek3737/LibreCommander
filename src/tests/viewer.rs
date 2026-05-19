@@ -14,11 +14,12 @@ fn f3_viewer_clears_stale_prev_mode() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.entries = vec![TestEntry::new("view.txt").path(file).size(4).build()];
-    state.left_panel.unfiltered_entries = state.left_panel.entries.clone();
+    state.left_panel.listing.entries = vec![TestEntry::new("view.txt").path(file).size(4).build()];
+    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
     state.left_panel.cursor = 0;
-    state.left_panel.path_index = state
+    state.left_panel.listing.path_index = state
         .left_panel
+        .listing
         .entries
         .iter()
         .enumerate()

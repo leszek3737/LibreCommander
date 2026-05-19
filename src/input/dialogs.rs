@@ -358,7 +358,7 @@ fn handle_input_action(
             } else {
                 Some(input)
             };
-            if panel.unfiltered_dirty || panel.unfiltered_entries.is_empty() {
+            if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
                 refresh_active(state);
             } else {
                 rebuild_visible_entries(panel, panel_visible_height(terminal_height));

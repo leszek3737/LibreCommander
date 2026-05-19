@@ -129,14 +129,14 @@ pub fn apply_compare_to_panels(
 }
 
 fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
-    for entry in &mut panel.entries {
+    for entry in &mut panel.listing.entries {
         entry.selected = if entry.name != ".." {
             marks.contains(&entry.name)
         } else {
             false
         };
     }
-    for entry in &mut panel.unfiltered_entries {
+    for entry in &mut panel.listing.unfiltered_entries {
         entry.selected = if entry.name != ".." {
             marks.contains(&entry.name)
         } else {
@@ -490,7 +490,13 @@ mod tests {
         let mut left_panel = PanelState {
             path: PathBuf::from("/tmp"),
             canonical_path: None,
-            entries: vec![entry("a.txt", 10), entry("b.txt", 20)],
+            listing: crate::app::types::PanelListing {
+                entries: vec![entry("a.txt", 10), entry("b.txt", 20)],
+                unfiltered_entries: vec![],
+                unfiltered_dirty: true,
+                path_index: HashMap::new(),
+                needs_rebuild: false,
+            },
             cursor: 0,
             scroll_offset: 0,
             sort_mode: crate::app::types::SortMode::NameAsc,
@@ -504,15 +510,17 @@ mod tests {
             total_size: 0,
             last_error: None,
             history: vec![],
-            unfiltered_entries: vec![],
-            unfiltered_dirty: true,
-            path_index: HashMap::new(),
-            needs_rebuild: false,
         };
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
             canonical_path: None,
-            entries: vec![entry("a.txt", 10)],
+            listing: crate::app::types::PanelListing {
+                entries: vec![entry("a.txt", 10)],
+                unfiltered_entries: vec![],
+                unfiltered_dirty: true,
+                path_index: HashMap::new(),
+                needs_rebuild: false,
+            },
             cursor: 0,
             scroll_offset: 0,
             sort_mode: crate::app::types::SortMode::NameAsc,
@@ -526,10 +534,6 @@ mod tests {
             total_size: 0,
             last_error: None,
             history: vec![],
-            unfiltered_entries: vec![],
-            unfiltered_dirty: true,
-            path_index: HashMap::new(),
-            needs_rebuild: false,
         };
 
         let report = CompareReport {
@@ -542,8 +546,8 @@ mod tests {
 
         apply_compare_to_panels(&mut left_panel, &mut right_panel, &report);
 
-        assert!(!left_panel.entries[0].selected);
-        assert!(left_panel.entries[1].selected);
-        assert!(!right_panel.entries[0].selected);
+        assert!(!left_panel.listing.entries[0].selected);
+        assert!(left_panel.listing.entries[1].selected);
+        assert!(!right_panel.listing.entries[0].selected);
     }
 }

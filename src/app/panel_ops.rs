@@ -55,23 +55,17 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 panel.sort_options,
                 panel.show_hidden,
             );
-            panel.unfiltered_entries = new_unfiltered;
-            ops::sort_entries(
-                &mut panel.unfiltered_entries,
-                panel.sort_mode,
-                panel.sort_options,
-            );
-            panel.unfiltered_dirty = false;
-            panel.path_index.clear();
-            panel.entries = new_filtered;
+            let mut sorted_unfiltered = new_unfiltered;
+            ops::sort_entries(&mut sorted_unfiltered, panel.sort_mode, panel.sort_options);
+            panel.listing.set_unfiltered(sorted_unfiltered);
+            panel.listing.set_entries(new_filtered);
             restore_panel_selection(panel, &saved);
             panel.recalculate_selection_stats();
             restore_panel_cursor(panel, current_name.as_deref());
             panel.ensure_cursor_visible(visible_height);
         }
         Err(e) => {
-            panel.unfiltered_entries.clear();
-            panel.entries.clear();
+            panel.listing.clear();
             panel.cursor = 0;
             panel.scroll_offset = 0;
             panel.last_error = Some(e.to_string());
@@ -98,6 +92,7 @@ fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Error]) {
 
 fn current_panel_entry_name(panel: &PanelState) -> Option<String> {
     panel
+        .listing
         .entries
         .get(panel.cursor)
         .filter(|e| e.name != "..")
@@ -106,6 +101,7 @@ fn current_panel_entry_name(panel: &PanelState) -> Option<String> {
 
 fn selected_panel_paths(panel: &PanelState) -> HashSet<PathBuf> {
     panel
+        .listing
         .entries
         .iter()
         .filter(|e| e.selected)
@@ -133,13 +129,14 @@ pub fn filtered_sorted_entries(
 pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
     panel.sync_unfiltered_selection();
     let current_name = current_panel_entry_name(panel);
-    panel.entries = filtered_sorted_entries(
-        &panel.unfiltered_entries,
+    let filtered = filtered_sorted_entries(
+        &panel.listing.unfiltered_entries,
         panel.filter.as_deref(),
         panel.sort_mode,
         panel.sort_options,
         panel.show_hidden,
     );
+    panel.listing.set_entries(filtered);
     panel.recalculate_selection_stats();
     restore_panel_cursor(panel, current_name.as_deref());
     panel.ensure_cursor_visible(visible_height);
@@ -156,19 +153,19 @@ pub(crate) fn entry_matches_panel(
 }
 
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
-    for entry in &mut panel.entries {
+    for entry in &mut panel.listing.entries {
         entry.selected = saved.contains(&entry.path);
     }
 }
 
 fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
     if let Some(name) = current_name
-        && let Some(pos) = panel.entries.iter().position(|e| e.name == name)
+        && let Some(pos) = panel.listing.entries.iter().position(|e| e.name == name)
     {
         panel.cursor = pos;
     }
-    if panel.cursor >= panel.entries.len() && !panel.entries.is_empty() {
-        panel.cursor = panel.entries.len() - 1;
+    if panel.cursor >= panel.listing.entries.len() && !panel.listing.entries.is_empty() {
+        panel.cursor = panel.listing.entries.len() - 1;
     }
 }
 
