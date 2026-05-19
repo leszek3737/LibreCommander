@@ -124,9 +124,18 @@ impl From<&Settings> for PersistedSetup {
 impl From<PersistedSetup> for Settings {
     fn from(setup: PersistedSetup) -> Self {
         Self {
-            active_panel: match setup.active_panel.as_str() {
+            active_panel: match setup.active_panel.to_lowercase().as_str() {
                 "right" => ActivePanel::Right,
-                _ => ActivePanel::Left,
+                "left" => ActivePanel::Left,
+                other => {
+                    if !other.is_empty() {
+                        crate::debug_log!(
+                            "config: invalid active_panel value '{}', using default Left",
+                            setup.active_panel
+                        );
+                    }
+                    ActivePanel::Left
+                }
             },
             dir_first: setup.dir_first,
             sensitive: setup.sensitive,

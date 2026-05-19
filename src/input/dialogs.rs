@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
 
-use lc::app::job_runner::{RunningJob, start_confirmed_action};
+use lc::app::job_runner::{RunningJob, start_confirmed_action, start_search_job};
 use lc::app::shell;
 use lc::app::types::*;
 use lc::fs;
@@ -252,49 +252,8 @@ fn set_pending_overwrite(state: &mut AppState) {
     }
 }
 
-fn handle_find_file(state: &mut AppState, input: &str, terminal_height: u16) {
-    let dir = state.active_panel().path.clone();
-    let outcome = ops::FileSearch::search_files_with_diagnostics(&dir, input, true, false);
-    let result_count = outcome.matches.len();
-    let error_count = outcome.errors.len();
-    let truncated = outcome.truncated;
-    if let Some(first) = outcome.matches.first()
-        && let Some(parent) = first.path.parent()
-    {
-        state.active_panel_mut().set_path(parent.to_path_buf());
-        refresh_active(state);
-        if let Some(pos) = state
-            .active_panel()
-            .entries
-            .iter()
-            .position(|e| e.path == first.path)
-        {
-            state.active_panel_mut().cursor = pos;
-            state
-                .active_panel_mut()
-                .ensure_cursor_visible(panel_visible_height(terminal_height));
-        }
-    }
-    let mut message = if result_count > 0 {
-        format!("Found {result_count} match(es) for '{input}'")
-    } else {
-        format!("No matches for '{input}'")
-    };
-    if error_count > 0 {
-        message.push_str(&format!(", {error_count} error(s)"));
-    }
-    if let Some(reason) = truncated {
-        let label = match reason {
-            ops::TruncationReason::DepthLimit => "depth limit",
-            ops::TruncationReason::ItemLimit => "item limit",
-            ops::TruncationReason::ContentResultLimit => "result limit",
-            ops::TruncationReason::FileTooLarge => "file too large",
-            ops::TruncationReason::LineTooLong => "line too long",
-            ops::TruncationReason::BinaryFile => "binary file",
-        };
-        message.push_str(&format!(", truncated ({label})"));
-    }
-    state.status_message = Some(message);
+fn handle_find_file(state: &mut AppState, running_job: &mut Option<RunningJob>, input: &str) {
+    start_search_job(state, running_job, input);
 }
 
 fn handle_quick_cd(state: &mut AppState, input: &str) {
@@ -320,6 +279,7 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
 fn handle_input_action(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
     action: &InputAction,
     terminal_height: u16,
 ) -> bool {
@@ -405,7 +365,10 @@ fn handle_input_action(
             }
         }
         InputAction::QuickCd => handle_quick_cd(state, &input),
-        InputAction::FindFile => handle_find_file(state, &input, terminal_height),
+        InputAction::FindFile => {
+            handle_find_file(state, running_job, &input);
+            return false;
+        }
     }
     state.mode = AppMode::Normal;
     state.dialog_input.clear();
@@ -451,12 +414,15 @@ fn apply_text_edit(state: &mut AppState, key: KeyCode) {
 fn handle_input_dialog(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
+    running_job: &mut Option<RunningJob>,
     action: &InputAction,
     key: KeyCode,
     terminal_height: u16,
 ) -> bool {
     match key {
-        KeyCode::Enter => handle_input_action(state, viewer_state, action, terminal_height),
+        KeyCode::Enter => {
+            handle_input_action(state, viewer_state, running_job, action, terminal_height)
+        }
         KeyCode::Esc => {
             if *action == InputAction::ViewerSearch {
                 state.mode = AppMode::Viewing;
@@ -616,8 +582,14 @@ pub(crate) fn handle_dialog(
         }
         DialogKind::Input { .. } => {
             if let Some(action) = input_action {
-                let _ =
-                    handle_input_dialog(state, viewer_state, &action, key, terminal_size.height);
+                let _ = handle_input_dialog(
+                    state,
+                    viewer_state,
+                    running_job,
+                    &action,
+                    key,
+                    terminal_size.height,
+                );
             }
         }
         DialogKind::Error(_) => {

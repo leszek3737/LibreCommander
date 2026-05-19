@@ -86,6 +86,7 @@ fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
                 .filter(|path| path.is_absolute())
                 .map(|home| home.join(".config").join(APP_NAME))
         })
+        .or_else(platform_config_home)
 }
 
 pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
@@ -101,6 +102,29 @@ pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
                 .filter(|path| path.is_absolute())
                 .map(|home| home.join(".cache").join(APP_NAME))
         })
+        .or_else(platform_cache_home)
+}
+
+/// On Windows, HOME/XDG are often unset; fall back to platform dirs.
+/// On other platforms, HOME is always available, so this returns `None`.
+#[cfg(windows)]
+fn platform_config_home() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join(APP_NAME))
+}
+
+#[cfg(not(windows))]
+fn platform_config_home() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(windows)]
+fn platform_cache_home() -> Option<PathBuf> {
+    dirs::cache_dir().map(|dir| dir.join(APP_NAME))
+}
+
+#[cfg(not(windows))]
+fn platform_cache_home() -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]

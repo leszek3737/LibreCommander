@@ -217,22 +217,41 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
 
         if dirty {
-            terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))?;
+            if let Err(e) =
+                terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))
+            {
+                if let Some(ref mut job) = running_job {
+                    job.shutdown();
+                }
+                return Err(e);
+            }
             dirty = false;
         }
 
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
+            let key = match event::read() {
+                Ok(k) => k,
+                Err(e) => {
+                    if let Some(ref mut job) = running_job {
+                        job.shutdown();
+                    }
+                    return Err(e);
+                }
+            };
             dirty = dispatch_event(
                 &mut state,
                 &mut viewer_state,
                 &mut viewer_loader,
                 &mut running_job,
                 terminal,
-                &event::read()?,
+                &key,
             )?;
         }
 
         if state.should_quit {
+            if let Some(ref mut job) = running_job {
+                job.shutdown();
+            }
             return Ok(());
         }
     }
@@ -279,7 +298,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     match key.kind {
         KeyEventKind::Press => {}
         KeyEventKind::Repeat if key_repeat_allowed(&state.mode, key.code) => {}
-        _ => return Ok(true),
+        _ => return Ok(false),
     }
     let size = terminal.size()?;
     match &state.mode {

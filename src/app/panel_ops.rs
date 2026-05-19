@@ -56,6 +56,11 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 panel.show_hidden,
             );
             panel.unfiltered_entries = new_unfiltered;
+            ops::sort_entries(
+                &mut panel.unfiltered_entries,
+                panel.sort_mode,
+                panel.sort_options,
+            );
             panel.unfiltered_dirty = false;
             panel.path_index.clear();
             panel.entries = new_filtered;

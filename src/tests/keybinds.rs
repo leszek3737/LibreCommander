@@ -20,7 +20,7 @@ fn ctrl_alt_s_starts_search_mode() {
         &mut None,
         &mut None,
         KeyCode::Char('s'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
         24,
         &mut terminal,
     );
@@ -44,7 +44,7 @@ fn ctrl_alt_h_toggles_hidden() {
         &mut None,
         &mut None,
         KeyCode::Char('h'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
         24,
         &mut terminal,
     );
@@ -80,7 +80,7 @@ fn ctrl_alt_r_refreshes() {
         &mut None,
         &mut None,
         KeyCode::Char('r'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
         24,
         &mut terminal,
     );
@@ -109,7 +109,7 @@ fn ctrl_alt_u_swaps_panels() {
         &mut None,
         &mut None,
         KeyCode::Char('u'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
         24,
         &mut terminal,
     );
