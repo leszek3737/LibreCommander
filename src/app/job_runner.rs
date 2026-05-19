@@ -73,7 +73,7 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
             move |progress| {
                 let _ = progress_sender.send(JobMessage::Progress(progress));
             },
-            Some(cancel_for_worker),
+            &Some(cancel_for_worker),
             action_label,
         );
         let _ = sender.send(JobMessage::Finished { report });

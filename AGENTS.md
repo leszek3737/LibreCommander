@@ -80,6 +80,16 @@ before declaring a task done. Don't skip clippy — the project pins `print_stdo
 - **Avoid `.unwrap()` / `.expect()`** in non-test code unless the invariant is
   obvious and documented inline. Prefer `?`, `let ... else`, or
   `Result`-returning helpers.
+- **No `#[allow(...)]` or `#[expect(...)]` to suppress lints** — fix the
+  underlying issue instead. The only exceptions are:
+  - `#[allow(clippy::unwrap_used / expect_used / panic)]` on `mod tests` blocks
+    (test code idiomatically uses `.unwrap()` / `.expect()`).
+  - `#[allow(clippy::print_stdout)]` when the TUI is explicitly suspended and
+    stdout is the intended output channel (e.g., shell command prompt).
+  - `#[allow(non_snake_case)]` when a name deliberately mirrors an external
+    token (e.g., `%D` menu substitution).
+  - If you believe a new exception is warranted, ask the user first and
+    document the reason in a comment on the annotation.
 - **Functions over 100 lines trigger `too_many_lines`** — split them. The same
   applies to deeply nested logic (`cognitive_complexity`).
 - **Ratatui = immediate mode.** The render path must be a pure function of

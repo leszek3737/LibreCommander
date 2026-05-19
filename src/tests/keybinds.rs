@@ -251,10 +251,11 @@ fn alt_backspace_empty_history_does_nothing() {
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn alt_c_opens_quick_cd() {
-    let mut state = AppState::default();
-    state.active_panel = ActivePanel::Left;
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
     handle_alt_keys(&mut state, KeyCode::Char('c'), 20);
     assert!(matches!(
         state.mode,
@@ -283,10 +284,11 @@ fn alt_x_opens_command_line() {
 }
 
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn alt_unhandled_does_nothing() {
-    let mut state = AppState::default();
-    state.active_panel = ActivePanel::Left;
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
     handle_alt_keys(&mut state, KeyCode::Char('y'), 20);
     assert!(matches!(state.mode, AppMode::Normal));
 }

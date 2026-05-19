@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::Path;
 
 use ratatui::{
@@ -91,7 +92,6 @@ fn render_tree_scrollbar(
     f.render_widget(paragraph, area);
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn render_directory_tree(
     f: &mut Frame,
     tree_root: &Path,
@@ -109,7 +109,57 @@ pub fn render_directory_tree(
     );
 }
 
-#[allow(clippy::too_many_lines)]
+fn render_tree_entries(
+    f: &mut Frame,
+    entries: &[TreeEntry],
+    row_range: Range<usize>,
+    selected: usize,
+    inner: Rect,
+    content_width: u16,
+    colors: &ColorPalette,
+) {
+    for (offset, entry) in entries[row_range.clone()].iter().enumerate() {
+        let row = row_range.start + offset;
+        let y = inner.y + offset as u16;
+        if y >= inner.y + inner.height.saturating_sub(1) {
+            break;
+        }
+
+        let indent = indent_for_depth(entry.depth);
+        let indent_width = UnicodeWidthStr::width(indent);
+        let prefix = if entry.is_dir && entry.read_error {
+            "! "
+        } else if entry.is_dir {
+            if entry.expanded { "- " } else { "+ " }
+        } else {
+            "  "
+        };
+
+        let prefix_width = UnicodeWidthStr::width(prefix);
+        let available = (content_width as usize)
+            .saturating_sub(indent_width)
+            .saturating_sub(prefix_width);
+        let display_name = truncate_name(entry.name.as_str(), available);
+
+        let line_style = if row == selected {
+            Theme::highlight_with_colors(colors)
+        } else if entry.is_dir {
+            Theme::panel_file_with_colors(Theme::directory_with_colors(colors), colors)
+        } else {
+            Theme::panel_file_with_colors(Theme::regular_file_with_colors(colors), colors)
+        };
+
+        let line = Line::from(vec![
+            Span::styled(indent, line_style),
+            Span::styled(prefix, line_style),
+            Span::styled(display_name, line_style),
+        ]);
+        let para = Paragraph::new(line);
+        let row_area = Rect::new(inner.x, y, content_width, 1);
+        f.render_widget(para, row_area);
+    }
+}
+
 pub fn render_directory_tree_with_colors(
     f: &mut Frame,
     tree_root: &Path,
@@ -162,11 +212,6 @@ pub fn render_directory_tree_with_colors(
     let end = (start + visible_height).min(entries.len());
 
     let has_scrollbar = entries.len() > visible_height && inner.width > 1;
-    let content_width = if has_scrollbar {
-        inner.width.saturating_sub(1)
-    } else {
-        inner.width
-    };
 
     if has_scrollbar {
         let sb_area = Rect::new(
@@ -185,46 +230,20 @@ pub fn render_directory_tree_with_colors(
         );
     }
 
-    for (offset, entry) in entries[start..end].iter().enumerate() {
-        let row = start + offset;
-        let y = inner.y + offset as u16;
-        if y >= inner.y + inner.height.saturating_sub(1) {
-            break;
-        }
-
-        let indent = indent_for_depth(entry.depth);
-        let indent_width = UnicodeWidthStr::width(indent);
-        let prefix = if entry.is_dir && entry.read_error {
-            "! "
-        } else if entry.is_dir {
-            if entry.expanded { "- " } else { "+ " }
-        } else {
-            "  "
-        };
-
-        let prefix_width = UnicodeWidthStr::width(prefix);
-        let available = (content_width as usize)
-            .saturating_sub(indent_width)
-            .saturating_sub(prefix_width);
-        let display_name = truncate_name(entry.name.as_str(), available);
-
-        let line_style = if row == selected {
-            Theme::highlight_with_colors(colors)
-        } else if entry.is_dir {
-            Theme::panel_file_with_colors(Theme::directory_with_colors(colors), colors)
-        } else {
-            Theme::panel_file_with_colors(Theme::regular_file_with_colors(colors), colors)
-        };
-
-        let line = Line::from(vec![
-            Span::styled(indent, line_style),
-            Span::styled(prefix, line_style),
-            Span::styled(display_name, line_style),
-        ]);
-        let para = Paragraph::new(line);
-        let row_area = Rect::new(inner.x, y, content_width, 1);
-        f.render_widget(para, row_area);
-    }
+    let content_width = if has_scrollbar {
+        inner.width.saturating_sub(1)
+    } else {
+        inner.width
+    };
+    render_tree_entries(
+        f,
+        entries,
+        start..end,
+        selected,
+        inner,
+        content_width,
+        colors,
+    );
 
     let bottom_y = inner.y + inner.height.saturating_sub(1);
     let bottom_area = Rect::new(inner.x, bottom_y, inner.width, 1);

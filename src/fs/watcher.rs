@@ -107,8 +107,12 @@ impl Watcher {
             .map_err(|e| notify_to_io(&e))?;
             self.fallback = Some(fallback);
         }
-        #[allow(clippy::unwrap_used)]
-        Ok(self.fallback.as_mut().unwrap())
+        let Some(f) = self.fallback.as_mut() else {
+            return Err(io::Error::other(
+                "create_fallback: fallback must be initialized",
+            ));
+        };
+        Ok(f)
     }
 
     /// Start watching `path` for filesystem events.

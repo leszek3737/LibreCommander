@@ -14,7 +14,6 @@ fn command_execute(state: &mut AppState) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {

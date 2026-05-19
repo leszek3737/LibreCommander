@@ -5,7 +5,6 @@ use lc::ui::{DIR_TREE_OVERHEAD_ROWS, viewer};
 
 use crate::app::panel_ops::refresh_active;
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_directory_tree(
     state: &mut AppState,
     _viewer_state: &mut Option<viewer::ViewerState>,
@@ -47,51 +46,10 @@ pub(crate) fn handle_directory_tree(
                 .min(state.tree_entries.len().saturating_sub(visible_height));
         }
         KeyCode::Enter => {
-            let selected = state.tree_selected;
-            let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
-            let is_file = state.tree_entries.get(selected).is_some_and(|e| !e.is_dir);
-
-            if is_dir {
-                let show_hidden = state.active_panel().show_hidden;
-                let diagnostics = dir_tree::toggle_expand_with_diagnostics(
-                    &mut state.tree_entries,
-                    selected,
-                    show_hidden,
-                );
-                set_tree_diagnostic_status(&mut state.status_message, &diagnostics);
-                if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty()
-                {
-                    state.tree_selected = state.tree_entries.len() - 1;
-                }
-            } else if is_file {
-                let path = state.tree_entries[selected].path.clone();
-                *viewer_loader = Some(viewer::ViewerState::open_background(path));
-                state.prev_mode = Some(state.mode.clone());
-                state.mode = AppMode::Viewing;
-            }
+            handle_tree_enter(state, viewer_loader);
         }
         KeyCode::Char('c') => {
-            let (entry_is_dir, entry_path) = match state.tree_entries.get(state.tree_selected) {
-                Some(e) => (e.is_dir, e.path.clone()),
-                None => return,
-            };
-            let target = if entry_is_dir {
-                entry_path
-            } else {
-                entry_path
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or(entry_path)
-            };
-            if target.is_dir() {
-                state.active_panel_mut().set_path(target);
-                state.active_panel_mut().cursor = 0;
-                state.active_panel_mut().scroll_offset = 0;
-                state.tree_selected = 0;
-                state.tree_scroll = 0;
-                refresh_active(state);
-                state.mode = AppMode::Normal;
-            }
+            handle_tree_cd(state);
         }
         _ => {}
     }
@@ -128,6 +86,54 @@ pub(crate) fn set_tree_diagnostic_status(
         .map(|d| format!("{}: {}", d.path.display(), d.message))
         .collect();
     *status_message = Some(format!("Directory tree warnings: [{}]", items.join("] [")));
+}
+
+fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
+    let selected = state.tree_selected;
+    let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
+    let is_file = state.tree_entries.get(selected).is_some_and(|e| !e.is_dir);
+
+    if is_dir {
+        let show_hidden = state.active_panel().show_hidden;
+        let diagnostics = dir_tree::toggle_expand_with_diagnostics(
+            &mut state.tree_entries,
+            selected,
+            show_hidden,
+        );
+        set_tree_diagnostic_status(&mut state.status_message, &diagnostics);
+        if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty() {
+            state.tree_selected = state.tree_entries.len() - 1;
+        }
+    } else if is_file {
+        let path = state.tree_entries[selected].path.clone();
+        *viewer_loader = Some(viewer::ViewerState::open_background(path));
+        state.prev_mode = Some(state.mode.clone());
+        state.mode = AppMode::Viewing;
+    }
+}
+
+fn handle_tree_cd(state: &mut AppState) {
+    let (entry_is_dir, entry_path) = match state.tree_entries.get(state.tree_selected) {
+        Some(e) => (e.is_dir, e.path.clone()),
+        None => return,
+    };
+    let target = if entry_is_dir {
+        entry_path
+    } else {
+        entry_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or(entry_path)
+    };
+    if target.is_dir() {
+        state.active_panel_mut().set_path(target);
+        state.active_panel_mut().cursor = 0;
+        state.active_panel_mut().scroll_offset = 0;
+        state.tree_selected = 0;
+        state.tree_scroll = 0;
+        refresh_active(state);
+        state.mode = AppMode::Normal;
+    }
 }
 
 #[cfg(test)]

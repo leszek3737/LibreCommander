@@ -52,7 +52,6 @@ const GROUP_FILE: u8 = 2;
 /// `str::to_lowercase()`. Results may disagree on non-ASCII filenames.
 /// Raw byte values serve as deterministic tiebreaker for natural sort.
 #[inline]
-#[allow(clippy::too_many_lines)]
 pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOptions) {
     let dir_first = options.dir_first;
     let sensitive = options.sensitive;

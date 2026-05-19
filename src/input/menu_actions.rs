@@ -8,9 +8,87 @@ use lc::ops;
 use super::directory_tree::set_tree_diagnostic_status;
 use crate::app::panel_ops::{current_visible_height, rebuild_visible_entries, with_menu_panel};
 
-#[allow(clippy::too_many_lines)]
 pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifiers, bool)> {
     let action = menu_action_at(state.menu_selected, state.menu_item_selected)?;
+    match action {
+        MenuAction::ToggleListingMode
+        | MenuAction::CycleSortOrder
+        | MenuAction::OpenFilter
+        | MenuAction::ResetPanelFilter
+        | MenuAction::TogglePermissions => execute_panel_config_action(state, action),
+        MenuAction::DirectoryTree
+        | MenuAction::FindFile
+        | MenuAction::CompareDirs
+        | MenuAction::History
+        | MenuAction::DirectoryHotlist
+        | MenuAction::CommandLine => execute_nav_action(state, action),
+        MenuAction::Rename | MenuAction::Chmod => execute_dialog_action(state, action),
+        MenuAction::ViewFile => Some((KeyCode::F(3), KeyModifiers::NONE, false)),
+        MenuAction::EditFile => Some((KeyCode::F(4), KeyModifiers::NONE, false)),
+        MenuAction::Copy => Some((KeyCode::F(5), KeyModifiers::NONE, false)),
+        MenuAction::Move => Some((KeyCode::F(6), KeyModifiers::NONE, false)),
+        MenuAction::MakeDirectory => Some((KeyCode::F(7), KeyModifiers::NONE, false)),
+        MenuAction::Delete => Some((KeyCode::F(8), KeyModifiers::NONE, false)),
+        MenuAction::RefreshPanel => Some((KeyCode::Char('r'), KeyModifiers::CONTROL, true)),
+        MenuAction::ToggleHiddenFiles => Some((KeyCode::Char('h'), KeyModifiers::CONTROL, true)),
+        MenuAction::SwapPanels => {
+            std::mem::swap(&mut state.left_panel, &mut state.right_panel);
+            state.active_panel = match state.active_panel {
+                ActivePanel::Left => ActivePanel::Right,
+                ActivePanel::Right => ActivePanel::Left,
+            };
+            None
+        }
+        MenuAction::SwitchPanels => {
+            state.active_panel = match state.active_panel {
+                ActivePanel::Left => ActivePanel::Right,
+                ActivePanel::Right => ActivePanel::Left,
+            };
+            None
+        }
+        MenuAction::SaveCurrentPathToHotlist => {
+            with_menu_panel(state, |state| {
+                if !state
+                    .directory_hotlist
+                    .iter()
+                    .any(|p| p == &state.active_panel().path)
+                {
+                    state
+                        .directory_hotlist
+                        .push(state.active_panel().path.clone());
+                }
+                state.status_message =
+                    Some("Path added to hotlist (run Save Setup to persist)".to_string());
+            });
+            None
+        }
+        MenuAction::Quit => {
+            state.should_quit = true;
+            None
+        }
+        MenuAction::SaveSetup => {
+            match config::save_setup(state) {
+                Ok(path) => {
+                    state.status_message = Some(format!("Setup saved to {}", path.display()));
+                }
+                Err(err) => {
+                    state.status_message = Some(format!("Save setup failed: {err}"));
+                }
+            }
+            None
+        }
+        MenuAction::OpenUserMenu => {
+            open_user_menu(state);
+            None
+        }
+        _ => None,
+    }
+}
+
+fn execute_panel_config_action(
+    state: &mut AppState,
+    action: MenuAction,
+) -> Option<(KeyCode, KeyModifiers, bool)> {
     match action {
         MenuAction::ToggleListingMode => {
             with_menu_panel(state, |state| {
@@ -43,7 +121,6 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             });
             None
         }
-        MenuAction::RefreshPanel => Some((KeyCode::Char('r'), KeyModifiers::CONTROL, true)),
         MenuAction::ResetPanelFilter => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
@@ -53,7 +130,6 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             });
             None
         }
-        MenuAction::ToggleHiddenFiles => Some((KeyCode::Char('h'), KeyModifiers::CONTROL, true)),
         MenuAction::TogglePermissions => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
@@ -65,6 +141,15 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             });
             None
         }
+        _ => None,
+    }
+}
+
+fn execute_nav_action(
+    state: &mut AppState,
+    action: MenuAction,
+) -> Option<(KeyCode, KeyModifiers, bool)> {
+    match action {
         MenuAction::DirectoryTree => {
             with_menu_panel(state, |state| {
                 let path = state.active_panel().path.clone();
@@ -88,21 +173,6 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             });
             None
         }
-        MenuAction::SwapPanels => {
-            std::mem::swap(&mut state.left_panel, &mut state.right_panel);
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
-            None
-        }
-        MenuAction::SwitchPanels => {
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
-            None
-        }
         MenuAction::CompareDirs => {
             state.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::CompareMode);
@@ -118,28 +188,19 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
             state.mode = AppMode::ListPicker(PickerKind::Hotlist);
             None
         }
-        MenuAction::SaveCurrentPathToHotlist => {
-            with_menu_panel(state, |state| {
-                if !state
-                    .directory_hotlist
-                    .iter()
-                    .any(|p| p == &state.active_panel().path)
-                {
-                    state
-                        .directory_hotlist
-                        .push(state.active_panel().path.clone());
-                }
-                state.status_message =
-                    Some("Path added to hotlist (run Save Setup to persist)".to_string());
-            });
+        MenuAction::CommandLine => {
+            state.enter_command_line_mode();
             None
         }
-        MenuAction::ViewFile => Some((KeyCode::F(3), KeyModifiers::NONE, false)),
-        MenuAction::EditFile => Some((KeyCode::F(4), KeyModifiers::NONE, false)),
-        MenuAction::Copy => Some((KeyCode::F(5), KeyModifiers::NONE, false)),
-        MenuAction::Move => Some((KeyCode::F(6), KeyModifiers::NONE, false)),
-        MenuAction::MakeDirectory => Some((KeyCode::F(7), KeyModifiers::NONE, false)),
-        MenuAction::Delete => Some((KeyCode::F(8), KeyModifiers::NONE, false)),
+        _ => None,
+    }
+}
+
+fn execute_dialog_action(
+    state: &mut AppState,
+    action: MenuAction,
+) -> Option<(KeyCode, KeyModifiers, bool)> {
+    match action {
         MenuAction::Rename => {
             with_menu_panel(state, |state| {
                 let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
@@ -175,29 +236,6 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
                     });
                 }
             });
-            None
-        }
-        MenuAction::Quit => {
-            state.should_quit = true;
-            None
-        }
-        MenuAction::SaveSetup => {
-            match config::save_setup(state) {
-                Ok(path) => {
-                    state.status_message = Some(format!("Setup saved to {}", path.display()));
-                }
-                Err(err) => {
-                    state.status_message = Some(format!("Save setup failed: {err}"));
-                }
-            }
-            None
-        }
-        MenuAction::OpenUserMenu => {
-            open_user_menu(state);
-            None
-        }
-        MenuAction::CommandLine => {
-            state.enter_command_line_mode();
             None
         }
         _ => None,

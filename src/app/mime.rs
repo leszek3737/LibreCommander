@@ -374,7 +374,6 @@ fn font_mime(ext: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
