@@ -313,6 +313,8 @@ impl PanelListing {
             self.path_index.insert(entry.path.clone(), i);
         }
         self.unfiltered_entries = entries;
+        self.unfiltered_dirty = false;
+        self.needs_rebuild = false;
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
@@ -324,7 +326,7 @@ impl PanelListing {
         self.unfiltered_entries.clear();
         self.path_index.clear();
         self.needs_rebuild = false;
-        self.unfiltered_dirty = false;
+        self.unfiltered_dirty = true;
     }
 
     pub fn mark_dirty(&mut self) {

@@ -302,7 +302,6 @@ fn full_refresh_panel(panel: &mut PanelState) {
     match reader::read_directory(&panel.path) {
         Ok((entries, _errors)) => {
             panel.listing.set_unfiltered(entries);
-            panel.listing.needs_rebuild = false;
             panel.last_error = None;
             panel.canonical_path = panel.path.canonicalize().ok();
             for entry in &mut panel.listing.unfiltered_entries {
@@ -312,7 +311,6 @@ fn full_refresh_panel(panel: &mut PanelState) {
         }
         Err(err) => {
             panel.listing.clear();
-            panel.listing.mark_unfiltered_dirty();
             // Do NOT set needs_full_refresh here — that would cause
             // poll_watcher_events to retry on every tick, creating an
             // infinite loop when the directory is permanently gone.
