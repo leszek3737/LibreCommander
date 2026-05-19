@@ -84,6 +84,7 @@ impl<const N: usize> std::ops::IndexMut<usize> for SmallCharBuf<N> {
 pub enum CompiledPattern {
     Plain {
         needle: Vec<char>,
+        needle_str: String,
         needle_ascii: Option<String>,
         insensitive: bool,
     },
@@ -104,7 +105,7 @@ impl CompiledPattern {
         let insensitive = !case_sensitive;
 
         if !pattern.contains(['*', '?']) {
-            let needle = if insensitive {
+            let needle: Vec<char> = if insensitive {
                 pattern.chars().flat_map(|c| c.to_lowercase()).collect()
             } else {
                 pattern.chars().collect()
@@ -114,8 +115,10 @@ impl CompiledPattern {
             } else {
                 None
             };
+            let needle_str: String = needle.iter().collect();
             return Self::Plain {
                 needle,
+                needle_str,
                 needle_ascii,
                 insensitive,
             };
@@ -193,6 +196,7 @@ impl CompiledPattern {
         match self {
             Self::Plain {
                 needle,
+                needle_str: _,
                 needle_ascii,
                 insensitive: true,
             } => {
@@ -210,14 +214,15 @@ impl CompiledPattern {
                 Self::contains_case_insensitive_compiled(name, needle)
             }
             Self::Plain {
-                needle,
+                needle: _,
+                needle_str,
                 needle_ascii: _,
                 insensitive: false,
             } => {
-                if needle.is_empty() {
+                if needle_str.is_empty() {
                     return true;
                 }
-                name.contains(needle.iter().collect::<String>().as_str())
+                name.contains(needle_str.as_str())
             }
             Self::WildcardSimple {
                 prefix,
@@ -236,6 +241,11 @@ impl CompiledPattern {
                             .windows(suffix_chars.len())
                             .any(|window| window == suffix_chars)
                     });
+                }
+                let prefix_len = prefix.as_ref().map_or(0, |p: &Vec<char>| p.len());
+                let suffix_len = suffix.as_ref().map_or(0, |s: &Vec<char>| s.len());
+                if name_chars.len() < prefix_len + suffix_len {
+                    return false;
                 }
                 if let Some(prefix_chars) = prefix {
                     if name_chars.len() < prefix_chars.len() {
@@ -256,13 +266,18 @@ impl CompiledPattern {
                 }
                 true
             }
+            // NOTE: to_lowercase() can expand one char to multiple (e.g. İ → i + \u{307}).
+            // The matcher treats each folded char independently, so `?` may partially
+            // match a multi-char lowercase expansion. Known limitation for Turkish İ,
+            // German ß, and similar. Full fix requires index-map from original positions
+            // to folded ranges.
             Self::WildcardDp { chars, insensitive } => {
                 let name_chars: Vec<char> = if *insensitive {
                     name.chars().flat_map(|c| c.to_lowercase()).collect()
                 } else {
                     name.chars().collect()
                 };
-                Self::dp_wildcard_match(&name_chars, chars)
+                Self::greedy_wildcard_match(&name_chars, chars)
             }
         }
     }
@@ -299,43 +314,40 @@ impl CompiledPattern {
         false
     }
 
-    fn dp_wildcard_match(name_chars: &[char], pattern_chars: &[char]) -> bool {
-        let n = name_chars.len();
-        let m = pattern_chars.len();
-
-        let mut dp_prev = vec![false; m + 1];
-        let mut dp_curr = vec![false; m + 1];
-        dp_prev[0] = true;
-
-        for j in 1..=m {
-            if pattern_chars[j - 1] == '*' {
-                dp_prev[j] = dp_prev[j - 1];
-            }
-        }
-
-        for i in 1..=n {
-            dp_curr.fill(false);
-            for j in 1..=m {
-                match pattern_chars[j - 1] {
-                    '*' => {
-                        dp_curr[j] = dp_prev[j] || dp_curr[j - 1];
-                    }
-                    '?' => {
-                        dp_curr[j] = dp_prev[j - 1];
-                    }
-                    c => {
-                        dp_curr[j] = if name_chars[i - 1] == c {
-                            dp_prev[j - 1]
-                        } else {
-                            false
-                        };
-                    }
+    fn greedy_wildcard_match(name: &[char], pattern: &[char]) -> bool {
+        let mut ni = 0;
+        let mut pi = 0;
+        let mut star_pi: Option<usize> = None;
+        let mut star_ni = 0;
+        while ni < name.len() {
+            match pattern.get(pi) {
+                Some('*') => {
+                    star_pi = Some(pi);
+                    star_ni = ni;
+                    pi += 1;
                 }
+                Some('?') => {
+                    ni += 1;
+                    pi += 1;
+                }
+                Some(c) if name[ni] == *c => {
+                    ni += 1;
+                    pi += 1;
+                }
+                _ => match star_pi {
+                    Some(sp) => {
+                        star_ni += 1;
+                        ni = star_ni;
+                        pi = sp + 1;
+                    }
+                    None => return false,
+                },
             }
-            std::mem::swap(&mut dp_prev, &mut dp_curr);
         }
-
-        dp_prev[m]
+        while pi < pattern.len() && pattern[pi] == '*' {
+            pi += 1;
+        }
+        pi == pattern.len()
     }
 }
 
@@ -510,8 +522,7 @@ impl FileSearch {
             }
         }
     }
-    #[allow(dead_code)]
-    fn search_content(
+    pub fn search_content(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -520,8 +531,7 @@ impl FileSearch {
         Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
     }
 
-    #[allow(dead_code)]
-    fn search_content_with_diagnostics(
+    pub fn search_content_with_diagnostics(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -541,8 +551,7 @@ impl FileSearch {
         outcome
     }
 
-    #[allow(dead_code)]
-    fn search_content_recursive(
+    pub fn search_content_recursive(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -572,7 +581,6 @@ impl FileSearch {
         );
     }
 
-    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     fn search_content_recursive_inner(
@@ -684,7 +692,6 @@ impl FileSearch {
         }
     }
 
-    #[allow(dead_code)]
     fn search_in_file(
         path: &Path,
         pattern: &str,
@@ -751,7 +758,14 @@ impl FileSearch {
 
                     let line_text = match std::str::from_utf8(line) {
                         Ok(s) => s.strip_suffix('\r').unwrap_or(s).to_owned(),
-                        Err(_) => continue,
+                        Err(_) => {
+                            outcome.errors.push(format!(
+                                "non-UTF-8 line {} in {}",
+                                line_no,
+                                path.display()
+                            ));
+                            continue;
+                        }
                     };
                     let match_found = if case_sensitive {
                         line_text.contains(pattern)

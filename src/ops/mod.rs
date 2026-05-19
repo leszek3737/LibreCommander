@@ -4,7 +4,7 @@ pub(crate) mod compare;
 pub(crate) mod file_ops;
 pub(crate) mod helpers;
 pub(crate) mod natsort;
-pub(crate) mod search;
+pub mod search;
 pub(crate) mod sorting;
 
 pub use compare::{apply_compare_to_panels, compare_entries};

@@ -45,6 +45,12 @@ const GROUP_UP: u8 = 0;
 const GROUP_DIR: u8 = 1;
 const GROUP_FILE: u8 = 2;
 
+/// Sort directory entries by the given mode.
+///
+/// Natural sort (`NatAsc`/`NatDesc`) uses ASCII-only case folding
+/// (`make_ascii_lowercase`). Name and Extension sorts use full Unicode
+/// `str::to_lowercase()`. Results may disagree on non-ASCII filenames.
+/// Raw byte values serve as deterministic tiebreaker for natural sort.
 #[inline]
 #[allow(clippy::too_many_lines)]
 pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOptions) {
@@ -78,9 +84,6 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         SortMode::BtimeDesc => {
             entries.sort_by_cached_key(|e| reverse_btime_sort_key(e, dir_first, sensitive))
         }
-        // NOTE: natsort uses ASCII-only case folding; regular Name sort uses full Unicode
-        // via str::to_lowercase(). NaturalName and Name sorts may disagree on non-ASCII filenames.
-        // Raw bytes serve as deterministic tiebreaker for case-variant names (a1.txt vs A1.txt).
         SortMode::NaturalNameAsc => {
             entries.sort_by_cached_key(|entry| natural_sort_key(entry, dir_first, sensitive))
         }

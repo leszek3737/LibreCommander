@@ -400,7 +400,7 @@ fn batch_move(
     )
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn execute_batch_generic<F>(
     sources: &[PathBuf],
     dest_dir: &Path,
@@ -420,6 +420,9 @@ where
     let mut bytes_total = helpers::sum_sizes(&sizes);
     let mut bytes_done = 0_u64;
     let start_time = Instant::now();
+    let dest_dir_normalized = dest_dir
+        .canonicalize()
+        .unwrap_or_else(|_| dest_dir.to_path_buf());
     let ctx = ProgressCtx {
         total,
         sources,
@@ -459,7 +462,8 @@ where
             continue;
         }
         let target = dest_dir.join(file_name);
-        if !used_dests.insert(target.clone()) {
+        let dedup_key = dest_dir_normalized.join(file_name);
+        if !used_dests.insert(dedup_key) {
             errors.push(format!(
                 "{}: duplicate destination {}",
                 src.display(),
@@ -520,31 +524,51 @@ where
 }
 
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut canonical_ok: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut canonical_fail: Vec<PathBuf> = Vec::new();
-    // NOTE: canonicalize() calls the filesystem per path; could be slow for large
-    // batches on network/removable drives. Pre-checking path existence first, or
-    // batching canonicalize calls, would be possible optimizations.
+    let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+    let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+    let mut identity_ok: Vec<PathBuf> = Vec::new();
+    let mut identity_fail: Vec<PathBuf> = Vec::new();
+
     for p in paths {
-        match std::fs::canonicalize(p) {
-            Ok(c) => canonical_ok.push((c, p.clone())),
-            Err(_) => canonical_fail.push(p.clone()),
+        match p.symlink_metadata() {
+            Ok(meta) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let id = (meta.dev(), meta.ino());
+                    if !seen_ids.insert(id) {
+                        continue;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if !seen_paths.insert(p.clone()) {
+                        continue;
+                    }
+                }
+                identity_ok.push(p.clone());
+            }
+            Err(_) => {
+                if !seen_paths.insert(p.clone()) {
+                    continue;
+                }
+                identity_fail.push(p.clone());
+            }
         }
     }
-    canonical_ok.sort_by_key(|(c, _)| c.components().count());
-    let mut filtered: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for (canonical, original) in canonical_ok {
-        if !filtered
-            .iter()
-            .any(|(existing, _)| canonical.starts_with(existing))
-        {
-            filtered.push((canonical, original));
+
+    identity_ok.sort_by_key(|p| p.components().count());
+    let mut filtered: Vec<PathBuf> = Vec::new();
+    for p in &identity_ok {
+        if !filtered.iter().any(|existing| p.starts_with(existing)) {
+            filtered.push(p.clone());
         }
     }
-    canonical_fail.sort();
-    canonical_fail.dedup();
-    filtered.extend(canonical_fail.into_iter().map(|p| (p.clone(), p)));
-    filtered.into_iter().map(|(_, o)| o).collect()
+
+    identity_fail.sort();
+    identity_fail.dedup();
+    filtered.extend(identity_fail);
+    filtered
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1150,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn dedup_paths_removes_symlink_duplicates() {
+    fn dedup_paths_keeps_symlink_and_target_separate() {
         let dir = tempfile::tempdir().unwrap();
         let real = make_file(dir.path(), "real.txt", b"content");
         let link = dir.path().join("link.txt");
@@ -1159,11 +1183,12 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&real, &link).unwrap();
 
-        let paths = vec![real.clone(), link];
+        let paths = vec![real.clone(), link.clone()];
         let result = dedup_paths(&paths);
 
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], real);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&real));
+        assert!(result.contains(&link));
     }
 
     #[test]

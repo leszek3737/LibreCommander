@@ -52,8 +52,11 @@ impl PartialEq for MenuEntry {
     }
 }
 
-/// Shell-escape a single string value using single-quote wrapping.
-/// Internal single quotes become `'\''`.
+/// Shell-escape via single-quote wrapping.
+///
+/// Prevents shell metacharacter injection but does NOT protect
+/// against option injection (filenames starting with `-`).
+/// Menu templates should use `--` before `%f`/`%t`.
 pub fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2 + 3 * s.chars().filter(|&c| c == '\'').count());
     out.push('\'');
@@ -68,11 +71,19 @@ pub fn shell_quote(s: &str) -> String {
     out
 }
 
+fn safe_file_arg(s: &str) -> String {
+    if s.starts_with('-') {
+        format!("-- {}", shell_quote(s))
+    } else {
+        shell_quote(s)
+    }
+}
+
 /// Context supplied by the caller for `%`-substitutions.
 #[derive(Debug)]
 pub struct SubstContext<'a> {
     /// Name of the file under the cursor (not the full path).
-    pub current_file: &'a str,
+    pub current_file: &'a Path,
     /// Active panel directory.
     pub active_dir: &'a Path,
     /// Opposite panel directory.
@@ -95,7 +106,14 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
         match chars.next() {
             None => out.push('%'),
             Some('%') => out.push('%'),
-            Some('f') => out.push_str(&shell_quote(ctx.current_file)),
+            Some('f') => {
+                let name = ctx
+                    .current_file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| NON_UTF8_ERR.to_owned())?;
+                out.push_str(&safe_file_arg(name));
+            }
             Some('d') => {
                 out.push_str(&shell_quote(
                     ctx.active_dir
@@ -112,12 +130,17 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
             }
             Some('t' | 's') => {
                 if ctx.tagged.is_empty() {
-                    out.push_str(&shell_quote(ctx.current_file));
+                    let name = ctx
+                        .current_file
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| NON_UTF8_ERR.to_owned())?;
+                    out.push_str(&safe_file_arg(name));
                 } else {
                     let quoted: Result<Vec<String>, String> = ctx
                         .tagged
                         .iter()
-                        .map(|p| tagged_name(p, ctx.active_dir).map(|n| shell_quote(&n)))
+                        .map(|p| tagged_name(p, ctx.active_dir).map(|n| safe_file_arg(&n)))
                         .collect();
                     out.push_str(&quoted?.join(" "));
                 }
@@ -212,7 +235,7 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                 continue;
             }
             if next.starts_with('\t') || next.starts_with(' ') || next.starts_with('+') {
-                body_lines.push(trimmed.to_string());
+                body_lines.push(next[1..].to_string());
                 let _ = lines.next();
             } else {
                 break;
@@ -231,15 +254,15 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                         line: condition_line,
                         message: format!("Invalid filename regex `{s}`: {err}"),
                     });
-                    CompiledCondition::Always
+                    CompiledCondition::Never
                 }
             },
             Some(ConditionParseResult::Unsupported) => {
                 warnings.push(MenuWarning {
                     line: condition_line,
-                    message: "Unsupported condition type, entry will always match".into(),
+                    message: "Unsupported condition type, entry will never match".into(),
                 });
-                CompiledCondition::Always
+                CompiledCondition::Never
             }
             None => CompiledCondition::Always,
         };
@@ -400,7 +423,7 @@ mod tests {
         tagged: &'a [PathBuf],
     ) -> SubstContext<'a> {
         SubstContext {
-            current_file: file,
+            current_file: Path::new(file),
             active_dir: active,
             other_dir: other,
             tagged,
@@ -646,8 +669,8 @@ mod tests {
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hotkey, 'T');
-        assert!(matches!(entries[0].condition, CompiledCondition::Always));
-        assert_eq!(filter_entries(&entries, "anything.txt").len(), 1);
+        assert!(matches!(entries[0].condition, CompiledCondition::Never));
+        assert_eq!(filter_entries(&entries, "anything.txt").len(), 0);
     }
 
     #[test]
@@ -658,9 +681,9 @@ mod tests {
         assert_eq!(parsed.entries[0].hotkey, 'T');
         assert!(matches!(
             parsed.entries[0].condition,
-            CompiledCondition::Always
+            CompiledCondition::Never
         ));
-        assert_eq!(filter_entries(&parsed.entries, "anything.txt").len(), 2);
+        assert_eq!(filter_entries(&parsed.entries, "anything.txt").len(), 1);
         assert_eq!(parsed.entries[1].hotkey, 'B');
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(parsed.warnings[0].line, 1);
@@ -677,8 +700,8 @@ mod tests {
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hotkey, 'T');
-        assert!(matches!(entries[0].condition, CompiledCondition::Always));
-        assert_eq!(filter_entries(&entries, "anything.txt").len(), 1);
+        assert!(matches!(entries[0].condition, CompiledCondition::Never));
+        assert_eq!(filter_entries(&entries, "anything.txt").len(), 0);
     }
 
     #[test]
@@ -689,13 +712,13 @@ mod tests {
         assert_eq!(parsed.entries[0].hotkey, 'T');
         assert!(matches!(
             parsed.entries[0].condition,
-            CompiledCondition::Always
+            CompiledCondition::Never
         ));
-        assert_eq!(filter_entries(&parsed.entries, "anything.txt").len(), 2);
+        assert_eq!(filter_entries(&parsed.entries, "anything.txt").len(), 1);
         assert_eq!(parsed.warnings.len(), 1);
         assert_eq!(
             parsed.warnings[0].message,
-            "Unsupported condition type, entry will always match"
+            "Unsupported condition type, entry will never match"
         );
     }
 
@@ -732,6 +755,6 @@ mod tests {
         let src = "A  Add\n\tcmd\n+extra_arg\n";
         let entries = parse_menu(src);
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].command.contains("+extra_arg"));
+        assert!(entries[0].command.contains("extra_arg"));
     }
 }

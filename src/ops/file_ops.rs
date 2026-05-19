@@ -1,6 +1,6 @@
 use crate::debug_log;
 use crate::ops::chunk_copy;
-use crate::ops::helpers::{cleanup_dir, cleanup_dir_all, cleanup_file, path_starts_with};
+use crate::ops::helpers::{cleanup_dir, cleanup_dir_all, cleanup_file, lexical_path_starts_with};
 
 use std::fs;
 use std::io;
@@ -86,8 +86,26 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
         }
         Ok(bytes)
     } else {
-        let bytes = fs::copy(src, dest)?;
-        apply_metadata(dest, &src_meta)?;
+        let temp = reserve_temp_file_for(dest)?;
+        let bytes = match fs::copy(src, &temp) {
+            Ok(b) => b,
+            Err(e) => {
+                cleanup_file(&temp);
+                return Err(e);
+            }
+        };
+        apply_metadata(&temp, &src_meta)?;
+        if dest.exists() {
+            cleanup_file(&temp);
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("destination already exists: {}", dest.display()),
+            ));
+        }
+        if let Err(e) = swap_temp_to_dest(&temp, dest, overwrite) {
+            cleanup_file(&temp);
+            return Err(e);
+        }
         Ok(bytes)
     }
 }
@@ -118,7 +136,7 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Resul
             "cannot copy directory into itself",
         ));
     }
-    if path_starts_with(&src_root, &dest_root) {
+    if lexical_path_starts_with(&src_root, &dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -128,10 +146,21 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Resul
         ensure_destination_absent(dest)?;
     }
     let temp_dest = reserve_temp_dir_for(dest)?;
+    let src_perms = fs::metadata(src)?.permissions();
     let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, overwrite, 0);
     match result {
         Ok(bytes) => {
-            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite) {
+            let revalidated_dest = canonicalize_with_nearest_existing_parent(dest)?;
+            if src_root == revalidated_dest
+                || lexical_path_starts_with(&src_root, &revalidated_dest)
+            {
+                cleanup_dir_all(&temp_dest);
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "destination changed during copy — possible symlink race",
+                ));
+            }
+            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite, &src_perms) {
                 cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
@@ -159,6 +188,8 @@ pub fn copy_dir_recursive_with_progress(
         overwrite,
     };
     let temp_dest = reserve_temp_dir_for(dest)?;
+    let src_perms = fs::metadata(src)?.permissions();
+    let src_root = canonicalize_existing_path(src)?;
     let result = copy_dir_recursive_with_progress_inner(src, &temp_dest, &ctx, 0);
     match result {
         Ok(bytes) => {
@@ -166,7 +197,17 @@ pub fn copy_dir_recursive_with_progress(
                 cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
-            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite) {
+            let revalidated_dest = canonicalize_with_nearest_existing_parent(dest)?;
+            if src_root == revalidated_dest
+                || lexical_path_starts_with(&src_root, &revalidated_dest)
+            {
+                cleanup_dir_all(&temp_dest);
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "destination changed during copy — possible symlink race",
+                ));
+            }
+            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite, &src_perms) {
                 cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
@@ -201,7 +242,7 @@ fn copy_dir_recursive_inner(
             "cannot copy directory into itself",
         ));
     }
-    if depth == 0 && path_starts_with(src_root, dest_root) {
+    if depth == 0 && lexical_path_starts_with(src_root, dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -330,6 +371,14 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     Ok(())
 }
 
+/// Move or rename a filesystem entry.
+///
+/// Case-only rename semantics:
+/// - On case-insensitive filesystems, `canonicalize()` resolves both `src` and
+///   `dest` to the same inode, so the `same_file` branch fires and the rename
+///   is performed via `fs::rename`, which handles the case change atomically.
+/// - On case-sensitive filesystems, `dest.canonicalize()` fails (target does
+///   not exist), so the function proceeds as a normal move.
 #[allow(dead_code)]
 pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
@@ -501,9 +550,8 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
             "refusing to delete root directory",
         ));
     }
-    let canonical_str = canonical.to_string_lossy();
     for critical in CRITICAL_DIRS {
-        if canonical_str == *critical {
+        if canonical == Path::new(*critical) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
@@ -516,15 +564,14 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
             .unwrap_or_else(|_| std::env::temp_dir());
         canonical.starts_with(&canonical_temp)
     };
-    let original_str = path.to_string_lossy();
     for critical in CRITICAL_DIR_PREFIXES {
-        if !is_under_temp && canonical_str.starts_with(&format!("{critical}/")) {
+        if !is_under_temp && canonical.starts_with(Path::new(*critical)) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
             ));
         }
-        if !is_under_temp && original_str.starts_with(&format!("{critical}/")) {
+        if !is_under_temp && path.starts_with(Path::new(*critical)) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
@@ -567,7 +614,7 @@ fn delete_dir_contents_impl(
             format!("cannot canonicalize {}: {e}", path.display()),
         )
     })?;
-    if canonical != root && !path_starts_with(root, &canonical) {
+    if canonical != root && !lexical_path_starts_with(root, &canonical) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "refusing to delete path outside requested directory",
@@ -667,7 +714,7 @@ fn validate_copy_targets(src: &Path, dest: &Path, overwrite: bool) -> io::Result
             "cannot copy directory into itself",
         ));
     }
-    if path_starts_with(&src_root, &dest_root) {
+    if lexical_path_starts_with(&src_root, &dest_root) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot copy directory into its descendant",
@@ -684,7 +731,10 @@ fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
         .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize parent: {e}")))?;
     let canonical_child = canonicalize_with_nearest_existing_parent(child)
         .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize child: {e}")))?;
-    Ok(path_starts_with(&canonical_parent, &canonical_child))
+    Ok(lexical_path_starts_with(
+        &canonical_parent,
+        &canonical_child,
+    ))
 }
 
 fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
@@ -729,9 +779,13 @@ struct DestBackup {
     entry: PathBuf,
 }
 
-fn publish_temp_dir(temp_dest: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
-    let permissions = fs::metadata(temp_dest)?.permissions();
-    fs::set_permissions(temp_dest, permissions)?;
+fn publish_temp_dir(
+    temp_dest: &Path,
+    dest: &Path,
+    overwrite: bool,
+    src_perms: &fs::Permissions,
+) -> io::Result<()> {
+    fs::set_permissions(temp_dest, src_perms.clone())?;
     if !overwrite {
         return fs::rename(temp_dest, dest);
     }
@@ -952,13 +1006,22 @@ fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()
             Ok(_) => true,
             Err(_) => false,
         };
-        // On Windows, fs::rename fails if dest exists — remove first.
-        // On Unix, rename(2) atomically replaces the target.
         #[cfg(windows)]
         if need_remove {
-            fs::remove_file(dest)?;
+            let backup = dest.with_extension("lc_bak");
+            fs::rename(dest, &backup)?;
+            match fs::rename(temp, dest) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&backup);
+                }
+                Err(err) => {
+                    let _ = fs::rename(&backup, dest);
+                    return Err(err);
+                }
+            }
+            return Ok(());
         }
-        let _ = need_remove; // unused on Unix
+        let _ = need_remove;
     }
     std::fs::rename(temp, dest)
 }
@@ -1362,7 +1425,8 @@ mod tests {
         fs::write(temp.join("file.txt"), b"new").unwrap();
         fs::write(&blocked_parent, b"not a directory").unwrap();
 
-        let err = publish_temp_dir(&temp, &blocked_dest, true).unwrap_err();
+        let perms = fs::metadata(&temp).unwrap().permissions();
+        let err = publish_temp_dir(&temp, &blocked_dest, true, &perms).unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::NotADirectory);
         assert_eq!(
@@ -1387,7 +1451,8 @@ mod tests {
         fs::create_dir(&temp).unwrap();
         fs::write(temp.join("file.txt"), b"new").unwrap();
 
-        let err = publish_temp_dir(&temp, &dest, true).unwrap_err();
+        let perms = fs::metadata(&temp).unwrap().permissions();
+        let err = publish_temp_dir(&temp, &dest, true, &perms).unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
         assert_eq!(fs::read_to_string(dest.join("stale.txt")).unwrap(), "old");
