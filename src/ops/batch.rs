@@ -524,35 +524,38 @@ where
 }
 
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    #[cfg(unix)]
     let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
+    #[cfg(not(unix))]
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut identity_ok: Vec<PathBuf> = Vec::new();
     let mut identity_fail: Vec<PathBuf> = Vec::new();
 
     for p in paths {
-        match p.symlink_metadata() {
-            Ok(meta) => {
-                #[cfg(unix)]
-                {
+        #[cfg(unix)]
+        {
+            match p.symlink_metadata() {
+                Ok(meta) => {
                     use std::os::unix::fs::MetadataExt;
                     let id = (meta.dev(), meta.ino());
                     if !seen_ids.insert(id) {
                         continue;
                     }
+                    identity_ok.push(p.clone());
                 }
-                #[cfg(not(unix))]
-                {
-                    if !seen_paths.insert(p.clone()) {
-                        continue;
-                    }
+                Err(_) => {
+                    identity_fail.push(p.clone());
                 }
-                identity_ok.push(p.clone());
             }
-            Err(_) => {
-                if !seen_paths.insert(p.clone()) {
-                    continue;
-                }
-                identity_fail.push(p.clone());
+        }
+        #[cfg(not(unix))]
+        {
+            if !seen_paths.insert(p.clone()) {
+                continue;
+            }
+            match p.symlink_metadata() {
+                Ok(_) => identity_ok.push(p.clone()),
+                Err(_) => identity_fail.push(p.clone()),
             }
         }
     }

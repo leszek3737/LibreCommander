@@ -78,8 +78,17 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     let src_meta = fs::metadata(src)?;
     if overwrite {
         let temp = reserve_temp_file_for(dest)?;
-        let bytes = fs::copy(src, &temp)?;
-        apply_metadata(&temp, &src_meta)?;
+        let bytes = match fs::copy(src, &temp) {
+            Ok(b) => b,
+            Err(e) => {
+                cleanup_file(&temp);
+                return Err(e);
+            }
+        };
+        if let Err(e) = apply_metadata(&temp, &src_meta) {
+            cleanup_file(&temp);
+            return Err(e);
+        }
         if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
             cleanup_file(&temp);
             return Err(err);
@@ -94,7 +103,10 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
                 return Err(e);
             }
         };
-        apply_metadata(&temp, &src_meta)?;
+        if let Err(e) = apply_metadata(&temp, &src_meta) {
+            cleanup_file(&temp);
+            return Err(e);
+        }
         if dest.exists() {
             cleanup_file(&temp);
             return Err(io::Error::new(
@@ -150,7 +162,13 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Resul
     let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, overwrite, 0);
     match result {
         Ok(bytes) => {
-            let revalidated_dest = canonicalize_with_nearest_existing_parent(dest)?;
+            let revalidated_dest = match canonicalize_with_nearest_existing_parent(dest) {
+                Ok(p) => p,
+                Err(e) => {
+                    cleanup_dir_all(&temp_dest);
+                    return Err(e);
+                }
+            };
             if src_root == revalidated_dest
                 || lexical_path_starts_with(&src_root, &revalidated_dest)
             {
@@ -197,7 +215,13 @@ pub fn copy_dir_recursive_with_progress(
                 cleanup_dir_all(&temp_dest);
                 return Err(err);
             }
-            let revalidated_dest = canonicalize_with_nearest_existing_parent(dest)?;
+            let revalidated_dest = match canonicalize_with_nearest_existing_parent(dest) {
+                Ok(p) => p,
+                Err(e) => {
+                    cleanup_dir_all(&temp_dest);
+                    return Err(e);
+                }
+            };
             if src_root == revalidated_dest
                 || lexical_path_starts_with(&src_root, &revalidated_dest)
             {
