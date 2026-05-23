@@ -211,7 +211,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 && vs.view_mode == ViewMode::Image
                 && let Ok(size) = terminal.size()
             {
-                let _ = vs.prepare_image_preview(size.width, size.height);
+                vs.prepare_image_preview(size.width, size.height);
             }
             if let Err(e) =
                 terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))

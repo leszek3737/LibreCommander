@@ -219,7 +219,7 @@ impl ViewerState {
             0
         };
 
-        let is_image = is_image_mime(&mime);
+        let is_image = is_image_mime(mime.as_deref());
 
         Ok(ViewerState {
             file_path: path.to_path_buf(),
@@ -640,7 +640,7 @@ impl ViewerState {
         self.visual_heights.borrow_mut().clear();
         self.visual_offsets.borrow_mut().clear();
         *self.cached_content_width.borrow_mut() = 0;
-        if self.is_hex_mode() {
+        if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
     }
@@ -656,13 +656,13 @@ impl ViewerState {
         self.visual_heights.borrow_mut().clear();
         self.visual_offsets.borrow_mut().clear();
         *self.cached_content_width.borrow_mut() = 0;
-        if self.is_hex_mode() {
+        if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
     }
 
     pub fn toggle_hex_mode(&mut self) {
-        let is_image = is_image_mime(&self.detected_mime);
+        let is_image = is_image_mime(self.detected_mime.as_deref());
         self.view_mode = if self.is_hex_mode() {
             if is_image {
                 ViewMode::Image
@@ -772,38 +772,38 @@ impl ViewerState {
         self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
     }
 
-    pub fn prepare_image_preview(&mut self, area_width: u16, area_height: u16) -> io::Result<()> {
-        let content_height = area_height.saturating_sub(2);
+    pub fn prepare_image_preview(&mut self, area_width: u16, area_height: u16) {
+        let content_height = area_height.saturating_sub(3);
         if area_width == 0 || content_height == 0 {
-            return Ok(());
+            return;
         }
         if self.cached_image_size == Some((area_width, content_height)) {
-            return Ok(());
+            return;
         }
 
         let size_str = format!("{}x{}", area_width, content_height);
-        let output = std::process::Command::new("chafa")
+        let parsed_text = match std::process::Command::new("chafa")
             .arg("-f")
             .arg("symbols")
             .arg("--size")
             .arg(&size_str)
             .arg("--")
             .arg(&self.file_path)
-            .output()?;
-
-        let parsed_text = if output.status.success() {
-            match output.stdout.into_text() {
+            .output()
+        {
+            Ok(out) if out.status.success() => match out.stdout.into_text() {
                 Ok(text) => text,
                 Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
+            },
+            Ok(out) => {
+                let err_msg = String::from_utf8_lossy(&out.stderr);
+                Text::raw(format!("Chafa error: {}", err_msg))
             }
-        } else {
-            let err_msg = String::from_utf8_lossy(&output.stderr);
-            Text::raw(format!("Chafa error: {}", err_msg))
+            Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
         };
 
         self.cached_image_size = Some((area_width, content_height));
         self.cached_image_text = Some(parsed_text);
-        Ok(())
     }
 }
 
@@ -831,8 +831,8 @@ fn build_lowercase_mapping(original: &str, lower: &mut String, byte_map: &mut Ve
     }
 }
 
-fn is_image_mime(mime: &Option<String>) -> bool {
-    mime.as_ref().is_some_and(|m| m.starts_with("image/"))
+fn is_image_mime(mime: Option<&str>) -> bool {
+    mime.is_some_and(|m| m.starts_with("image/"))
 }
 
 fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
