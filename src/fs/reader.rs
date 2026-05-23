@@ -7,10 +7,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::app::types::PanelState;
+use crate::app::types::{PanelState, compute_category};
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
@@ -45,14 +45,14 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
     UID_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.uid_to_name.len() >= CACHE_MAX_SIZE
-            && let Some(oldest) = cache.uid_to_name.keys().next().copied()
+            && let Some(evicted) = cache.uid_to_name.keys().next().copied()
         {
-            cache.uid_to_name.remove(&oldest);
+            cache.uid_to_name.remove(&evicted);
         }
         if cache.gid_to_name.len() >= CACHE_MAX_SIZE
-            && let Some(oldest) = cache.gid_to_name.keys().next().copied()
+            && let Some(evicted) = cache.gid_to_name.keys().next().copied()
         {
-            cache.gid_to_name.remove(&oldest);
+            cache.gid_to_name.remove(&evicted);
         }
         let owner = cache
             .uid_to_name
@@ -92,32 +92,49 @@ fn file_name_from_path(path: &Path) -> String {
         .to_string()
 }
 
-fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
-    let metadata = fs::symlink_metadata(path)?;
+fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
+    let path = entry.path();
+    let file_name = entry.file_name().to_string_lossy().into_owned();
+    let metadata = entry.metadata()?;
     let is_symlink = metadata.is_symlink();
     let target_meta = if is_symlink {
-        fs::metadata(path).ok()
+        fs::metadata(&path).ok()
     } else {
         None
     };
 
+    Ok(build_file_entry_from_metadata(
+        path,
+        file_name,
+        &metadata,
+        target_meta.as_ref(),
+    ))
+}
+
+fn build_file_entry_from_metadata(
+    path: PathBuf,
+    file_name: String,
+    metadata: &fs::Metadata,
+    target_meta: Option<&fs::Metadata>,
+) -> FileEntry {
+    let is_symlink = metadata.is_symlink();
     let cha = if is_symlink {
-        Cha::from_link_metadata(&metadata, target_meta.as_ref())
+        Cha::from_link_metadata(metadata, target_meta)
     } else {
-        Cha::new(&metadata)
+        Cha::new(metadata)
     };
     let cha = cha.with_hidden(file_name.starts_with('.'));
 
     let (uid, gid) = (cha.uid, cha.gid);
     let (owner, group) = lookup_owner_group(uid, gid);
 
-    let name = file_name.to_string();
     let (time_str, size_str, name_width, size_width, time_width) =
-        FileEntry::cached_fields(&cha, &name);
+        FileEntry::cached_fields(&cha, &file_name);
+    let category = compute_category(&cha, &file_name);
 
-    Ok(FileEntry {
-        name,
-        path: path.to_path_buf(),
+    FileEntry {
+        name: file_name,
+        path,
         cha,
         owner,
         group,
@@ -128,7 +145,8 @@ fn build_file_entry(path: &Path, file_name: &str) -> io::Result<FileEntry> {
         name_width,
         size_width,
         time_width,
-    })
+        category,
+    }
 }
 
 pub fn ensure_path_index(panel: &mut PanelState) {
@@ -169,6 +187,7 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
         let dummy_cha = Cha::dummy_dir();
         let (time_str, size_str, name_width, size_width, time_width) =
             FileEntry::cached_fields(&dummy_cha, "..");
+        let category = compute_category(&dummy_cha, "..");
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent_path.to_path_buf(),
@@ -182,6 +201,7 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             name_width,
             size_width,
             time_width,
+            category,
         });
     }
 
@@ -204,14 +224,11 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
                 continue;
             }
         };
-        let entry_path = entry.path();
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-
-        match build_file_entry(&entry_path, &file_name) {
+        match build_file_entry(&entry) {
             Ok(file_entry) => entries.push(file_entry),
             Err(e) => errors.push(io::Error::new(
                 e.kind(),
-                format!("Failed to read '{}': {}", entry_path.display(), e),
+                format!("Failed to read '{}': {}", entry.path().display(), e),
             )),
         }
     }
@@ -221,15 +238,24 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
 
 pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     let file_name = file_name_from_path(path);
-    build_file_entry(path, &file_name)
+    let metadata = fs::symlink_metadata(path)?;
+    let is_symlink = metadata.is_symlink();
+    let target_meta = if is_symlink {
+        fs::metadata(path).ok()
+    } else {
+        None
+    };
+
+    Ok(build_file_entry_from_metadata(
+        path.to_path_buf(),
+        file_name,
+        &metadata,
+        target_meta.as_ref(),
+    ))
 }
 
 pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     if is_parent_entry(&entry) {
-        return;
-    }
-
-    if panel.listing.unfiltered_entries.is_empty() {
         return;
     }
 
@@ -648,13 +674,14 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_with_empty_unfiltered_skips_insert() {
+    fn test_upsert_with_empty_unfiltered_inserts_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("main.rs", false)]);
         panel.filter = Some("*.rs".to_string());
 
         upsert_entry(&mut panel, test_entry("notes.txt", false));
 
-        assert_eq!(panel.listing.unfiltered_entries.len(), 0);
+        assert_eq!(panel.listing.unfiltered_entries.len(), 1);
+        assert_eq!(panel.listing.unfiltered_entries[0].name, "notes.txt");
     }
 
     #[test]

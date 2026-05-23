@@ -218,8 +218,9 @@ impl Watcher {
     }
 
     fn remove_watched_dir_state(&mut self, path: &Path) {
+        let clean = crate::fs::path::clean_path(path);
         self.watchers.retain(|watched, _| {
-            watched.as_path() != path && !path_points_to_missing_watch(path, watched)
+            watched.as_path() != clean && !path_points_to_missing_watch(&clean, watched)
         });
         self.path_cache
             .retain(|_, v| self.watchers.contains_key(v.as_path()));
@@ -641,7 +642,7 @@ fn notify_to_io(err: &notify::Error) -> io::Error {
 fn path_points_to_missing_watch(path: &Path, watched: &Path) -> bool {
     if path.is_relative()
         && let Ok(current_dir) = std::env::current_dir()
-        && current_dir.join(path) == watched
+        && crate::fs::path::clean_path(&current_dir.join(path)) == watched
     {
         return true;
     }

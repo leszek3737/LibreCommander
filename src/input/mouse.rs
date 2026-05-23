@@ -619,7 +619,6 @@ mod tests {
         let mut state = AppState {
             mode: AppMode::Dialog(DialogKind::Input {
                 prompt: "Name:".to_string(),
-                default_text: "".to_string(),
                 action: InputAction::CreateDirectory,
             }),
             dialog_input: TextInput {
@@ -655,7 +654,6 @@ mod tests {
         let mut state = AppState {
             mode: AppMode::Dialog(DialogKind::Input {
                 prompt: "Name:".to_string(),
-                default_text: "".to_string(),
                 action: InputAction::CreateDirectory,
             }),
             dialog_input: TextInput {
@@ -942,6 +940,7 @@ mod tests {
             name_width: unicode_width::UnicodeWidthStr::width(name),
             size_width: 0,
             time_width: 0,
+            category: crate::app::types::FileCategory::Other,
         };
         let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
         let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));

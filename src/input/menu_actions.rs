@@ -115,7 +115,6 @@ fn execute_panel_config_action(
                 state.dialog_input.cursor_end();
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Filter:".to_string(),
-                    default_text: state.dialog_input.text.clone(),
                     action: InputAction::Filter,
                 });
             });
@@ -168,7 +167,6 @@ fn execute_nav_action(
             state.dialog_input.clear();
             state.mode = AppMode::Dialog(DialogKind::Input {
                 prompt: "Find file:".to_string(),
-                default_text: String::new(),
                 action: InputAction::FindFile,
             });
             None
@@ -207,11 +205,10 @@ fn execute_dialog_action(
                 if let Some(name) = entry_name
                     && name != ".."
                 {
-                    state.dialog_input.text = name.clone();
+                    state.dialog_input.text = name;
                     state.dialog_input.cursor_end();
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Rename to:".to_string(),
-                        default_text: name,
                         action: InputAction::Rename,
                     });
                 }
@@ -231,7 +228,6 @@ fn execute_dialog_action(
                     state.dialog_input.cursor_end();
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Chmod (octal):".to_string(),
-                        default_text: state.dialog_input.text.clone(),
                         action: InputAction::Chmod,
                     });
                 }

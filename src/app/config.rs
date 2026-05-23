@@ -88,7 +88,7 @@ impl Settings {
         }
     }
 
-    pub fn apply_to_state(&self, state: &mut AppState) {
+    pub fn apply_to_state(self, state: &mut AppState) {
         apply_panel(&mut state.left_panel, &self.left);
         apply_panel(&mut state.right_panel, &self.right);
         state.active_panel = self.active_panel;
@@ -99,7 +99,7 @@ impl Settings {
         state.left_panel.sort_options = sort_opts;
         state.right_panel.sort_options = sort_opts;
         if !self.hotlist.is_empty() || state.directory_hotlist.is_empty() {
-            state.hotlist_set(self.hotlist.clone());
+            state.hotlist_set(self.hotlist);
         }
     }
 }
@@ -319,6 +319,7 @@ mod tests {
             right: PersistedPanel::default(),
             hotlist: vec![tmp_dir.clone(), PathBuf::from("/usr")],
         };
+        let hotlist = settings.hotlist.clone();
         settings.apply_to_state(&mut state);
 
         assert_eq!(state.active_panel, ActivePanel::Right);
@@ -334,7 +335,7 @@ mod tests {
         assert_eq!(state.left_panel.sort_mode, SortMode::ExtensionAsc);
         assert_eq!(state.left_panel.filter, Some("txt".to_string()));
         assert!(!state.left_panel.show_hidden);
-        assert_eq!(state.directory_hotlist, settings.hotlist);
+        assert_eq!(state.directory_hotlist, hotlist);
     }
 
     #[test]

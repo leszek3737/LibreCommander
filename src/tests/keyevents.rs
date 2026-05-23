@@ -239,7 +239,6 @@ fn key_repeat_text_edit_updates_input_dialog() {
     let mut state = AppState {
         mode: AppMode::Dialog(DialogKind::Input {
             prompt: "Create directory:".to_string(),
-            default_text: String::new(),
             action: InputAction::CreateDirectory,
         }),
         dialog_input: TextInput {

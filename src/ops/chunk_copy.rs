@@ -2,7 +2,7 @@ use super::helpers::cleanup_file;
 use crate::debug_log;
 use filetime::FileTime;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -147,40 +147,20 @@ fn publish_temp(
         Err(_) => {}
     }
 
-    let mut src = BufReader::new(File::open(temp_dest)?);
-    let dest_file = OpenOptions::new().write(true).create_new(true).open(dest)?;
-    let result = (|| -> io::Result<()> {
-        preserve_permissions(dest, src_metadata)?;
-        let mut dest_file = BufWriter::new(dest_file);
-        let mut buffer = [0_u8; BUFFER_SIZE];
-
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                drop(dest_file);
-                cleanup_file(dest);
-                cleanup_file(temp_dest);
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
-            }
-
-            let bytes_read = src.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-
-            dest_file.write_all(&buffer[..bytes_read])?;
-        }
-
-        dest_file.flush()?;
-        dest_file.get_ref().sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        cleanup_file(dest);
+    if dest.try_exists()? {
+        cleanup_file(temp_dest);
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination file already exists",
+        ));
     }
-    result?;
+
+    preserve_permissions(temp_dest, src_metadata)?;
+    fs::rename(temp_dest, dest).inspect_err(|_| {
+        cleanup_file(temp_dest);
+    })?;
     let atime = filetime::FileTime::from_last_access_time(src_metadata);
     let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
-    cleanup_file(temp_dest);
     if let Err(e) = filetime::set_file_times(dest, atime, mtime) {
         debug_log!("set_file_times failed for {}: {e}", dest.display());
     }

@@ -137,7 +137,6 @@ pub(crate) fn handle_viewer_mode(
                 state.dialog_input.cursor_end();
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Find in viewer:".to_string(),
-                    default_text: state.dialog_input.text.clone(),
                     action: InputAction::ViewerSearch,
                 });
             }
