@@ -82,9 +82,14 @@ fn terminal_state_file_path() -> PathBuf {
     paths::terminal_state_file_path()
 }
 
-fn main() -> io::Result<()> {
+fn main() {
     install_panic_hook();
-    enter_tui_stdout()?;
+    if let Err(err) = enter_tui_stdout() {
+        lc::debug_log!("Error: {err}");
+        let msg = format!("Error: {err}\n");
+        let _ = io::stderr().write_all(msg.as_bytes());
+        std::process::exit(1);
+    }
 
     let result = {
         let _guard = TerminalGuard;
@@ -99,8 +104,8 @@ fn main() -> io::Result<()> {
         lc::debug_log!("Error: {err}");
         let msg = format!("Error: {err}\n");
         let _ = io::stderr().write_all(msg.as_bytes());
+        std::process::exit(1);
     }
-    result
 }
 
 fn poll_viewer_loader(
@@ -401,17 +406,7 @@ fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
     }
 
     if key == KeyCode::Enter {
-        return matches!(
-            mode,
-            AppMode::Dialog(
-                DialogKind::Input { .. }
-                    | DialogKind::Error(_)
-                    | DialogKind::Progress(_, _, _)
-                    | DialogKind::Properties { .. }
-                    | DialogKind::CopyMove { .. }
-                    | DialogKind::Help { .. }
-            )
-        );
+        return false;
     }
 
     false
@@ -516,7 +511,6 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
         KeyCode::F(7) => {
             state.mode = AppMode::Dialog(app::types::DialogKind::Input {
                 prompt: "Create directory:".to_string(),
-                default_text: String::new(),
                 action: InputAction::CreateDirectory,
             });
             state.dialog_input.clear();
@@ -537,11 +531,10 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             if let Some(name) = entry_name
                 && name != ".."
             {
-                state.dialog_input.text = name.clone();
+                state.dialog_input.text = name;
                 state.dialog_input.cursor_end();
                 state.mode = AppMode::Dialog(app::types::DialogKind::Input {
                     prompt: "Rename to:".to_string(),
-                    default_text: name,
                     action: InputAction::Rename,
                 });
             }
@@ -599,6 +592,11 @@ fn launch_editor<B: ratatui::backend::Backend>(
         }
         match (status, resume_result) {
             (Err(e), _) => state.status_message = Some(format!("Editor error: {e}")),
+            (Ok(s), Err(e)) if !s.success() => {
+                state.status_message = Some(format!(
+                    "Editor exited with status: {s}; terminal restore failed: {e}"
+                ));
+            }
             (_, Err(e)) => {
                 state.status_message = Some(format!("Terminal restore failed after editor: {e}"));
             }
@@ -757,13 +755,14 @@ fn reposition_cursor_to_entry(state: &mut AppState, prev_dir_name: Option<&str>,
 }
 
 pub(crate) fn handle_enter_key(state: &mut AppState, visible: usize) {
-    let entry_info = state
-        .active_panel()
-        .current_entry()
-        .map(|e| (e.is_dir(), e.path.clone(), e.name == ".."));
-    if let Some((is_dir, path, is_dotdot)) = entry_info
-        && is_dir
-    {
+    let entry_info = state.active_panel().current_entry().and_then(|e| {
+        if e.is_dir() {
+            Some((e.path.clone(), e.name == ".."))
+        } else {
+            None
+        }
+    });
+    if let Some((path, is_dotdot)) = entry_info {
         let prev_dir_name = if is_dotdot {
             file_name_str(&state.active_panel().path)
         } else {
@@ -855,7 +854,6 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
         KeyCode::Char('c') => {
             state.mode = AppMode::Dialog(app::types::DialogKind::Input {
                 prompt: "Quick cd:".to_string(),
-                default_text: state.active_panel().path.display().to_string(),
                 action: InputAction::QuickCd,
             });
             state.dialog_input.text = state.active_panel().path.display().to_string();

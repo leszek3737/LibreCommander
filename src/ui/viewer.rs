@@ -139,7 +139,9 @@ impl ViewerState {
         if self.raw_bytes.is_empty() && idx == 0 {
             return Cow::Borrowed("[Empty file]");
         }
-        let start = *self.line_offsets.get(idx).unwrap_or(&0);
+        let Some(&start) = self.line_offsets.get(idx) else {
+            return Cow::Borrowed("");
+        };
         let end = self
             .line_offsets
             .get(idx + 1)

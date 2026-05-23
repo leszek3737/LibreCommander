@@ -46,7 +46,6 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
     let mut state = AppState {
         mode: AppMode::Dialog(DialogKind::Input {
             prompt: "Viewer search:".to_string(),
-            default_text: "needle".to_string(),
             action: InputAction::ViewerSearch,
         }),
         dialog_input: TextInput {

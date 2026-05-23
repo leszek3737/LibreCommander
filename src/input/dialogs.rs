@@ -115,7 +115,7 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
 fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
     match (src.canonicalize(), dest.canonicalize()) {
         (Ok(s), Ok(d)) => s == d,
-        _ => src == dest,
+        _ => crate::fs::path::clean_path(src) == crate::fs::path::clean_path(dest),
     }
 }
 

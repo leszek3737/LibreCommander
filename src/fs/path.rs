@@ -10,8 +10,7 @@ const ENV_VAR_EXPANSION_FACTOR: usize = 2;
 /// preserved on Unix; on Windows, `ParentDir` after a drive prefix is kept
 /// (drive-relative navigation).
 pub fn clean_path(path: &Path) -> PathBuf {
-    let est_comps = path.as_os_str().len();
-    let mut comps: Vec<Component<'_>> = Vec::with_capacity(est_comps);
+    let mut comps: Vec<Component<'_>> = Vec::with_capacity(16);
 
     for component in path.components() {
         match component {

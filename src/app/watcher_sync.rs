@@ -231,18 +231,10 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
         return true;
     }
 
-    let parent_raw = parent.to_path_buf();
-    let panel_path_raw = panel_path.to_path_buf();
+    let parent_clean = crate::fs::path::clean_path(parent);
+    let panel_clean = crate::fs::path::clean_path(panel_path);
 
-    let parent_canonical = parent.canonicalize().ok();
-    let panel_canonical = panel_path.canonicalize().ok();
-
-    match (parent_canonical, panel_canonical) {
-        (Some(parent), Some(panel_path)) => parent == panel_path,
-        (Some(parent), None) => parent == panel_path_raw,
-        (None, Some(panel_path)) => parent_raw == panel_path,
-        (None, None) => false,
-    }
+    parent_clean == panel_clean
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {

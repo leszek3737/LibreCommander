@@ -30,7 +30,8 @@ fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
     let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
     if secs >= 0 {
-        Some(UNIX_EPOCH + Duration::new(secs as u64, nsecs))
+        let nsecs = nsecs.min(999_999_999);
+        UNIX_EPOCH.checked_add(Duration::new(secs as u64, nsecs))
     } else {
         None
     }

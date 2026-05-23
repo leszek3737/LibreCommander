@@ -221,6 +221,45 @@ pub struct FileEntry {
     pub name_width: usize,
     pub size_width: usize,
     pub time_width: usize,
+    pub category: FileCategory,
+}
+
+pub(crate) fn compute_category(cha: &Cha, name: &str) -> FileCategory {
+    use crate::app::file_type as ft;
+    if cha.is_link() {
+        return FileCategory::Symlink;
+    }
+    if cha.is_dir() {
+        return FileCategory::Dir;
+    }
+    if ft::is_source_code(name) {
+        return FileCategory::Code;
+    }
+    if ft::is_config(name) {
+        return FileCategory::Config;
+    }
+    if ft::is_archive(name) {
+        return FileCategory::Archive;
+    }
+    if ft::is_image(name) {
+        return FileCategory::Image;
+    }
+    if ft::is_video(name) {
+        return FileCategory::Video;
+    }
+    if ft::is_audio(name) {
+        return FileCategory::Audio;
+    }
+    if ft::is_document(name) {
+        return FileCategory::Document;
+    }
+    if ft::is_font(name) {
+        return FileCategory::Font;
+    }
+    if cha.is_executable() {
+        return FileCategory::Executable;
+    }
+    FileCategory::Other
 }
 
 // ============================================================================
@@ -438,7 +477,6 @@ pub enum DialogKind {
     Confirm(ConfirmDetails),
     Input {
         prompt: String,
-        default_text: String,
         action: InputAction,
     },
     Error(String),
@@ -726,6 +764,7 @@ impl FileEntryBuilder {
     pub fn build(self) -> FileEntry {
         let (time_str, size_str, name_width, size_width, time_width) =
             FileEntry::cached_fields(&self.cha, &self.name);
+        let category = compute_category(&self.cha, &self.name);
         FileEntry {
             name: self.name,
             path: self.path,
@@ -739,6 +778,7 @@ impl FileEntryBuilder {
             name_width,
             size_width,
             time_width,
+            category,
         }
     }
 }
@@ -838,41 +878,7 @@ impl FileEntry {
     /// Hidden files get their real type (e.g. `.bashrc` → Config, `.backup.zip` → Archive).
     /// A symlink to a directory is `Symlink`, not `Dir`.
     pub fn category(&self) -> FileCategory {
-        use crate::app::file_type as ft;
-        if self.is_symlink() {
-            return FileCategory::Symlink;
-        }
-        if self.is_dir() {
-            return FileCategory::Dir;
-        }
-        if ft::is_source_code(&self.name) {
-            return FileCategory::Code;
-        }
-        if ft::is_config(&self.name) {
-            return FileCategory::Config;
-        }
-        if ft::is_archive(&self.name) {
-            return FileCategory::Archive;
-        }
-        if ft::is_image(&self.name) {
-            return FileCategory::Image;
-        }
-        if ft::is_video(&self.name) {
-            return FileCategory::Video;
-        }
-        if ft::is_audio(&self.name) {
-            return FileCategory::Audio;
-        }
-        if ft::is_document(&self.name) {
-            return FileCategory::Document;
-        }
-        if ft::is_font(&self.name) {
-            return FileCategory::Font;
-        }
-        if self.is_executable() {
-            return FileCategory::Executable;
-        }
-        FileCategory::Other
+        self.category
     }
 
     pub fn display_size(&self) -> String {
@@ -1840,17 +1846,10 @@ mod tests {
     fn test_dialog_kind_input() {
         let dialog = DialogKind::Input {
             prompt: "Enter name:".to_string(),
-            default_text: "default".to_string(),
             action: InputAction::Rename,
         };
-        if let DialogKind::Input {
-            prompt,
-            default_text,
-            action,
-        } = dialog
-        {
+        if let DialogKind::Input { prompt, action } = dialog {
             assert_eq!(prompt, "Enter name:");
-            assert_eq!(default_text, "default");
             assert_eq!(action, InputAction::Rename);
         } else {
             panic!("Expected Input variant");

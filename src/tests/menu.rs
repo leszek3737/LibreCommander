@@ -87,7 +87,6 @@ fn menu_rename_opens_input_dialog_with_current_name() {
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Input {
             prompt: _,
-            default_text: _,
             action: app::types::InputAction::Rename,
         })
     ));
