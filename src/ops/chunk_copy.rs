@@ -147,9 +147,16 @@ fn publish_temp(
         Err(_) => {}
     }
 
+    if dest.try_exists()? {
+        cleanup_file(temp_dest);
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination file already exists",
+        ));
+    }
+
     preserve_permissions(temp_dest, src_metadata)?;
-    fs::rename(temp_dest, dest).inspect_err(|e| {
-        let _ = e;
+    fs::rename(temp_dest, dest).inspect_err(|_| {
         cleanup_file(temp_dest);
     })?;
     let atime = filetime::FileTime::from_last_access_time(src_metadata);

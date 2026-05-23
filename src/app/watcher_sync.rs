@@ -169,7 +169,7 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
 }
 
 pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, &panel.path) {
+    if !path_parent_matches(path, &panel.path, panel.canonical_path.as_deref()) {
         return false;
     }
 
@@ -180,7 +180,7 @@ pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> b
 }
 
 pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, &panel.path) {
+    if !path_parent_matches(path, &panel.path, panel.canonical_path.as_deref()) {
         return false;
     }
 
@@ -218,7 +218,7 @@ fn event_is_panel_dir(path: &Path, panel: &PanelState) -> bool {
     path.canonicalize().is_ok_and(|p| p == panel_canonical)
 }
 
-fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
+fn path_parent_matches(path: &Path, panel_path: &Path, panel_canonical: Option<&Path>) -> bool {
     if path.file_name().is_none() {
         return false;
     }
@@ -231,10 +231,25 @@ fn path_parent_matches(path: &Path, panel_path: &Path) -> bool {
         return true;
     }
 
+    if panel_canonical == Some(parent) {
+        return true;
+    }
+
     let parent_clean = crate::fs::path::clean_path(parent);
     let panel_clean = crate::fs::path::clean_path(panel_path);
 
-    parent_clean == panel_clean
+    if parent_clean == panel_clean {
+        return true;
+    }
+
+    if let Some(canonical) = panel_canonical {
+        let canonical_clean = crate::fs::path::clean_path(canonical);
+        if parent_clean == canonical_clean {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
@@ -531,7 +546,7 @@ mod tests {
         let panel_path = dir.path().join("missing");
         let child = panel_path.join("file.txt");
 
-        assert!(path_parent_matches(&child, &panel_path));
+        assert!(path_parent_matches(&child, &panel_path, None));
     }
 
     #[test]

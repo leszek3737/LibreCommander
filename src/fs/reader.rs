@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::app::types::{PanelState, compute_category};
@@ -95,23 +95,33 @@ fn file_name_from_path(path: &Path) -> String {
 fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
     let path = entry.path();
     let file_name = entry.file_name().to_string_lossy().into_owned();
-    let file_type = entry.file_type()?;
-    let is_symlink = file_type.is_symlink();
-    let metadata = if is_symlink {
-        fs::symlink_metadata(&path)?
-    } else {
-        entry.metadata()?
-    };
+    let metadata = entry.metadata()?;
+    let is_symlink = metadata.is_symlink();
     let target_meta = if is_symlink {
         fs::metadata(&path).ok()
     } else {
         None
     };
 
+    Ok(build_file_entry_from_metadata(
+        path,
+        file_name,
+        &metadata,
+        target_meta.as_ref(),
+    ))
+}
+
+fn build_file_entry_from_metadata(
+    path: PathBuf,
+    file_name: String,
+    metadata: &fs::Metadata,
+    target_meta: Option<&fs::Metadata>,
+) -> FileEntry {
+    let is_symlink = metadata.is_symlink();
     let cha = if is_symlink {
-        Cha::from_link_metadata(&metadata, target_meta.as_ref())
+        Cha::from_link_metadata(metadata, target_meta)
     } else {
-        Cha::new(&metadata)
+        Cha::new(metadata)
     };
     let cha = cha.with_hidden(file_name.starts_with('.'));
 
@@ -122,7 +132,7 @@ fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
         FileEntry::cached_fields(&cha, &file_name);
     let category = compute_category(&cha, &file_name);
 
-    Ok(FileEntry {
+    FileEntry {
         name: file_name,
         path,
         cha,
@@ -136,7 +146,7 @@ fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
         size_width,
         time_width,
         category,
-    })
+    }
 }
 
 pub fn ensure_path_index(panel: &mut PanelState) {
@@ -236,35 +246,12 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
         None
     };
 
-    let cha = if is_symlink {
-        Cha::from_link_metadata(&metadata, target_meta.as_ref())
-    } else {
-        Cha::new(&metadata)
-    };
-    let cha = cha.with_hidden(file_name.starts_with('.'));
-
-    let (uid, gid) = (cha.uid, cha.gid);
-    let (owner, group) = lookup_owner_group(uid, gid);
-
-    let (time_str, size_str, name_width, size_width, time_width) =
-        FileEntry::cached_fields(&cha, &file_name);
-    let category = compute_category(&cha, &file_name);
-
-    Ok(FileEntry {
-        name: file_name,
-        path: path.to_path_buf(),
-        cha,
-        owner,
-        group,
-        selected: false,
-        mime_type: None,
-        time_str,
-        size_str,
-        name_width,
-        size_width,
-        time_width,
-        category,
-    })
+    Ok(build_file_entry_from_metadata(
+        path.to_path_buf(),
+        file_name,
+        &metadata,
+        target_meta.as_ref(),
+    ))
 }
 
 pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
