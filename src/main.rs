@@ -23,7 +23,7 @@ mod render;
 use app::job_runner::{RunningJob, poll_running_job};
 #[cfg(test)]
 use app::types::PanelState;
-use app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction};
+use app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction, ViewMode};
 use app::{panel_ops, paths, shell, watcher_sync};
 
 use ui::viewer;
@@ -150,19 +150,7 @@ fn poll_viewer_loader(
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    let terminal_state_file = terminal_state_file_path();
-
-    if std::fs::metadata(&terminal_state_file).is_ok() {
-        let leave_result = leave_tui_stdout();
-        let resume_result = resume_terminal_stdout();
-        if resume_result.is_ok()
-            && let Err(e) = std::fs::remove_file(&terminal_state_file)
-        {
-            lc::debug_log!("failed to remove terminal state file: {e}");
-        }
-        leave_result?;
-        resume_result?;
-    }
+    recover_terminal_state()?;
 
     let mut state = AppState::new();
     let config_raw = match app::config::load_setup(&mut state) {
@@ -211,17 +199,20 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
             dirty = true;
         }
-
         if poll_running_job(&mut state, &mut running_job, panel_ops::refresh_both) {
             panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
             dirty = true;
         }
-
         if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader) {
             dirty = true;
         }
-
         if dirty {
+            if let Some(vs) = viewer_state.as_mut()
+                && vs.view_mode == ViewMode::Image
+                && let Ok(size) = terminal.size()
+            {
+                let _ = vs.prepare_image_preview(size.width, size.height);
+            }
             if let Err(e) =
                 terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))
             {
@@ -232,7 +223,6 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             }
             dirty = false;
         }
-
         if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
             let key = match event::read() {
                 Ok(k) => k,
@@ -260,6 +250,22 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             return Ok(());
         }
     }
+}
+
+fn recover_terminal_state() -> io::Result<()> {
+    let terminal_state_file = terminal_state_file_path();
+    if std::fs::metadata(&terminal_state_file).is_ok() {
+        let leave_result = leave_tui_stdout();
+        let resume_result = resume_terminal_stdout();
+        if resume_result.is_ok()
+            && let Err(e) = std::fs::remove_file(&terminal_state_file)
+        {
+            lc::debug_log!("failed to remove terminal state file: {e}");
+        }
+        leave_result?;
+        resume_result?;
+    }
+    Ok(())
 }
 
 fn dispatch_event<B: ratatui::backend::Backend>(

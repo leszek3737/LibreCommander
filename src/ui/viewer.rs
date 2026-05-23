@@ -1,3 +1,4 @@
+use ansi_to_tui::IntoText;
 use ratatui::{
     Frame,
     layout::Margin,
@@ -51,6 +52,8 @@ pub struct ViewerState {
     visual_offsets: RefCell<Vec<usize>>,
     cached_content_width: RefCell<usize>,
     file_truncated: bool,
+    pub cached_image_size: Option<(u16, u16)>,
+    pub cached_image_text: Option<Text<'static>>,
 }
 
 pub struct ViewerLoader {
@@ -216,6 +219,8 @@ impl ViewerState {
             0
         };
 
+        let is_image = is_image_mime(&mime);
+
         Ok(ViewerState {
             file_path: path.to_path_buf(),
             line_offsets,
@@ -228,7 +233,9 @@ impl ViewerState {
             current_match: None,
             wrap_lines: true,
             show_line_numbers: false,
-            view_mode: if open_as_text {
+            view_mode: if is_image {
+                ViewMode::Image
+            } else if open_as_text {
                 ViewMode::Text
             } else {
                 ViewMode::Hex
@@ -243,6 +250,8 @@ impl ViewerState {
             visual_offsets: RefCell::new(Vec::new()),
             cached_content_width: RefCell::new(0),
             file_truncated,
+            cached_image_size: None,
+            cached_image_text: None,
         })
     }
 
@@ -624,16 +633,22 @@ impl ViewerState {
     }
 
     pub fn toggle_line_numbers(&mut self) {
+        if matches!(self.view_mode, ViewMode::Image) {
+            return;
+        }
         self.show_line_numbers = !self.show_line_numbers;
         self.visual_heights.borrow_mut().clear();
         self.visual_offsets.borrow_mut().clear();
         *self.cached_content_width.borrow_mut() = 0;
-        if !self.is_hex_mode() {
+        if self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
     }
 
     pub fn toggle_wrap(&mut self) {
+        if matches!(self.view_mode, ViewMode::Image) {
+            return;
+        }
         self.wrap_lines = !self.wrap_lines;
         if self.wrap_lines {
             self.horizontal_offset = 0;
@@ -641,14 +656,19 @@ impl ViewerState {
         self.visual_heights.borrow_mut().clear();
         self.visual_offsets.borrow_mut().clear();
         *self.cached_content_width.borrow_mut() = 0;
-        if !self.is_hex_mode() {
+        if self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
     }
 
     pub fn toggle_hex_mode(&mut self) {
+        let is_image = is_image_mime(&self.detected_mime);
         self.view_mode = if self.is_hex_mode() {
-            ViewMode::Text
+            if is_image {
+                ViewMode::Image
+            } else {
+                ViewMode::Text
+            }
         } else {
             ViewMode::Hex
         };
@@ -751,6 +771,40 @@ impl ViewerState {
         };
         self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
     }
+
+    pub fn prepare_image_preview(&mut self, area_width: u16, area_height: u16) -> io::Result<()> {
+        let content_height = area_height.saturating_sub(2);
+        if area_width == 0 || content_height == 0 {
+            return Ok(());
+        }
+        if self.cached_image_size == Some((area_width, content_height)) {
+            return Ok(());
+        }
+
+        let size_str = format!("{}x{}", area_width, content_height);
+        let output = std::process::Command::new("chafa")
+            .arg("-f")
+            .arg("symbols")
+            .arg("--size")
+            .arg(&size_str)
+            .arg("--")
+            .arg(&self.file_path)
+            .output()?;
+
+        let parsed_text = if output.status.success() {
+            match output.stdout.into_text() {
+                Ok(text) => text,
+                Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
+            }
+        } else {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            Text::raw(format!("Chafa error: {}", err_msg))
+        };
+
+        self.cached_image_size = Some((area_width, content_height));
+        self.cached_image_text = Some(parsed_text);
+        Ok(())
+    }
 }
 
 fn line_number_digits(line_count: usize) -> usize {
@@ -775,6 +829,10 @@ fn build_lowercase_mapping(original: &str, lower: &mut String, byte_map: &mut Ve
             byte_map.push(orig_byte_idx);
         }
     }
+}
+
+fn is_image_mime(mime: &Option<String>) -> bool {
+    mime.as_ref().is_some_and(|m| m.starts_with("image/"))
 }
 
 fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
@@ -1250,6 +1308,48 @@ pub fn render_hex_view_with_colors(
     };
     let position_text = format!("Offset: {current_line}/{total_lines}");
     render_viewer_status(f, inner_area, state, "Hex", &position_text, colors);
+}
+
+pub fn render_image_view_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    state: &ViewerState,
+    colors: &ColorPalette,
+) {
+    let block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .style(Theme::panel_with_colors(colors))
+        .title(format!("{} [Image]", state.file_path.display()))
+        .title_style(Theme::title_with_colors(colors));
+    f.render_widget(block, area);
+
+    let inner_area = area.inner(Margin {
+        horizontal: 0,
+        vertical: 1,
+    });
+    if inner_area.height == 0 {
+        return;
+    }
+
+    let content_area = Rect {
+        x: inner_area.x,
+        y: inner_area.y,
+        width: inner_area.width,
+        height: inner_area.height.saturating_sub(1),
+    };
+
+    if content_area.width > 0 && content_area.height > 0 {
+        if let Some(text) = &state.cached_image_text {
+            let paragraph = Paragraph::new(text.clone());
+            f.render_widget(paragraph, content_area);
+        } else {
+            let paragraph = Paragraph::new("Generating preview\u{2026}");
+            f.render_widget(paragraph, content_area);
+        }
+    }
+
+    let position_text = format!("Size: {}", format_size(state.file_size as u64));
+    render_viewer_status(f, inner_area, state, "Image", &position_text, colors);
 }
 
 #[cfg(test)]
@@ -2159,5 +2259,104 @@ mod tests {
             state.search_matches.is_empty(),
             "hex search should not match offset prefix"
         );
+    }
+
+    const PNG_HEADER: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE,
+    ];
+
+    fn create_png_file() -> NamedTempFile {
+        let mut file = NamedTempFile::with_suffix(".png").unwrap();
+        file.write_all(PNG_HEADER).unwrap();
+        file
+    }
+
+    #[test]
+    fn test_open_image_file_sets_view_mode_to_image() {
+        let file = create_png_file();
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+        assert!(
+            state
+                .detected_mime
+                .as_deref()
+                .is_some_and(|m| m.starts_with("image/"))
+        );
+    }
+
+    #[test]
+    fn test_toggle_hex_mode_with_image_file() {
+        let file = create_png_file();
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+
+        state.toggle_hex_mode();
+        assert_eq!(state.view_mode, ViewMode::Hex);
+
+        state.toggle_hex_mode();
+        assert_eq!(state.view_mode, ViewMode::Image);
+    }
+
+    #[test]
+    fn test_toggle_wrap_noop_in_image_mode() {
+        let file = create_png_file();
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+        let original_wrap = state.wrap_lines;
+
+        state.toggle_wrap();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+        assert_eq!(state.wrap_lines, original_wrap);
+    }
+
+    #[test]
+    fn test_toggle_line_numbers_noop_in_image_mode() {
+        let file = create_png_file();
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+        let original_line_numbers = state.show_line_numbers;
+
+        state.toggle_line_numbers();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+        assert_eq!(state.show_line_numbers, original_line_numbers);
+    }
+
+    #[test]
+    fn test_image_file_has_correct_mode_after_toggle() {
+        let file = create_png_file();
+        let mut state = ViewerState::open(file.path()).unwrap();
+
+        assert_eq!(state.view_mode, ViewMode::Image);
+
+        state.toggle_hex_mode();
+        assert_eq!(state.view_mode, ViewMode::Hex);
+
+        state.toggle_hex_mode();
+        assert_eq!(
+            state.view_mode,
+            ViewMode::Image,
+            "should return to Image mode, not Text"
+        );
+    }
+
+    #[test]
+    fn test_render_image_view_does_not_panic() {
+        let file = create_png_file();
+        let state = ViewerState::open(file.path()).unwrap();
+
+        assert!(state.cached_image_size.is_none());
+        assert!(state.cached_image_text.is_none());
+
+        let buffer = render_viewer_buffer(&state, 80, 24);
+
+        assert!(!buffer.area.is_empty());
     }
 }

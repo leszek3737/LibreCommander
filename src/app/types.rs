@@ -647,6 +647,7 @@ pub struct AppState {
 pub enum ViewMode {
     Text,
     Hex,
+    Image,
 }
 
 // ============================================================================
