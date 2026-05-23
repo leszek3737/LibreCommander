@@ -13,7 +13,7 @@ fn safe_split_at(s: &str, mut byte_idx: usize) -> (&str, &str) {
 
 use lc::{app, ui};
 
-use app::types::{ActivePanel, AppMode, AppState, PickerKind};
+use app::types::{ActivePanel, AppMode, AppState, PickerKind, ViewMode};
 use std::borrow::Cow;
 use ui::theme::{ColorPalette, Theme};
 use ui::{dialogs, panels, viewer};
@@ -29,10 +29,16 @@ pub(crate) fn render_ui(
 
     if state.mode == AppMode::Viewing {
         if let Some(vs) = viewer_state {
-            if vs.is_hex_mode() {
-                viewer::render_hex_view_with_colors(f, f.area(), vs, colors);
-            } else {
-                viewer::render_viewer_with_colors(f, f.area(), vs, colors);
+            match vs.view_mode {
+                ViewMode::Hex => {
+                    viewer::render_hex_view_with_colors(f, f.area(), vs, colors);
+                }
+                ViewMode::Image => {
+                    viewer::render_image_view_with_colors(f, f.area(), vs, colors);
+                }
+                ViewMode::Text => {
+                    viewer::render_viewer_with_colors(f, f.area(), vs, colors);
+                }
             }
             return;
         }

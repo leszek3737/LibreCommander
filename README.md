@@ -69,6 +69,7 @@ cargo install --path .
 | `rayon` 1 | Parallel iteration / background jobs |
 | `infer` 0.19 | MIME type detection |
 | `filetime` 0.2 | File modification time handling |
+| `ansi-to-tui` 8 | Parse ANSI sequences for image viewing |
 
 Dev dependency: `tempfile` 3 (for tests).
 
@@ -322,11 +323,53 @@ The built-in viewer (F3) supports:
 - **Text mode** with word wrap (toggle with `w`)
 - **Line numbers** (toggle with `l`)
 - **Hex dump** (toggle with `h`) — standard hex+offset format, 16 bytes per line
+- **Image preview** — automatic image preview rendering in character art using `chafa` (toggle with `h` to hex mode)
 - **In-file search** (`/` to search, `n`/`N` to navigate matches)
 - **Horizontal scrolling** for wide lines
 - **Unicode support** — lossy UTF-8 display for binary files
 - **Size limit** — files up to 100 MiB (larger files are truncated)
 - **Content detection** — auto-detection of text vs binary content (MIME-based with null-byte fallback)
+
+## Image Preview
+
+lc renders images as character art (ANSI TrueColor) using **chafa**. Open any
+image file with `F3` — the viewer auto-detects image MIME types and switches to
+Image mode.
+
+### Requirements
+
+```bash
+# macOS
+brew install chafa
+
+# Debian / Ubuntu
+sudo apt install chafa
+
+# Fedora
+sudo dnf install chafa
+
+# Arch
+sudo pacman -S chafa
+```
+
+chafa is not bundled with lc. If missing, the viewer shows
+"Failed to execute chafa (is it installed?)".
+
+### Controls in Image mode
+
+| Key | Action |
+|-----|--------|
+| `h` | Toggle between image preview and hex dump |
+| `Up` / `Down` / `k` / `j` | No-op (image fills available area) |
+| `Esc` / `F3` / `F10` / `q` | Close viewer |
+
+### How it works
+
+- On first view or terminal resize, lc spawns `chafa --size WxH <file>` and
+  parses its ANSI output into terminal characters via `ansi-to-tui`.
+- The result is cached — subsequent frames only clone the cached `Text`,
+  keeping **60 FPS** rendering.
+- Preview size adapts to the terminal area, leaving one line for the status bar.
 
 ## Search
 
