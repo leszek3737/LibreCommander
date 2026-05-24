@@ -56,7 +56,8 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
                     state.active_panel_mut().scroll_offset = 0;
                     refresh_active(state);
                 } else {
-                    state.status_message = Some("Hotlist entry no longer exists".to_string());
+                    state.status_message =
+                        Some("Hotlist entry is no longer a valid directory".to_string());
                 }
                 state.mode = AppMode::Normal;
             } else {

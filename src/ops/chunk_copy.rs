@@ -47,7 +47,7 @@ pub fn copy_with_progress(
                 cleanup_file(&temp_dest);
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
-            if let Err(err) = publish_temp(&temp_dest, dest, &metadata, cancel, overwrite) {
+            if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
                 cleanup_file(&temp_dest);
                 return Err(err);
             }
@@ -109,7 +109,6 @@ fn copy_to_temp(
             if pending_delta > 0 {
                 let _ = progress_tx.send(pending_delta);
             }
-            let _ = writer.flush();
             return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
         }
     }
@@ -128,7 +127,6 @@ fn copy_to_temp(
 fn publish_temp(
     temp_dest: &Path,
     dest: &Path,
-    src_metadata: &fs::Metadata,
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<()> {
@@ -147,22 +145,16 @@ fn publish_temp(
         Err(_) => {}
     }
 
-    if dest.try_exists()? {
-        cleanup_file(temp_dest);
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "destination file already exists",
-        ));
-    }
-
-    preserve_permissions(temp_dest, src_metadata)?;
-    fs::rename(temp_dest, dest).inspect_err(|_| {
-        cleanup_file(temp_dest);
-    })?;
-    let atime = filetime::FileTime::from_last_access_time(src_metadata);
-    let mtime = filetime::FileTime::from_last_modification_time(src_metadata);
-    if let Err(e) = filetime::set_file_times(dest, atime, mtime) {
-        debug_log!("set_file_times failed for {}: {e}", dest.display());
+    match fs::rename(temp_dest, dest) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            cleanup_file(temp_dest);
+            return Err(err);
+        }
+        Err(err) => {
+            cleanup_file(temp_dest);
+            return Err(err);
+        }
     }
 
     Ok(())
@@ -561,9 +553,8 @@ mod tests {
         fs::write(&temp, b"data").expect("write temp");
         fs::create_dir(&dest).expect("create dest dir");
 
-        let src_meta = fs::metadata(&temp).expect("temp meta");
         let cancel = AtomicBool::new(false);
-        let err = publish_temp(&temp, &dest, &src_meta, &cancel, true).expect_err("should fail");
+        let err = publish_temp(&temp, &dest, &cancel, true).expect_err("should fail");
         assert!(
             err.kind() == io::ErrorKind::IsADirectory || err.kind() == io::ErrorKind::Other,
             "expected IsADirectory or Other, got {:?}",

@@ -559,7 +559,7 @@ pub fn render_help_dialog(
 
     let message_paragraph = Paragraph::new(message)
         .wrap(Wrap { trim: true })
-        .scroll((clamped_offset as u16, 0))
+        .scroll((clamped_offset.min(u16::MAX as usize) as u16, 0))
         .alignment(Alignment::Left)
         .style(Theme::info_with_colors(colors));
     f.render_widget(message_paragraph, message_area);

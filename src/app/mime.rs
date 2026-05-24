@@ -5,10 +5,6 @@ use std::path::Path;
 use crate::app::types::FileCategory;
 
 pub fn detect_mime(path: &Path) -> Option<String> {
-    if path.is_dir() {
-        return Some("inode/directory".to_string());
-    }
-
     let fallback = || {
         path.file_name()
             .and_then(|name| name.to_str())
@@ -20,6 +16,11 @@ pub fn detect_mime(path: &Path) -> Option<String> {
         Ok(file) => file,
         Err(_) => return fallback(),
     };
+
+    if file.metadata().is_ok_and(|m| m.is_dir()) {
+        return Some("inode/directory".to_string());
+    }
+
     let mut buf = [0u8; 8192];
     let len = match file.read(&mut buf) {
         Ok(len) => len,
@@ -306,7 +307,7 @@ fn config_mime(ext: &str) -> Option<&'static str> {
         "xml" => Some("application/xml"),
         "ini" | "conf" | "cfg" => Some("text/config"),
         "plist" => Some("application/x-plist"),
-        "lock" => Some("application/json"),
+        "lock" => Some("text/config"),
         "config" | "cnf" | "env" | "properties" | "desktop" | "gitignore" | "gitattributes"
         | "gitmodules" | "dockerignore" | "editorconfig" => Some("text/config"),
         _ => None,

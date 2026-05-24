@@ -51,7 +51,7 @@ fn validate_path_name(input: &str) -> ValidationResult {
         return ValidationResult::InvalidPath(format!("Name contains path separator: {input}"));
     }
     if contains_parent_dir(input) {
-        ValidationResult::InvalidPath(input.to_string())
+        ValidationResult::InvalidPath(format!("'..' not allowed in '{input}'"))
     } else {
         ValidationResult::Valid
     }
@@ -115,7 +115,9 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
 fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
     match (src.canonicalize(), dest.canonicalize()) {
         (Ok(s), Ok(d)) => s == d,
-        _ => crate::fs::path::clean_path(src) == crate::fs::path::clean_path(dest),
+        (Err(_), Err(_)) | (Ok(_), _) | (_, Ok(_)) => {
+            crate::fs::path::clean_path(src) == crate::fs::path::clean_path(dest)
+        }
     }
 }
 
@@ -301,7 +303,7 @@ fn handle_input_action(
                     return false;
                 }
                 ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(format!("Invalid path: '..' not allowed in '{p}'"));
+                    state.status_message = Some(p);
                     return false;
                 }
                 _ => return false,

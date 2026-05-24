@@ -1267,6 +1267,9 @@ impl AppState {
     }
 
     pub fn hotlist_remove(&mut self, index: usize) {
+        if index >= self.directory_hotlist.len() {
+            return;
+        }
         self.directory_hotlist.remove(index);
         self.rebuild_hotlist_cache();
     }

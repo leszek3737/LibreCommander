@@ -227,6 +227,7 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
+    let total = menu_total_count();
     let max_items = menu_item_count(state.menu_selected);
     if max_items == 0 {
         state.mode = AppMode::Normal;
@@ -239,14 +240,14 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
         }
         KeyCode::Left => {
             state.menu_selected = if state.menu_selected == 0 {
-                menu_total_count() - 1
+                total - 1
             } else {
                 state.menu_selected - 1
             };
             state.menu_item_selected = 0;
         }
         KeyCode::Right => {
-            state.menu_selected = (state.menu_selected + 1) % menu_total_count();
+            state.menu_selected = (state.menu_selected + 1) % total;
             state.menu_item_selected = 0;
         }
         KeyCode::Up => {

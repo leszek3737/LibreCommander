@@ -689,7 +689,7 @@ impl FileSearch {
         outcome
     }
 
-    pub fn search_content_recursive(
+    fn search_content_recursive(
         path: &Path,
         pattern: &str,
         recursive: bool,
@@ -718,7 +718,6 @@ impl FileSearch {
         Self::search_content_recursive_inner(path, depth, &mut ctx);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn search_content_recursive_inner(
         path: &Path,
         depth: usize,
@@ -904,7 +903,7 @@ impl FileSearch {
                         }
                     };
                     let match_found = if case_sensitive {
-                        line_text.contains(pattern)
+                        true
                     } else {
                         Self::contains_case_insensitive(&line_text, pattern_lower)
                     };
