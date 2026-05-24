@@ -145,17 +145,17 @@ fn publish_temp(
         Err(_) => {}
     }
 
-    match fs::rename(temp_dest, dest) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            cleanup_file(temp_dest);
-            return Err(err);
-        }
-        Err(err) => {
-            cleanup_file(temp_dest);
-            return Err(err);
-        }
+    if dest.try_exists().unwrap_or(true) {
+        cleanup_file(temp_dest);
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination file already exists",
+        ));
     }
+
+    fs::rename(temp_dest, dest).inspect_err(|_| {
+        cleanup_file(temp_dest);
+    })?;
 
     Ok(())
 }

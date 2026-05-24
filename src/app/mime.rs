@@ -14,7 +14,12 @@ pub fn detect_mime(path: &Path) -> Option<String> {
 
     let mut file = match File::open(path) {
         Ok(file) => file,
-        Err(_) => return fallback(),
+        Err(_) => {
+            if path.is_dir() {
+                return Some("inode/directory".to_string());
+            }
+            return fallback();
+        }
     };
 
     if file.metadata().is_ok_and(|m| m.is_dir()) {
