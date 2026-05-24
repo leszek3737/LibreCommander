@@ -147,13 +147,13 @@ fn parse_color(s: &str) -> Option<Color> {
         return None;
     }
     if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if hex.len() == 6 {
             let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
             let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
             let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
             return Some(Color::Rgb(r, g, b));
         }
-        if hex.len() == 3 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if hex.len() == 3 {
             let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
             let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
             let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;

@@ -107,12 +107,9 @@ impl Watcher {
             .map_err(|e| notify_to_io(&e))?;
             self.fallback = Some(fallback);
         }
-        let Some(f) = self.fallback.as_mut() else {
-            return Err(io::Error::other(
-                "create_fallback: fallback must be initialized",
-            ));
-        };
-        Ok(f)
+        self.fallback
+            .as_mut()
+            .ok_or_else(|| io::Error::other("create_fallback: fallback must be initialized"))
     }
 
     /// Start watching `path` for filesystem events.
@@ -162,9 +159,10 @@ impl Watcher {
             canonical.clone()
         } else {
             match path.canonicalize() {
-                Ok(path) => {
-                    self.path_cache.insert(path.clone(), path.clone());
-                    path
+                Ok(canonical) => {
+                    self.path_cache
+                        .insert(path.to_path_buf(), canonical.clone());
+                    canonical
                 }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {
                     self.remove_watched_dir_state(path);

@@ -104,7 +104,7 @@ impl ViewerState {
 
     fn compute_line_offsets(bytes: &[u8]) -> Vec<usize> {
         if bytes.is_empty() {
-            return Vec::new();
+            return vec![0];
         }
         let mut offsets = vec![0];
         offsets.extend(
@@ -201,7 +201,7 @@ impl ViewerState {
         let has_invalid_utf8 =
             !raw_bytes.is_empty() && open_as_text && std::str::from_utf8(&raw_bytes).is_err();
 
-        let line_offsets = if raw_bytes.is_empty() || !open_as_text {
+        let line_offsets = if !open_as_text {
             Vec::new()
         } else {
             Self::compute_line_offsets(&raw_bytes)

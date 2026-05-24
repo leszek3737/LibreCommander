@@ -51,7 +51,7 @@ fn validate_path_name(input: &str) -> ValidationResult {
         return ValidationResult::InvalidPath(format!("Name contains path separator: {input}"));
     }
     if contains_parent_dir(input) {
-        ValidationResult::InvalidPath(input.to_string())
+        ValidationResult::InvalidPath(format!("'..' not allowed in '{input}'"))
     } else {
         ValidationResult::Valid
     }
@@ -301,7 +301,7 @@ fn handle_input_action(
                     return false;
                 }
                 ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(format!("Invalid path: '..' not allowed in '{p}'"));
+                    state.status_message = Some(p);
                     return false;
                 }
                 _ => return false,

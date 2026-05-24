@@ -182,6 +182,7 @@ fn reverse_ext_sort_key(
 }
 
 type SizeKey = (u8, u64, String, String);
+type SizeKeyReverse = (u8, Reverse<(u64, String, String)>);
 
 fn size_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> SizeKey {
     let name_key = if sensitive {
@@ -197,16 +198,13 @@ fn size_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> SizeKey
     )
 }
 
-fn reverse_size_sort_key(
-    entry: &FileEntry,
-    dir_first: bool,
-    sensitive: bool,
-) -> (u8, Reverse<u64>, String, String) {
+fn reverse_size_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> SizeKeyReverse {
     let (_, size, nk0, nk1) = size_sort_key(entry, dir_first, sensitive);
-    (entry_group(entry, dir_first), Reverse(size), nk0, nk1)
+    (entry_group(entry, dir_first), Reverse((size, nk0, nk1)))
 }
 
 type MtimeKey = (u8, std::time::SystemTime, String, String);
+type MtimeKeyReverse = (u8, Reverse<(std::time::SystemTime, String, String)>);
 
 fn mtime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> MtimeKey {
     let name_key = if sensitive {
@@ -222,16 +220,17 @@ fn mtime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> MtimeK
     )
 }
 
-fn reverse_mtime_sort_key(
-    entry: &FileEntry,
-    dir_first: bool,
-    sensitive: bool,
-) -> (u8, Reverse<std::time::SystemTime>, String, String) {
+fn reverse_mtime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> MtimeKeyReverse {
     let (_, mtime, nk0, nk1) = mtime_sort_key(entry, dir_first, sensitive);
-    (entry_group(entry, dir_first), Reverse(mtime), nk0, nk1)
+    (entry_group(entry, dir_first), Reverse((mtime, nk0, nk1)))
 }
 
 type BtimeKey = (u8, Reverse<bool>, std::time::SystemTime, String, String);
+type BtimeKeyReverse = (
+    u8,
+    Reverse<bool>,
+    Reverse<(std::time::SystemTime, String, String)>,
+);
 
 fn btime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> BtimeKey {
     let name_key = if sensitive {
@@ -248,24 +247,12 @@ fn btime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> BtimeK
     )
 }
 
-fn reverse_btime_sort_key(
-    entry: &FileEntry,
-    dir_first: bool,
-    sensitive: bool,
-) -> (
-    u8,
-    Reverse<bool>,
-    Reverse<std::time::SystemTime>,
-    String,
-    String,
-) {
+fn reverse_btime_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> BtimeKeyReverse {
     let (_, has_btime, bt, nk0, nk1) = btime_sort_key(entry, dir_first, sensitive);
     (
         entry_group(entry, dir_first),
         has_btime,
-        Reverse(bt),
-        nk0,
-        nk1,
+        Reverse((bt, nk0, nk1)),
     )
 }
 

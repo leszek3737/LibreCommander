@@ -262,7 +262,9 @@ fn recover_terminal_state() -> io::Result<()> {
         {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
-        leave_result?;
+        if let Err(e) = &leave_result {
+            lc::debug_log!("leave_tui_stdout failed: {e}");
+        }
         resume_result?;
     }
     Ok(())

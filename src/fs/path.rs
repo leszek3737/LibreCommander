@@ -66,16 +66,16 @@ pub fn expand_path(input: &str) -> PathBuf {
         return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
 
-    if let Some(rest) = stripped_tilde(trimmed) {
-        if let Some(home) = dirs::home_dir() {
-            let expanded_rest = expand_env_vars(rest);
-            return home.join(expanded_rest.trim_start_matches('/'));
-        }
-        return PathBuf::from(trimmed);
+    if let Some(rest) = stripped_tilde(trimmed)
+        && let Some(home) = dirs::home_dir()
+    {
+        let expanded_rest = expand_env_vars(rest);
+        let raw = home.join(expanded_rest.trim_start_matches('/'));
+        return clean_path(&raw);
     }
 
     let expanded = expand_env_vars(trimmed);
-    PathBuf::from(expanded)
+    clean_path(&PathBuf::from(expanded))
 }
 
 fn stripped_tilde(s: &str) -> Option<&str> {
@@ -143,6 +143,9 @@ fn expand_brace_var(after_dollar: &str) -> Option<(usize, String)> {
     let total = 1 + close + 1;
     let var_name = &inner[..close];
     if !var_name.is_empty() {
+        if !is_env_name_start(var_name.chars().next().unwrap_or('_')) {
+            return Some((total, format!("${{{var_name}}}")));
+        }
         if let Some(val) = env_var(var_name) {
             return Some((total, val));
         }

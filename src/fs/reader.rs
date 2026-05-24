@@ -294,9 +294,9 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
 pub fn format_date(time: SystemTime) -> String {
     let datetime: DateTime<Local> = DateTime::from(time);
     let now = Local::now();
-    let duration = now - datetime;
+    let days = now.signed_duration_since(datetime).num_days();
 
-    if duration.num_days() <= 365 {
+    if (0..=365).contains(&days) {
         datetime.format("%b %d %H:%M").to_string()
     } else {
         datetime.format("%b %d  %Y").to_string()

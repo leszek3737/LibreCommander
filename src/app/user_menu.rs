@@ -234,8 +234,8 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
                 condition_line = cond_line_idx + 1;
                 continue;
             }
-            if next.starts_with('\t') || next.starts_with(' ') || next.starts_with('+') {
-                body_lines.push(next[1..].to_string());
+            if let Some(rest) = next.strip_prefix(&['\t', ' ', '+'][..]) {
+                body_lines.push(rest.to_string());
                 let _ = lines.next();
             } else {
                 break;
@@ -308,7 +308,7 @@ fn merge_conditions(
 /// `None` if the line is empty or has no condition type.
 fn parse_condition(line: &str) -> Option<ConditionParseResult> {
     // Strip leading `+` and whitespace.
-    let rest = line.trim_start_matches('+').trim();
+    let rest = line.strip_prefix('+').unwrap_or(line).trim();
     let mut parts = rest.splitn(2, char::is_whitespace);
     match parts.next() {
         Some("f") => parts

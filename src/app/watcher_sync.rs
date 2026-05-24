@@ -68,8 +68,10 @@ fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool
             }
             Err(err) => {
                 all_paths_present = false;
-                debug_log!("Watcher sync skipped path {}: {err}", path.display());
-                desired.insert(path.to_path_buf());
+                debug_log!(
+                    "Watcher sync skipped non-canonicalizable path {}: {err}",
+                    path.display()
+                );
             }
         }
     }

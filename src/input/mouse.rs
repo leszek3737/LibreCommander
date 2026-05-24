@@ -29,7 +29,7 @@ pub(crate) struct MousePosition {
 
 pub fn handle_mouse_event(
     state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
+    viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
     running_job: &mut Option<RunningJob>,
     mouse_event: crossterm::event::MouseEvent,
@@ -46,7 +46,7 @@ pub fn handle_mouse_event(
         mouse_event.kind,
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
     ) {
-        handle_mouse_scroll(state, _viewer_state, mouse_event.kind, &pos);
+        handle_mouse_scroll(state, viewer_state, mouse_event.kind, &pos);
         return None;
     }
 
@@ -66,7 +66,7 @@ pub fn handle_mouse_event(
 
     match button {
         MouseButton::Left => {
-            handle_left_down(state, _viewer_state, viewer_loader, running_job, &pos)
+            handle_left_down(state, viewer_state, viewer_loader, running_job, &pos)
         }
         MouseButton::Middle => handle_middle_down(state, &pos),
         MouseButton::Right => handle_right_down(state, &pos),

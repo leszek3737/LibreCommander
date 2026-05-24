@@ -8,6 +8,7 @@ fn command_execute(state: &mut AppState) {
     let cmd = state.command_line.text.clone();
     state.mode = AppMode::Normal;
     state.command_line.clear();
+    state.command_draft.clear();
     state.history_index = None;
     if !cmd.is_empty() {
         shell::run_shell_command(state, &cmd, false, refresh_active);
@@ -38,6 +39,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
             KeyCode::Char('c') => {
                 state.mode = AppMode::Normal;
                 state.command_line.clear();
+                state.command_draft.clear();
                 state.history_index = None;
                 return;
             }
@@ -53,6 +55,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
             state.command_line.clear();
+            state.command_draft.clear();
             state.history_index = None;
         }
         KeyCode::Enter => {
