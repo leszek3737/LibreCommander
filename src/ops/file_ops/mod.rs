@@ -7,7 +7,9 @@ mod temp;
 
 pub use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
 pub use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
-pub use entry_ops::{chmod, create_directory, rename_entry};
+#[cfg(unix)]
+pub use entry_ops::chmod;
+pub use entry_ops::{create_directory, rename_entry};
 pub use move_ops::move_entry_with_progress;
 
 pub(super) use temp::replace_file_with_temp;

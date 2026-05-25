@@ -1,6 +1,5 @@
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
 
 pub fn create_directory(path: &Path) -> io::Result<()> {
@@ -45,7 +44,10 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
     fs::rename(old, new_path)
 }
 
+#[cfg(unix)]
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() {
         return Err(io::Error::new(

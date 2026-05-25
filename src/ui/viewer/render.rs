@@ -138,23 +138,20 @@ pub fn render_viewer_with_colors(
     let visible_matches = &state.search_matches_by_line;
     let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
 
-    let line_data: Vec<std::borrow::Cow<'_, str>> =
-        (start_idx..end_idx).map(|i| state.get_line(i)).collect();
-
-    for (idx, i) in (start_idx..end_idx).enumerate() {
-        let line_content = &line_data[idx];
+    for i in start_idx..end_idx {
+        let line = state.get_line(i);
         let line_match_start = match_start;
         while match_start < visible_matches.len() && visible_matches[match_start].line == i {
             match_start += 1;
         }
         let line_matches = &visible_matches[line_match_start..match_start];
 
-        let text_spans: Vec<Span<'_>> = if line_matches.is_empty() {
-            vec![Span::raw(line_content.clone())]
+        let text_spans: Vec<Span<'static>> = if line_matches.is_empty() {
+            vec![Span::raw(line.into_owned())]
         } else {
-            format_line_with_highlight(line_content, line_matches, state.current_match, colors)
+            format_line_with_highlight(&line, line_matches, state.current_match, colors)
                 .into_iter()
-                .map(|s| Span::styled(s.content, s.style))
+                .map(|s| Span::styled(s.content.into_owned(), s.style))
                 .collect()
         };
 
@@ -263,7 +260,7 @@ pub fn render_hex_view_with_colors(
         let line_matches = &visible_matches[line_match_start..match_start];
 
         let spans: Vec<Span<'static>> = if line_matches.is_empty() {
-            vec![Span::raw(std::mem::take(&mut hex_line_buffer))]
+            vec![Span::raw(hex_line_buffer.clone())]
         } else {
             let highlighted = format_line_with_highlight(
                 &hex_line_buffer,
