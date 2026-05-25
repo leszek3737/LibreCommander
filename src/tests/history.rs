@@ -81,3 +81,26 @@ fn empty_history_does_not_open_picker() {
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
     assert_eq!(state.mode, AppMode::Normal);
 }
+
+#[test]
+fn history_skips_empty_command() {
+    let mut state = AppState::default();
+    shell::push_history(&mut state, "");
+    assert!(state.command_history.is_empty());
+}
+
+#[test]
+fn history_skips_whitespace_command() {
+    let mut state = AppState::default();
+    shell::push_history(&mut state, "   ");
+    assert!(state.command_history.is_empty());
+}
+
+#[test]
+fn history_whitespace_after_valid_command() {
+    let mut state = AppState::default();
+    shell::push_history(&mut state, "ls -la");
+    shell::push_history(&mut state, "   ");
+    assert_eq!(state.command_history.len(), 1);
+    assert_eq!(state.command_history[0], "ls -la");
+}
