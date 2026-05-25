@@ -1,0 +1,58 @@
+use std::path::PathBuf;
+
+use super::dialogs::{DialogKind, PickerKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompareMode {
+    #[default]
+    Quick,
+    Size,
+    Thorough,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppMode {
+    Normal,
+    Viewing,
+    CommandLine,
+    Dialog(DialogKind),
+    Search,
+    Menu,
+    ListPicker(PickerKind),
+    DirectoryTree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Text,
+    Hex,
+    Image,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingAction {
+    Copy {
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+        overwrite: bool,
+    },
+    Move {
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+        overwrite: bool,
+    },
+    Delete {
+        paths: Vec<PathBuf>,
+    },
+}
+
+impl PendingAction {
+    pub fn set_overwrite(&mut self) {
+        match self {
+            Self::Copy { overwrite, .. } | Self::Move { overwrite, .. } => {
+                *overwrite = true;
+            }
+            Self::Delete { .. } => {}
+        }
+    }
+}
