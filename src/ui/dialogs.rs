@@ -438,44 +438,62 @@ pub fn render_input_dialog(
         return;
     }
 
-    let graphemes: Vec<&str> = value.graphemes(true).collect();
-    let grapheme_count = graphemes.len();
+    let grapheme_count = value.graphemes(true).count();
     let clamped_cursor = cursor_pos.min(grapheme_count);
 
-    let grapheme_widths: Vec<usize> = graphemes
-        .iter()
-        .map(|g| UnicodeWidthStr::width(*g))
-        .collect();
+    let cursor_display: usize = value
+        .graphemes(true)
+        .take(clamped_cursor)
+        .map(UnicodeWidthStr::width)
+        .sum();
 
-    let mut cum_widths = vec![0usize; grapheme_count + 1];
-    for i in 0..grapheme_count {
-        cum_widths[i + 1] = cum_widths[i] + grapheme_widths[i];
-    }
-
-    let cursor_display = cum_widths[clamped_cursor];
     let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
 
-    let start_idx = if scroll_display == 0 {
-        0
-    } else {
-        cum_widths
-            .iter()
-            .position(|&w| w > scroll_display)
-            .map(|p| p.saturating_sub(1))
-            .unwrap_or(0)
-    };
-
+    let mut start_cum = 0usize;
     let mut visible = String::new();
     let mut vis_width = 0;
-    for i in start_idx..grapheme_count {
-        if vis_width + grapheme_widths[i] > visible_width {
-            break;
+
+    if scroll_display == 0 {
+        for g in value.graphemes(true) {
+            let gw = UnicodeWidthStr::width(g);
+            if vis_width + gw > visible_width {
+                break;
+            }
+            visible.push_str(g);
+            vis_width += gw;
         }
-        visible.push_str(graphemes[i]);
-        vis_width += grapheme_widths[i];
+    } else {
+        let mut cum = 0usize;
+        let mut found_start = false;
+        for g in value.graphemes(true) {
+            let gw = UnicodeWidthStr::width(g);
+            if !found_start && cum + gw > scroll_display {
+                found_start = true;
+                start_cum = cum;
+            }
+            cum += gw;
+            if found_start {
+                if vis_width + gw > visible_width {
+                    break;
+                }
+                visible.push_str(g);
+                vis_width += gw;
+            }
+        }
+        if !found_start {
+            start_cum = 0;
+            for g in value.graphemes(true) {
+                let gw = UnicodeWidthStr::width(g);
+                if vis_width + gw > visible_width {
+                    break;
+                }
+                visible.push_str(g);
+                vis_width += gw;
+            }
+        }
     }
 
-    let display_cursor_col = cursor_display.saturating_sub(cum_widths[start_idx]);
+    let display_cursor_col = cursor_display.saturating_sub(start_cum);
     let cursor_x = input_inner.x + display_cursor_col.min(visible_width.saturating_sub(1)) as u16;
     let cursor_y = input_inner.y;
 

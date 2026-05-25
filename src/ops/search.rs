@@ -82,6 +82,38 @@ impl<const N: usize> std::ops::IndexMut<usize> for SmallCharBuf<N> {
     }
 }
 
+fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    let needle_len = needle_lower.len();
+    let mut buf = SmallCharBuf::<64>::new(needle_len);
+    let mut filled = 0usize;
+    let mut head = 0usize;
+
+    for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+        buf[head] = c;
+        head = (head + 1) % needle_len;
+        if filled < needle_len {
+            filled += 1;
+        }
+        if filled == needle_len {
+            let mut all_match = true;
+            for (i, &nc) in needle_lower.iter().enumerate() {
+                let idx = (head + i) % needle_len;
+                if buf[idx] != nc {
+                    all_match = false;
+                    break;
+                }
+            }
+            if all_match {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub enum CompiledPattern {
     Plain {
         needle: Vec<char>,
@@ -212,7 +244,7 @@ impl CompiledPattern {
                         .windows(ascii_needle.len())
                         .any(|w| w.eq_ignore_ascii_case(ascii_needle.as_bytes()));
                 }
-                Self::contains_case_insensitive_compiled(name, needle)
+                contains_case_insensitive(name, needle)
             }
             Self::Plain {
                 needle: _,
@@ -283,38 +315,6 @@ impl CompiledPattern {
         }
     }
 
-    fn contains_case_insensitive_compiled(haystack: &str, needle_lower: &[char]) -> bool {
-        if needle_lower.is_empty() {
-            return true;
-        }
-        let needle_len = needle_lower.len();
-        let mut buf = SmallCharBuf::<64>::new(needle_len);
-        let mut filled = 0usize;
-        let mut head = 0usize;
-
-        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
-            buf[head] = c;
-            head = (head + 1) % needle_len;
-            if filled < needle_len {
-                filled += 1;
-            }
-            if filled == needle_len {
-                let mut all_match = true;
-                for (i, &nc) in needle_lower.iter().enumerate() {
-                    let idx = (head + i) % needle_len;
-                    if buf[idx] != nc {
-                        all_match = false;
-                        break;
-                    }
-                }
-                if all_match {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     fn greedy_wildcard_match(name: &[char], pattern: &[char]) -> bool {
         let mut ni = 0;
         let mut pi = 0;
@@ -358,7 +358,13 @@ struct FileSearchContext<'a> {
     outcome: &'a mut SearchOutcome<FileEntry>,
     item_count: &'a mut usize,
     visited: &'a mut HashSet<(u64, u64)>,
-    cancel: &'a AtomicBool,
+    cancel: Option<&'a AtomicBool>,
+}
+
+impl FileSearchContext<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+    }
 }
 
 struct ContentSearchContext<'a> {
@@ -392,15 +398,13 @@ impl FileSearch {
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
         let mut visited = HashSet::new();
         Self::seed_visited_dir(path, &mut visited);
-        Self::search_files_recursive(
-            path,
-            &compiled_pattern,
-            recursive,
-            &mut outcome,
-            0,
-            &mut item_count,
-            &mut visited,
-        );
+        let mut ctx = FileSearchContext {
+            outcome: &mut outcome,
+            item_count: &mut item_count,
+            visited: &mut visited,
+            cancel: None,
+        };
+        Self::search_files_recursive(path, &compiled_pattern, recursive, 0, &mut ctx);
         outcome
     }
 
@@ -420,9 +424,9 @@ impl FileSearch {
             outcome: &mut outcome,
             item_count: &mut item_count,
             visited: &mut visited,
-            cancel,
+            cancel: Some(cancel),
         };
-        Self::search_files_recursive_cancellable(path, &compiled_pattern, recursive, 0, &mut ctx);
+        Self::search_files_recursive(path, &compiled_pattern, recursive, 0, &mut ctx);
         outcome
     }
 
@@ -475,102 +479,10 @@ impl FileSearch {
         path: &Path,
         pattern: &CompiledPattern,
         recursive: bool,
-        outcome: &mut SearchOutcome<FileEntry>,
-        depth: usize,
-        item_count: &mut usize,
-        visited: &mut HashSet<(u64, u64)>,
-    ) {
-        if !path.is_dir() {
-            outcome
-                .errors
-                .push(format!("Not a directory: {}", path.display()));
-            return;
-        }
-        let Some(entries) = Self::prepare_dir_scan(
-            path,
-            depth,
-            MAX_SEARCH_DEPTH,
-            MAX_SEARCH_ITEMS,
-            item_count,
-            outcome,
-            |_| true,
-        ) else {
-            return;
-        };
-
-        for entry in entries {
-            if *item_count >= MAX_SEARCH_ITEMS {
-                outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
-                return;
-            }
-
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => {
-                    outcome
-                        .errors
-                        .push(format!("Failed to read entry in {}: {err}", path.display()));
-                    continue;
-                }
-            };
-            let entry_path = entry.path();
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
-                Err(err) => {
-                    outcome.errors.push(format!(
-                        "Failed to read type for {}: {err}",
-                        entry_path.display()
-                    ));
-                    continue;
-                }
-            };
-
-            *item_count += 1;
-
-            let name = entry.file_name();
-            let name_lossy = name.to_string_lossy();
-            if pattern.matches(&name_lossy) {
-                match get_file_info(&entry_path) {
-                    Ok(file_entry) => outcome.matches.push(file_entry),
-                    Err(err) => outcome.errors.push(format!(
-                        "Failed to read metadata for {}: {err}",
-                        entry_path.display()
-                    )),
-                }
-            }
-
-            if file_type.is_symlink() {
-                continue;
-            }
-
-            if recursive && file_type.is_dir() {
-                if let Ok(meta) = entry.metadata()
-                    && let Some(key) = get_inode_key(&meta)
-                    && !visited.insert(key)
-                {
-                    continue;
-                }
-                Self::search_files_recursive(
-                    &entry_path,
-                    pattern,
-                    recursive,
-                    outcome,
-                    depth + 1,
-                    item_count,
-                    visited,
-                );
-            }
-        }
-    }
-
-    fn search_files_recursive_cancellable(
-        path: &Path,
-        pattern: &CompiledPattern,
-        recursive: bool,
         depth: usize,
         ctx: &mut FileSearchContext<'_>,
     ) {
-        if ctx.cancel.load(Ordering::Relaxed) {
+        if ctx.is_cancelled() {
             return;
         }
         if !path.is_dir() {
@@ -592,7 +504,7 @@ impl FileSearch {
         };
 
         for entry in entries {
-            if ctx.cancel.load(Ordering::Relaxed) {
+            if ctx.is_cancelled() {
                 return;
             }
             if *ctx.item_count >= MAX_SEARCH_ITEMS {
@@ -648,13 +560,7 @@ impl FileSearch {
                 {
                     continue;
                 }
-                Self::search_files_recursive_cancellable(
-                    &entry_path,
-                    pattern,
-                    recursive,
-                    depth + 1,
-                    ctx,
-                );
+                Self::search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx);
             }
         }
     }
@@ -905,7 +811,7 @@ impl FileSearch {
                     let match_found = if case_sensitive {
                         true
                     } else {
-                        Self::contains_case_insensitive(&line_text, pattern_lower)
+                        contains_case_insensitive(&line_text, pattern_lower)
                     };
 
                     if match_found {
@@ -929,40 +835,6 @@ impl FileSearch {
                 path.display()
             ));
         }
-    }
-
-    /// Case-insensitive substring search over Unicode lowercase chars.
-    /// The circular buffer stays on the stack for needles up to 64 chars.
-    fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
-        if needle_lower.is_empty() {
-            return true;
-        }
-        let needle_len = needle_lower.len();
-        let mut buf = SmallCharBuf::<64>::new(needle_len);
-        let mut filled = 0usize;
-        let mut head = 0usize;
-
-        for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
-            buf[head] = c;
-            head = (head + 1) % needle_len;
-            if filled < needle_len {
-                filled += 1;
-            }
-            if filled == needle_len {
-                let mut all_match = true;
-                for (i, &nc) in needle_lower.iter().enumerate() {
-                    let idx = (head + i) % needle_len;
-                    if buf[idx] != nc {
-                        all_match = false;
-                        break;
-                    }
-                }
-                if all_match {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {

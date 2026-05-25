@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
 
 use lc::app::panel_ops;
-use lc::app::types::{AppMode, AppState, DialogKind, InputAction};
+use lc::app::types::{self, AppMode, AppState, DialogKind, InputAction};
 use lc::menu::{menu_item_count, menu_total_count};
 use lc::ui::viewer;
 
@@ -15,7 +15,7 @@ const VIEWER_CHROME_HEIGHT: u16 = 3;
 const HORIZONTAL_SCROLL_STEP: usize = 4;
 
 pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
-    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+    types::restore_prev_mode(state);
     state.search_query.clear();
     state.search_cursor = 0;
     let panel = state.active_panel_mut();
@@ -98,13 +98,15 @@ pub(crate) fn handle_viewer_mode(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
+    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
     key: KeyCode,
     terminal_size: Size,
 ) {
     if viewer_loader.is_some() {
         if matches!(key, KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q')) {
             viewer_loader.take();
-            state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+            *image_preview_loader = None;
+            types::restore_prev_mode(state);
             *viewer_state = None;
         }
         return;
@@ -116,7 +118,8 @@ pub(crate) fn handle_viewer_mode(
         vs.clamp_scroll();
         match key {
             KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
-                state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+                *image_preview_loader = None;
+                types::restore_prev_mode(state);
                 *viewer_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => vs.scroll_up(1),
@@ -236,7 +239,7 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
 
     match key {
         KeyCode::Esc | KeyCode::F(9 | 10) => {
-            state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+            types::restore_prev_mode(state);
         }
         KeyCode::Left => {
             state.menu_selected = if state.menu_selected == 0 {

@@ -10,7 +10,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
+/// Window for coalescing rapid-fire filesystem events (creates, writes, chmod
+/// bursts). 300 ms absorbs the typical jitter from editors, build tools and
+/// macOS FSEvents without introducing a perceptible delay in panel refreshes.
 const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
+
+/// Maximum time a "rename-from" entry is kept before we treat the rename as a
+/// plain delete.  Two seconds is generous enough for slow network mounts (NFS,
+/// SMB, FUSE) where the paired "rename-to" event can arrive with significant
+/// latency, while still bounding stale entries in the pending map.
 const PENDING_FROM_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
@@ -276,18 +284,18 @@ impl Watcher {
         if !stale_entries.is_empty() {
             let mut pending = lock_or_recover(&self.pending_from, "pending_from");
             for (parent_key, path, time) in stale_entries {
-                debug_log!(
-                    "stale rename From timed out: emitting Deleted for {} (parent {})",
-                    path.display(),
-                    parent_key.display(),
-                );
-                match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
-                    SendStatus::Full(_) => {}
-                    SendStatus::Sent | SendStatus::Disconnected => {
-                        if let Some(entry) = pending.get(&parent_key)
-                            && entry.path == path
-                            && entry.time == time
-                        {
+                if let Some(entry) = pending.get(&parent_key)
+                    && entry.path == path
+                    && entry.time == time
+                {
+                    debug_log!(
+                        "stale rename From timed out: emitting Deleted for {} (parent {})",
+                        path.display(),
+                        parent_key.display(),
+                    );
+                    match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
+                        SendStatus::Full(_) => {}
+                        SendStatus::Sent | SendStatus::Disconnected => {
                             pending.remove(&parent_key);
                         }
                     }

@@ -81,11 +81,11 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
 
     state.active_panel_mut().clear_selection();
     state.status_message = None;
-    state.mode = AppMode::Dialog(DialogKind::Progress(
-        format!("{action_label} starting..."),
-        0.0,
-        true,
-    ));
+    state.mode = AppMode::Dialog(DialogKind::Progress {
+        message: format!("{action_label} starting..."),
+        progress_fraction: 0.0,
+        cancellable: true,
+    });
     *running_job = Some(RunningJob {
         receiver,
         cancel,
@@ -121,11 +121,11 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
 
     let search_origin = state.active_panel;
     state.status_message = None;
-    state.mode = AppMode::Dialog(DialogKind::Progress(
-        format!("Searching for '{}'...", pattern),
-        0.0,
-        true,
-    ));
+    state.mode = AppMode::Dialog(DialogKind::Progress {
+        message: format!("Searching for '{}'...", pattern),
+        progress_fraction: 0.0,
+        cancellable: true,
+    });
     state.dialog_input.clear();
     *running_job = Some(RunningJob {
         receiver,
@@ -157,11 +157,11 @@ pub fn poll_running_job(
                 if let Some(progress) = latest_progress.take() {
                     let msg =
                         format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-                    state.mode = AppMode::Dialog(DialogKind::Progress(
-                        msg,
-                        progress.byte_percent() / 100.0,
-                        true,
-                    ));
+                    state.mode = AppMode::Dialog(DialogKind::Progress {
+                        message: msg,
+                        progress_fraction: progress.byte_percent() / 100.0,
+                        cancellable: true,
+                    });
                     dirty = true;
                 }
                 finished = Some(report);
@@ -174,11 +174,11 @@ pub fn poll_running_job(
 
     if let Some(progress) = latest_progress {
         let msg = format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-        state.mode = AppMode::Dialog(DialogKind::Progress(
-            msg,
-            progress.byte_percent() / 100.0,
-            true,
-        ));
+        state.mode = AppMode::Dialog(DialogKind::Progress {
+            message: msg,
+            progress_fraction: progress.byte_percent() / 100.0,
+            cancellable: true,
+        });
         dirty = true;
     }
 

@@ -142,16 +142,16 @@ fn expand_brace_var(after_dollar: &str) -> Option<(usize, String)> {
     let close = find_brace_close(inner)?;
     let total = 1 + close + 1;
     let var_name = &inner[..close];
-    if !var_name.is_empty() {
-        if !is_env_name_start(var_name.chars().next().unwrap_or('_')) {
-            return Some((total, format!("${{{var_name}}}")));
-        }
-        if let Some(val) = env_var(var_name) {
-            return Some((total, val));
-        }
+    let Some(first_char) = var_name.chars().next() else {
+        return Some((total, "${}".to_string()));
+    };
+    if !is_env_name_start(first_char) {
         return Some((total, format!("${{{var_name}}}")));
     }
-    Some((total, "${}".to_string()))
+    if let Some(val) = env_var(var_name) {
+        return Some((total, val));
+    }
+    Some((total, format!("${{{var_name}}}")))
 }
 
 fn expand_dollar_var(after_dollar: &str) -> Option<(usize, String)> {

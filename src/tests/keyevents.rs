@@ -16,6 +16,7 @@ fn dispatch_resize_event_returns_true() {
         &mut state,
         &mut viewer,
         &mut None,
+        &mut None,
         &mut job,
         &mut terminal,
         &Event::Resize(80, 24),
@@ -38,6 +39,7 @@ fn dispatch_unhandled_event_returns_false() {
         &mut state,
         &mut viewer,
         &mut None,
+        &mut None,
         &mut job,
         &mut terminal,
         &Event::FocusGained,
@@ -57,24 +59,18 @@ fn dispatch_mouse_click_moves_cursor() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.listing.entries = vec![
-        TestEntry::new("a.txt")
-            .path(tmp.path().join("a.txt"))
-            .build(),
-        TestEntry::new("b.txt")
-            .path(tmp.path().join("b.txt"))
-            .build(),
-    ];
-    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
+    populate_panel(
+        &mut state.left_panel,
+        vec![
+            TestEntry::new("a.txt")
+                .path(tmp.path().join("a.txt"))
+                .build(),
+            TestEntry::new("b.txt")
+                .path(tmp.path().join("b.txt"))
+                .build(),
+        ],
+    );
     state.left_panel.cursor = 1;
-    state.left_panel.listing.path_index = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.path.clone(), i))
-        .collect();
 
     let event = Event::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -89,6 +85,7 @@ fn dispatch_mouse_click_moves_cursor() {
     let result = super::super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut None,
         &mut job,
         &mut terminal,
@@ -109,20 +106,14 @@ fn key_press_triggers_search_initiation() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.listing.entries = vec![
-        TestEntry::new("alpha.txt")
-            .path(tmp.path().join("alpha.txt"))
-            .build(),
-    ];
-    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
-    state.left_panel.listing.path_index = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.path.clone(), i))
-        .collect();
+    populate_panel(
+        &mut state.left_panel,
+        vec![
+            TestEntry::new("alpha.txt")
+                .path(tmp.path().join("alpha.txt"))
+                .build(),
+        ],
+    );
     let mut viewer: Option<viewer::ViewerState> = None;
     let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
@@ -131,6 +122,7 @@ fn key_press_triggers_search_initiation() {
     let result = super::super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut None,
         &mut job,
         &mut terminal,
@@ -149,20 +141,14 @@ fn key_release_is_ignored() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.listing.entries = vec![
-        TestEntry::new("alpha.txt")
-            .path(tmp.path().join("alpha.txt"))
-            .build(),
-    ];
-    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
-    state.left_panel.listing.path_index = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.path.clone(), i))
-        .collect();
+    populate_panel(
+        &mut state.left_panel,
+        vec![
+            TestEntry::new("alpha.txt")
+                .path(tmp.path().join("alpha.txt"))
+                .build(),
+        ],
+    );
     let mut viewer: Option<viewer::ViewerState> = None;
     let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
@@ -175,6 +161,7 @@ fn key_release_is_ignored() {
     let result = super::super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut None,
         &mut job,
         &mut terminal,
@@ -196,26 +183,20 @@ fn key_repeat_navigation_moves_cursor() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.listing.entries = vec![
-        TestEntry::new("a.txt")
-            .path(tmp.path().join("a.txt"))
-            .build(),
-        TestEntry::new("b.txt")
-            .path(tmp.path().join("b.txt"))
-            .build(),
-        TestEntry::new("c.txt")
-            .path(tmp.path().join("c.txt"))
-            .build(),
-    ];
-    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
-    state.left_panel.listing.path_index = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.path.clone(), i))
-        .collect();
+    populate_panel(
+        &mut state.left_panel,
+        vec![
+            TestEntry::new("a.txt")
+                .path(tmp.path().join("a.txt"))
+                .build(),
+            TestEntry::new("b.txt")
+                .path(tmp.path().join("b.txt"))
+                .build(),
+            TestEntry::new("c.txt")
+                .path(tmp.path().join("c.txt"))
+                .build(),
+        ],
+    );
     let mut viewer: Option<viewer::ViewerState> = None;
     let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
@@ -224,6 +205,7 @@ fn key_repeat_navigation_moves_cursor() {
     let result = super::super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut None,
         &mut job,
         &mut terminal,
@@ -256,6 +238,7 @@ fn key_repeat_text_edit_updates_input_dialog() {
         &mut state,
         &mut viewer,
         &mut None,
+        &mut None,
         &mut job,
         &mut terminal,
         &Event::Key(key),
@@ -275,20 +258,14 @@ fn key_repeat_destructive_is_ignored() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.left_panel.listing.entries = vec![
-        TestEntry::new("victim.txt")
-            .path(tmp.path().join("victim.txt"))
-            .build(),
-    ];
-    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
-    state.left_panel.listing.path_index = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (e.path.clone(), i))
-        .collect();
+    populate_panel(
+        &mut state.left_panel,
+        vec![
+            TestEntry::new("victim.txt")
+                .path(tmp.path().join("victim.txt"))
+                .build(),
+        ],
+    );
     let mut viewer: Option<viewer::ViewerState> = None;
     let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
@@ -297,6 +274,7 @@ fn key_repeat_destructive_is_ignored() {
     let result = super::super::dispatch_event(
         &mut state,
         &mut viewer,
+        &mut None,
         &mut None,
         &mut job,
         &mut terminal,

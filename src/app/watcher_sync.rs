@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
+use crate::app::panel_ops::update_panel_read_errors;
 use crate::app::types::{AppState, PanelState};
 use crate::debug_log;
 use crate::fs::reader;
@@ -282,11 +283,8 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
 }
 
 fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
-    let existed = panel
-        .listing
-        .unfiltered_entries
-        .iter()
-        .any(|entry| entry.path == path);
+    reader::ensure_path_index(panel);
+    let existed = panel.listing.path_index.contains_key(path);
     if existed {
         reader::remove_entry(panel, path);
         panel.listing.mark_dirty();
@@ -309,9 +307,9 @@ fn full_refresh_panel(panel: &mut PanelState) {
         .collect();
 
     match reader::read_directory(&panel.path) {
-        Ok((entries, _errors)) => {
+        Ok((entries, errors)) => {
+            update_panel_read_errors(panel, &errors);
             panel.listing.set_unfiltered(entries);
-            panel.last_error = None;
             panel.canonical_path = panel.path.canonicalize().ok();
             for entry in &mut panel.listing.unfiltered_entries {
                 entry.selected = saved.contains(&entry.path);

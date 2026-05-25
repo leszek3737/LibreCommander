@@ -74,7 +74,7 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
     }
 }
 
-fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Error]) {
+pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Error]) {
     if errors.is_empty() {
         panel.last_error = None;
     } else {

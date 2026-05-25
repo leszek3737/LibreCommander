@@ -1,5 +1,29 @@
 use crate::*;
 
+struct IsolatedEnv {
+    xdg_config: std::ffi::OsString,
+    home: std::ffi::OsString,
+}
+
+impl IsolatedEnv {
+    fn new(xdg_config: &std::path::Path) -> Self {
+        Self {
+            xdg_config: xdg_config.as_os_str().to_owned(),
+            home: std::ffi::OsString::from("/nonexistent"),
+        }
+    }
+}
+
+impl app::paths::EnvProvider for IsolatedEnv {
+    fn var_os(&self, key: &str) -> Option<std::ffi::OsString> {
+        match key {
+            "XDG_CONFIG_HOME" => Some(self.xdg_config.clone()),
+            "HOME" => Some(self.home.clone()),
+            _ => None,
+        }
+    }
+}
+
 #[test]
 fn file_name_str_valid_utf8() {
     assert_eq!(
@@ -25,6 +49,8 @@ fn file_name_str_non_utf8_returns_lossy() {
 
 #[test]
 fn config_load_missing_file_ok() {
-    let result = app::config::load_settings();
+    let tmp = tempfile::tempdir().unwrap();
+    let env = IsolatedEnv::new(tmp.path());
+    let result = app::config::load_settings_with_env(&env);
     assert!(result.is_ok());
 }

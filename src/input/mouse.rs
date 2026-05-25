@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::shell;
-use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
+use crate::app::types::{self, ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::viewer;
 
@@ -234,7 +234,7 @@ fn handle_mouse_dialog(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    if let AppMode::Dialog(DialogKind::Progress(_, _, _)) = state.mode {
+    if let AppMode::Dialog(DialogKind::Progress { .. }) = state.mode {
         return handle_progress_click(state, running_job, pos);
     }
 
@@ -328,7 +328,9 @@ fn handle_overwrite_click(
         if state.dialog_selection == new_sel {
             match new_sel {
                 0 => {
-                    set_pending_overwrite(state);
+                    if let Some(action) = state.pending_action.as_mut() {
+                        action.set_overwrite();
+                    }
                     start_confirmed_action(state, running_job);
                     finish_confirmed_action(state);
                 }
@@ -342,18 +344,6 @@ fn handle_overwrite_click(
         }
     }
     Some(MouseOutcome::Consumed)
-}
-
-fn set_pending_overwrite(state: &mut AppState) {
-    if let Some(action) = state.pending_action.as_mut() {
-        match action {
-            crate::app::types::PendingAction::Copy { overwrite, .. }
-            | crate::app::types::PendingAction::Move { overwrite, .. } => {
-                *overwrite = true;
-            }
-            crate::app::types::PendingAction::Delete { .. } => {}
-        }
-    }
 }
 
 fn handle_progress_click(
@@ -428,7 +418,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
             return Some(MouseOutcome::MenuAction);
         }
     }
-    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+    types::restore_prev_mode(state);
     Some(MouseOutcome::Consumed)
 }
 
@@ -848,7 +838,11 @@ mod tests {
     #[test]
     fn mouse_progress_click_is_consumed() {
         let mut state = AppState {
-            mode: AppMode::Dialog(DialogKind::Progress("Copying".to_string(), 0.5, true)),
+            mode: AppMode::Dialog(DialogKind::Progress {
+                message: "Copying".to_string(),
+                progress_fraction: 0.5,
+                cancellable: true,
+            }),
             ..Default::default()
         };
         let mut running_job = None;
@@ -1190,13 +1184,9 @@ mod tests {
             },
         );
 
-        assert!(!matches!(
-            state.mode,
-            AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
-        ));
         assert!(matches!(
             state.mode,
-            AppMode::Dialog(DialogKind::Progress(_, _, _))
+            AppMode::Dialog(DialogKind::Progress { .. })
         ));
     }
 
@@ -1246,7 +1236,7 @@ mod tests {
         assert_eq!(state.status_message.as_deref(), Some("Queued"));
         assert!(matches!(
             state.mode,
-            AppMode::Dialog(DialogKind::Progress(_, _, _))
+            AppMode::Dialog(DialogKind::Progress { .. })
         ));
     }
 

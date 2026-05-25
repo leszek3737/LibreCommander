@@ -145,6 +145,7 @@ fn selected_or_current_paths_uses_selection_when_present() {
         TestEntry::new("file_c.txt").size(100).selected().build(),
     ];
     state.left_panel.cursor = 1;
+    state.left_panel.selected_count = 2;
 
     let paths = selected_or_current_paths(&state);
     assert_eq!(paths.len(), 2);

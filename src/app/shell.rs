@@ -87,6 +87,18 @@ fn get_shell(for_menu: bool) -> (String, &'static str) {
     (shell, "-c")
 }
 
+pub fn push_history(state: &mut AppState, cmd: &str) {
+    if cmd.trim().is_empty() {
+        return;
+    }
+    if state.command_history.back().is_none_or(|last| last != cmd) {
+        state.command_history.push_back(cmd.to_string());
+        if state.command_history.len() > MAX_HISTORY {
+            state.command_history.pop_front();
+        }
+    }
+}
+
 pub fn run_shell_command(
     state: &mut AppState,
     cmd: &str,
@@ -97,12 +109,7 @@ pub fn run_shell_command(
         return;
     }
 
-    if state.command_history.back().is_none_or(|last| last != cmd) {
-        state.command_history.push_back(cmd.to_string());
-        if state.command_history.len() > MAX_HISTORY {
-            state.command_history.pop_front();
-        }
-    }
+    push_history(state, cmd);
 
     if suspend_terminal_stdout().is_err() {
         state.status_message = Some("Terminal suspend failed".into());

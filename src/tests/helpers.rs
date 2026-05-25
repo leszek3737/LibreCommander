@@ -1,5 +1,5 @@
 use crate::*;
-use app::types::FileEntry;
+use app::types::{FileEntry, PanelState};
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
@@ -58,6 +58,10 @@ impl TestEntry {
             .selected(self.selected)
             .build()
     }
+}
+
+pub fn populate_panel(panel: &mut PanelState, entries: Vec<FileEntry>) {
+    panel.set_entries(entries);
 }
 
 pub fn buffer_to_string(buffer: &ratatui::buffer::Buffer) -> String {

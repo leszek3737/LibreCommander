@@ -5,9 +5,9 @@ use lc::app::{shell, types::*};
 use crate::app::panel_ops::refresh_active;
 
 fn command_execute(state: &mut AppState) {
-    let cmd = state.command_line.text.clone();
+    let cmd = std::mem::take(&mut state.command_line.text);
+    state.command_line.cursor = 0;
     state.mode = AppMode::Normal;
-    state.command_line.clear();
     state.command_draft.clear();
     state.history_index = None;
     if !cmd.is_empty() {
