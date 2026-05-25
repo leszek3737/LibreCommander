@@ -19,7 +19,7 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 - **Panel views** - Long (detailed) and Brief (compact) listing modes
 - **File type icons** - Emoji icons and color coding for archives, images, source code, audio, video, config files
 - **Mouse support** - Single click to select, double click to open/view, click to switch panels
-- **Keyboard-driven** - 45+ keyboard shortcuts for power users
+- **Keyboard-driven** - Rich keyboard shortcut set for power users
 - **Configurable** - Customizable settings stored in `~/.config/lc/config.toml`
 - **System protection** - Refuses to delete critical system directories (`/`, `/etc`, `/usr`, etc.)
 
@@ -70,6 +70,9 @@ cargo install --path .
 | `infer` 0.19 | MIME type detection |
 | `filetime` 0.2 | File modification time handling |
 | `ansi-to-tui` 8 | Parse ANSI sequences for image viewing |
+| `memchr` 2 | Fast byte scanning for content detection/search |
+| `shlex` 2 | Shell-style splitting/quoting |
+| `unicode-segmentation` 1 | Unicode grapheme-aware text editing |
 
 Dev dependency: `tempfile` 3 (for tests).
 
@@ -83,6 +86,7 @@ Dev dependency: `tempfile` 3 (for tests).
 | `F2` | User menu |
 | `F9` | Menu bar |
 | `F10` / `q` | Quit |
+| `Alt+X` | Command line |
 
 ### Navigation
 
@@ -109,12 +113,15 @@ Dev dependency: `tempfile` 3 (for tests).
 | `F6` | Move file(s) |
 | `F7` | Create directory |
 | `F8` | Delete file(s) |
+| `F11` | Rename file or directory |
 | `Alt+Enter` | Show file properties |
 | `Insert` | Toggle file selection |
 | `Shift+↑` | Extend selection upward |
 | `Shift+↓` | Extend selection downward |
 | `Ctrl+R` | Refresh current panel |
 | `Ctrl+O` | External viewer (temporarily exit to shell) |
+
+Additional file actions are available from the F9 menu: File > Rename and File > Chmod.
 
 ### Search & Filter
 
@@ -166,6 +173,8 @@ Dev dependency: `tempfile` 3 (for tests).
 | `c` | cd to selected directory |
 
 ### Command Line Mode
+
+Enter command line mode with `Alt+X` or Menu: Command > Command line.
 
 | Key | Action |
 |-----|--------|
@@ -249,6 +258,27 @@ hotlist = ["/home/user", "/home/user/projects"]
 
 An optional `[theme]` section is supported for color customization; all fields have defaults.
 
+```toml
+[theme]
+icon_theme = "emoji"      # "emoji", "ascii", or "nerd_font"
+panel_bg = "navy"
+panel_fg = "white"
+highlight_bg = "cyan"
+highlight_fg = "black"
+directory = "white"
+executable = "green"
+symlink = "cyan"
+archive = "red"
+image = "magenta"
+video = "light_magenta"
+audio = "light_green"
+source_code = "yellow"
+config = "light_blue"
+regular_file = "white"
+```
+
+Color values accept named colors (`red`, `light_blue`, `navy`), hex colors (`#RRGGBB` or `#RGB`), or 0-255 ANSI color indexes.
+
 ### Environment Variables
 
 | Variable | Purpose | Default |
@@ -311,6 +341,7 @@ Long-running copy, move, and delete operations run as background jobs with live 
 Safety guarantees:
 
 - Existing destinations are not overwritten by chunked copies.
+- Copy/move conflicts show an overwrite confirmation before replacing existing entries.
 - Recursive directory copies publish through a temporary sibling and clean up partial output on failure or cancellation.
 - Symlinks are copied or deleted as symlinks rather than following their targets.
 - Cross-device moves fall back to copy-then-delete only after the copy succeeds.
@@ -423,7 +454,7 @@ Differing and unique entries are auto-selected in both panels.
 Run the test suite:
 
 ```bash
-cargo test
+cargo test --locked
 ```
 
 The test suite covers:
@@ -444,8 +475,9 @@ Run these checks before submitting changes:
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
 File operations include safety guards: system directories are protected from deletion, symlinks are handled correctly during copy/move/delete, and terminal state is always restored (even on panic).

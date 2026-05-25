@@ -1,8 +1,9 @@
 # Libre Commander (lc) — Agent Instructions
 
-Rust TUI file manager inspired by Midnight Commander. Single statically-linked
-binary, no runtime dependencies. Stack: **Ratatui 0.30 + crossterm 0.29**,
-edition 2024, MSRV 1.95, `unsafe_code = forbid`.
+Rust TUI file manager inspired by Midnight Commander. Single Rust binary, with
+optional external tools for enhanced features (for example `chafa` for image
+previews). Stack: **Ratatui 0.30 + crossterm 0.29**, edition 2024, MSRV 1.95,
+`unsafe_code = forbid`.
 
 > If you have access to **Serena** or **GitNexus** MCP tools, jump to those
 > sections — they are the preferred navigation path. Everything above them is
@@ -22,13 +23,24 @@ edition 2024, MSRV 1.95, `unsafe_code = forbid`.
 
 ```
 src/
-  main.rs              # event loop, App struct, action dispatch (~3k LOC)
+  main.rs              # event loop, App struct, high-level action handlers
+  render.rs            # render orchestration and terminal draw entry points
   lib.rs               # public module exports
   menu.rs              # user menu loader (.mc.menu format)
-  input.rs             # key handling helpers
+  input/               # key/mouse handling and mode dispatch
+    mod.rs             # input facade
+    normal.rs          # normal-mode key handling
+    mode_dispatch.rs   # routes input by current Mode
+    dialogs.rs         # dialog input handling
+    menu_actions.rs    # F9 menu actions
+    command_line.rs    # shell command line input
+    directory_tree.rs  # directory tree input
+    pickers.rs         # list picker input
+    mouse.rs           # mouse events
   app/
     config.rs          # config.toml parsing (serde + toml)
-    types.rs           # core enums/structs (Pane, Mode, Selection, ...)
+    types/             # core enums/structs (Pane, Mode, Selection, ...)
+      app_state.rs, panel.rs, file_entry.rs, modes.rs, dialogs.rs, sorting.rs
     keymap.rs          # key bindings
     dir_tree.rs        # directory tree model
     user_menu.rs       # F2 menu state
@@ -40,18 +52,24 @@ src/
   fs/
     reader.rs          # async-style dir reads (rayon)
     watcher.rs         # `notify` crate wrapper
+    path.rs            # path helpers
+    cha.rs             # image terminal capability helpers
   ops/
-    file_ops.rs        # copy / move / delete / mkdir
+    file_ops/          # copy / move / delete / mkdir / rename / chmod
+      copy.rs, delete.rs, move_ops.rs, entry_ops.rs, common.rs, temp.rs
     chunk_copy.rs      # buffered copy with progress
     batch.rs           # multi-file pipelines
-    search.rs          # name + content search (regex)
+    search/            # name + content search (regex)
+      model.rs, name.rs, content.rs, pattern.rs, walk.rs
     sorting.rs         # column sorters
+    natsort.rs         # natural sort helpers
     compare.rs, helpers.rs
   ui/
     mod.rs             # top-level draw()
-    panels.rs          # left/right file panels
-    dialogs.rs         # modal dialogs (copy, delete, mkdir, ...)
-    viewer.rs          # F3 internal viewer
+    panels/            # left/right file panels
+    dialogs/           # modal dialogs (copy, delete, mkdir, ...)
+    viewer/            # F3 internal viewer, hex/text/image rendering
+      open.rs, loader.rs, search.rs, hex.rs, render.rs, scroll.rs, mime.rs
     dir_tree.rs, menu.rs, theme.rs
 ```
 
@@ -62,15 +80,26 @@ cargo run                          # dev build & run
 cargo build --release              # binary at target/release/lc
 cargo test                         # unit + integration tests
 cargo test -- --nocapture          # with println! visible
-cargo clippy --all-targets -- -D warnings   # lint, treat warnings as errors
+cargo clippy --locked --all-targets -- -D warnings   # CI-equivalent lint
 cargo fmt                          # format (run after every edit)
 cargo fmt --check                  # CI check
 ```
 
-Always run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test`
-before declaring a task done. Don't skip clippy — the project pins `print_stdout`,
-`print_stderr`, `dbg_macro` as **deny** and `unwrap_used`, `expect_used`, `panic`,
-`todo`, `too_many_lines`, `cognitive_complexity` as **warn** (see `Cargo.toml`).
+For code changes, run the CI-equivalent local sequence before declaring the task
+done:
+
+```bash
+cargo fmt
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
+```
+
+For docs-only changes, inspect `git diff`; no Rust build is required. Don't skip
+clippy for code — the project pins `print_stdout`, `print_stderr`, `dbg_macro`
+as **deny** and `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`,
+`too_many_lines`, `cognitive_complexity`, `needless_pass_by_value`,
+`redundant_clone`, and `inefficient_to_string` as **warn** (see `Cargo.toml`).
 
 ## Code Style & Conventions
 
@@ -110,6 +139,21 @@ before declaring a task done. Don't skip clippy — the project pins `print_stdo
   `Cargo.toml` `[target.'cfg(...)']`). Test path/permission logic mentally for
   both before committing.
 
+## TUI Invariants
+
+- **Render is pure.** `ui::*` and `render.rs` must draw from `App` state and not
+  mutate application state. Event handlers own mutation.
+- **Input stays responsive.** Do not run heavy filesystem work, recursive walks,
+  external commands, or image generation directly in key/mouse handlers or render
+  paths. Use existing background job patterns (`rayon`, `app::job_runner`,
+  `ViewerLoader`, `ImagePreviewLoader`).
+- **Terminal state must recover.** Any path that suspends the TUI, enters raw
+  mode, or executes a shell/editor/viewer must restore terminal state on success
+  and error.
+- **Panel state is user state.** Refreshes should preserve selection, cursor,
+  filters, sorting, hidden-file mode, and active pane unless the user action
+  explicitly changes them.
+
 ## File Size Policy
 
 Prefer small, focused files — but **not at the cost of idiomatic Rust**. The
@@ -137,14 +181,14 @@ Prefer small, focused files — but **not at the cost of idiomatic Rust**. The
 3. Make the smallest possible change. No drive-by refactors.
 4. If the file you touched crosses 800 lines, apply the **File Size Policy**
    above before finishing.
-5. Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test`.
+5. For code, run `cargo fmt && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo build --release --locked`.
 6. If you touched a public API in `lib.rs` re-exports, grep for external uses.
-7. Update `CHANGELOG.md` only if the user asks or the change is user-facing.
+7. Update `CHANGELOG.md` only if the user asks or you are preparing a release.
 
 ## Commits & PRs
 
-- Recent style (see `git log`): `<version> - <imperative summary>`, e.g.
-  `0.0.11 - Add async file operations`. Match it.
+- Recent style (see `git log`): Conventional Commits, e.g. `fix: ...`,
+  `feat(viewer): ...`, `refactor: ...`. Match it.
 - One logical change per commit. Don't bundle formatting churn with logic.
 - Don't bump the version in `Cargo.toml` unless explicitly asked.
 - Never commit `target/`, editor swap files, or worktree dirs.
@@ -156,6 +200,14 @@ Prefer small, focused files — but **not at the cost of idiomatic Rust**. The
 - Filesystem actions on user data are destructive. Dry-run mentally before
   introducing new delete/move/overwrite paths; ensure confirmation dialogs are
   wired in `ui::dialogs`.
+- Delete/move/overwrite flows must have an explicit confirmation path unless the
+  user already confirmed the exact operation in the current UI flow.
+- Symlinks are data. Do not follow them during chmod/copy/delete unless the
+  operation explicitly says so and tests cover it.
+- Cross-device moves need copy+delete fallback with cancellation, partial-copy
+  cleanup, and no-clobber behavior preserved.
+- Long-running file operations must report progress and support cancellation via
+  the existing job/watcher channels.
 - Don't add network calls — this is an offline tool by design.
 - Don't add a runtime config migration without the user's say-so; users have
   hand-edited `config.toml` files.
@@ -187,11 +239,12 @@ because `src/main.rs` is **~3000 lines** — reading it linearly is wasteful.
 - NEVER read `src/main.rs` from line 1 without first calling `get_symbols_overview`
   on it (or `read_memory("main_rs_navigation")` for a section map).
 - NEVER use `mcp__serena__execute_shell_command` or `mcp__serena__create_text_file`
-  — they are excluded in `.serena/project.yml`. Use Claude's `Bash` and `Write`
-  tools instead.
+  — they are excluded in `.serena/project.yml`. Use the active agent's normal
+  shell and patch/file-edit tools instead.
 - NEVER attempt edits via Serena's editing tools (`replace_symbol_body`,
   `insert_after_symbol`, `replace_content`, `rename_symbol`). The project is in
-  `read_only: true` mode for Serena — apply edits with Claude's `Edit` / `Write`.
+  `read_only: true` mode for Serena — apply edits with the active agent's
+  patch/file-edit tools.
 
 ### When To Reach For Which Tool
 
@@ -222,7 +275,7 @@ This project is indexed by GitNexus as **LibreCommander** (3087 symbols, 9064 re
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run impact analysis before risky symbol edits.** Before changing a non-test function/method/type signature, public API, action handler, file operation, render/input flow, or doing a rename/refactor, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user. Docs-only, formatting-only, test-only, and small private implementation fixes may skip impact analysis.
 - **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
@@ -230,7 +283,7 @@ This project is indexed by GitNexus as **LibreCommander** (3087 symbols, 9064 re
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER edit risky non-test symbols without first running `gitnexus_impact` on them.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
 - NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
 - NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
