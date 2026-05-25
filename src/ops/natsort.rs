@@ -8,110 +8,6 @@
 
 use std::cmp::Ordering;
 
-#[cfg(test)]
-macro_rules! return_unless_equal {
-    ($ord:expr) => {
-        match $ord {
-            Ordering::Equal => {}
-            ord => return ord,
-        }
-    };
-}
-
-#[cfg(test)]
-#[inline]
-fn compare_left(left: &[u8], right: &[u8], li: &mut usize, ri: &mut usize) -> Ordering {
-    loop {
-        let lb = left.get(*li).copied();
-        let rb = right.get(*ri).copied();
-
-        match (lb, rb) {
-            (Some(lb), Some(rb)) if lb.is_ascii_digit() && rb.is_ascii_digit() => {
-                return_unless_equal!(lb.cmp(&rb));
-            }
-            (Some(lb), _) if lb.is_ascii_digit() => return Ordering::Greater,
-            (_, Some(rb)) if rb.is_ascii_digit() => return Ordering::Less,
-            _ => return Ordering::Equal,
-        }
-
-        *li += 1;
-        *ri += 1;
-    }
-}
-
-#[cfg(test)]
-#[inline]
-fn compare_right(left: &[u8], right: &[u8], li: &mut usize, ri: &mut usize) -> Ordering {
-    let mut bias = Ordering::Equal;
-
-    loop {
-        let lb = left.get(*li).copied();
-        let rb = right.get(*ri).copied();
-
-        match (lb, rb) {
-            (Some(lb), Some(rb)) if lb.is_ascii_digit() && rb.is_ascii_digit() => {
-                if bias == Ordering::Equal {
-                    bias = lb.cmp(&rb);
-                }
-            }
-            (Some(lb), _) if lb.is_ascii_digit() => return Ordering::Greater,
-            (_, Some(rb)) if rb.is_ascii_digit() => return Ordering::Less,
-            _ => return bias,
-        }
-
-        *li += 1;
-        *ri += 1;
-    }
-}
-
-#[cfg(test)]
-pub fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
-    let mut li = 0;
-    let mut ri = 0;
-
-    let mut l = left.get(li);
-    let mut r = right.get(ri);
-
-    loop {
-        match (l, r) {
-            (Some(&ll), Some(&rr)) => {
-                if ll.is_ascii_digit() && rr.is_ascii_digit() {
-                    if ll == b'0' || rr == b'0' {
-                        return_unless_equal!(compare_left(left, right, &mut li, &mut ri));
-                    } else {
-                        return_unless_equal!(compare_right(left, right, &mut li, &mut ri));
-                    }
-
-                    l = left.get(li);
-                    r = right.get(ri);
-                    continue;
-                }
-
-                if ll.is_ascii_digit() {
-                    return Ordering::Greater;
-                }
-                if rr.is_ascii_digit() {
-                    return Ordering::Less;
-                }
-
-                if insensitive {
-                    return_unless_equal!(ll.to_ascii_lowercase().cmp(&rr.to_ascii_lowercase()));
-                } else {
-                    return_unless_equal!(ll.cmp(&rr));
-                }
-            }
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-            (None, None) => return Ordering::Equal,
-        }
-
-        li += 1;
-        l = left.get(li);
-        ri += 1;
-        r = right.get(ri);
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NatKeySegment {
     Text(Box<[u8]>),
@@ -184,6 +80,123 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use legacy::natsort;
+
+    mod legacy {
+        use std::cmp::Ordering;
+
+        macro_rules! return_unless_equal {
+            ($ord:expr) => {
+                match $ord {
+                    Ordering::Equal => {}
+                    ord => return ord,
+                }
+            };
+        }
+
+        #[inline]
+        pub(super) fn compare_left(
+            left: &[u8],
+            right: &[u8],
+            li: &mut usize,
+            ri: &mut usize,
+        ) -> Ordering {
+            loop {
+                let lb = left.get(*li).copied();
+                let rb = right.get(*ri).copied();
+
+                match (lb, rb) {
+                    (Some(lb), Some(rb)) if lb.is_ascii_digit() && rb.is_ascii_digit() => {
+                        return_unless_equal!(lb.cmp(&rb));
+                    }
+                    (Some(lb), _) if lb.is_ascii_digit() => return Ordering::Greater,
+                    (_, Some(rb)) if rb.is_ascii_digit() => return Ordering::Less,
+                    _ => return Ordering::Equal,
+                }
+
+                *li += 1;
+                *ri += 1;
+            }
+        }
+
+        #[inline]
+        pub(super) fn compare_right(
+            left: &[u8],
+            right: &[u8],
+            li: &mut usize,
+            ri: &mut usize,
+        ) -> Ordering {
+            let mut bias = Ordering::Equal;
+
+            loop {
+                let lb = left.get(*li).copied();
+                let rb = right.get(*ri).copied();
+
+                match (lb, rb) {
+                    (Some(lb), Some(rb)) if lb.is_ascii_digit() && rb.is_ascii_digit() => {
+                        if bias == Ordering::Equal {
+                            bias = lb.cmp(&rb);
+                        }
+                    }
+                    (Some(lb), _) if lb.is_ascii_digit() => return Ordering::Greater,
+                    (_, Some(rb)) if rb.is_ascii_digit() => return Ordering::Less,
+                    _ => return bias,
+                }
+
+                *li += 1;
+                *ri += 1;
+            }
+        }
+
+        pub(super) fn natsort(left: &[u8], right: &[u8], insensitive: bool) -> Ordering {
+            let mut li = 0;
+            let mut ri = 0;
+
+            let mut l = left.get(li);
+            let mut r = right.get(ri);
+
+            loop {
+                match (l, r) {
+                    (Some(&ll), Some(&rr)) => {
+                        if ll.is_ascii_digit() && rr.is_ascii_digit() {
+                            if ll == b'0' || rr == b'0' {
+                                return_unless_equal!(compare_left(left, right, &mut li, &mut ri,));
+                            } else {
+                                return_unless_equal!(compare_right(left, right, &mut li, &mut ri,));
+                            }
+
+                            l = left.get(li);
+                            r = right.get(ri);
+                            continue;
+                        }
+
+                        if ll.is_ascii_digit() {
+                            return Ordering::Greater;
+                        }
+                        if rr.is_ascii_digit() {
+                            return Ordering::Less;
+                        }
+
+                        if insensitive {
+                            return_unless_equal!(
+                                ll.to_ascii_lowercase().cmp(&rr.to_ascii_lowercase())
+                            );
+                        } else {
+                            return_unless_equal!(ll.cmp(&rr));
+                        }
+                    }
+                    (Some(_), None) => return Ordering::Greater,
+                    (None, Some(_)) => return Ordering::Less,
+                    (None, None) => return Ordering::Equal,
+                }
+
+                li += 1;
+                l = left.get(li);
+                ri += 1;
+                r = right.get(ri);
+            }
+        }
+    }
 
     fn sorted(left: &[&str]) {
         let mut right = left.to_vec();

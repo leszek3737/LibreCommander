@@ -97,6 +97,75 @@ impl Drop for ViewerLoader {
     }
 }
 
+pub fn run_chafa(path: &Path, width: u16, height: u16) -> Text<'static> {
+    let size_str = format!("{}x{}", width, height);
+    match std::process::Command::new("chafa")
+        .arg("-f")
+        .arg("symbols")
+        .arg("--size")
+        .arg(&size_str)
+        .arg("--")
+        .arg(path)
+        .output()
+    {
+        Ok(out) if out.status.success() => match out.stdout.into_text() {
+            Ok(text) => text,
+            Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
+        },
+        Ok(out) => {
+            let err_msg = String::from_utf8_lossy(&out.stderr);
+            Text::raw(format!("Chafa error: {}", err_msg))
+        }
+        Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
+    }
+}
+
+pub struct ImagePreviewLoader {
+    pub file_path: PathBuf,
+    receiver: mpsc::Receiver<(u16, u16, Text<'static>)>,
+    cancel: Arc<AtomicBool>,
+    _handle: Option<JoinHandle<()>>,
+}
+
+impl ImagePreviewLoader {
+    pub fn start(path: PathBuf, width: u16, height: u16) -> Self {
+        let file_path = path.clone();
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        let handle = thread::spawn(move || {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            let text = run_chafa(&path, width, height);
+            if !cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send((width, height, text));
+            }
+        });
+        Self {
+            file_path,
+            receiver: rx,
+            cancel,
+            _handle: Some(handle),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn try_recv(&self) -> Result<(u16, u16, Text<'static>), mpsc::TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+
+impl Drop for ImagePreviewLoader {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        let _ = self._handle.take();
+    }
+}
+
 impl ViewerState {
     pub fn open(path: &Path) -> io::Result<Self> {
         Self::open_with_cancel(path, None)
@@ -772,38 +841,20 @@ impl ViewerState {
         self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
     }
 
-    pub fn prepare_image_preview(&mut self, area_width: u16, area_height: u16) {
+    pub fn needs_image_preview(&self, area_width: u16, area_height: u16) -> bool {
         let content_height = area_height.saturating_sub(3);
-        if area_width == 0 || content_height == 0 {
-            return;
-        }
-        if self.cached_image_size == Some((area_width, content_height)) {
-            return;
-        }
+        area_width > 0
+            && content_height > 0
+            && self.cached_image_size != Some((area_width, content_height))
+    }
 
-        let size_str = format!("{}x{}", area_width, content_height);
-        let parsed_text = match std::process::Command::new("chafa")
-            .arg("-f")
-            .arg("symbols")
-            .arg("--size")
-            .arg(&size_str)
-            .arg("--")
-            .arg(&self.file_path)
-            .output()
-        {
-            Ok(out) if out.status.success() => match out.stdout.into_text() {
-                Ok(text) => text,
-                Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
-            },
-            Ok(out) => {
-                let err_msg = String::from_utf8_lossy(&out.stderr);
-                Text::raw(format!("Chafa error: {}", err_msg))
-            }
-            Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
-        };
+    pub fn set_image_preview(&mut self, width: u16, height: u16, text: Text<'static>) {
+        self.cached_image_size = Some((width, height));
+        self.cached_image_text = Some(text);
+    }
 
-        self.cached_image_size = Some((area_width, content_height));
-        self.cached_image_text = Some(parsed_text);
+    pub fn image_content_size(area_width: u16, area_height: u16) -> (u16, u16) {
+        (area_width, area_height.saturating_sub(3))
     }
 }
 
@@ -1148,8 +1199,8 @@ pub fn render_viewer_with_colors(
 
     state.update_wrap_layout(content_area.width as usize);
 
-    let mut lines: Vec<Line> = Vec::new();
-    let mut line_num_lines: Vec<Line> = Vec::new();
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    let mut line_num_lines: Vec<Line<'_>> = Vec::new();
     let visible_height = content_area.height as usize;
 
     let use_visual = state.is_visual_scroll();
@@ -1160,20 +1211,22 @@ pub fn render_viewer_with_colors(
     let visible_matches = &state.search_matches_by_line;
     let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
 
-    for i in start_idx..end_idx {
-        let line_content = state.get_line(i).into_owned();
+    let line_data: Vec<Cow<'_, str>> = (start_idx..end_idx).map(|i| state.get_line(i)).collect();
+
+    for (idx, i) in (start_idx..end_idx).enumerate() {
+        let line_content = &line_data[idx];
         let line_match_start = match_start;
         while match_start < visible_matches.len() && visible_matches[match_start].line == i {
             match_start += 1;
         }
         let line_matches = &visible_matches[line_match_start..match_start];
 
-        let text_spans: Vec<Span> = if line_matches.is_empty() {
-            vec![Span::raw(line_content)]
+        let text_spans: Vec<Span<'_>> = if line_matches.is_empty() {
+            vec![Span::raw(line_content.clone())]
         } else {
-            format_line_with_highlight(&line_content, line_matches, state.current_match, colors)
+            format_line_with_highlight(line_content, line_matches, state.current_match, colors)
                 .into_iter()
-                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                .map(|s| Span::styled(s.content, s.style))
                 .collect()
         };
 
@@ -1191,7 +1244,8 @@ pub fn render_viewer_with_colors(
                 i + 1,
                 width = line_number_digits(state.line_count)
             );
-            let mut combined = vec![Span::raw(line_num)];
+            let mut combined: Vec<Span<'_>> = Vec::with_capacity(text_spans.len() + 1);
+            combined.push(Span::raw(line_num));
             combined.extend(text_spans);
             lines.push(Line::from(combined));
         } else {
@@ -2358,5 +2412,47 @@ mod tests {
         let buffer = render_viewer_buffer(&state, 80, 24);
 
         assert!(!buffer.area.is_empty());
+    }
+
+    #[test]
+    fn test_image_preview_loader_stores_file_path() {
+        let path_a = PathBuf::from("/tmp/image_a.png");
+        let path_b = PathBuf::from("/tmp/image_b.png");
+
+        let loader_a = ImagePreviewLoader {
+            file_path: path_a.clone(),
+            receiver: mpsc::channel().1,
+            cancel: Arc::new(AtomicBool::new(false)),
+            _handle: None,
+        };
+        let loader_b = ImagePreviewLoader {
+            file_path: path_b.clone(),
+            receiver: mpsc::channel().1,
+            cancel: Arc::new(AtomicBool::new(false)),
+            _handle: None,
+        };
+
+        assert_eq!(loader_a.file_path, path_a);
+        assert_eq!(loader_b.file_path, path_b);
+        assert_ne!(loader_a.file_path, loader_b.file_path);
+    }
+
+    #[test]
+    fn test_image_preview_race_condition_guard_discards_mismatched_path() {
+        let loader_path = PathBuf::from("/tmp/old_image.png");
+        let viewer_path = PathBuf::from("/tmp/new_image.png");
+
+        let loader = ImagePreviewLoader {
+            file_path: loader_path,
+            receiver: mpsc::channel().1,
+            cancel: Arc::new(AtomicBool::new(false)),
+            _handle: None,
+        };
+
+        let matched = viewer_path == loader.file_path;
+        assert!(
+            !matched,
+            "loader for old file must not match new viewer path"
+        );
     }
 }

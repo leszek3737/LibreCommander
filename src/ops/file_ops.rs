@@ -602,19 +602,18 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
             ));
         }
     }
-    delete_dir_contents(&canonical, path, cancel)?;
+    delete_dir_contents(&canonical, cancel)?;
     check_optional_canceled(cancel)?;
     fs::remove_dir(path)
 }
 
 const DELETE_MAX_DEPTH: usize = 256;
 
-fn delete_dir_contents(root: &Path, path: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
-    delete_dir_contents_impl(root, path, cancel, 0)
+fn delete_dir_contents(root: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
+    delete_dir_contents_impl(root, cancel, 0)
 }
 
 fn delete_dir_contents_impl(
-    root: &Path,
     path: &Path,
     cancel: Option<&AtomicBool>,
     depth: usize,
@@ -632,18 +631,6 @@ fn delete_dir_contents_impl(
             "refusing to recursively delete symlinked directory",
         ));
     }
-    let canonical = path.canonicalize().map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("cannot canonicalize {}: {e}", path.display()),
-        )
-    })?;
-    if canonical != root && !lexical_path_starts_with(root, &canonical) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "refusing to delete path outside requested directory",
-        ));
-    }
 
     for entry in fs::read_dir(path)? {
         check_optional_canceled(cancel)?;
@@ -654,7 +641,7 @@ fn delete_dir_contents_impl(
         if file_type.is_symlink() {
             fs::remove_file(&entry_path)?;
         } else if file_type.is_dir() {
-            delete_dir_contents_impl(root, &entry_path, cancel, depth + 1)?;
+            delete_dir_contents_impl(&entry_path, cancel, depth + 1)?;
             check_optional_canceled(cancel)?;
             fs::remove_dir(&entry_path)?;
         } else {

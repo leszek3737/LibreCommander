@@ -419,7 +419,12 @@ fn format_entry_line(
     };
 
     let padding = available_name_width.saturating_sub(name_actual_width);
-    format!("{marker}{name}{}{}", " ".repeat(padding), suffix.text)
+    let mut s = String::with_capacity(1 + name.len() + padding + suffix.text.len());
+    s.push(marker);
+    s.push_str(&name);
+    s.extend(std::iter::repeat_n(' ', padding));
+    s.push_str(&suffix.text);
+    s
 }
 
 fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> String {
@@ -591,7 +596,10 @@ pub fn render_status_bar_with_colors(
 
     let info_line_width = UnicodeWidthStr::width(info_line.as_str());
     let padding = remaining.saturating_sub(info_line_width);
-    let full_text = format!("{info_line}{}{right_info}", " ".repeat(padding));
+    let mut full_text = String::with_capacity(info_line.len() + padding + right_info.len());
+    full_text.push_str(&info_line);
+    full_text.extend(std::iter::repeat_n(' ', padding));
+    full_text.push_str(&right_info);
 
     let paragraph = Paragraph::new(full_text)
         .style(Theme::status_bar_with_colors(colors))

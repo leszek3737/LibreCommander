@@ -23,7 +23,7 @@ mod render;
 use app::job_runner::{RunningJob, poll_running_job};
 #[cfg(test)]
 use app::types::PanelState;
-use app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction, ViewMode};
+use app::types::{AppMode, AppState, DialogKind, InputAction, ViewMode};
 use app::{panel_ops, paths, shell, watcher_sync};
 
 use ui::viewer;
@@ -149,6 +149,58 @@ fn poll_viewer_loader(
     changed
 }
 
+fn poll_image_preview(
+    viewer_state: &mut Option<viewer::ViewerState>,
+    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
+) -> bool {
+    let Some(loader) = image_preview_loader.as_ref() else {
+        return false;
+    };
+    match loader.try_recv() {
+        Ok((w, h, text)) => {
+            let matched = viewer_state
+                .as_ref()
+                .is_some_and(|vs| vs.file_path == loader.file_path);
+            if matched && let Some(vs) = viewer_state.as_mut() {
+                vs.set_image_preview(w, h, text);
+            }
+            *image_preview_loader = None;
+            matched
+        }
+        Err(mpsc::TryRecvError::Empty) => false,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            *image_preview_loader = None;
+            false
+        }
+    }
+}
+
+fn start_image_preview_if_needed(
+    viewer_state: &mut Option<viewer::ViewerState>,
+    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
+    terminal_size: (u16, u16),
+) {
+    let Some(vs) = viewer_state.as_mut() else {
+        return;
+    };
+    if vs.view_mode != ViewMode::Image {
+        return;
+    }
+    let (w, h) = terminal_size;
+    if !vs.needs_image_preview(w, h) {
+        return;
+    }
+    if let Some(loader) = image_preview_loader.take() {
+        loader.cancel();
+    }
+    let (cw, ch) = viewer::ViewerState::image_content_size(w, h);
+    *image_preview_loader = Some(viewer::ImagePreviewLoader::start(
+        vs.file_path.clone(),
+        cw,
+        ch,
+    ));
+}
+
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     recover_terminal_state()?;
 
@@ -168,6 +220,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
     let mut viewer_state: Option<viewer::ViewerState> = None;
     let mut viewer_loader: Option<viewer::ViewerLoader> = None;
+    let mut image_preview_loader: Option<viewer::ImagePreviewLoader> = None;
     let mut running_job: Option<RunningJob> = None;
     let (watch_tx, watch_rx) = mpsc::sync_channel(2048);
     let mut watcher = match fs::watcher::Watcher::new(Arc::new(watch_tx)) {
@@ -206,12 +259,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader) {
             dirty = true;
         }
+        if poll_image_preview(&mut viewer_state, &mut image_preview_loader) {
+            dirty = true;
+        }
         if dirty {
-            if let Some(vs) = viewer_state.as_mut()
-                && vs.view_mode == ViewMode::Image
-                && let Ok(size) = terminal.size()
-            {
-                vs.prepare_image_preview(size.width, size.height);
+            if let Ok(size) = terminal.size() {
+                start_image_preview_if_needed(
+                    &mut viewer_state,
+                    &mut image_preview_loader,
+                    (size.width, size.height),
+                );
             }
             if let Err(e) =
                 terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))
@@ -237,6 +294,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 &mut state,
                 &mut viewer_state,
                 &mut viewer_loader,
+                &mut image_preview_loader,
                 &mut running_job,
                 terminal,
                 &key,
@@ -257,9 +315,7 @@ fn recover_terminal_state() -> io::Result<()> {
     if std::fs::metadata(&terminal_state_file).is_ok() {
         let leave_result = leave_tui_stdout();
         let resume_result = resume_terminal_stdout();
-        if resume_result.is_ok()
-            && let Err(e) = std::fs::remove_file(&terminal_state_file)
-        {
+        if let Err(e) = std::fs::remove_file(&terminal_state_file) {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
         if let Err(e) = &leave_result {
@@ -274,6 +330,7 @@ fn dispatch_event<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
+    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
     running_job: &mut Option<RunningJob>,
     terminal: &mut Terminal<B>,
     event: &Event,
@@ -283,6 +340,7 @@ fn dispatch_event<B: ratatui::backend::Backend>(
             state,
             viewer_state,
             viewer_loader,
+            image_preview_loader,
             running_job,
             terminal,
             key,
@@ -304,6 +362,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
+    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
     running_job: &mut Option<RunningJob>,
     terminal: &mut Terminal<B>,
     key: &KeyEvent,
@@ -331,6 +390,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
                 state,
                 viewer_state,
                 viewer_loader,
+                image_preview_loader,
                 key.code,
                 size,
             );
@@ -593,9 +653,7 @@ fn launch_editor<B: ratatui::backend::Backend>(
             .stderr(std::process::Stdio::inherit())
             .status();
         let resume_result = resume_terminal_stdout();
-        if resume_result.is_ok()
-            && let Err(e) = std::fs::remove_file(&terminal_state_file)
-        {
+        if let Err(e) = std::fs::remove_file(&terminal_state_file) {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
         match (status, resume_result) {
@@ -724,10 +782,7 @@ pub(crate) fn handle_navigation_keys(
             p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
         }
         KeyCode::Tab => {
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
+            state.active_panel = state.active_panel.toggle();
             let p = state.active_panel_mut();
             let max = p.listing.entries.len().saturating_sub(1);
             p.cursor = p.cursor.min(max);
@@ -790,10 +845,7 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_heig
     match key {
         KeyCode::Char('u') => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
+            state.active_panel = state.active_panel.toggle();
         }
         KeyCode::Char('s') => {
             let panel = state.active_panel_mut();
@@ -873,8 +925,21 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
 }
 
 fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
-    let selected: Vec<std::path::PathBuf> = state
-        .active_panel()
+    let panel = state.active_panel();
+
+    let current_entry_fallback = || {
+        panel
+            .current_entry()
+            .filter(|entry| entry.name != "..")
+            .map(|entry| vec![entry.path.clone()])
+            .unwrap_or_default()
+    };
+
+    if panel.selected_count == 0 {
+        return current_entry_fallback();
+    }
+
+    let selected: Vec<std::path::PathBuf> = panel
         .selected_entries()
         .into_iter()
         .filter(|entry| entry.name != "..")
@@ -882,15 +947,10 @@ fn selected_or_current_paths(state: &AppState) -> Vec<std::path::PathBuf> {
         .collect();
 
     if selected.is_empty() {
-        state
-            .active_panel()
-            .current_entry()
-            .filter(|entry| entry.name != "..")
-            .map(|entry| vec![entry.path.clone()])
-            .unwrap_or_default()
-    } else {
-        selected
+        return current_entry_fallback();
     }
+
+    selected
 }
 
 #[cfg(test)]

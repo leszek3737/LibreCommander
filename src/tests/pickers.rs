@@ -156,4 +156,5 @@ fn empty_hotlist_does_not_open_picker() {
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
     state.picker_selected = 0;
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
+    assert_eq!(state.mode, AppMode::Normal);
 }

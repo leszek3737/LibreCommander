@@ -5,7 +5,8 @@ use std::sync::{Mutex, TryLockError};
 
 use chrono::Local;
 
-const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024;
+const MIB: u64 = 1024 * 1024;
+const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
 
 /// Simple file-based debug logger for runtime diagnostics during TUI operation.
 /// Writes to a single log file, thread-safe via Mutex.
@@ -77,7 +78,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         && guard
             .as_ref()
             .and_then(|f| f.metadata().ok())
-            .is_some_and(|m| m.len() > MAX_LOG_SIZE)
+            .is_some_and(|m| m.len() > MAX_LOG_SIZE_BYTES)
     {
         *guard = None;
         let path = log_path();
@@ -172,7 +173,7 @@ mod tests {
 
         {
             let mut f = std::fs::File::create(&path).expect("create oversized log");
-            std::io::Write::write_all(&mut f, &vec![b'X'; (MAX_LOG_SIZE + 1) as usize])
+            std::io::Write::write_all(&mut f, &vec![b'X'; (MAX_LOG_SIZE_BYTES + 1) as usize])
                 .expect("write oversized log");
         }
 
@@ -181,7 +182,7 @@ mod tests {
             reset_for_test();
             log(format_args!("attempt {attempt}"));
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            if len > 0 && len < MAX_LOG_SIZE {
+            if len > 0 && len < MAX_LOG_SIZE_BYTES {
                 let mut contents = String::new();
                 let _ = std::fs::File::open(&path)
                     .expect("open log")

@@ -33,17 +33,11 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
         MenuAction::ToggleHiddenFiles => Some((KeyCode::Char('h'), KeyModifiers::CONTROL, true)),
         MenuAction::SwapPanels => {
             std::mem::swap(&mut state.left_panel, &mut state.right_panel);
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
+            state.active_panel = state.active_panel.toggle();
             None
         }
         MenuAction::SwitchPanels => {
-            state.active_panel = match state.active_panel {
-                ActivePanel::Left => ActivePanel::Right,
-                ActivePanel::Right => ActivePanel::Left,
-            };
+            state.active_panel = state.active_panel.toggle();
             None
         }
         MenuAction::SaveCurrentPathToHotlist => {

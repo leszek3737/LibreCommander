@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::app::types::{PanelState, compute_category};
+use crate::app::types::{PanelListing, PanelState, compute_category};
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
@@ -149,18 +149,19 @@ fn build_file_entry_from_metadata(
     }
 }
 
+fn rebuild_path_index(listing: &mut PanelListing) {
+    listing.path_index.clear();
+    listing.path_index.reserve(listing.unfiltered_entries.len());
+    for (i, entry) in listing.unfiltered_entries.iter().enumerate() {
+        listing.path_index.insert(entry.path.clone(), i);
+    }
+}
+
 pub fn ensure_path_index(panel: &mut PanelState) {
     if !panel.listing.path_index.is_empty() {
         return;
     }
-    panel.listing.path_index.clear();
-    panel
-        .listing
-        .path_index
-        .reserve(panel.listing.unfiltered_entries.len());
-    for (i, entry) in panel.listing.unfiltered_entries.iter().enumerate() {
-        panel.listing.path_index.insert(entry.path.clone(), i);
-    }
+    rebuild_path_index(&mut panel.listing);
 }
 
 pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
@@ -281,14 +282,16 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
         return;
     }
 
+    ensure_path_index(panel);
+    if !panel.listing.path_index.contains_key(path) {
+        return;
+    }
+
     panel
         .listing
         .unfiltered_entries
         .retain(|e| is_parent_entry(e) || e.path != path);
-
-    if panel.listing.path_index.len() != panel.listing.unfiltered_entries.len() {
-        panel.listing.path_index.clear();
-    }
+    rebuild_path_index(&mut panel.listing);
 }
 
 pub fn format_date(time: SystemTime) -> String {

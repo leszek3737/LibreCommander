@@ -124,11 +124,13 @@ impl From<&Settings> for PersistedSetup {
 impl From<PersistedSetup> for Settings {
     fn from(setup: PersistedSetup) -> Self {
         Self {
-            active_panel: match setup.active_panel.to_lowercase().as_str() {
-                "right" => ActivePanel::Right,
-                "left" => ActivePanel::Left,
-                other => {
-                    if !other.is_empty() {
+            active_panel: {
+                if setup.active_panel.eq_ignore_ascii_case("right") {
+                    ActivePanel::Right
+                } else if setup.active_panel.eq_ignore_ascii_case("left") {
+                    ActivePanel::Left
+                } else {
+                    if !setup.active_panel.is_empty() {
                         crate::debug_log!(
                             "config: invalid active_panel value '{}', using default Left",
                             setup.active_panel
@@ -217,7 +219,11 @@ pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
 }
 
 pub fn load_settings() -> Result<Option<Settings>, String> {
-    let Some(raw) = read_config_raw()? else {
+    load_settings_with_env(&paths::ProcessEnv)
+}
+
+pub fn load_settings_with_env(env: &impl paths::EnvProvider) -> Result<Option<Settings>, String> {
+    let Some(raw) = read_config_raw_with_env(env)? else {
         return Ok(None);
     };
     let setup: PersistedSetup = raw
@@ -227,7 +233,11 @@ pub fn load_settings() -> Result<Option<Settings>, String> {
 }
 
 fn read_config_raw() -> Result<Option<toml::Value>, String> {
-    let Some(path) = paths::config_file_path() else {
+    read_config_raw_with_env(&paths::ProcessEnv)
+}
+
+fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml::Value>, String> {
+    let Some(path) = paths::config_file_path_with_env(env) else {
         return Ok(None);
     };
     let content = match fs::read_to_string(&path) {

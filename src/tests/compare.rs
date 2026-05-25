@@ -104,6 +104,11 @@ fn compare_directories_by_content_zero_length() {
     state.left_panel.set_path(left_dir.path().to_path_buf());
     state.right_panel.set_path(right_dir.path().to_path_buf());
     pickers::compare_directories(&mut state, CompareMode::Quick);
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::Confirm(_))
+    ));
+    assert_eq!(state.dialog_selection, 0);
 }
 
 #[test]

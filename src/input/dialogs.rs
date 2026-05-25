@@ -79,7 +79,7 @@ fn dismiss_dialog_and_restore(state: &mut AppState) {
 pub(crate) fn finish_confirmed_action(state: &mut AppState) {
     state.dialog_selection = 0;
     if state.status_message.is_some()
-        && !matches!(state.mode, AppMode::Dialog(DialogKind::Progress(_, _, _)))
+        && !matches!(state.mode, AppMode::Dialog(DialogKind::Progress { .. }))
     {
         let msg = state.status_message.take();
         dismiss_dialog(state);
@@ -221,14 +221,20 @@ fn handle_overwrite_dialog(
             return;
         }
         KeyCode::Char('o' | 'O') => {
-            set_pending_overwrite(state);
+            if let Some(action) = state.pending_action.as_mut() {
+                action.set_overwrite();
+            }
         }
         KeyCode::Char('c' | 'C') => {
             dismiss_dialog(state);
             return;
         }
         KeyCode::Enter => match state.dialog_selection {
-            0 => set_pending_overwrite(state),
+            0 => {
+                if let Some(action) = state.pending_action.as_mut() {
+                    action.set_overwrite();
+                }
+            }
             1 => {
                 dismiss_dialog(state);
                 return;
@@ -239,17 +245,6 @@ fn handle_overwrite_dialog(
     }
     start_confirmed_action(state, running_job);
     finish_confirmed_action(state);
-}
-
-fn set_pending_overwrite(state: &mut AppState) {
-    if let Some(action) = state.pending_action.as_mut() {
-        match action {
-            PendingAction::Copy { overwrite, .. } | PendingAction::Move { overwrite, .. } => {
-                *overwrite = true;
-            }
-            PendingAction::Delete { .. } => {}
-        }
-    }
 }
 
 fn handle_find_file(state: &mut AppState, running_job: &mut Option<RunningJob>, input: &str) {
@@ -595,7 +590,7 @@ pub(crate) fn handle_dialog(
         DialogKind::Error(_) => {
             handle_error_dialog(state, key);
         }
-        DialogKind::Progress(_, _, _) => {
+        DialogKind::Progress { .. } => {
             handle_progress_dialog(state, running_job, key);
         }
         DialogKind::Properties { .. } => {

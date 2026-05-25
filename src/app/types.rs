@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use chrono::{DateTime, Datelike, Timelike};
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -184,23 +184,19 @@ pub fn format_size(size: u64) -> String {
     FileSize(size).to_string()
 }
 
-pub fn format_time(modified: SystemTime) -> String {
-    if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-        let timestamp = duration.as_secs();
+fn format_system_time(modified: SystemTime) -> Option<String> {
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let ts = i64::try_from(duration.as_secs()).ok()?;
+    let dt = DateTime::from_timestamp(ts, 0)?;
+    Some(
+        dt.with_timezone(&chrono::Local)
+            .format("%d-%m-%y %H:%M")
+            .to_string(),
+    )
+}
 
-        if let Some(dt) = DateTime::from_timestamp(timestamp as i64, 0) {
-            let local = dt.with_timezone(&chrono::Local);
-            return format!(
-                "{:02}-{:02}-{:02} {:02}:{:02}",
-                local.day(),
-                local.month(),
-                local.year() % 100,
-                local.hour(),
-                local.minute()
-            );
-        }
-    }
-    "??-??-?? ??:??".to_string()
+pub fn format_time(modified: SystemTime) -> String {
+    format_system_time(modified).unwrap_or_else(|| "??-??-?? ??:??".to_string())
 }
 
 // ============================================================================
@@ -428,6 +424,15 @@ pub enum ActivePanel {
     Right,
 }
 
+impl ActivePanel {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
 // ============================================================================
 // 4b. ConfirmDetails struct
 // ============================================================================
@@ -484,7 +489,11 @@ pub enum DialogKind {
         message: String,
         scroll_offset: usize,
     },
-    Progress(String, f32, bool), // (message, progress 0.0-1.0, cancellable)
+    Progress {
+        message: String,
+        progress_fraction: f32,
+        cancellable: bool,
+    },
     CopyMove {
         source: Vec<PathBuf>,
         dest: PathBuf,
@@ -669,6 +678,17 @@ pub enum PendingAction {
     Delete {
         paths: Vec<std::path::PathBuf>,
     },
+}
+
+impl PendingAction {
+    pub fn set_overwrite(&mut self) {
+        match self {
+            Self::Copy { overwrite, .. } | Self::Move { overwrite, .. } => {
+                *overwrite = true;
+            }
+            Self::Delete { .. } => {}
+        }
+    }
 }
 
 // ============================================================================
@@ -900,24 +920,10 @@ impl FileEntry {
     }
 
     pub fn display_modified(&self) -> String {
-        use std::time::UNIX_EPOCH;
-
         let Some(mtime) = self.cha.mtime else {
             return "Unknown".to_string();
         };
-        if let Ok(duration) = mtime.duration_since(UNIX_EPOCH) {
-            i64::try_from(duration.as_secs())
-                .ok()
-                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
-                .map(|dt| {
-                    dt.with_timezone(&chrono::Local)
-                        .format("%d-%m-%y %H:%M")
-                        .to_string()
-                })
-                .unwrap_or_else(|| "Unknown".to_string())
-        } else {
-            "Unknown".to_string()
-        }
+        format_system_time(mtime).unwrap_or_else(|| "Unknown".to_string())
     }
 }
 
@@ -1004,7 +1010,11 @@ impl PanelState {
     }
 
     fn set_unfiltered_selection(&mut self, path: &Path, selected: bool) {
-        if let Some(ue) = self
+        if let Some(&idx) = self.listing.path_index.get(path) {
+            if let Some(ue) = self.listing.unfiltered_entries.get_mut(idx) {
+                ue.selected = selected;
+            }
+        } else if let Some(ue) = self
             .listing
             .unfiltered_entries
             .iter_mut()
@@ -1335,6 +1345,10 @@ impl Default for AppState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn restore_prev_mode(state: &mut AppState) {
+    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
 }
 
 // ============================================================================
@@ -1872,10 +1886,19 @@ mod tests {
 
     #[test]
     fn test_dialog_kind_progress() {
-        let dialog = DialogKind::Progress("Copying...".to_string(), 0.5, true);
-        if let DialogKind::Progress(msg, progress, cancellable) = dialog {
-            assert_eq!(msg, "Copying...");
-            assert_eq!(progress, 0.5);
+        let dialog = DialogKind::Progress {
+            message: "Copying...".to_string(),
+            progress_fraction: 0.5,
+            cancellable: true,
+        };
+        if let DialogKind::Progress {
+            message,
+            progress_fraction,
+            cancellable,
+        } = dialog
+        {
+            assert_eq!(message, "Copying...");
+            assert_eq!(progress_fraction, 0.5);
             assert!(cancellable);
         } else {
             panic!("Expected Progress variant");

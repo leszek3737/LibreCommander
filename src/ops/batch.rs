@@ -594,8 +594,11 @@ fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
 
     identity_ok.sort_by_key(|p| p.components().count());
     let mut filtered: Vec<PathBuf> = Vec::new();
+    let mut accepted: HashSet<&Path> = HashSet::with_capacity(identity_ok.len());
     for p in &identity_ok {
-        if !filtered.iter().any(|existing| p.starts_with(existing)) {
+        let dominated = p.ancestors().skip(1).any(|a| accepted.contains(a));
+        if !dominated {
+            accepted.insert(p);
             filtered.push(p.clone());
         }
     }

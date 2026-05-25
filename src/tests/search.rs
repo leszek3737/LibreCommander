@@ -157,6 +157,7 @@ fn search_mode_with_empty_panel_handles_enter_gracefully() {
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
     handle_search_mode(&mut state, KeyCode::Enter, 20);
+    assert_eq!(state.mode, AppMode::Normal);
 }
 
 #[test]
@@ -180,6 +181,7 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
     handle_search_mode(&mut state, KeyCode::Char('x'), 20);
+    assert_eq!(state.search_query, "x");
 }
 
 #[test]

@@ -250,10 +250,14 @@ fn to_ui_dialog<'a>(
             message: Cow::Borrowed(message),
             scroll_offset: *scroll_offset,
         },
-        app::types::DialogKind::Progress(msg, pct, cancellable) => dialogs::DialogKind::Progress {
+        app::types::DialogKind::Progress {
+            message,
+            progress_fraction,
+            cancellable,
+        } => dialogs::DialogKind::Progress {
             title: Cow::Borrowed("Progress"),
-            message: Cow::Borrowed(msg),
-            percent: *pct * 100.0,
+            message: Cow::Borrowed(message),
+            percent: *progress_fraction * 100.0,
             cancellable: *cancellable,
         },
         app::types::DialogKind::CopyMove {

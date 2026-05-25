@@ -188,7 +188,11 @@ fn help_dialog_renders_help_text() {
 #[test]
 fn progress_dialog_nan_percent_handled() {
     let state = AppState {
-        mode: AppMode::Dialog(DialogKind::Progress("copying".to_string(), f32::NAN, true)),
+        mode: AppMode::Dialog(DialogKind::Progress {
+            message: "copying".to_string(),
+            progress_fraction: f32::NAN,
+            cancellable: true,
+        }),
         ..Default::default()
     };
     let mut terminal = test_terminal();

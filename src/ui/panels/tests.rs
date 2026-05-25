@@ -24,105 +24,140 @@ fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) 
         .build()
 }
 
-#[test]
-fn test_get_file_color_directory() {
-    let entry = create_test_entry("mydir", true, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::White));
-    assert!(style.add_modifier.contains(Modifier::BOLD));
+macro_rules! test_file_color {
+    ($name:ident, $filename:expr, $is_dir:expr, $is_exec:expr, $is_symlink:expr, $expected:expr, bold) => {
+        #[test]
+        fn $name() {
+            let entry = create_test_entry($filename, $is_dir, $is_exec, $is_symlink);
+            let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+            assert_eq!(style.fg, Some($expected));
+            assert!(style.add_modifier.contains(Modifier::BOLD));
+        }
+    };
+    ($name:ident, $filename:expr, $is_dir:expr, $is_exec:expr, $is_symlink:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let entry = create_test_entry($filename, $is_dir, $is_exec, $is_symlink);
+            let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+            assert_eq!(style.fg, Some($expected));
+        }
+    };
 }
 
-#[test]
-fn test_get_file_color_code_script() {
-    let entry = create_test_entry("script.sh", false, true, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Yellow));
-}
-
-#[test]
-fn test_get_file_color_extensionless_executable() {
-    let entry = create_test_entry("mybinary", false, true, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Green));
-    assert!(style.add_modifier.contains(Modifier::BOLD));
-}
-
-#[test]
-fn test_get_file_color_symlink() {
-    let entry = create_test_entry("link", false, false, true);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Cyan));
-}
-
-#[test]
-fn test_get_file_color_archive() {
-    let entry = create_test_entry("archive.tar.gz", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Red));
-}
-
-#[test]
-fn test_get_file_color_image() {
-    let entry = create_test_entry("photo.png", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Magenta));
-}
-
-#[test]
-fn test_get_file_color_source_code() {
-    let entry = create_test_entry("main.rs", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Yellow));
-}
-
-#[test]
-fn test_get_file_color_hidden_as_other() {
-    let entry = create_test_entry(".hidden", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::White));
-}
-
-#[test]
-fn test_get_file_color_config() {
-    let entry = create_test_entry("settings.toml", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::LightBlue));
-}
-
-#[test]
-fn test_get_file_color_video() {
-    let entry = create_test_entry("movie.mp4", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::LightMagenta));
-}
-
-#[test]
-fn test_get_file_color_audio() {
-    let entry = create_test_entry("song.mp3", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::LightGreen));
-}
-
-#[test]
-fn test_get_file_color_font() {
-    let entry = create_test_entry("font.ttf", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::LightCyan));
-}
-
-#[test]
-fn test_get_file_color_regular() {
-    let entry = create_test_entry("unknown.xyz", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::White));
-}
-
-#[test]
-fn test_get_file_color_document() {
-    let entry = create_test_entry("document.txt", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::LightYellow));
-}
+test_file_color!(
+    test_get_file_color_directory,
+    "mydir",
+    true,
+    false,
+    false,
+    Color::White,
+    bold
+);
+test_file_color!(
+    test_get_file_color_code_script,
+    "script.sh",
+    false,
+    true,
+    false,
+    Color::Yellow
+);
+test_file_color!(
+    test_get_file_color_extensionless_executable,
+    "mybinary",
+    false,
+    true,
+    false,
+    Color::Green,
+    bold
+);
+test_file_color!(
+    test_get_file_color_symlink,
+    "link",
+    false,
+    false,
+    true,
+    Color::Cyan
+);
+test_file_color!(
+    test_get_file_color_archive,
+    "archive.tar.gz",
+    false,
+    false,
+    false,
+    Color::Red
+);
+test_file_color!(
+    test_get_file_color_image,
+    "photo.png",
+    false,
+    false,
+    false,
+    Color::Magenta
+);
+test_file_color!(
+    test_get_file_color_source_code,
+    "main.rs",
+    false,
+    false,
+    false,
+    Color::Yellow
+);
+test_file_color!(
+    test_get_file_color_hidden_as_other,
+    ".hidden",
+    false,
+    false,
+    false,
+    Color::White
+);
+test_file_color!(
+    test_get_file_color_config,
+    "settings.toml",
+    false,
+    false,
+    false,
+    Color::LightBlue
+);
+test_file_color!(
+    test_get_file_color_video,
+    "movie.mp4",
+    false,
+    false,
+    false,
+    Color::LightMagenta
+);
+test_file_color!(
+    test_get_file_color_audio,
+    "song.mp3",
+    false,
+    false,
+    false,
+    Color::LightGreen
+);
+test_file_color!(
+    test_get_file_color_font,
+    "font.ttf",
+    false,
+    false,
+    false,
+    Color::LightCyan
+);
+test_file_color!(
+    test_get_file_color_regular,
+    "unknown.xyz",
+    false,
+    false,
+    false,
+    Color::White
+);
+test_file_color!(
+    test_get_file_color_document,
+    "document.txt",
+    false,
+    false,
+    false,
+    Color::LightYellow
+);
 
 #[test]
 fn test_format_size_zero() {
@@ -521,25 +556,6 @@ fn test_panel_status_summary_no_selection_when_zero() {
 }
 
 #[test]
-fn test_truncate_name_no_truncation() {
-    assert_eq!(truncate_name("hello", 10), "hello");
-}
-
-#[test]
-fn test_truncate_name_with_ellipsis() {
-    let result = truncate_name("hello world", 8);
-    assert!(result.ends_with('…'));
-    assert!(UnicodeWidthStr::width(&*result) <= 8);
-}
-
-#[test]
-fn test_truncate_name_unicode() {
-    let result = truncate_name("日本語テストファイル", 6);
-    assert_eq!(&*result, "日本語");
-    assert_eq!(UnicodeWidthStr::width(&*result), 6);
-}
-
-#[test]
 fn test_truncate_to_width_wide_char_fits_exactly() {
     let result = truncate_to_width("中a", 2);
     assert_eq!(&*result, "中");
@@ -565,6 +581,31 @@ fn test_truncate_to_width_wide_char_doesnt_fit() {
     let result = truncate_to_width("a中bc", 3);
     assert_eq!(&*result, "a中");
     assert_eq!(UnicodeWidthStr::width(&*result), 3);
+}
+
+#[test]
+fn test_truncate_name_no_truncation() {
+    assert_eq!(truncate_name("hello", 10), "hello");
+}
+
+#[test]
+fn test_truncate_name_with_ellipsis() {
+    let result = truncate_name("hello world", 8);
+    assert!(result.ends_with('…'));
+    assert!(UnicodeWidthStr::width(&*result) <= 8);
+}
+
+#[test]
+fn test_truncate_name_unicode() {
+    let result = truncate_name("日本語テストファイル", 6);
+    assert_eq!(&*result, "日本語");
+    assert_eq!(UnicodeWidthStr::width(&*result), 6);
+}
+
+#[test]
+fn test_truncate_name_empty() {
+    let result = truncate_name("", 5);
+    assert_eq!(&*result, "");
 }
 
 #[test]

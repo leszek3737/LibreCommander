@@ -145,6 +145,7 @@ fn selected_or_current_paths_uses_selection_when_present() {
         TestEntry::new("file_c.txt").size(100).selected().build(),
     ];
     state.left_panel.cursor = 1;
+    state.left_panel.selected_count = 2;
 
     let paths = selected_or_current_paths(&state);
     assert_eq!(paths.len(), 2);
@@ -168,6 +169,51 @@ fn selected_or_current_paths_empty_panel() {
     let state = AppState::new();
     let paths = selected_or_current_paths(&state);
     assert!(paths.is_empty());
+}
+
+#[test]
+fn selected_or_current_paths_no_selection_returns_current() {
+    let mut state = AppState::new();
+    state.active_panel = ActivePanel::Left;
+    state.left_panel.listing.entries = vec![
+        TestEntry::new("..").size(100).build(),
+        TestEntry::new("file_a.txt").size(100).build(),
+    ];
+    state.left_panel.cursor = 1;
+    state.left_panel.selected_count = 0;
+
+    let paths = selected_or_current_paths(&state);
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], PathBuf::from("/tmp/file_a.txt"));
+}
+
+#[test]
+fn selected_or_current_paths_dotdot_current_returns_empty() {
+    let mut state = AppState::new();
+    state.active_panel = ActivePanel::Left;
+    state.left_panel.listing.entries = vec![TestEntry::new("..").size(100).build()];
+    state.left_panel.cursor = 0;
+    state.left_panel.selected_count = 0;
+
+    let paths = selected_or_current_paths(&state);
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn selected_or_current_paths_all_dotdot_selected_fallback() {
+    let mut state = AppState::new();
+    state.active_panel = ActivePanel::Left;
+    state.left_panel.listing.entries = vec![
+        TestEntry::new("..").size(100).selected().build(),
+        TestEntry::new("file_a.txt").size(100).build(),
+    ];
+    state.left_panel.cursor = 1;
+    state.left_panel.selected_count = 1;
+    state.left_panel.recalculate_selection_stats();
+
+    let paths = selected_or_current_paths(&state);
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0], PathBuf::from("/tmp/file_a.txt"));
 }
 
 #[test]
