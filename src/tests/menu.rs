@@ -162,7 +162,7 @@ fn menu_hotlist_opens_picker() {
         menu_item_selected: 6,
         ..Default::default()
     };
-    state.directory_hotlist.push(tmp.path().to_path_buf());
+    state.hotlist_push(tmp.path().to_path_buf());
 
     handle_menu_mode(
         &mut state,

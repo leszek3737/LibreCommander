@@ -172,6 +172,7 @@ pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io
     std::fs::rename(temp, dest)
 }
 
+#[cfg(test)]
 pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
     let dir = dest.parent().ok_or_else(|| {
         io::Error::new(
@@ -206,6 +207,22 @@ pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
     ))
 }
 
+pub(super) fn reserve_temp_path_for(name: &str, dest_dir: &Path) -> io::Result<PathBuf> {
+    let pid = std::process::id();
+    for counter in 0..1024 {
+        let temp = dest_dir.join(format!("{}.{}.{}.lc-symlink.tmp", name, pid, counter));
+        match fs::symlink_metadata(&temp) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(temp),
+            Err(e) => return Err(e),
+            Ok(_) => continue,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve temporary symlink path (exhausted 1024 attempts)",
+    ))
+}
+
 pub fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
     let need_remove = match fs::symlink_metadata(dest) {
         Ok(meta) if meta.is_dir() => {
@@ -219,7 +236,29 @@ pub fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
     };
     #[cfg(windows)]
     if need_remove {
-        fs::remove_file(dest)?;
+        let mut os = dest.as_os_str().to_os_string();
+        os.push(".lc_bak");
+        let backup = PathBuf::from(os);
+        if backup.exists() {
+            fs::remove_file(&backup)?;
+        }
+        fs::rename(dest, &backup)?;
+        match fs::rename(temp, dest) {
+            Ok(()) => {
+                let _ = fs::remove_file(&backup);
+            }
+            Err(err) => {
+                if let Err(restore_err) = fs::rename(&backup, dest) {
+                    debug_log!(
+                        "failed to restore backup {} to {}: {restore_err}",
+                        backup.display(),
+                        dest.display()
+                    );
+                }
+                return Err(err);
+            }
+        }
+        return Ok(());
     }
     let _ = need_remove;
     fs::rename(temp, dest)

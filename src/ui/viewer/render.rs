@@ -124,8 +124,6 @@ pub fn render_viewer_with_colors(
         return;
     }
 
-    state.update_wrap_layout(content_area.width as usize);
-
     let mut lines: Vec<Line<'_>> = Vec::new();
     let mut line_num_lines: Vec<Line<'_>> = Vec::new();
     let visible_height = content_area.height as usize;
@@ -146,8 +144,8 @@ pub fn render_viewer_with_colors(
         }
         let line_matches = &visible_matches[line_match_start..match_start];
 
-        let text_spans: Vec<Span<'static>> = if line_matches.is_empty() {
-            vec![Span::raw(line.into_owned())]
+        let text_spans: Vec<Span<'_>> = if line_matches.is_empty() {
+            vec![Span::raw(line)]
         } else {
             format_line_with_highlight(&line, line_matches, state.current_match, colors)
                 .into_iter()
@@ -239,19 +237,19 @@ pub fn render_hex_view_with_colors(
     let visible_lines = content_area.height as usize;
     let end_line = (start_line + visible_lines).min(total_lines);
 
-    let mut lines: Vec<Line> = Vec::new();
+    let line_count = end_line - start_line;
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(line_count);
 
     let visible_matches = &state.search_matches_by_line;
     let mut match_start =
         visible_matches.partition_point(|line_match| line_match.line < start_line);
 
-    let mut hex_line_buffer = String::with_capacity(128);
     for line_idx in start_line..end_line {
         let offset = line_idx * bytes_per_line;
         let slice_len = (bytes.len() - offset).min(bytes_per_line);
         let slice = &bytes[offset..offset + slice_len];
-        hex_line_buffer.clear();
-        format_hex_line_to_buffer(offset, slice, &mut hex_line_buffer);
+        let mut hex_line = String::with_capacity(128);
+        format_hex_line_to_buffer(offset, slice, &mut hex_line);
 
         let line_match_start = match_start;
         while match_start < visible_matches.len() && visible_matches[match_start].line == line_idx {
@@ -259,15 +257,11 @@ pub fn render_hex_view_with_colors(
         }
         let line_matches = &visible_matches[line_match_start..match_start];
 
-        let spans: Vec<Span<'static>> = if line_matches.is_empty() {
-            vec![Span::raw(hex_line_buffer.clone())]
+        let spans: Vec<Span<'_>> = if line_matches.is_empty() {
+            vec![Span::raw(hex_line)]
         } else {
-            let highlighted = format_line_with_highlight(
-                &hex_line_buffer,
-                line_matches,
-                state.current_match,
-                colors,
-            );
+            let highlighted =
+                format_line_with_highlight(&hex_line, line_matches, state.current_match, colors);
             highlighted
                 .into_iter()
                 .map(|s| Span::styled(s.content.into_owned(), s.style))
@@ -319,8 +313,7 @@ pub fn render_image_view_with_colors(
 
     if content_area.width > 0 && content_area.height > 0 {
         if let Some(text) = &state.cached_image_text {
-            let paragraph = Paragraph::new(text.clone());
-            f.render_widget(paragraph, content_area);
+            f.render_widget(text, content_area);
         } else {
             let paragraph = Paragraph::new("Generating preview\u{2026}");
             f.render_widget(paragraph, content_area);

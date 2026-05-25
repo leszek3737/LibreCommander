@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::Local;
 
@@ -55,11 +55,8 @@ fn stderr_fallback(msg: &str) {
 }
 
 pub fn log(args: std::fmt::Arguments<'_>) {
-    let mut guard = match LOG_FILE.try_lock() {
-        Ok(guard) => guard,
-        Err(TryLockError::Poisoned(err)) => err.into_inner(),
-        Err(TryLockError::WouldBlock) => return,
-    };
+    let mut guard: MutexGuard<'_, Option<std::fs::File>> =
+        LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
     let freshly_opened = guard.is_none();
     if freshly_opened {
         match ensure_log_file() {
@@ -82,8 +79,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
     {
         *guard = None;
         let path = log_path();
-        let _ = std::fs::File::create(&path).and_then(|f| f.sync_all());
-        match ensure_log_file() {
+        match OpenOptions::new().write(true).truncate(true).open(&path) {
             Ok(f) => *guard = Some(f),
             Err(e) => {
                 stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));

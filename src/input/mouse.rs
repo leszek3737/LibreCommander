@@ -6,6 +6,7 @@ use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::shell;
 use crate::app::types::{self, ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
+use crate::ui::dialogs;
 use crate::ui::viewer;
 
 use super::dialogs::{check_overwrite_conflict, dismiss_dialog, finish_confirmed_action};
@@ -257,24 +258,16 @@ fn handle_mouse_dialog(
     None
 }
 
-fn dialog_button_row(height: u16, dialog_height: u16) -> u16 {
-    let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-    dialog_y + dialog_height.saturating_sub(2)
-}
-
-fn dialog_left(width: u16, dialog_width: u16) -> u16 {
-    (width.saturating_sub(dialog_width)) / 2
-}
-
 fn handle_confirm_click(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let dialog_height = pos.height * 40 / 100;
-    let btn_row = dialog_button_row(pos.height, dialog_height);
-    let dialog_width = pos.width / 2;
-    let dialog_left = dialog_left(pos.width, dialog_width);
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let dialog_rect = dialogs::centered_rect(50, 40, area);
+    let btn_row = dialog_rect.y + dialog_rect.height.saturating_sub(2);
+    let dialog_left = dialog_rect.x;
+    let dialog_width = dialog_rect.width;
 
     if pos.row == btn_row && pos.col >= dialog_left && pos.col < dialog_left + dialog_width {
         let btn_center = dialog_left + dialog_width / 2;
@@ -317,10 +310,11 @@ fn handle_overwrite_click(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let dialog_height = pos.height * 40 / 100;
-    let btn_row = dialog_button_row(pos.height, dialog_height);
-    let dialog_width = pos.width / 2;
-    let dialog_left = dialog_left(pos.width, dialog_width);
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let dialog_rect = dialogs::centered_rect(50, 40, area);
+    let btn_row = dialog_rect.y + dialog_rect.height.saturating_sub(2);
+    let dialog_left = dialog_rect.x;
+    let dialog_width = dialog_rect.width;
 
     if pos.row == btn_row && pos.col >= dialog_left && pos.col < dialog_left + dialog_width {
         let btn_center = dialog_left + dialog_width / 2;
@@ -351,11 +345,11 @@ fn handle_progress_click(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let dialog_height = pos.height * 40 / 100;
-    let dialog_y = (pos.height.saturating_sub(dialog_height)) / 2;
-    let cancel_row = dialog_y + dialog_height.saturating_sub(2);
-    let dialog_width = pos.width / 2;
-    let dialog_left = dialog_left(pos.width, dialog_width);
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let dialog_rect = dialogs::centered_rect(50, 40, area);
+    let cancel_row = dialog_rect.y + dialog_rect.height.saturating_sub(2);
+    let dialog_left = dialog_rect.x;
+    let dialog_width = dialog_rect.width;
 
     if pos.row == cancel_row
         && pos.col >= dialog_left
@@ -411,8 +405,22 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
     let inner_y = 2u16;
     let inner_width = dropdown_width.saturating_sub(2);
 
-    if pos.col >= inner_x && pos.col < inner_x + inner_width && pos.row >= inner_y {
-        let item_idx = (pos.row - inner_y) as usize;
+    let max_visible = pos.height.saturating_sub(1);
+    let dropdown_height = ((items.len().min(u16::MAX as usize - 2)) as u16 + 2).min(max_visible);
+    let visible_items = dropdown_height.saturating_sub(2) as usize;
+    let clamped_selected = state.menu_item_selected.min(items.len().saturating_sub(1));
+    let scroll_offset = if items.len() <= visible_items {
+        0
+    } else {
+        clamped_selected.saturating_sub(visible_items.saturating_sub(1))
+    };
+
+    if pos.col >= inner_x
+        && pos.col < inner_x + inner_width
+        && pos.row >= inner_y
+        && pos.row < inner_y + visible_items as u16
+    {
+        let item_idx = scroll_offset + (pos.row - inner_y) as usize;
         if item_idx < items.len() {
             state.menu_item_selected = item_idx;
             return Some(MouseOutcome::MenuAction);
@@ -576,17 +584,9 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
     let panel_mut = state.active_panel_mut();
     let start = anchor.min(current_index);
     let end = anchor.max(current_index);
-    for entry in panel_mut.listing.entries.iter_mut() {
-        entry.selected = false;
-    }
-    for entry in panel_mut
-        .listing
-        .entries
-        .iter_mut()
-        .skip(start)
-        .take(end - start + 1)
-    {
-        entry.selected = true;
+    panel_mut.clear_selection();
+    for i in start..=end {
+        panel_mut.set_selection_at(i, true);
     }
     panel_mut.cursor = current_index;
     let visible_rows = (panel_end_row - panel_start_row).saturating_sub(1) as usize;

@@ -102,18 +102,20 @@ const CONFIG_EXACT_NAMES: &[&str] = &[
     ".gitignore",
     ".env",
     ".editorconfig",
-];
-
-const CONFIG_PREFIXES: &[&str] = &[".env."];
-
-const SOURCE_EXACT_NAMES: &[&str] = &[
-    "Dockerfile",
     "Makefile",
+    "Dockerfile",
     "Vagrantfile",
     "Rakefile",
     "Gemfile",
     "justfile",
+    "Brewfile",
+    "Containerfile",
+    "Jenkinsfile",
 ];
+
+const CONFIG_PREFIXES: &[&str] = &[".env."];
+
+const SOURCE_EXACT_NAMES: &[&str] = &[];
 
 const FONT_SUFFIXES: &[&str] = &[".ttf", ".otf", ".woff", ".woff2", ".eot"];
 

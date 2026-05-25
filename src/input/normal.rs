@@ -374,8 +374,8 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                     size: entry.size(),
                     mtime: entry.mtime(),
                     permissions: entry.mode_bits(),
-                    owner: entry.owner.clone(),
-                    group: entry.group.clone(),
+                    owner: entry.owner.to_string(),
+                    group: entry.group.to_string(),
                     is_dir: entry.is_dir(),
                     is_symlink: entry.is_symlink(),
                 });

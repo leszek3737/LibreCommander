@@ -19,6 +19,12 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
             state.picker_selected += 1;
         }
+        KeyCode::Home if len > 0 => {
+            state.picker_selected = 0;
+        }
+        KeyCode::End if len > 0 => {
+            state.picker_selected = len - 1;
+        }
         KeyCode::Enter => {
             if state.picker_selected >= len {
                 state.mode = AppMode::Normal;
@@ -48,8 +54,14 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
             state.picker_selected += 1;
         }
+        KeyCode::Home if len > 0 => {
+            state.picker_selected = 0;
+        }
+        KeyCode::End if len > 0 => {
+            state.picker_selected = len - 1;
+        }
         KeyCode::Enter => {
-            if let Some(path) = state.directory_hotlist.get(state.picker_selected).cloned() {
+            if let Some(path) = state.hotlist().get(state.picker_selected).cloned() {
                 if path.is_dir() {
                     state.active_panel_mut().set_path(path);
                     state.active_panel_mut().cursor = 0;
@@ -66,16 +78,16 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
         }
         KeyCode::Char('a') => {
             let cur = state.active_panel().path.clone();
-            if state.directory_hotlist.iter().any(|p| p == &cur) {
+            if state.hotlist().iter().any(|p| p == &cur) {
                 state.status_message = Some("Directory already in hotlist".to_string());
             } else {
                 state.hotlist_push(cur);
                 state.status_message = Some("Added current directory to hotlist".to_string());
             }
         }
-        KeyCode::Char('d') if state.picker_selected < state.directory_hotlist.len() => {
+        KeyCode::Char('d') if state.picker_selected < state.hotlist().len() => {
             state.hotlist_remove(state.picker_selected);
-            if state.picker_selected > 0 && state.picker_selected >= state.directory_hotlist.len() {
+            if state.picker_selected > 0 && state.picker_selected >= state.hotlist().len() {
                 state.picker_selected -= 1;
             }
         }
@@ -95,6 +107,12 @@ fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
         }
         KeyCode::Down if state.picker_selected + 1 < len => {
             state.picker_selected += 1;
+        }
+        KeyCode::Home => {
+            state.picker_selected = 0;
+        }
+        KeyCode::End => {
+            state.picker_selected = len - 1;
         }
         KeyCode::Enter => {
             let chosen = MODES[state.picker_selected.min(len - 1)];
@@ -116,6 +134,12 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
         }
         KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
             state.picker_selected += 1;
+        }
+        KeyCode::Home if len > 0 => {
+            state.picker_selected = 0;
+        }
+        KeyCode::End if len > 0 => {
+            state.picker_selected = len - 1;
         }
         KeyCode::Enter => {
             let idx = state.picker_selected.min(len.saturating_sub(1));
@@ -178,7 +202,7 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
             handle_history_picker(state, key, state.command_history.len());
         }
         PickerKind::Hotlist => {
-            handle_hotlist_picker(state, key, state.directory_hotlist.len());
+            handle_hotlist_picker(state, key, state.hotlist().len());
         }
         PickerKind::CompareMode => {
             handle_compare_mode_picker(state, key);

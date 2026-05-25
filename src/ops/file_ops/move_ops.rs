@@ -28,6 +28,15 @@ pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
         return if src == dest {
             Ok(())
         } else {
+            if src
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "cannot move symlink onto its own target",
+                ));
+            }
             fs::rename(src, dest)
         };
     }
@@ -100,6 +109,15 @@ pub fn move_entry_with_progress(
         return if src == dest {
             Ok(())
         } else {
+            if src
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "cannot move symlink onto its own target",
+                ));
+            }
             fs::rename(src, dest)
         };
     }

@@ -219,21 +219,20 @@ pub fn panel_visible_height(terminal_height: u16) -> usize {
 }
 
 pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
-    if index >= state.directory_hotlist.len() {
-        state.status_message = Some(format!(
-            "Hotlist index {} out of range (0..{})",
-            index,
-            state.directory_hotlist.len()
-        ));
-        return;
-    }
-    let path = &state.directory_hotlist[index];
+    let path = match state.hotlist().get(index) {
+        Some(p) => p.clone(),
+        None => {
+            let len = state.hotlist().len();
+            state.status_message =
+                Some(format!("Hotlist index {} out of range (0..{})", index, len));
+            return;
+        }
+    };
     if !path.is_dir() {
         state.status_message = Some(format!("{} is not a directory", path.display()));
         return;
     }
     let display = path.display().to_string();
-    let path = path.clone();
     let panel = state.active_panel_mut();
     panel.history.push(panel.path.clone());
     panel.set_path(path);

@@ -376,6 +376,30 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
         action: "HistoryNext",
         description: "Next command in history",
     },
+    KeyBinding {
+        mode: "CommandLine",
+        key: "Ctrl+A",
+        action: "CursorHome",
+        description: "Move cursor to beginning of line",
+    },
+    KeyBinding {
+        mode: "CommandLine",
+        key: "Ctrl+E",
+        action: "CursorEnd",
+        description: "Move cursor to end of line",
+    },
+    KeyBinding {
+        mode: "CommandLine",
+        key: "Ctrl+U",
+        action: "ClearToStart",
+        description: "Clear line before cursor",
+    },
+    KeyBinding {
+        mode: "CommandLine",
+        key: "Ctrl+W",
+        action: "DeleteWordBack",
+        description: "Delete word before cursor",
+    },
     // ── Search ───────────────────────────────────────────────────────────────
     KeyBinding {
         mode: "Search",

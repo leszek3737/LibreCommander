@@ -539,6 +539,9 @@ fn process_batch_entry<F>(
         })
     };
 
+    state.bytes_done = state.bytes_done.saturating_add(file_bytes_so_far);
+    state.bytes_total = state.bytes_total.max(state.bytes_done);
+
     if let Err(e) = result {
         if e.kind() == io::ErrorKind::Interrupted && is_canceled(cancel) {
             state.canceled = true;
@@ -546,9 +549,8 @@ fn process_batch_entry<F>(
         state.errors.push(format!("{}: {}", src.display(), e));
     } else {
         state.success_count += 1;
-        state.bytes_done = state
-            .bytes_done
-            .saturating_add(current_total.max(file_bytes_so_far));
+        let remainder = current_total.saturating_sub(file_bytes_so_far);
+        state.bytes_done = state.bytes_done.saturating_add(remainder);
         state.bytes_total = state.bytes_total.max(state.bytes_done);
     }
 

@@ -36,7 +36,7 @@ impl TextInput {
         self.clamp_cursor();
         let pos = self.byte_pos();
         self.text.insert(pos, c);
-        self.cursor += 1;
+        self.cursor = self.text[..pos + c.len_utf8()].graphemes(true).count();
         true
     }
 

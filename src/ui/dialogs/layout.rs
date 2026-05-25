@@ -50,10 +50,6 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     const MIN_WIDTH: u16 = 30;
     const MIN_HEIGHT: u16 = 5;
 
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        return area;
-    }
-
     let dialog_width = ((area.width as u32 * percent_x as u32) / 100)
         .max(MIN_WIDTH as u32)
         .min(area.width as u32) as u16;

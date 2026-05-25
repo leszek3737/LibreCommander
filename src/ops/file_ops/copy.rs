@@ -11,8 +11,10 @@ use super::common::{
     MAX_RECURSION_DEPTH, canonicalize_existing_path, canonicalize_with_nearest_existing_parent,
     check_canceled, ensure_destination_absent, reject_same_file, validate_copy_targets,
 };
+#[cfg(test)]
+use super::temp::reserve_temp_file_for;
 use super::temp::{
-    publish_temp_dir, reserve_temp_dir_for, reserve_temp_file_for, swap_temp_to_dest,
+    publish_temp_dir, reserve_temp_dir_for, reserve_temp_path_for, swap_temp_to_dest,
 };
 
 #[cfg(test)]
@@ -319,8 +321,16 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     #[cfg(unix)]
     {
         if overwrite {
-            let temp = reserve_temp_file_for(dest)?;
-            fs::remove_file(&temp)?;
+            let dest_dir = dest.parent().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "destination has no parent directory",
+                )
+            })?;
+            let name = dest.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename")
+            })?;
+            let temp = reserve_temp_path_for(&name.to_string_lossy(), dest_dir)?;
             std::os::unix::fs::symlink(&target, &temp)?;
             if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
                 cleanup_file(&temp);

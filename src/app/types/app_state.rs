@@ -42,12 +42,6 @@ pub struct AppState {
     pub tree_scroll: usize,
     pub last_click_time: Option<std::time::Instant>,
     pub last_click_position: Option<(u16, u16)>,
-    pub drag_active: bool,
-    pub drag_source_pane: ActivePanel,
-    pub drag_source_path: PathBuf,
-    pub drag_source_name: String,
-    pub drag_current_row: u16,
-    pub drag_current_col: u16,
     pub scroll_accel: u8,
     pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
@@ -92,12 +86,6 @@ impl AppState {
             tree_scroll: 0,
             last_click_time: None,
             last_click_position: None,
-            drag_active: false,
-            drag_source_pane: ActivePanel::Left,
-            drag_source_path: PathBuf::new(),
-            drag_source_name: String::new(),
-            drag_current_row: 0,
-            drag_current_col: 0,
             scroll_accel: 0,
             last_scroll_time: None,
             drag_anchor_index: None,
@@ -132,6 +120,10 @@ impl AppState {
             ActivePanel::Left => &mut self.right_panel,
             ActivePanel::Right => &mut self.left_panel,
         }
+    }
+
+    pub fn hotlist(&self) -> &[PathBuf] {
+        &self.directory_hotlist
     }
 
     pub fn rebuild_hotlist_cache(&mut self) {
@@ -189,11 +181,6 @@ impl AppState {
     }
 
     pub fn reset_drag_state(&mut self) {
-        self.drag_active = false;
-        self.drag_source_path.clear();
-        self.drag_source_name.clear();
-        self.drag_current_row = 0;
-        self.drag_current_col = 0;
         self.drag_anchor_index = None;
     }
 

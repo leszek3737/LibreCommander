@@ -1,39 +1,6 @@
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 use crate::app::types::FileCategory;
-
-pub fn detect_mime(path: &Path) -> Option<String> {
-    let fallback = || {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .and_then(extension_mime)
-            .map(str::to_string)
-    };
-
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(_) => {
-            if path.is_dir() {
-                return Some("inode/directory".to_string());
-            }
-            return fallback();
-        }
-    };
-
-    if file.metadata().is_ok_and(|m| m.is_dir()) {
-        return Some("inode/directory".to_string());
-    }
-
-    let mut buf = [0u8; 8192];
-    let len = match file.read(&mut buf) {
-        Ok(len) => len,
-        Err(_) => return fallback(),
-    };
-
-    detect_mime_from_bytes(path, &buf[..len]).or_else(fallback)
-}
 
 pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<String> {
     infer::get(bytes)
@@ -72,7 +39,8 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             | "text/tab-separated-values"
             | "text/x-rst" => FileCategory::Document,
             "text/x-asciidoc" => FileCategory::Document,
-            "text/xml" | "text/yaml" | "text/config" => FileCategory::Config,
+            "text/xml" | "text/yaml" | "text/config" | "text/x-makefile" | "text/x-dockerfile"
+            | "text/x-justfile" | "text/x-groovy" => FileCategory::Config,
             _ => FileCategory::Code,
         };
     }
@@ -145,7 +113,29 @@ pub fn category_from_ext(name: &str) -> FileCategory {
 }
 
 #[must_use]
+fn dotless_config_mime(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "makefile" => Some("text/x-makefile"),
+        "dockerfile" => Some("text/x-dockerfile"),
+        "vagrantfile" => Some("text/x-ruby"),
+        "rakefile" => Some("text/x-ruby"),
+        "gemfile" => Some("text/x-ruby"),
+        "justfile" => Some("text/x-justfile"),
+        "brewfile" => Some("text/x-ruby"),
+        "containerfile" => Some("text/x-dockerfile"),
+        "jenkinsfile" => Some("text/x-groovy"),
+        _ => None,
+    }
+}
+
+#[must_use]
 pub fn extension_mime(name: &str) -> Option<&'static str> {
+    let basename = name.rsplit('/').next().unwrap_or(name);
+    if let Some(mime) = dotless_config_mime(basename) {
+        return Some(mime);
+    }
+
     let name = name.to_ascii_lowercase();
 
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {

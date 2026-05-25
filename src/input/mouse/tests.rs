@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
+
 use super::*;
 use crate::app::types::{ConfirmDetails, InputAction, PendingAction, TextInput};
 
@@ -324,8 +326,8 @@ fn drag_select_range() {
             dev: 0,
             nlink: 0,
         },
-        owner: String::new(),
-        group: String::new(),
+        owner: Arc::from(""),
+        group: Arc::from(""),
         selected: false,
         mime_type: None,
         time_str: String::new(),

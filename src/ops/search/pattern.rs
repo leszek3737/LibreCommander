@@ -1,70 +1,13 @@
 use crate::ops::search::FileSearch;
 
-/// Inline char buffer that lives on the stack for sizes <= N,
-/// falling back to heap allocation for larger sizes.
-struct SmallCharBuf<const N: usize> {
-    inline: [char; N],
-    heap: Option<Vec<char>>,
-}
-
-impl<const N: usize> SmallCharBuf<N> {
-    fn new(len: usize) -> Self {
-        let inline = ['\0'; N];
-        let heap = if len > N { Some(vec!['\0'; len]) } else { None };
-        Self { inline, heap }
-    }
-}
-
-impl<const N: usize> std::ops::Index<usize> for SmallCharBuf<N> {
-    type Output = char;
-
-    fn index(&self, index: usize) -> &char {
-        match &self.heap {
-            Some(v) => &v[index],
-            None => &self.inline[index],
-        }
-    }
-}
-
-impl<const N: usize> std::ops::IndexMut<usize> for SmallCharBuf<N> {
-    fn index_mut(&mut self, index: usize) -> &mut char {
-        match &mut self.heap {
-            Some(v) => &mut v[index],
-            None => &mut self.inline[index],
-        }
-    }
-}
-
 pub(super) fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
     if needle_lower.is_empty() {
         return true;
     }
-    let needle_len = needle_lower.len();
-    let mut buf = SmallCharBuf::<64>::new(needle_len);
-    let mut filled = 0usize;
-    let mut head = 0usize;
-
-    for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
-        buf[head] = c;
-        head = (head + 1) % needle_len;
-        if filled < needle_len {
-            filled += 1;
-        }
-        if filled == needle_len {
-            let mut all_match = true;
-            for (i, &nc) in needle_lower.iter().enumerate() {
-                let idx = (head + i) % needle_len;
-                if buf[idx] != nc {
-                    all_match = false;
-                    break;
-                }
-            }
-            if all_match {
-                return true;
-            }
-        }
-    }
-    false
+    let lowered: Vec<char> = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
+    lowered
+        .windows(needle_lower.len())
+        .any(|w| w == needle_lower)
 }
 
 pub enum CompiledPattern {
@@ -461,37 +404,6 @@ mod tests {
             "i\u{307}stanbul",
             false
         ));
-    }
-
-    #[test]
-    fn small_char_buf_small_inline() {
-        let mut buf = SmallCharBuf::<4>::new(3);
-        buf[0] = 'a';
-        buf[1] = 'b';
-        buf[2] = 'c';
-        assert_eq!(buf[0], 'a');
-        assert_eq!(buf[1], 'b');
-        assert_eq!(buf[2], 'c');
-    }
-
-    #[test]
-    fn small_char_buf_large_heap() {
-        let mut buf = SmallCharBuf::<4>::new(10);
-        buf[0] = 'x';
-        buf[5] = 'y';
-        buf[9] = 'z';
-        assert_eq!(buf[0], 'x');
-        assert_eq!(buf[5], 'y');
-        assert_eq!(buf[9], 'z');
-    }
-
-    #[test]
-    fn small_char_buf_exactly_n_uses_inline() {
-        let mut buf = SmallCharBuf::<4>::new(4);
-        buf[0] = 'p';
-        buf[3] = 'q';
-        assert_eq!(buf[0], 'p');
-        assert_eq!(buf[3], 'q');
     }
 
     #[test]
