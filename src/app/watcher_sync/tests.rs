@@ -646,3 +646,31 @@ fn sync_watcher_paths_cooldown_skips_early_retries() {
         "cooldown should prevent redundant watch attempts"
     );
 }
+
+#[test]
+fn sync_watcher_paths_cooldown_allows_different_paths() {
+    let dir1 = tempfile::tempdir().unwrap();
+    let dir2 = tempfile::tempdir().unwrap();
+    let missing = dir1.path().join("nonexistent");
+    let (event_tx, _rx) = mpsc::sync_channel(256);
+    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
+
+    let mut state = AppState::new();
+    state.left_panel.set_path(missing);
+    state.right_panel.set_path(dir1.path().to_path_buf());
+
+    let mut sync_state = WatcherSyncState::default();
+
+    // First sync fails (missing path), sets cooldown
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    assert!(sync_state.failed_cooldown.is_some());
+
+    // Navigate to valid directory — cooldown should NOT block
+    state.left_panel.set_path(dir2.path().to_path_buf());
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+
+    assert!(
+        sync_state.last_synced.is_some(),
+        "different paths should bypass cooldown"
+    );
+}

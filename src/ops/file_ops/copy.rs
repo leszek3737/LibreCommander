@@ -13,9 +13,7 @@ use super::common::{
 };
 #[cfg(test)]
 use super::temp::reserve_temp_file_for;
-use super::temp::{
-    publish_temp_dir, reserve_temp_dir_for, reserve_temp_path_for, swap_temp_to_dest,
-};
+use super::temp::{publish_temp_dir, reserve_temp_dir_for, swap_temp_to_dest};
 
 #[cfg(test)]
 pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
@@ -330,8 +328,28 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
             let name = dest.file_name().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename")
             })?;
-            let temp = reserve_temp_path_for(&name.to_string_lossy(), dest_dir)?;
-            std::os::unix::fs::symlink(&target, &temp)?;
+            let temp = {
+                let base = name.to_string_lossy();
+                let pid = std::process::id();
+                let mut chosen = None;
+                for counter in 0u32..1024 {
+                    let path = dest_dir.join(format!("{base}.{pid}.{counter}.lc-symlink.tmp"));
+                    match std::os::unix::fs::symlink(&target, &path) {
+                        Ok(()) => {
+                            chosen = Some(path);
+                            break;
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                chosen.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "could not create temporary symlink (exhausted 1024 attempts)",
+                    )
+                })?
+            };
             if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
                 cleanup_file(&temp);
                 return Err(err);

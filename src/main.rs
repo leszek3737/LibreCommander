@@ -225,8 +225,8 @@ fn pre_draw(
         image_preview_loader,
         (size.width, size.height),
     );
-    if state.mode == AppMode::Viewing
-        && let Some(vs) = viewer_state
+    if let Some(vs) = viewer_state
+        && state.mode == AppMode::Viewing
     {
         vs.update_wrap_layout(size.width as usize);
     }

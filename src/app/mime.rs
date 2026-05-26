@@ -131,7 +131,10 @@ fn dotless_config_mime(name: &str) -> Option<&'static str> {
 
 #[must_use]
 pub fn extension_mime(name: &str) -> Option<&'static str> {
-    let basename = name.rsplit('/').next().unwrap_or(name);
+    let basename = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
     if let Some(mime) = dotless_config_mime(basename) {
         return Some(mime);
     }

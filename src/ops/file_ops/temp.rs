@@ -207,22 +207,6 @@ pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-pub(super) fn reserve_temp_path_for(name: &str, dest_dir: &Path) -> io::Result<PathBuf> {
-    let pid = std::process::id();
-    for counter in 0..1024 {
-        let temp = dest_dir.join(format!("{}.{}.{}.lc-symlink.tmp", name, pid, counter));
-        match fs::symlink_metadata(&temp) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(temp),
-            Err(e) => return Err(e),
-            Ok(_) => continue,
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve temporary symlink path (exhausted 1024 attempts)",
-    ))
-}
-
 pub fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
     let need_remove = match fs::symlink_metadata(dest) {
         Ok(meta) if meta.is_dir() => {

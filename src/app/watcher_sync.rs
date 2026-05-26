@@ -15,7 +15,7 @@ const COOLDOWN: Duration = Duration::from_secs(5);
 #[derive(Default)]
 pub struct WatcherSyncState {
     pub last_synced: Option<(PathBuf, PathBuf)>,
-    pub failed_cooldown: Option<Instant>,
+    pub failed_cooldown: Option<(Instant, PathBuf, PathBuf)>,
 }
 
 pub fn sync_watcher_paths(
@@ -34,8 +34,10 @@ pub fn sync_watcher_paths(
         return;
     }
 
-    if let Some(deadline) = sync_state.failed_cooldown
-        && Instant::now() < deadline
+    if let Some((deadline, fl, fr)) = &sync_state.failed_cooldown
+        && Instant::now() < *deadline
+        && fl == &state.left_panel.path
+        && fr == &state.right_panel.path
     {
         return;
     }
@@ -62,7 +64,7 @@ pub fn sync_watcher_paths(
 
     if had_error || !all_paths_present {
         sync_state.last_synced = None;
-        sync_state.failed_cooldown = Some(Instant::now() + COOLDOWN);
+        sync_state.failed_cooldown = Some((Instant::now() + COOLDOWN, left, right));
     } else {
         sync_state.last_synced = Some((left, right));
         sync_state.failed_cooldown = None;
@@ -338,6 +340,7 @@ fn full_refresh_panel(panel: &mut PanelState) {
             panel.cursor = 0;
             panel.scroll_offset = 0;
             panel.last_error = Some(err.to_string());
+            panel.recalculate_selection_stats();
         }
     }
 }

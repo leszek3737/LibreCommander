@@ -12,7 +12,7 @@ fn remove_symlink(path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn remove_symlink(path: &Path) -> io::Result<()> {
-    let target_is_dir = fs::metadata(path).is_ok_and(|m| m.is_dir());
+    let target_is_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
     if target_is_dir {
         fs::remove_dir(path)
     } else {

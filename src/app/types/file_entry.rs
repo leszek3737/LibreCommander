@@ -60,8 +60,14 @@ pub fn format_permissions(mode: u32) -> String {
 }
 
 pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
-    let dt = DateTime::<Local>::from(modified);
-    Some(dt.format("%d-%m-%y %H:%M").to_string())
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let ts = i64::try_from(duration.as_secs()).ok()?;
+    let dt = DateTime::from_timestamp(ts, 0)?;
+    Some(
+        dt.with_timezone(&Local)
+            .format("%d-%m-%y %H:%M")
+            .to_string(),
+    )
 }
 
 pub fn format_time(modified: SystemTime) -> String {

@@ -4,10 +4,27 @@ pub(super) fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -
     if needle_lower.is_empty() {
         return true;
     }
-    let lowered: Vec<char> = haystack.chars().flat_map(|c| c.to_lowercase()).collect();
-    lowered
-        .windows(needle_lower.len())
-        .any(|w| w == needle_lower)
+    let needle_len = needle_lower.len();
+    let mut ring = vec!['\0'; needle_len];
+    let mut filled = 0usize;
+    let mut head = 0usize;
+
+    for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
+        ring[head] = c;
+        head = (head + 1) % needle_len;
+        if filled < needle_len {
+            filled += 1;
+        }
+        if filled == needle_len
+            && needle_lower
+                .iter()
+                .enumerate()
+                .all(|(i, &nc)| ring[(head + i) % needle_len] == nc)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub enum CompiledPattern {
