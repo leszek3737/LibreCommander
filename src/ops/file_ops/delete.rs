@@ -5,6 +5,21 @@ use std::sync::atomic::AtomicBool;
 
 use super::common::check_optional_canceled;
 
+#[cfg(not(windows))]
+fn remove_symlink(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
+#[cfg(windows)]
+fn remove_symlink(path: &Path) -> io::Result<()> {
+    let target_is_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+    if target_is_dir {
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 #[cfg(target_os = "macos")]
 const CRITICAL_DIRS: &[&str] = &[
     "/",
@@ -83,7 +98,7 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
     check_optional_canceled(cancel)?;
     let root_metadata = fs::symlink_metadata(path)?;
     if root_metadata.file_type().is_symlink() {
-        return fs::remove_file(path);
+        return remove_symlink(path);
     }
     let canonical = path
         .canonicalize()
@@ -154,10 +169,9 @@ fn delete_dir_contents_impl(
         check_optional_canceled(cancel)?;
         let entry = entry?;
         let entry_path = entry.path();
-        let metadata = fs::symlink_metadata(&entry_path)?;
-        let file_type = metadata.file_type();
+        let file_type = entry.file_type()?;
         if file_type.is_symlink() {
-            fs::remove_file(&entry_path)?;
+            remove_symlink(&entry_path)?;
         } else if file_type.is_dir() {
             delete_dir_contents_impl(&entry_path, cancel, depth + 1)?;
             check_optional_canceled(cancel)?;

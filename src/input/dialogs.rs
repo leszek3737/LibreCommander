@@ -47,7 +47,7 @@ fn validate_path_name(input: &str) -> ValidationResult {
         ValidationResult::Valid => {}
         other => return other,
     }
-    if input.contains('/') || input.contains('\\') {
+    if input.contains('/') || (cfg!(windows) && input.contains('\\')) {
         return ValidationResult::InvalidPath(format!("Name contains path separator: {input}"));
     }
     if contains_parent_dir(input) {
@@ -261,7 +261,7 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
         panel.cursor = 0;
         panel.scroll_offset = 0;
         refresh_active(state);
-        if !state.directory_hotlist.iter().any(|p| p == &expanded) {
+        if !state.hotlist().iter().any(|p| p == &expanded) {
             state.hotlist_push(expanded);
         }
     } else if expanded.exists() {
@@ -314,7 +314,7 @@ fn handle_input_action(
                     return false;
                 }
                 ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(format!("Invalid name: '..' not allowed in '{p}'"));
+                    state.status_message = Some(p);
                     return false;
                 }
                 _ => return false,

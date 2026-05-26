@@ -1,7 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use chrono::DateTime;
+use chrono::{DateTime, Local};
 use unicode_width::UnicodeWidthStr;
 
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
@@ -18,6 +19,13 @@ impl std::fmt::Display for FileSize {
         while size_f >= 1024.0 && unit_idx < units.len() - 1 {
             size_f /= 1024.0;
             unit_idx += 1;
+        }
+        if unit_idx > 0 {
+            size_f = (size_f * 10.0).round() / 10.0;
+            if size_f >= 1024.0 && unit_idx < units.len() - 1 {
+                size_f /= 1024.0;
+                unit_idx += 1;
+            }
         }
         if unit_idx == 0 {
             write!(f, "{} {}", size, units[unit_idx])
@@ -56,7 +64,7 @@ pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
     let ts = i64::try_from(duration.as_secs()).ok()?;
     let dt = DateTime::from_timestamp(ts, 0)?;
     Some(
-        dt.with_timezone(&chrono::Local)
+        dt.with_timezone(&Local)
             .format("%d-%m-%y %H:%M")
             .to_string(),
     )
@@ -67,41 +75,7 @@ pub fn format_time(modified: SystemTime) -> String {
 }
 
 pub fn compute_category(cha: &Cha, name: &str) -> FileCategory {
-    use crate::app::file_type as ft;
-    if cha.is_link() {
-        return FileCategory::Symlink;
-    }
-    if cha.is_dir() {
-        return FileCategory::Dir;
-    }
-    if ft::is_source_code(name) {
-        return FileCategory::Code;
-    }
-    if ft::is_config(name) {
-        return FileCategory::Config;
-    }
-    if ft::is_archive(name) {
-        return FileCategory::Archive;
-    }
-    if ft::is_image(name) {
-        return FileCategory::Image;
-    }
-    if ft::is_video(name) {
-        return FileCategory::Video;
-    }
-    if ft::is_audio(name) {
-        return FileCategory::Audio;
-    }
-    if ft::is_document(name) {
-        return FileCategory::Document;
-    }
-    if ft::is_font(name) {
-        return FileCategory::Font;
-    }
-    if cha.is_executable() {
-        return FileCategory::Executable;
-    }
-    FileCategory::Other
+    crate::app::file_type::category(name, cha.is_dir(), cha.is_executable(), cha.is_link())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,8 +83,8 @@ pub struct FileEntry {
     pub name: String,
     pub path: PathBuf,
     pub cha: Cha,
-    pub owner: String,
-    pub group: String,
+    pub owner: Arc<str>,
+    pub group: Arc<str>,
     pub selected: bool,
     pub mime_type: Option<String>,
     pub time_str: String,
@@ -126,8 +100,8 @@ pub struct FileEntryBuilder {
     name: String,
     path: PathBuf,
     cha: Cha,
-    owner: String,
-    group: String,
+    owner: Arc<str>,
+    group: Arc<str>,
     selected: bool,
     mime_type: Option<String>,
 }
@@ -189,11 +163,11 @@ impl FileEntryBuilder {
         self
     }
     pub fn owner(mut self, v: impl Into<String>) -> Self {
-        self.owner = v.into();
+        self.owner = Arc::from(v.into());
         self
     }
     pub fn group(mut self, v: impl Into<String>) -> Self {
-        self.group = v.into();
+        self.group = Arc::from(v.into());
         self
     }
     pub fn selected(mut self, v: bool) -> Self {
@@ -261,8 +235,8 @@ impl FileEntry {
                 dev: 0,
                 nlink: 0,
             },
-            owner: String::new(),
-            group: String::new(),
+            owner: Arc::from(""),
+            group: Arc::from(""),
             selected: false,
             mime_type: None,
         }

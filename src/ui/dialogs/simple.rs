@@ -54,10 +54,11 @@ pub fn render_progress_dialog(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let msg_min = if inner.height <= 3 { 1 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(2),
+            Constraint::Min(msg_min),
             Constraint::Length(1),
             Constraint::Length(1),
         ])

@@ -9,12 +9,12 @@ fn hotlist_picker_add_current_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.directory_hotlist.clear();
+    state.hotlist_set(vec![]);
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 
     pickers::handle_list_picker(&mut state, KeyCode::Char('a'));
 
-    assert!(state.directory_hotlist.contains(&tmp.path().to_path_buf()));
+    assert!(state.hotlist().contains(&tmp.path().to_path_buf()));
 }
 
 #[test]
@@ -22,17 +22,13 @@ fn hotlist_picker_add_dedup() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    state.directory_hotlist = vec![tmp.path().to_path_buf()];
+    state.hotlist_set(vec![tmp.path().to_path_buf()]);
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 
     pickers::handle_list_picker(&mut state, KeyCode::Char('a'));
 
     assert_eq!(
-        state
-            .directory_hotlist
-            .iter()
-            .filter(|p| **p == tmp.path())
-            .count(),
+        state.hotlist().iter().filter(|p| **p == tmp.path()).count(),
         1
     );
 }
@@ -40,34 +36,34 @@ fn hotlist_picker_add_dedup() {
 #[test]
 fn hotlist_picker_delete_entry() {
     let mut state = AppState {
-        directory_hotlist: vec![
-            PathBuf::from("/a"),
-            PathBuf::from("/b"),
-            PathBuf::from("/c"),
-        ],
         mode: AppMode::ListPicker(PickerKind::Hotlist),
         picker_selected: 1,
         ..Default::default()
     };
+    state.hotlist_set(vec![
+        PathBuf::from("/a"),
+        PathBuf::from("/b"),
+        PathBuf::from("/c"),
+    ]);
 
     pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
 
-    assert_eq!(state.directory_hotlist.len(), 2);
-    assert!(!state.directory_hotlist.contains(&PathBuf::from("/b")));
+    assert_eq!(state.hotlist().len(), 2);
+    assert!(!state.hotlist().contains(&PathBuf::from("/b")));
 }
 
 #[test]
 fn hotlist_picker_delete_adjusts_cursor() {
     let mut state = AppState {
-        directory_hotlist: vec![PathBuf::from("/a"), PathBuf::from("/b")],
         mode: AppMode::ListPicker(PickerKind::Hotlist),
         picker_selected: 1,
         ..Default::default()
     };
+    state.hotlist_set(vec![PathBuf::from("/a"), PathBuf::from("/b")]);
 
     pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
 
-    assert_eq!(state.directory_hotlist.len(), 1);
+    assert_eq!(state.hotlist().len(), 1);
     assert_eq!(state.picker_selected, 0);
 }
 
@@ -152,7 +148,7 @@ fn picker_wrap_single_item_stays_at_zero() {
 #[test]
 fn empty_hotlist_does_not_open_picker() {
     let mut state = AppState::default();
-    state.directory_hotlist.clear();
+    state.hotlist_set(vec![]);
     state.mode = AppMode::ListPicker(PickerKind::Hotlist);
     state.picker_selected = 0;
     pickers::handle_list_picker(&mut state, KeyCode::Enter);

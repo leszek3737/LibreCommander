@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Mutex, MutexGuard};
 
 use chrono::Local;
 
@@ -15,6 +15,11 @@ const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
 /// Usage: `debug_log!("message: {}", value)` — same syntax as eprintln!
 ///
 /// For pre-TUI and post-TUI output, use eprintln!/println! with #[allow] instead.
+///
+/// **Blocking behavior:** The internal mutex uses a blocking lock. On a stalled
+/// filesystem (network mount, writeback pressure) this will block the calling
+/// thread until the lock is released. Do not call `debug_log!` from paths where
+/// filesystem latency is expected to be high.
 static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
 #[cfg(test)]
@@ -55,11 +60,8 @@ fn stderr_fallback(msg: &str) {
 }
 
 pub fn log(args: std::fmt::Arguments<'_>) {
-    let mut guard = match LOG_FILE.try_lock() {
-        Ok(guard) => guard,
-        Err(TryLockError::Poisoned(err)) => err.into_inner(),
-        Err(TryLockError::WouldBlock) => return,
-    };
+    let mut guard: MutexGuard<'_, Option<std::fs::File>> =
+        LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
     let freshly_opened = guard.is_none();
     if freshly_opened {
         match ensure_log_file() {
@@ -82,8 +84,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
     {
         *guard = None;
         let path = log_path();
-        let _ = std::fs::File::create(&path).and_then(|f| f.sync_all());
-        match ensure_log_file() {
+        match OpenOptions::new().write(true).truncate(true).open(&path) {
             Ok(f) => *guard = Some(f),
             Err(e) => {
                 stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));

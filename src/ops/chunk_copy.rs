@@ -3,7 +3,7 @@ use crate::debug_log;
 use filetime::FileTime;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -75,21 +75,21 @@ fn copy_to_temp(
     cancel: &AtomicBool,
 ) -> io::Result<u64> {
     let dest_file = File::create_new(temp_dest)?;
-    let mut reader = BufReader::new(src_file);
-    let mut writer = BufWriter::new(dest_file);
-    let mut buffer = [0_u8; BUFFER_SIZE];
+    let mut reader = src_file;
+    let mut writer = dest_file;
+    let mut buf = vec![0_u8; BUFFER_SIZE];
     let mut total_written = 0_u64;
     let mut pending_delta = 0_u64;
     let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
     let mut bytes_since_progress_check = 0_usize;
 
     loop {
-        let bytes_read = reader.read(&mut buffer)?;
+        let bytes_read = reader.read(&mut buf)?;
         if bytes_read == 0 {
             break;
         }
 
-        writer.write_all(&buffer[..bytes_read])?;
+        writer.write_all(&buf[..bytes_read])?;
         let bytes_written = bytes_read as u64;
         total_written += bytes_written;
         pending_delta += bytes_written;

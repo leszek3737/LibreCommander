@@ -153,14 +153,14 @@ fn sync_watcher_paths_keeps_existing_panel_when_other_panel_missing() {
     let mut state = AppState::new();
     state.left_panel.set_path(dir.path().to_path_buf());
     state.right_panel.set_path(missing);
-    let mut last_synced = None;
+    let mut sync_state = WatcherSyncState::default();
 
-    sync_watcher_paths(&mut watcher, &state, &mut last_synced);
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
 
     let watched = watcher.as_ref().unwrap().watched_dirs();
     assert_eq!(watched, vec![dir.path().canonicalize().unwrap()]);
     assert!(
-        last_synced.is_none(),
+        sync_state.last_synced.is_none(),
         "should not set last_synced when a panel path is missing"
     );
 }
@@ -383,7 +383,7 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
 }
 
 #[test]
-fn full_refresh_on_error_clears_entries() {
+fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     let dir = tempfile::tempdir().unwrap();
     let mut panel = test_panel(dir.path());
     let file = dir.path().join("file.txt");
@@ -400,6 +400,8 @@ fn full_refresh_on_error_clears_entries() {
     assert!(panel.listing.path_index.is_empty());
     assert!(panel.listing.unfiltered_dirty);
     assert!(!panel.listing.needs_rebuild);
+    assert_eq!(panel.cursor, 0);
+    assert_eq!(panel.scroll_offset, 0);
     assert!(
         panel.last_error.is_some(),
         "should set last_error on read failure"
@@ -449,15 +451,15 @@ fn sync_watcher_paths_retries_on_watch_error() {
     state.left_panel = test_panel(dir1.path());
     state.right_panel = test_panel(dir2.path());
 
-    let mut last_synced: Option<(PathBuf, PathBuf)> = None;
+    let mut sync_state = WatcherSyncState::default();
 
-    sync_watcher_paths(&mut watcher, &state, &mut last_synced);
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
 
     assert!(
-        last_synced.is_some(),
+        sync_state.last_synced.is_some(),
         "should set last_synced on successful sync"
     );
-    let synced_paths = last_synced.unwrap();
+    let synced_paths = sync_state.last_synced.unwrap();
     assert_eq!(synced_paths.0, state.left_panel.path);
     assert_eq!(synced_paths.1, state.right_panel.path);
 
@@ -476,15 +478,15 @@ fn sync_watcher_paths_sets_last_synced_when_all_paths_valid() {
     state.left_panel = test_panel(dir1.path());
     state.right_panel = test_panel(dir2.path());
 
-    let mut last_synced: Option<(PathBuf, PathBuf)> = None;
+    let mut sync_state = WatcherSyncState::default();
 
-    sync_watcher_paths(&mut watcher, &state, &mut last_synced);
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
 
     assert!(
-        last_synced.is_some(),
+        sync_state.last_synced.is_some(),
         "should set last_synced when both paths exist and watches succeed"
     );
-    let synced = last_synced.unwrap();
+    let synced = sync_state.last_synced.unwrap();
     assert_eq!(synced.0, state.left_panel.path);
     assert_eq!(synced.1, state.right_panel.path);
 }
@@ -580,7 +582,6 @@ fn created_child_file_appears_in_panel() {
 fn deleted_root_dir_stays_at_root_and_refreshes() {
     let (tx, rx) = mpsc::sync_channel(256);
     let mut state = AppState::new();
-    // Set panel path to "/" — parent() returns None
     state.left_panel.set_path(PathBuf::from("/"));
 
     tx.send(WatchEvent::Deleted(PathBuf::from("/"))).unwrap();
@@ -605,12 +606,71 @@ fn sync_watcher_paths_does_not_set_last_synced_when_path_missing() {
     state.left_panel.set_path(missing);
     state.right_panel.set_path(dir.path().to_path_buf());
 
-    let mut last_synced: Option<(PathBuf, PathBuf)> = None;
+    let mut sync_state = WatcherSyncState::default();
 
-    sync_watcher_paths(&mut watcher, &state, &mut last_synced);
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
 
     assert!(
-        last_synced.is_none(),
+        sync_state.last_synced.is_none(),
         "should not set last_synced when a panel path does not exist"
+    );
+    assert!(
+        sync_state.failed_cooldown.is_some(),
+        "should set cooldown on failure"
+    );
+}
+
+#[test]
+fn sync_watcher_paths_cooldown_skips_early_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nonexistent_panel_dir");
+    let (event_tx, _rx) = mpsc::sync_channel(256);
+    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
+
+    let mut state = AppState::new();
+    state.left_panel.set_path(missing);
+    state.right_panel.set_path(dir.path().to_path_buf());
+
+    let mut sync_state = WatcherSyncState::default();
+
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    assert!(sync_state.failed_cooldown.is_some());
+
+    let watched_before = watcher.as_ref().unwrap().watched_dirs().len();
+
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+
+    let watched_after = watcher.as_ref().unwrap().watched_dirs().len();
+    assert_eq!(
+        watched_before, watched_after,
+        "cooldown should prevent redundant watch attempts"
+    );
+}
+
+#[test]
+fn sync_watcher_paths_cooldown_allows_different_paths() {
+    let dir1 = tempfile::tempdir().unwrap();
+    let dir2 = tempfile::tempdir().unwrap();
+    let missing = dir1.path().join("nonexistent");
+    let (event_tx, _rx) = mpsc::sync_channel(256);
+    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
+
+    let mut state = AppState::new();
+    state.left_panel.set_path(missing);
+    state.right_panel.set_path(dir1.path().to_path_buf());
+
+    let mut sync_state = WatcherSyncState::default();
+
+    // First sync fails (missing path), sets cooldown
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    assert!(sync_state.failed_cooldown.is_some());
+
+    // Navigate to valid directory — cooldown should NOT block
+    state.left_panel.set_path(dir2.path().to_path_buf());
+    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+
+    assert!(
+        sync_state.last_synced.is_some(),
+        "different paths should bypass cooldown"
     );
 }

@@ -35,8 +35,17 @@ pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> 
     Some((metadata.dev(), metadata.ino()))
 }
 
-#[cfg(not(unix))]
-/// Non-Unix `std` metadata does not expose a portable inode key.
+#[cfg(windows)]
+/// Return a stable filesystem identity for cycle detection.
+pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let vol = metadata.volume_serial_number()? as u64;
+    let idx = metadata.file_index()?;
+    Some((vol, idx))
+}
+
+#[cfg(not(any(unix, windows)))]
+/// Platforms without inode-like identifiers.
 pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     None
 }

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::app::types::{PanelListing, PanelState, compute_category};
@@ -23,8 +24,8 @@ use crate::app::types::format_permissions;
 pub use crate::app::types::FileEntry;
 
 struct UidCache {
-    uid_to_name: HashMap<u32, String>,
-    gid_to_name: HashMap<u32, String>,
+    uid_to_name: HashMap<u32, Arc<str>>,
+    gid_to_name: HashMap<u32, Arc<str>>,
 }
 
 // Design note: thread_local caches are per-thread. When rayon spawns
@@ -41,7 +42,7 @@ thread_local! {
 }
 
 #[cfg(unix)]
-fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
+fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
     UID_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.uid_to_name.len() >= CACHE_MAX_SIZE
@@ -59,8 +60,8 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
             .entry(uid)
             .or_insert_with(|| {
                 users::get_user_by_uid(uid)
-                    .map(|u| u.name().to_string_lossy().into_owned())
-                    .unwrap_or_else(|| uid.to_string())
+                    .map(|u| Arc::from(u.name().to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| Arc::from(uid.to_string()))
             })
             .clone();
         let group = cache
@@ -68,8 +69,8 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
             .entry(gid)
             .or_insert_with(|| {
                 users::get_group_by_gid(gid)
-                    .map(|g| g.name().to_string_lossy().into_owned())
-                    .unwrap_or_else(|| gid.to_string())
+                    .map(|g| Arc::from(g.name().to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| Arc::from(gid.to_string()))
             })
             .clone();
         (owner, group)
@@ -77,8 +78,8 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (String, String) {
 }
 
 #[cfg(not(unix))]
-fn lookup_owner_group(_uid: u32, _gid: u32) -> (String, String) {
-    ("-".to_string(), "-".to_string())
+fn lookup_owner_group(_uid: u32, _gid: u32) -> (Arc<str>, Arc<str>) {
+    (Arc::from("-"), Arc::from("-"))
 }
 
 fn is_parent_entry(entry: &FileEntry) -> bool {

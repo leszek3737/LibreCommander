@@ -54,7 +54,7 @@ pub(super) fn render_confirmation_dialog_inner(
     f.render_widget(block, area);
 
     let has_files = !files.is_empty();
-    let max_rows = inner.height.saturating_sub(5).max(3);
+    let max_rows = inner.height.saturating_sub(3);
     let file_rows = if has_files {
         (files.len() as u16 + 1).min(max_rows)
     } else {

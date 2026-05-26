@@ -190,7 +190,7 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
-    let previous_discriminant = std::mem::discriminant(&state.mode);
+    let prev = state.mode.clone();
     if let Some((key, modifiers, for_menu_panel)) = super::menu_actions::execute_menu_action(state)
     {
         state.mode = AppMode::Normal;
@@ -217,8 +217,8 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
                 terminal,
             );
         }
-    } else if std::mem::discriminant(&state.mode) == previous_discriminant {
-        state.mode = AppMode::Normal;
+    } else if state.mode == prev {
+        types::restore_prev_mode(state);
     }
 }
 

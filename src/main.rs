@@ -40,7 +40,7 @@ pub(crate) use input::normal::{
     handle_navigation_keys,
 };
 
-const EVENT_POLL_TIMEOUT_MS: u64 = 100;
+const EVENT_POLL_TIMEOUT_MS: u64 = 33;
 
 pub(crate) fn file_name_str(p: &std::path::Path) -> Option<String> {
     p.file_name().map(|n| n.to_string_lossy().into_owned())
@@ -213,6 +213,25 @@ fn start_image_preview_if_needed(
     ));
 }
 
+fn pre_draw(
+    state: &AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
+    terminal: &Terminal<CrosstermBackend<io::Stdout>>,
+) {
+    let Ok(size) = terminal.size() else { return };
+    start_image_preview_if_needed(
+        viewer_state,
+        image_preview_loader,
+        (size.width, size.height),
+    );
+    if let Some(vs) = viewer_state
+        && state.mode == AppMode::Viewing
+    {
+        vs.update_wrap_layout(size.width as usize);
+    }
+}
+
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     recover_terminal_state()?;
 
@@ -239,25 +258,24 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         Ok(w) => Some(w),
         Err(err) => {
             let msg = format!("watcher disabled: {err}");
-            state.status_message = match state.status_message.take() {
-                Some(prev) => Some(format!("{prev}; {msg}")),
-                None => Some(msg),
-            };
+            state.status_message = Some(match state.status_message.take() {
+                Some(prev) => format!("{prev}; {msg}"),
+                None => msg,
+            });
             None
         }
     };
     let mut watcher_paused = false;
-    let mut last_synced_paths: Option<(PathBuf, PathBuf)> = None;
+    let mut watcher_sync_state = watcher_sync::WatcherSyncState::default();
 
     panel_ops::refresh_panel(&mut state.left_panel, 0);
     panel_ops::refresh_panel(&mut state.right_panel, 0);
-    watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
-
+    watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut watcher_sync_state);
     let mut dirty = true;
 
     loop {
         panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-        watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut last_synced_paths);
+        watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut watcher_sync_state);
         if let Some(ref w) = watcher {
             w.flush_pending();
         }
@@ -268,25 +286,23 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
             dirty = true;
         }
-        if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader) {
-            dirty = true;
-        }
-        if poll_image_preview(&mut viewer_state, &mut image_preview_loader) {
+        if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader)
+            || poll_image_preview(&mut viewer_state, &mut image_preview_loader)
+        {
             dirty = true;
         }
         if dirty {
-            if let Ok(size) = terminal.size() {
-                start_image_preview_if_needed(
-                    &mut viewer_state,
-                    &mut image_preview_loader,
-                    (size.width, size.height),
-                );
-            }
+            pre_draw(
+                &state,
+                &mut viewer_state,
+                &mut image_preview_loader,
+                terminal,
+            );
             if let Err(e) =
                 terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))
             {
-                if let Some(ref mut job) = running_job {
-                    job.shutdown();
+                if let Some(j) = running_job.as_mut() {
+                    j.shutdown()
                 }
                 return Err(e);
             }
@@ -296,8 +312,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             let key = match event::read() {
                 Ok(k) => k,
                 Err(e) => {
-                    if let Some(ref mut job) = running_job {
-                        job.shutdown();
+                    if let Some(j) = running_job.as_mut() {
+                        j.shutdown()
                     }
                     return Err(e);
                 }
@@ -314,8 +330,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
 
         if state.should_quit {
-            if let Some(ref mut job) = running_job {
-                job.shutdown();
+            if let Some(j) = running_job.as_mut() {
+                j.shutdown()
             }
             return Ok(());
         }

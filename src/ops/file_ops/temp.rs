@@ -172,6 +172,7 @@ pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io
     std::fs::rename(temp, dest)
 }
 
+#[cfg(test)]
 pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
     let dir = dest.parent().ok_or_else(|| {
         io::Error::new(
@@ -219,7 +220,29 @@ pub fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
     };
     #[cfg(windows)]
     if need_remove {
-        fs::remove_file(dest)?;
+        let mut os = dest.as_os_str().to_os_string();
+        os.push(".lc_bak");
+        let backup = PathBuf::from(os);
+        if backup.exists() {
+            fs::remove_file(&backup)?;
+        }
+        fs::rename(dest, &backup)?;
+        match fs::rename(temp, dest) {
+            Ok(()) => {
+                let _ = fs::remove_file(&backup);
+            }
+            Err(err) => {
+                if let Err(restore_err) = fs::rename(&backup, dest) {
+                    debug_log!(
+                        "failed to restore backup {} to {}: {restore_err}",
+                        backup.display(),
+                        dest.display()
+                    );
+                }
+                return Err(err);
+            }
+        }
+        return Ok(());
     }
     let _ = need_remove;
     fs::rename(temp, dest)

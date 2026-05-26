@@ -111,7 +111,7 @@ impl From<&Settings> for PersistedSetup {
                 ActivePanel::Left => "left",
                 ActivePanel::Right => "right",
             }
-            .to_string(),
+            .to_owned(),
             dir_first: settings.dir_first,
             sensitive: settings.sensitive,
             left: settings.left.clone(),
@@ -210,6 +210,8 @@ pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
     let Some(raw) = read_config_raw()? else {
         return Ok(None);
     };
+    // TODO: clone is required because toml::Value only implements IntoDeserializer
+    // for owned values, so we cannot deserialize from a reference.
     let setup: PersistedSetup = raw
         .clone()
         .try_into()
@@ -257,6 +259,8 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
         if resolved.is_dir() {
             panel.path = resolved.clone();
             panel.canonical_path = Some(resolved);
+        } else {
+            crate::debug_log!("configured panel path ignored: {}", path.display());
         }
     }
     panel.listing_mode = persisted.listing_mode;

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 use crate::app::panel_ops::update_panel_read_errors;
 use crate::app::types::{AppState, PanelState};
@@ -9,18 +10,34 @@ use crate::debug_log;
 use crate::fs::reader;
 use crate::fs::watcher::{WatchEvent, Watcher};
 
+const COOLDOWN: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+pub struct WatcherSyncState {
+    pub last_synced: Option<(PathBuf, PathBuf)>,
+    pub failed_cooldown: Option<(Instant, PathBuf, PathBuf)>,
+}
+
 pub fn sync_watcher_paths(
     watcher: &mut Option<Watcher>,
     state: &AppState,
-    last_synced: &mut Option<(PathBuf, PathBuf)>,
+    sync_state: &mut WatcherSyncState,
 ) {
     let Some(watcher) = watcher.as_mut() else {
         return;
     };
 
-    if let Some((l, r)) = last_synced.as_ref()
+    if let Some((l, r)) = sync_state.last_synced.as_ref()
         && l == &state.left_panel.path
         && r == &state.right_panel.path
+    {
+        return;
+    }
+
+    if let Some((deadline, fl, fr)) = &sync_state.failed_cooldown
+        && Instant::now() < *deadline
+        && fl == &state.left_panel.path
+        && fr == &state.right_panel.path
     {
         return;
     }
@@ -46,9 +63,11 @@ pub fn sync_watcher_paths(
     }
 
     if had_error || !all_paths_present {
-        *last_synced = None;
+        sync_state.last_synced = None;
+        sync_state.failed_cooldown = Some((Instant::now() + COOLDOWN, left, right));
     } else {
-        *last_synced = Some((left, right));
+        sync_state.last_synced = Some((left, right));
+        sync_state.failed_cooldown = None;
     }
 }
 
@@ -318,13 +337,10 @@ fn full_refresh_panel(panel: &mut PanelState) {
         }
         Err(err) => {
             panel.listing.clear();
-            // Do NOT set needs_full_refresh here — that would cause
-            // poll_watcher_events to retry on every tick, creating an
-            // infinite loop when the directory is permanently gone.
-            // Retry happens naturally when a new watcher event arrives
-            // for this panel directory (Created/Modified triggers
-            // left_needs_full_refresh/right_needs_full_refresh).
+            panel.cursor = 0;
+            panel.scroll_offset = 0;
             panel.last_error = Some(err.to_string());
+            panel.recalculate_selection_stats();
         }
     }
 }
