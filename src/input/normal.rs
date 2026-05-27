@@ -12,7 +12,6 @@ use crate::{
 
 pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
     state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     terminal: &mut ratatui::Terminal<B>,
@@ -109,14 +108,15 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
             state.status_message = Some(format!("Terminal suspend failed: {e}"));
             return;
         }
-        let terminal_state_file = terminal_state_file_path();
-        if let Some(parent) = terminal_state_file.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            lc::debug_log!("failed to create terminal state dir: {e}");
-        }
-        if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
-            lc::debug_log!("failed to write terminal state file: {e}");
+        if let Some(terminal_state_file) = terminal_state_file_path() {
+            if let Some(parent) = terminal_state_file.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                lc::debug_log!("failed to create terminal state dir: {e}");
+            }
+            if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
+                lc::debug_log!("failed to write terminal state file: {e}");
+            }
         }
         let parts: Vec<String> = shlex::split(&editor).unwrap_or_else(|| {
             let fallback: Vec<String> = editor.split_whitespace().map(String::from).collect();
@@ -135,7 +135,9 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
             .stderr(std::process::Stdio::inherit())
             .status();
         let resume_result = resume_terminal_stdout();
-        if let Err(e) = std::fs::remove_file(&terminal_state_file) {
+        if let Some(terminal_state_file) = terminal_state_file_path()
+            && let Err(e) = std::fs::remove_file(&terminal_state_file)
+        {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
         match (status, resume_result) {
@@ -170,19 +172,21 @@ pub(crate) fn confirm_file_transfer(
     if paths.is_empty() {
         return;
     }
-    let dest_dir = state.inactive_panel().path.clone();
-    let file_names = panel_ops::file_names_from_paths(&paths);
+    let dest_dir = state.inactive_panel().path().to_path_buf();
+    let file_names: Vec<String> = panel_ops::file_names_from_paths(&paths)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
     let msg = if paths.len() == 1 {
-        let name = file_name_str(&paths[0]).unwrap_or_default();
-        format!("{verb} '{name}' to '{}' ?", dest_dir.display())
+        let name = file_names[0].as_str();
+        format!("{verb} '{name}' to '{}'?", dest_dir.display())
     } else {
         format!(
-            "{verb} {} entries to '{}' ?",
+            "{verb} {} entries to '{}'?",
             paths.len(),
             dest_dir.display()
         )
-    }
-    .replace(" ?", "?");
+    };
     state.dialog_selection = 0;
     state.mode = AppMode::Dialog(lc::app::types::DialogKind::Confirm(
         lc::app::types::ConfirmDetails::with_files(label, &msg, file_names),
@@ -195,9 +199,12 @@ pub(crate) fn confirm_delete(state: &mut AppState) {
     if paths.is_empty() {
         return;
     }
-    let file_names = panel_ops::file_names_from_paths(&paths);
+    let file_names: Vec<String> = panel_ops::file_names_from_paths(&paths)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
     let msg = if paths.len() == 1 {
-        let name = file_name_str(&paths[0]).unwrap_or_default();
+        let name = file_names[0].as_str();
         format!("Delete '{name}'?")
     } else {
         format!("Delete {} entries?", paths.len())
@@ -314,12 +321,14 @@ pub(crate) fn handle_enter_key(state: &mut AppState, visible: usize) {
     });
     if let Some((path, is_dotdot)) = entry_info {
         let prev_dir_name = if is_dotdot {
-            file_name_str(&state.active_panel().path)
+            file_name_str(state.active_panel().path())
         } else {
             None
         };
         let p = state.active_panel_mut();
-        p.history.push(p.path.clone());
+        if p.history().last().map(|p| p.as_path()) != Some(p.path()) {
+            p.push_history(p.path().to_path_buf());
+        }
         p.set_path(path);
         p.cursor = 0;
         p.scroll_offset = 0;
@@ -346,7 +355,7 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_heig
         KeyCode::Char('h') => {
             let visible = panel_ops::panel_visible_height(terminal_height);
             let p = state.active_panel_mut();
-            p.show_hidden = !p.show_hidden;
+            p.set_show_hidden(!p.show_hidden());
             p.cursor = 0;
             p.scroll_offset = 0;
             panel_ops::rebuild_visible_entries(p, visible);
@@ -382,17 +391,19 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             }
         }
         KeyCode::Backspace => {
-            let prev_dir_name = file_name_str(&state.active_panel().path);
+            let prev_dir_name = file_name_str(state.active_panel().path());
             let panel = state.active_panel_mut();
-            if let Some(prev_path) = panel.history.pop()
-                && prev_path.is_dir()
-            {
-                panel.set_path(prev_path.clone());
-                panel.cursor = 0;
-                panel.scroll_offset = 0;
-                panel_ops::refresh_active(state);
-                reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
-                state.status_message = Some(format!("cd to {}", prev_path.display()));
+            if let Some(prev_path) = panel.pop_history() {
+                if prev_path.is_dir() {
+                    panel.set_path(prev_path.clone());
+                    panel.cursor = 0;
+                    panel.scroll_offset = 0;
+                    panel_ops::refresh_active(state);
+                    reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
+                    state.status_message = Some(format!("cd to {}", prev_path.display()));
+                } else {
+                    panel.push_history(prev_path);
+                }
             }
         }
         KeyCode::Char(c) if ('1'..='9').contains(&c) => {
@@ -403,7 +414,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                 prompt: "Quick cd:".to_string(),
                 action: InputAction::QuickCd,
             });
-            state.dialog_input.text = state.active_panel().path.display().to_string();
+            state.dialog_input.text = state.active_panel().path().display().to_string();
             state.dialog_input.cursor_end();
         }
         KeyCode::Char('x' | 'X') => state.enter_command_line_mode(),
@@ -422,7 +433,7 @@ pub(crate) fn selected_or_current_paths(state: &AppState) -> Vec<PathBuf> {
             .unwrap_or_default()
     };
 
-    if panel.selected_count == 0 {
+    if panel.selected_count() == 0 {
         return current_entry_fallback();
     }
 

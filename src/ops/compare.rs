@@ -36,13 +36,15 @@ fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool 
 }
 
 fn mtime_matches(left: std::time::SystemTime, right: std::time::SystemTime) -> bool {
-    match (
-        left.duration_since(std::time::UNIX_EPOCH),
-        right.duration_since(std::time::UNIX_EPOCH),
-    ) {
-        (Ok(l), Ok(r)) => l.abs_diff(r) <= MTIME_TOLERANCE,
-        _ => left == right,
-    }
+    let diff = if left > right {
+        left.duration_since(right)
+            .unwrap_or(MTIME_TOLERANCE + Duration::from_secs(1))
+    } else {
+        right
+            .duration_since(left)
+            .unwrap_or(MTIME_TOLERANCE + Duration::from_secs(1))
+    };
+    diff <= MTIME_TOLERANCE
 }
 
 pub struct CompareReport {

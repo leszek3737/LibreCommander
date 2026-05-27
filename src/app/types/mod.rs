@@ -10,7 +10,7 @@ mod text_input;
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests;
 
-pub use app_state::{AppState, restore_prev_mode};
+pub use app_state::AppState;
 pub use dialogs::{ConfirmDetails, DialogKind, InputAction, PickerKind};
 pub use file_entry::{
     FileCategory, FileEntry, FileEntryBuilder, FileSize, compute_category, format_permissions,

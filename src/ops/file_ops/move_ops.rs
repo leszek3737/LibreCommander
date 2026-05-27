@@ -6,8 +6,6 @@ use std::sync::mpsc::Sender;
 
 use super::common::{check_canceled, ensure_destination_absent, path_contains};
 use super::copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
-#[cfg(test)]
-use super::delete::delete_dir_recursive;
 use super::delete::delete_dir_recursive_cancelable;
 
 /// Move or rename a filesystem entry.
@@ -20,80 +18,10 @@ use super::delete::delete_dir_recursive_cancelable;
 ///   not exist), so the function proceeds as a normal move.
 #[cfg(test)]
 pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
-    let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
-        (Some(s), Some(d)) => s == d,
-        _ => src == dest,
-    };
-    if same_file {
-        return if src == dest {
-            Ok(())
-        } else {
-            let src_is_link = src
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink());
-            let dest_is_link = dest
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink());
-            if src_is_link && !dest_is_link {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "cannot move symlink onto its own target",
-                ));
-            }
-            fs::rename(src, dest)
-        };
-    }
-    if src.is_dir() && path_contains(src, dest)? {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot move directory into its descendant",
-        ));
-    }
-    if !overwrite {
-        ensure_destination_absent(dest)?;
-    }
-
-    match fs::rename(src, dest) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
-            let meta = src.symlink_metadata()?;
-            if meta.file_type().is_symlink() {
-                copy_symlink(src, dest, overwrite)?;
-                if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(format!(
-                        "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
-                        src.display(),
-                        dest.display(),
-                        del_err
-                    )));
-                }
-            } else if meta.is_dir() {
-                super::copy::copy_dir_recursive(src, dest, overwrite)?;
-                if !path_contains(src, dest)?
-                    && let Err(del_err) = delete_dir_recursive(src)
-                {
-                    return Err(io::Error::other(format!(
-                        "cross-device move: copied '{}' to '{}' but failed to remove source directory: {}",
-                        src.display(),
-                        dest.display(),
-                        del_err
-                    )));
-                }
-            } else {
-                super::copy::copy_file(src, dest, overwrite)?;
-                if let Err(del_err) = fs::remove_file(src) {
-                    return Err(io::Error::other(format!(
-                        "cross-device move: copied '{}' to '{}' but failed to remove source: {}",
-                        src.display(),
-                        dest.display(),
-                        del_err
-                    )));
-                }
-            }
-            Ok(())
-        }
-        Err(e) => Err(e),
-    }
+    let cancel = AtomicBool::new(false);
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<u64>();
+    drop(progress_rx);
+    move_entry_impl(src, dest, &progress_tx, &cancel, overwrite)
 }
 
 pub fn move_entry_with_progress(
@@ -103,15 +31,26 @@ pub fn move_entry_with_progress(
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<()> {
+    move_entry_impl(src, dest, progress_tx, cancel, overwrite)
+}
+
+fn move_entry_impl(
+    src: &Path,
+    dest: &Path,
+    progress_tx: &Sender<u64>,
+    cancel: &AtomicBool,
+    overwrite: bool,
+) -> io::Result<()> {
     check_canceled(cancel)?;
+    if src == dest {
+        return Ok(());
+    }
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
-        _ => src == dest,
+        _ => false,
     };
     if same_file {
-        return if src == dest {
-            Ok(())
-        } else {
+        return {
             let src_is_link = src
                 .symlink_metadata()
                 .is_ok_and(|m| m.file_type().is_symlink());

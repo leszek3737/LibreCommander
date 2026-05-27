@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use ansi_to_tui::IntoText;
 use ratatui::text::Text;
@@ -46,26 +47,57 @@ impl Drop for ViewerLoader {
     }
 }
 
+const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub fn run_chafa(path: &Path, width: u16, height: u16) -> Text<'static> {
     let size_str = format!("{}x{}", width, height);
-    match std::process::Command::new("chafa")
+    let mut child = match std::process::Command::new("chafa")
         .arg("-f")
         .arg("symbols")
         .arg("--size")
         .arg(&size_str)
         .arg("--")
         .arg(path)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Ok(out) if out.status.success() => match out.stdout.into_text() {
-            Ok(text) => text,
-            Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
-        },
-        Ok(out) => {
-            let err_msg = String::from_utf8_lossy(&out.stderr);
-            Text::raw(format!("Chafa error: {}", err_msg))
+        Ok(c) => c,
+        Err(e) => return Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
+    };
+
+    let deadline = Instant::now() + CHAFA_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = child
+                    .wait_with_output()
+                    .unwrap_or_else(|_| std::process::Output {
+                        status,
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    });
+                if out.status.success() {
+                    return match out.stdout.into_text() {
+                        Ok(text) => text,
+                        Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
+                    };
+                }
+                let err_msg = String::from_utf8_lossy(&out.stderr);
+                return Text::raw(format!("Chafa error: {}", err_msg));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Text::raw("Chafa timed out".to_string());
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Text::raw(format!("Chafa wait error: {}", e));
+            }
         }
-        Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
     }
 }
 

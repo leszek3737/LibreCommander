@@ -49,6 +49,7 @@ pub fn render_input_dialog(
     if visible_width == 0 || input_inner.height == 0 {
         let input_paragraph = Paragraph::new(value).block(input_block);
         f.render_widget(input_paragraph, chunks[1]);
+        f.set_cursor_position((input_inner.x, input_inner.y));
         return;
     }
 
@@ -108,7 +109,7 @@ pub fn render_input_dialog(
     }
 
     let display_cursor_col = cursor_display.saturating_sub(start_cum);
-    let cursor_x = input_inner.x + display_cursor_col.min(visible_width.saturating_sub(1)) as u16;
+    let cursor_x = input_inner.x + display_cursor_col.min(vis_width) as u16;
     let cursor_y = input_inner.y;
 
     let input_paragraph = Paragraph::new(visible).block(input_block);

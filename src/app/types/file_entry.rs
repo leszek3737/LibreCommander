@@ -7,6 +7,14 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
 
+const MODE_FILE: u32 = 0o100000;
+const MODE_DIR: u32 = 0o040000;
+const MODE_SYMLINK: u32 = 0o120000;
+
+const MODE_TYPE_MASK: u32 = 0o170000;
+
+const DEFAULT_FILE_MODE: u32 = 0o100644;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileSize(pub u64);
 
@@ -122,10 +130,10 @@ impl FileEntryBuilder {
     pub fn is_dir(mut self, v: bool) -> Self {
         let perms = self.cha.mode.permissions();
         if v {
-            self.cha.mode = ChaMode::new(0o040000 | perms);
+            self.cha.mode = ChaMode::new(MODE_DIR | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         } else if self.cha.is_dir() {
-            self.cha.mode = ChaMode::new(0o100000 | perms);
+            self.cha.mode = ChaMode::new(MODE_FILE | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         }
         self
@@ -133,10 +141,10 @@ impl FileEntryBuilder {
     pub fn is_symlink(mut self, v: bool) -> Self {
         let perms = self.cha.mode.permissions();
         if v {
-            self.cha.mode = ChaMode::new(0o120000 | perms);
+            self.cha.mode = ChaMode::new(MODE_SYMLINK | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         } else if self.cha.is_link() {
-            self.cha.mode = ChaMode::new(0o100000 | perms);
+            self.cha.mode = ChaMode::new(MODE_FILE | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         }
         self
@@ -158,7 +166,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn permissions(mut self, v: u32) -> Self {
-        let file_type = self.cha.mode.mode_u32() & 0o170000;
+        let file_type = self.cha.mode.mode_u32() & MODE_TYPE_MASK;
         self.cha.mode = ChaMode::new(file_type | (v & 0o7777));
         self
     }
@@ -224,7 +232,7 @@ impl FileEntry {
             path: PathBuf::new(),
             cha: Cha {
                 kind: ChaKind::empty(),
-                mode: ChaMode::new(0o100644),
+                mode: ChaMode::new(DEFAULT_FILE_MODE),
                 len: 0,
                 mtime: None,
                 btime: None,
@@ -304,9 +312,7 @@ impl FileEntry {
     }
 
     pub fn display_modified(&self) -> String {
-        let Some(mtime) = self.cha.mtime else {
-            return "Unknown".to_string();
-        };
-        format_system_time(mtime).unwrap_or_else(|| "Unknown".to_string())
+        let mtime = self.cha.mtime.unwrap_or(std::time::UNIX_EPOCH);
+        format_time(mtime)
     }
 }

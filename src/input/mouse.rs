@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::shell;
-use crate::app::types::{self, ActivePanel, AppMode, AppState, DialogKind};
+use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::dialogs;
 use crate::ui::viewer;
@@ -258,20 +258,39 @@ fn handle_mouse_dialog(
     None
 }
 
+struct DialogGeometry {
+    btn_row: u16,
+    dialog_left: u16,
+    dialog_width: u16,
+    btn_center: u16,
+}
+
+fn dialog_geometry(pos: &MousePosition) -> DialogGeometry {
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let r = dialogs::centered_rect(50, 40, area);
+    DialogGeometry {
+        btn_row: r.y + r.height.saturating_sub(2),
+        dialog_left: r.x,
+        dialog_width: r.width,
+        btn_center: r.x + r.width / 2,
+    }
+}
+
+fn hit_button_row(geo: &DialogGeometry, pos: &MousePosition) -> bool {
+    pos.row == geo.btn_row
+        && pos.col >= geo.dialog_left
+        && pos.col < geo.dialog_left + geo.dialog_width
+}
+
 fn handle_confirm_click(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let area = Rect::new(0, 0, pos.width, pos.height);
-    let dialog_rect = dialogs::centered_rect(50, 40, area);
-    let btn_row = dialog_rect.y + dialog_rect.height.saturating_sub(2);
-    let dialog_left = dialog_rect.x;
-    let dialog_width = dialog_rect.width;
+    let geo = dialog_geometry(pos);
 
-    if pos.row == btn_row && pos.col >= dialog_left && pos.col < dialog_left + dialog_width {
-        let btn_center = dialog_left + dialog_width / 2;
-        let new_sel = if pos.col < btn_center { 0 } else { 1 };
+    if hit_button_row(&geo, pos) {
+        let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
         if state.dialog_selection == new_sel {
             if new_sel == 0 {
                 if state.pending_action.is_some() {
@@ -310,15 +329,10 @@ fn handle_overwrite_click(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let area = Rect::new(0, 0, pos.width, pos.height);
-    let dialog_rect = dialogs::centered_rect(50, 40, area);
-    let btn_row = dialog_rect.y + dialog_rect.height.saturating_sub(2);
-    let dialog_left = dialog_rect.x;
-    let dialog_width = dialog_rect.width;
+    let geo = dialog_geometry(pos);
 
-    if pos.row == btn_row && pos.col >= dialog_left && pos.col < dialog_left + dialog_width {
-        let btn_center = dialog_left + dialog_width / 2;
-        let new_sel = if pos.col < btn_center { 0 } else { 1 };
+    if hit_button_row(&geo, pos) {
+        let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
         if state.dialog_selection == new_sel {
             match new_sel {
                 0 => {
@@ -345,15 +359,9 @@ fn handle_progress_click(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    let area = Rect::new(0, 0, pos.width, pos.height);
-    let dialog_rect = dialogs::centered_rect(50, 40, area);
-    let cancel_row = dialog_rect.y + dialog_rect.height.saturating_sub(2);
-    let dialog_left = dialog_rect.x;
-    let dialog_width = dialog_rect.width;
+    let geo = dialog_geometry(pos);
 
-    if pos.row == cancel_row
-        && pos.col >= dialog_left
-        && pos.col < dialog_left + dialog_width
+    if hit_button_row(&geo, pos)
         && let Some(job) = running_job.as_ref()
     {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -426,7 +434,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
             return Some(MouseOutcome::MenuAction);
         }
     }
-    types::restore_prev_mode(state);
+    state.restore_prev_mode();
     Some(MouseOutcome::Consumed)
 }
 
@@ -439,7 +447,7 @@ fn handle_mouse_function_bar(state: &mut AppState, pos: &MousePosition) -> Optio
     if pos.width == 0 {
         return Some(MouseOutcome::Consumed);
     }
-    let btn_idx = (pos.col * 10 / pos.width).min(9);
+    let btn_idx = (u32::from(pos.col) * 10 / u32::from(pos.width)).min(9) as u16;
     let fkey = match btn_idx {
         0 => KeyCode::F(1),
         1 => KeyCode::F(2),
@@ -524,7 +532,7 @@ fn handle_mouse_panels(
                 super::mode_dispatch::clear_search_state(state, visible);
             }
             let panel_mut = state.active_panel_mut();
-            panel_mut.history.push(panel_mut.path.clone());
+            panel_mut.push_history(panel_mut.path().to_path_buf());
             panel_mut.set_path(path);
             panel_mut.cursor = 0;
             panel_mut.scroll_offset = 0;
@@ -595,6 +603,8 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
 
 fn handle_mouse_up(state: &mut AppState) {
     state.drag_anchor_index = None;
+    state.last_click_time = None;
+    state.last_click_position = None;
 }
 
 #[cfg(test)]

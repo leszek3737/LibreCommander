@@ -53,16 +53,21 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
             cleanup_file(&temp);
             return Err(e);
         }
-        if dest.exists() {
-            cleanup_file(&temp);
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("destination already exists: {}", dest.display()),
-            ));
-        }
-        if let Err(e) = swap_temp_to_dest(&temp, dest, overwrite) {
-            cleanup_file(&temp);
-            return Err(e);
+        match fs::hard_link(&temp, dest) {
+            Ok(()) => {
+                cleanup_file(&temp);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                cleanup_file(&temp);
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("destination already exists: {}", dest.display()),
+                ));
+            }
+            Err(e) => {
+                cleanup_file(&temp);
+                return Err(e);
+            }
         }
         Ok(bytes)
     }
@@ -86,55 +91,9 @@ pub fn copy_file_with_progress(
 
 #[cfg(test)]
 pub fn copy_dir_recursive(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
-    let src_root = canonicalize_existing_path(src)?;
-    let dest_root = canonicalize_with_nearest_existing_parent(dest)?;
-    if src_root == dest_root {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot copy directory into itself",
-        ));
-    }
-    if lexical_path_starts_with(&src_root, &dest_root) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot copy directory into its descendant",
-        ));
-    }
-    if !overwrite {
-        ensure_destination_absent(dest)?;
-    }
-    let temp_dest = reserve_temp_dir_for(dest)?;
-    let src_perms = fs::metadata(src)?.permissions();
-    let result = copy_dir_recursive_inner(src, &temp_dest, &src_root, &dest_root, overwrite, 0);
-    match result {
-        Ok(bytes) => {
-            let revalidated_dest = match canonicalize_with_nearest_existing_parent(dest) {
-                Ok(p) => p,
-                Err(e) => {
-                    cleanup_dir_all(&temp_dest);
-                    return Err(e);
-                }
-            };
-            if src_root == revalidated_dest
-                || lexical_path_starts_with(&src_root, &revalidated_dest)
-            {
-                cleanup_dir_all(&temp_dest);
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "destination changed during copy — possible symlink race",
-                ));
-            }
-            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite, &src_perms) {
-                cleanup_dir_all(&temp_dest);
-                return Err(err);
-            }
-            Ok(bytes)
-        }
-        Err(err) => {
-            cleanup_dir_all(&temp_dest);
-            Err(err)
-        }
-    }
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let cancel = AtomicBool::new(false);
+    copy_dir_recursive_with_progress(src, dest, &tx, &cancel, overwrite)
 }
 
 pub fn copy_dir_recursive_with_progress(
@@ -188,69 +147,6 @@ pub fn copy_dir_recursive_with_progress(
             Err(err)
         }
     }
-}
-
-#[cfg(test)]
-fn copy_dir_recursive_inner(
-    src: &Path,
-    dest: &Path,
-    src_root: &Path,
-    dest_root: &Path,
-    overwrite: bool,
-    depth: usize,
-) -> io::Result<u64> {
-    if depth > MAX_RECURSION_DEPTH {
-        return Err(io::Error::other(format!(
-            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
-            src.display()
-        )));
-    }
-
-    if depth == 0 && src_root == dest_root {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot copy directory into itself",
-        ));
-    }
-    if depth == 0 && lexical_path_starts_with(src_root, dest_root) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "cannot copy directory into its descendant",
-        ));
-    }
-    if depth > 0 {
-        ensure_destination_absent(dest)?;
-        fs::create_dir(dest)?;
-    }
-    let src_perms = fs::metadata(src)?.permissions();
-
-    let mut total_bytes: u64 = 0;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-        let file_type = entry.file_type()?;
-
-        if file_type.is_dir() {
-            let copied = copy_dir_recursive_inner(
-                &entry_path,
-                &dest_path,
-                src_root,
-                dest_root,
-                overwrite,
-                depth + 1,
-            )?;
-            total_bytes = total_bytes.saturating_add(copied);
-        } else if file_type.is_symlink() {
-            copy_symlink(&entry_path, &dest_path, overwrite)?;
-        } else {
-            total_bytes =
-                total_bytes.saturating_add(copy_file(&entry_path, &dest_path, overwrite)?);
-        }
-    }
-
-    fs::set_permissions(dest, src_perms)?;
-    Ok(total_bytes)
 }
 
 pub struct CopyContext<'a> {

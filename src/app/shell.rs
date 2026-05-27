@@ -66,6 +66,12 @@ impl Drop for TerminalRestoreGuard {
     }
 }
 
+/// Returns `(shell_path, flag)` for spawning a shell command.
+///
+/// On non-Windows, `for_menu` selects between `sh -c` (user menu) and
+/// `$SHELL -c` (interactive commands). On Windows the parameter is ignored —
+/// `COMSPEC` (falling back to `cmd.exe`) is always used with `/C`, because
+/// menu commands are also executed through `cmd`.
 #[cfg(windows)]
 fn get_shell(_for_menu: bool) -> (String, &'static str) {
     let shell = std::env::var("COMSPEC")
@@ -109,18 +115,18 @@ pub fn run_shell_command(
         return;
     }
 
-    push_history(state, cmd);
-
     if suspend_terminal_stdout().is_err() {
         state.status_message = Some("Terminal suspend failed".into());
         return;
     }
+
+    push_history(state, cmd);
     let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
     let (shell, flag) = get_shell(for_menu);
     let status = Command::new(&shell)
         .arg(flag)
         .arg(cmd)
-        .current_dir(&state.active_panel().path)
+        .current_dir(state.active_panel().path())
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -176,7 +182,13 @@ pub fn toggle_external_view(
         Ok(())
     })();
     let raw_result = disable_raw_mode();
-    wait_result?;
+    if let Err(wait_err) = wait_result {
+        let reported = match raw_result {
+            Err(raw_err) => io::Error::new(raw_err.kind(), format!("{raw_err}; {wait_err}")),
+            Ok(()) => wait_err,
+        };
+        return Err(reported);
+    }
     raw_result?;
 
     resume_terminal_stdout()?;

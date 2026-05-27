@@ -115,8 +115,6 @@ const CONFIG_EXACT_NAMES: &[&str] = &[
 
 const CONFIG_PREFIXES: &[&str] = &[".env."];
 
-const SOURCE_EXACT_NAMES: &[&str] = &[];
-
 const FONT_SUFFIXES: &[&str] = &[".ttf", ".otf", ".woff", ".woff2", ".eot"];
 
 #[inline]
@@ -149,10 +147,7 @@ pub fn is_image(name: &str) -> bool {
 
 #[inline]
 pub fn is_source_code(name: &str) -> bool {
-    SOURCE_EXACT_NAMES
-        .iter()
-        .any(|&n| name.eq_ignore_ascii_case(n))
-        || has_any_suffix(name, SOURCE_CODE_SUFFIXES)
+    has_any_suffix(name, SOURCE_CODE_SUFFIXES)
 }
 
 #[inline]

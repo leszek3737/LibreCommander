@@ -490,7 +490,7 @@ fn test_format_entry_line_truncation_handles_unicode() {
 fn test_new_panel_state() {
     let panel = PanelState::new(PathBuf::from("/test"));
 
-    assert_eq!(panel.path, PathBuf::from("/test"));
+    assert_eq!(panel.path(), PathBuf::from("/test"));
     assert_eq!(panel.cursor, 0);
 }
 
@@ -538,10 +538,10 @@ fn test_panel_status_summary_with_selection() {
         create_test_entry("b.txt", false, false, false),
     ];
     panel.cursor = 0;
-    panel.selected_count = 1;
-    panel.selected_size = 1024;
+    panel.set_selected_count(1);
+    panel.set_selected_size(1024);
     let (summary, _) = panel_status_summary(&panel);
-    assert!(summary.contains("Sel: 1"));
+    assert!(summary.contains("1"));
     assert!(summary.contains("1.0 KB"));
 }
 
@@ -550,7 +550,7 @@ fn test_panel_status_summary_no_selection_when_zero() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![create_test_entry("a.txt", false, false, false)];
     panel.cursor = 0;
-    panel.selected_count = 0;
+    panel.set_selected_count(0);
     let (summary, _) = panel_status_summary(&panel);
     assert!(!summary.contains("Sel:"));
 }

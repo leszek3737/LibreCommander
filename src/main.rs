@@ -19,6 +19,7 @@ use lc::{app, fs, menu, ui};
 
 mod input;
 mod render;
+mod render_dialog_map;
 
 use app::job_runner::{RunningJob, poll_running_job};
 #[cfg(test)]
@@ -90,7 +91,7 @@ fn resume_terminal_stdout() -> io::Result<()> {
     enter_tui_stdout()
 }
 
-fn terminal_state_file_path() -> PathBuf {
+fn terminal_state_file_path() -> Option<PathBuf> {
     paths::terminal_state_file_path()
 }
 
@@ -143,11 +144,12 @@ fn poll_viewer_loader(
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {
             let now = std::time::Instant::now();
-            let should_redraw = state.viewer_spinner_frame.is_none_or(|last| {
+            let should_redraw = state.viewer_spinner_last_tick.is_none_or(|last| {
                 now.duration_since(last) >= std::time::Duration::from_millis(200)
             });
             if should_redraw {
-                state.viewer_spinner_frame = Some(now);
+                state.viewer_spinner_last_tick = Some(now);
+                state.viewer_spinner_frame = state.viewer_spinner_frame.wrapping_add(1);
                 changed = true;
             }
         }
@@ -162,6 +164,7 @@ fn poll_viewer_loader(
 }
 
 fn poll_image_preview(
+    state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
 ) -> bool {
@@ -181,8 +184,9 @@ fn poll_image_preview(
         }
         Err(mpsc::TryRecvError::Empty) => false,
         Err(mpsc::TryRecvError::Disconnected) => {
+            state.status_message = Some("Image preview failed: thread panicked".to_string());
             *image_preview_loader = None;
-            false
+            true
         }
     }
 }
@@ -217,9 +221,9 @@ fn pre_draw(
     state: &AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
     image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
-    terminal: &Terminal<CrosstermBackend<io::Stdout>>,
+    term_size: Size,
 ) {
-    let Ok(size) = terminal.size() else { return };
+    let size = term_size;
     start_image_preview_if_needed(
         viewer_state,
         image_preview_loader,
@@ -272,6 +276,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     panel_ops::refresh_panel(&mut state.right_panel, 0);
     watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut watcher_sync_state);
     let mut dirty = true;
+    let mut term_size = terminal.size()?;
 
     loop {
         panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
@@ -287,7 +292,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             dirty = true;
         }
         if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader)
-            || poll_image_preview(&mut viewer_state, &mut image_preview_loader)
+            || poll_image_preview(&mut state, &mut viewer_state, &mut image_preview_loader)
         {
             dirty = true;
         }
@@ -296,11 +301,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 &state,
                 &mut viewer_state,
                 &mut image_preview_loader,
-                terminal,
+                term_size,
             );
-            if let Err(e) =
-                terminal.draw(|f| render::render_ui(f, &state, &viewer_state, &viewer_loader))
-            {
+            if let Err(e) = terminal.draw(|f| {
+                render::render_ui(f, &state, viewer_state.as_ref(), viewer_loader.as_ref())
+            }) {
                 if let Some(j) = running_job.as_mut() {
                     j.shutdown()
                 }
@@ -325,6 +330,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 &mut image_preview_loader,
                 &mut running_job,
                 terminal,
+                &mut term_size,
                 &key,
             )?;
         }
@@ -339,21 +345,21 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 }
 
 fn recover_terminal_state() -> io::Result<()> {
-    let terminal_state_file = terminal_state_file_path();
+    let Some(terminal_state_file) = terminal_state_file_path() else {
+        return Ok(());
+    };
     if std::fs::metadata(&terminal_state_file).is_ok() {
         let leave_result = leave_tui_stdout();
         let resume_result = resume_terminal_stdout();
         if let Err(e) = std::fs::remove_file(&terminal_state_file) {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
-        if let Err(e) = &leave_result {
-            lc::debug_log!("leave_tui_stdout failed: {e}");
-        }
-        resume_result?;
+        resume_result.or(leave_result)?;
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_event<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -361,6 +367,7 @@ fn dispatch_event<B: ratatui::backend::Backend>(
     image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
     running_job: &mut Option<RunningJob>,
     terminal: &mut Terminal<B>,
+    term_size: &mut Size,
     event: &Event,
 ) -> Result<bool, B::Error> {
     match event {
@@ -371,6 +378,7 @@ fn dispatch_event<B: ratatui::backend::Backend>(
             image_preview_loader,
             running_job,
             terminal,
+            *term_size,
             key,
         ),
         Event::Mouse(mouse_event) => dispatch_mouse_event(
@@ -380,12 +388,17 @@ fn dispatch_event<B: ratatui::backend::Backend>(
             running_job,
             mouse_event,
             terminal,
+            *term_size,
         ),
-        Event::Resize(_, _) => Ok(true),
+        Event::Resize(cols, rows) => {
+            *term_size = Size::new(*cols, *rows);
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_key_event<B: ratatui::backend::Backend>(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -393,6 +406,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
     image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
     running_job: &mut Option<RunningJob>,
     terminal: &mut Terminal<B>,
+    term_size: Size,
     key: &KeyEvent,
 ) -> Result<bool, B::Error> {
     match key.kind {
@@ -400,7 +414,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
         KeyEventKind::Repeat if key_repeat_allowed(&state.mode, key.code) => {}
         _ => return Ok(false),
     }
-    let size = terminal.size()?;
+    let size = term_size;
     match &state.mode {
         AppMode::Normal => {
             input::mode_dispatch::handle_normal_mode(
@@ -515,42 +529,43 @@ fn dispatch_mouse_event<B: ratatui::backend::Backend>(
     running_job: &mut Option<RunningJob>,
     mouse_event: &MouseEvent,
     terminal: &mut Terminal<B>,
+    term_size: Size,
 ) -> Result<bool, B::Error> {
-    let size = terminal.size()?;
-    if let Some(outcome) = input::mouse::handle_mouse_event(
+    let Some(outcome) = input::mouse::handle_mouse_event(
         state,
         viewer_state,
         viewer_loader,
         running_job,
         *mouse_event,
-        size,
-    ) {
-        match outcome {
-            input::mouse::MouseOutcome::Consumed => {}
-            input::mouse::MouseOutcome::NormalKey(key) => {
-                if matches!(state.mode, AppMode::Search) {
-                    let visible = panel_ops::panel_visible_height(size.height);
-                    input::mode_dispatch::clear_search_state(state, visible);
-                }
-                input::mode_dispatch::handle_normal_mode(
-                    state,
-                    viewer_state,
-                    viewer_loader,
-                    key,
-                    KeyModifiers::NONE,
-                    size.height,
-                    terminal,
-                );
+        term_size,
+    ) else {
+        return Ok(false);
+    };
+    match outcome {
+        input::mouse::MouseOutcome::Consumed => {}
+        input::mouse::MouseOutcome::NormalKey(key) => {
+            if matches!(state.mode, AppMode::Search) {
+                let visible = panel_ops::panel_visible_height(term_size.height);
+                input::mode_dispatch::clear_search_state(state, visible);
             }
-            input::mouse::MouseOutcome::MenuAction => {
-                input::mode_dispatch::run_selected_menu_action(
-                    state,
-                    viewer_state,
-                    viewer_loader,
-                    size.height,
-                    terminal,
-                );
-            }
+            input::mode_dispatch::handle_normal_mode(
+                state,
+                viewer_state,
+                viewer_loader,
+                key,
+                KeyModifiers::NONE,
+                term_size.height,
+                terminal,
+            );
+        }
+        input::mouse::MouseOutcome::MenuAction => {
+            input::mode_dispatch::run_selected_menu_action(
+                state,
+                viewer_state,
+                viewer_loader,
+                term_size.height,
+                terminal,
+            );
         }
     }
     Ok(true)

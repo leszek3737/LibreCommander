@@ -63,7 +63,6 @@ impl ViewerState {
             self.clear_search_results();
             self.current_match = None;
             self.search_query = None;
-            self.has_invalid_utf8 = std::str::from_utf8(&self.raw_bytes).is_err();
         }
     }
 

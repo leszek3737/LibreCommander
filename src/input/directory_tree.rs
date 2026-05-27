@@ -94,7 +94,7 @@ fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::Vi
     let is_file = state.tree_entries.get(selected).is_some_and(|e| !e.is_dir);
 
     if is_dir {
-        let show_hidden = state.active_panel().show_hidden;
+        let show_hidden = state.active_panel().show_hidden();
         let diagnostics = dir_tree::toggle_expand_with_diagnostics(
             &mut state.tree_entries,
             selected,
@@ -261,6 +261,7 @@ mod tests {
         let diagnostics = vec![lc::app::dir_tree::TreeDiagnostic {
             path: PathBuf::from("/tmp/bad"),
             message: "permission denied".to_string(),
+            ..Default::default()
         }];
         set_tree_diagnostic_status(&mut msg, &diagnostics);
         assert!(
@@ -277,10 +278,12 @@ mod tests {
             lc::app::dir_tree::TreeDiagnostic {
                 path: PathBuf::from("/tmp/a"),
                 message: "err1".to_string(),
+                ..Default::default()
             },
             lc::app::dir_tree::TreeDiagnostic {
                 path: PathBuf::from("/tmp/b"),
                 message: "err2".to_string(),
+                ..Default::default()
             },
         ];
         set_tree_diagnostic_status(&mut msg, &diagnostics);

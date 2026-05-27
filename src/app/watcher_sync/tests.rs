@@ -42,7 +42,7 @@ fn watcher_upsert_adds_visible_entry_sorted_and_updates_stats() {
         .map(|entry| entry.name.as_str())
         .collect();
     assert_eq!(names, vec!["..", "alpha.txt", "beta.txt"]);
-    assert_eq!(panel.total_size, 9);
+    assert_eq!(panel.total_size(), 9);
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     fs::write(&drop, b"drop").unwrap();
 
     let mut panel = test_panel(dir.path());
-    panel.filter = Some("*.txt".to_string());
+    panel.set_filter(Some("*.txt".to_string()));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
     rebuild_visible_entries(&mut panel, None);
     panel.listing.entries[1].selected = true;
@@ -68,9 +68,9 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     assert_eq!(panel.listing.entries.len(), 2);
     assert_eq!(panel.listing.entries[1].name, "keep.txt");
     assert!(panel.listing.entries[1].selected);
-    assert_eq!(panel.selected_count, 1);
-    assert_eq!(panel.selected_size, 7);
-    assert_eq!(panel.total_size, 11);
+    assert_eq!(panel.selected_count(), 1);
+    assert_eq!(panel.selected_size(), 7);
+    assert_eq!(panel.total_size(), 11);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn watcher_upsert_hides_hidden_when_hidden_disabled() {
     fs::write(&hidden, b"secret").unwrap();
 
     let mut panel = test_panel(dir.path());
-    panel.show_hidden = false;
+    panel.set_show_hidden(false);
 
     assert!(!apply_watcher_upsert_if_matches(&mut panel, &hidden));
     assert_eq!(panel.listing.entries.len(), 1);
@@ -113,7 +113,7 @@ fn watcher_remove_updates_visible_entries_and_clamps_cursor_scroll() {
     assert_eq!(names, vec!["..", "a.txt"]);
     assert_eq!(panel.cursor, 1);
     assert_eq!(panel.scroll_offset, 1);
-    assert_eq!(panel.total_size, 1);
+    assert_eq!(panel.total_size(), 1);
 }
 
 #[test]
@@ -133,15 +133,16 @@ fn watcher_remove_handles_deleted_child_path() {
 }
 
 #[test]
-fn canonical_desired_paths_skips_missing_panel_path() {
+fn canonical_desired_paths_normalizes_paths_without_io() {
     let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("missing");
+    let other = dir.path().join("other");
 
-    let (desired, all_paths_present) = canonical_desired_paths(dir.path(), &missing);
+    let (desired, all_paths_present) = canonical_desired_paths(dir.path(), &other);
 
-    assert_eq!(desired.len(), 1);
-    assert!(desired.contains(&dir.path().canonicalize().unwrap()));
-    assert!(!all_paths_present);
+    assert_eq!(desired.len(), 2);
+    assert!(desired.contains(&crate::fs::path::clean_path(dir.path())));
+    assert!(desired.contains(&crate::fs::path::clean_path(&other)));
+    assert!(all_paths_present);
 }
 
 #[test]
@@ -183,7 +184,7 @@ fn watcher_upsert_uses_panel_sort_mode() {
     fs::write(&big, b"larger").unwrap();
 
     let mut panel = test_panel(dir.path());
-    panel.sort_mode = SortMode::SizeDesc;
+    panel.set_sort_mode(SortMode::SizeDesc);
     assert!(apply_watcher_upsert_if_matches(&mut panel, &small));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &big));
     rebuild_visible_entries(&mut panel, None);
@@ -227,7 +228,7 @@ fn watcher_updates_when_metadata_changes() {
     rebuild_visible_entries(&mut panel, None);
 
     assert_eq!(panel.listing.entries.len(), 2);
-    assert_eq!(panel.total_size, 18);
+    assert_eq!(panel.total_size(), 18);
 }
 
 #[test]
@@ -281,8 +282,8 @@ fn full_refresh_preserves_selected_entries() {
             .iter()
             .any(|entry| entry.path == selected && entry.selected)
     );
-    assert_eq!(panel.selected_count, 1);
-    assert_eq!(panel.selected_size, 8);
+    assert_eq!(panel.selected_count(), 1);
+    assert_eq!(panel.selected_size(), 8);
 }
 
 #[test]
@@ -332,7 +333,7 @@ fn deleted_panel_dir_navigates_to_parent_and_refreshes() {
     state.left_panel = test_panel(&child);
     let child_canonical = child.canonicalize().unwrap();
     assert_eq!(
-        state.left_panel.canonical_path,
+        state.left_panel.canonical_path().map(|p| p.to_path_buf()),
         Some(child_canonical.clone())
     );
 
@@ -342,9 +343,9 @@ fn deleted_panel_dir_navigates_to_parent_and_refreshes() {
 
     let dirty = poll_watcher_events(&mut state, &rx);
     assert!(dirty);
-    assert_eq!(state.left_panel.path, *parent.path());
+    assert_eq!(state.left_panel.path(), parent.path());
     assert_eq!(
-        state.left_panel.canonical_path,
+        state.left_panel.canonical_path().map(|p| p.to_path_buf()),
         parent.path().canonicalize().ok()
     );
     assert!(
@@ -379,7 +380,7 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
 
     let dirty = poll_watcher_events(&mut state, &rx);
     assert!(dirty);
-    assert_eq!(state.left_panel.path, new_name);
+    assert_eq!(state.left_panel.path(), new_name);
 }
 
 #[test]
@@ -403,7 +404,7 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     assert_eq!(panel.cursor, 0);
     assert_eq!(panel.scroll_offset, 0);
     assert!(
-        panel.last_error.is_some(),
+        panel.last_error().is_some(),
         "should set last_error on read failure"
     );
 }
@@ -427,7 +428,7 @@ fn full_refresh_recovers_after_error() {
         "should have entries after recovery"
     );
     assert!(
-        panel.last_error.is_none(),
+        panel.last_error().is_none(),
         "last_error should be cleared on success"
     );
     assert!(
@@ -460,8 +461,8 @@ fn sync_watcher_paths_retries_on_watch_error() {
         "should set last_synced on successful sync"
     );
     let synced_paths = sync_state.last_synced.unwrap();
-    assert_eq!(synced_paths.0, state.left_panel.path);
-    assert_eq!(synced_paths.1, state.right_panel.path);
+    assert_eq!(synced_paths.0, state.left_panel.path());
+    assert_eq!(synced_paths.1, state.right_panel.path());
 
     let watched = watcher.as_ref().unwrap().watched_dirs();
     assert_eq!(watched.len(), 2, "should watch both panel dirs");
@@ -487,15 +488,15 @@ fn sync_watcher_paths_sets_last_synced_when_all_paths_valid() {
         "should set last_synced when both paths exist and watches succeed"
     );
     let synced = sync_state.last_synced.unwrap();
-    assert_eq!(synced.0, state.left_panel.path);
-    assert_eq!(synced.1, state.right_panel.path);
+    assert_eq!(synced.0, state.left_panel.path());
+    assert_eq!(synced.1, state.right_panel.path());
 }
 
 #[test]
 fn event_is_panel_dir_uses_cached_canonical_path() {
     let dir = tempfile::tempdir().unwrap();
     let panel = test_panel(dir.path());
-    let canonical = panel.canonical_path.clone().unwrap();
+    let canonical = panel.canonical_path().unwrap().to_path_buf();
 
     assert!(event_is_panel_dir(&canonical, &panel));
 
@@ -508,10 +509,13 @@ fn set_path_updates_canonical_path() {
     let dir = tempfile::tempdir().unwrap();
     let mut panel = PanelState::new(PathBuf::from("/nonexistent"));
 
-    assert!(panel.canonical_path.is_none());
+    assert!(panel.canonical_path().is_none());
     panel.set_path(dir.path().to_path_buf());
-    assert_eq!(panel.path, dir.path());
-    assert_eq!(panel.canonical_path, dir.path().canonicalize().ok());
+    assert_eq!(panel.path(), dir.path());
+    assert_eq!(
+        panel.canonical_path(),
+        dir.path().canonicalize().ok().as_deref()
+    );
 }
 
 #[test]
@@ -589,7 +593,7 @@ fn deleted_root_dir_stays_at_root_and_refreshes() {
     let dirty = poll_watcher_events(&mut state, &rx);
     assert!(dirty, "should be dirty after root deletion event");
     assert_eq!(
-        state.left_panel.path,
+        state.left_panel.path(),
         PathBuf::from("/"),
         "should stay at root since parent() is None"
     );

@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -28,24 +27,24 @@ pub fn sync_watcher_paths(
     };
 
     if let Some((l, r)) = sync_state.last_synced.as_ref()
-        && l == &state.left_panel.path
-        && r == &state.right_panel.path
+        && l == state.left_panel.path()
+        && r == state.right_panel.path()
     {
         return;
     }
 
     if let Some((deadline, fl, fr)) = &sync_state.failed_cooldown
         && Instant::now() < *deadline
-        && fl == &state.left_panel.path
-        && fr == &state.right_panel.path
+        && fl == state.left_panel.path()
+        && fr == state.right_panel.path()
     {
         return;
     }
 
-    let left = state.left_panel.path.clone();
-    let right = state.right_panel.path.clone();
+    let left = state.left_panel.path().to_path_buf();
+    let right = state.right_panel.path().to_path_buf();
 
-    let (desired, all_paths_present) = canonical_desired_paths(&left, &right);
+    let (desired, _) = canonical_desired_paths(&left, &right);
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 
     let mut had_error = false;
@@ -62,7 +61,7 @@ pub fn sync_watcher_paths(
         }
     }
 
-    if had_error || !all_paths_present {
+    if had_error {
         sync_state.last_synced = None;
         sync_state.failed_cooldown = Some((Instant::now() + COOLDOWN, left, right));
     } else {
@@ -73,29 +72,10 @@ pub fn sync_watcher_paths(
 
 fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool) {
     let mut desired = HashSet::new();
-    let mut all_paths_present = true;
     for path in [left, right] {
-        match path.canonicalize() {
-            Ok(path) => {
-                desired.insert(path);
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                all_paths_present = false;
-                debug_log!(
-                    "Watcher sync skipped missing path {}: {err}",
-                    path.display()
-                );
-            }
-            Err(err) => {
-                all_paths_present = false;
-                debug_log!(
-                    "Watcher sync skipped non-canonicalizable path {}: {err}",
-                    path.display()
-                );
-            }
-        }
+        desired.insert(crate::fs::path::clean_path(path));
     }
-    (desired, all_paths_present)
+    (desired, true)
 }
 
 pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
@@ -124,14 +104,14 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
             }
             WatchEvent::Deleted(path) => {
                 if event_is_panel_dir(&path, &state.left_panel) {
-                    if let Some(parent) = state.left_panel.path.parent().map(Path::to_path_buf) {
+                    if let Some(parent) = state.left_panel.path().parent().map(Path::to_path_buf) {
                         state.left_panel.set_path(parent);
                     }
                     left_needs_full_refresh = true;
                     dirty = true;
                 }
                 if event_is_panel_dir(&path, &state.right_panel) {
-                    if let Some(parent) = state.right_panel.path.parent().map(Path::to_path_buf) {
+                    if let Some(parent) = state.right_panel.path().parent().map(Path::to_path_buf) {
                         state.right_panel.set_path(parent);
                     }
                     right_needs_full_refresh = true;
@@ -191,7 +171,7 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
 }
 
 pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, &panel.path, panel.canonical_path.as_deref()) {
+    if !path_parent_matches(path, panel.path(), panel.canonical_path()) {
         return false;
     }
 
@@ -202,7 +182,7 @@ pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> b
 }
 
 pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, &panel.path, panel.canonical_path.as_deref()) {
+    if !path_parent_matches(path, panel.path(), panel.canonical_path()) {
         return false;
     }
 
@@ -213,31 +193,40 @@ pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> b
 }
 
 fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
-    path.file_name().map(|name| panel.path.join(name))
+    path.file_name().map(|name| panel.path().join(name))
 }
 
 fn event_is_panel_dir(path: &Path, panel: &PanelState) -> bool {
-    if path == panel.path {
+    if path == panel.path() {
         return true;
     }
 
-    if path.parent() == Some(panel.path.as_path()) {
+    if path.parent() == Some(panel.path()) {
         return false;
     }
 
-    let panel_canonical = match &panel.canonical_path {
-        Some(c) => c.clone(),
-        None => match panel.path.canonicalize() {
-            Ok(c) => c,
-            Err(_) => return false,
-        },
-    };
-
-    if path == panel_canonical {
+    let panel_clean = crate::fs::path::clean_path(panel.path());
+    if path == panel_clean {
         return true;
     }
 
-    path.canonicalize().is_ok_and(|p| p == panel_canonical)
+    if let Some(c) = panel.canonical_path() {
+        if path == c {
+            return true;
+        }
+        return path.canonicalize().is_ok_and(|p| p == c);
+    }
+
+    let path_canonical = path.canonicalize().ok();
+    if path_canonical.as_ref().is_some_and(|p| *p == *panel_clean) {
+        return true;
+    }
+
+    let panel_resolved = panel.path().canonicalize().ok();
+    path_canonical
+        .as_ref()
+        .is_some_and(|pc| Some(pc) == panel_resolved.as_ref())
+        || panel_resolved.is_some_and(|pr| path == pr)
 }
 
 fn path_parent_matches(path: &Path, panel_path: &Path, panel_canonical: Option<&Path>) -> bool {
@@ -279,7 +268,7 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
         return false;
     };
 
-    if !panel.show_hidden && entry.is_hidden() {
+    if !panel.show_hidden() && entry.is_hidden() {
         return apply_watcher_remove(panel, path);
     }
 
@@ -325,11 +314,11 @@ fn full_refresh_panel(panel: &mut PanelState) {
         .map(|e| e.path.clone())
         .collect();
 
-    match reader::read_directory(&panel.path) {
+    match reader::read_directory(panel.path()) {
         Ok((entries, errors)) => {
             update_panel_read_errors(panel, &errors);
             panel.listing.set_unfiltered(entries);
-            panel.canonical_path = panel.path.canonicalize().ok();
+            panel.set_canonical_path(panel.path().canonicalize().ok());
             for entry in &mut panel.listing.unfiltered_entries {
                 entry.selected = saved.contains(&entry.path);
             }
@@ -339,7 +328,7 @@ fn full_refresh_panel(panel: &mut PanelState) {
             panel.listing.clear();
             panel.cursor = 0;
             panel.scroll_offset = 0;
-            panel.last_error = Some(err.to_string());
+            panel.set_last_error(Some(err.to_string()));
             panel.recalculate_selection_stats();
         }
     }
@@ -383,7 +372,6 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     if panel.scroll_offset > panel.cursor {
         panel.scroll_offset = panel.cursor;
     }
-    panel.recalculate_selection_stats();
 }
 
 #[cfg(test)]

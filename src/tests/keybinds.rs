@@ -35,7 +35,7 @@ fn ctrl_alt_h_toggles_hidden() {
     let mut state = AppState::default();
     let temp_dir = tempfile::tempdir().unwrap();
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.show_hidden = false;
+    state.left_panel.set_show_hidden(false);
     state.left_panel.cursor = 3;
     state.left_panel.scroll_offset = 2;
 
@@ -49,7 +49,7 @@ fn ctrl_alt_h_toggles_hidden() {
         &mut terminal,
     );
 
-    assert!(state.left_panel.show_hidden);
+    assert!(state.left_panel.show_hidden());
     assert_eq!(state.left_panel.cursor, 0);
     assert_eq!(state.left_panel.scroll_offset, 0);
 }
@@ -59,10 +59,10 @@ fn ctrl_alt_h_toggles_hidden_back() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.show_hidden = true;
+    state.left_panel.set_show_hidden(true);
     state.active_panel = ActivePanel::Left;
     super::super::handle_ctrl_keys(&mut state, KeyCode::Char('h'), 24);
-    assert!(!state.left_panel.show_hidden);
+    assert!(!state.left_panel.show_hidden());
 }
 
 #[test]
@@ -115,8 +115,8 @@ fn ctrl_alt_u_swaps_panels() {
         &mut terminal,
     );
 
-    assert_eq!(state.left_panel.path, PathBuf::from("/tmp/right"));
-    assert_eq!(state.right_panel.path, PathBuf::from("/tmp/left"));
+    assert_eq!(state.left_panel.path(), PathBuf::from("/tmp/right"));
+    assert_eq!(state.right_panel.path(), PathBuf::from("/tmp/left"));
     assert_eq!(state.active_panel, ActivePanel::Right);
 }
 
@@ -236,19 +236,19 @@ fn alt_enter_on_dotdot_does_nothing() {
 fn alt_backspace_navigates_to_parent() {
     let mut state = AppState::default();
     let parent = PathBuf::from("/tmp");
-    state.left_panel.history.push(parent.clone());
+    state.left_panel.push_history(parent.clone());
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Backspace, 20);
-    assert_eq!(state.left_panel.path, parent);
+    assert_eq!(state.left_panel.path(), parent);
 }
 
 #[test]
 fn alt_backspace_empty_history_does_nothing() {
     let mut state = AppState::default();
-    let orig_path = state.left_panel.path.clone();
+    let orig_path = state.left_panel.path().to_path_buf();
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Backspace, 20);
-    assert_eq!(state.left_panel.path, orig_path);
+    assert_eq!(state.left_panel.path(), orig_path);
 }
 
 #[test]
@@ -299,13 +299,7 @@ fn f7_opens_create_directory_dialog() {
     let mut state = AppState::default();
     let mut viewer = None;
     let mut terminal = test_terminal();
-    handle_function_keys(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        KeyCode::F(7),
-        &mut terminal,
-    );
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(7), &mut terminal);
     assert!(matches!(
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Input {
@@ -321,13 +315,7 @@ fn f9_enters_menu_mode() {
     let mut state = AppState::default();
     let mut viewer = None;
     let mut terminal = test_terminal();
-    handle_function_keys(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        KeyCode::F(9),
-        &mut terminal,
-    );
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(9), &mut terminal);
     assert!(matches!(state.mode, AppMode::Menu));
     assert_eq!(state.menu_item_selected, 0);
 }
@@ -337,13 +325,7 @@ fn f10_sets_should_quit() {
     let mut state = AppState::default();
     let mut viewer = None;
     let mut terminal = test_terminal();
-    handle_function_keys(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        KeyCode::F(10),
-        &mut terminal,
-    );
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(10), &mut terminal);
     assert!(state.should_quit);
 }
 

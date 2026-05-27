@@ -10,7 +10,7 @@ use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, me
 use crate::ui::theme::{ColorPalette, Theme};
 
 const MIN_DROPDOWN_ITEM_WIDTH: usize = 10;
-const MENU_VERTICAL_OFFSET: u16 = 4;
+const MENU_PADDING_WIDTH: u16 = 4;
 const MENU_DROPDOWN_OFFSET: u16 = 2;
 
 fn render_menu_title_bar(
@@ -26,8 +26,11 @@ fn render_menu_title_bar(
         } else {
             Theme::menu_bar_with_colors(colors)
         };
-        let label = Span::styled(format!(" {title} "), style);
-        let p = Paragraph::new(label);
+        let mut padded = String::with_capacity(title.len() + 2);
+        padded.push(' ');
+        padded.push_str(title);
+        padded.push(' ');
+        let p = Paragraph::new(Span::styled(padded, style));
         let area = Rect::new(
             menu_bar_area.x + menu_title_x(menu_bar_area.width, i),
             menu_bar_area.y,
@@ -51,7 +54,7 @@ fn render_menu_dropdown(
         .map(|s| UnicodeWidthStr::width(*s))
         .max()
         .unwrap_or(MIN_DROPDOWN_ITEM_WIDTH) as u16
-        + MENU_VERTICAL_OFFSET;
+        + MENU_PADDING_WIDTH;
     let dropdown_y = menu_bar_area.y + 1;
     let max_visible = f.area().height.saturating_sub(dropdown_y);
     if max_visible < 2 {
@@ -92,8 +95,11 @@ fn render_menu_dropdown(
             Theme::panel_with_colors(colors)
         };
         let item_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
-        let label = Span::styled(format!(" {item} "), style);
-        let p = Paragraph::new(label);
+        let mut padded = String::with_capacity(item.len() + 2);
+        padded.push(' ');
+        padded.push_str(item);
+        padded.push(' ');
+        let p = Paragraph::new(Span::styled(padded, style));
         f.render_widget(p, item_area);
     }
 }
@@ -128,6 +134,7 @@ pub fn render_menu_bar_with_colors(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 

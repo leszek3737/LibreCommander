@@ -1,7 +1,5 @@
 use std::path::{MAIN_SEPARATOR, Path};
 
-use unicode_width::UnicodeWidthStr;
-
 fn truncate_suffix(s: &str, max_width: usize) -> String {
     if max_width > 3 {
         let suffix_budget = max_width - 3;
@@ -59,15 +57,27 @@ pub(super) fn truncate_path(path: &str, max_width: usize) -> String {
 }
 
 pub fn wrapped_line_count(text: &str, available_width: u16) -> usize {
-    let w = available_width.max(1) as usize;
-    text.lines()
-        .map(|line| {
-            let display_w = UnicodeWidthStr::width(line);
-            if display_w == 0 {
-                1
-            } else {
-                display_w.div_ceil(w)
-            }
-        })
-        .sum()
+    if text.is_empty() || available_width == 0 {
+        return 0;
+    }
+    let w = usize::from(available_width);
+    let mut lines = 1;
+    let mut col = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines += 1;
+            col = 0;
+            continue;
+        }
+        let cw = unicode_width::UnicodeWidthChar::width(ch)
+            .unwrap_or(1)
+            .max(1);
+        if col + cw > w {
+            lines += 1;
+            col = cw;
+        } else {
+            col += cw;
+        }
+    }
+    lines
 }

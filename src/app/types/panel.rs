@@ -63,22 +63,22 @@ impl Default for PanelListing {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelState {
-    pub path: PathBuf,
-    pub canonical_path: Option<PathBuf>,
+    pub(crate) path: PathBuf,
+    pub(crate) canonical_path: Option<PathBuf>,
     pub listing: PanelListing,
     pub cursor: usize,
     pub scroll_offset: usize,
-    pub history: Vec<PathBuf>,
-    pub sort_mode: SortMode,
-    pub sort_options: SortOptions,
-    pub listing_mode: ListingMode,
-    pub show_hidden: bool,
-    pub show_permissions: bool,
-    pub filter: Option<String>,
-    pub selected_count: usize,
-    pub selected_size: u64,
-    pub total_size: u64,
-    pub last_error: Option<String>,
+    pub(crate) history: Vec<PathBuf>,
+    pub(crate) sort_mode: SortMode,
+    pub(crate) sort_options: SortOptions,
+    pub(crate) listing_mode: ListingMode,
+    pub(crate) show_hidden: bool,
+    pub(crate) show_permissions: bool,
+    pub(crate) filter: Option<String>,
+    pub(crate) selected_count: usize,
+    pub(crate) selected_size: u64,
+    pub(crate) total_size: u64,
+    pub(crate) last_error: Option<String>,
 }
 
 impl PanelState {
@@ -107,6 +107,106 @@ impl PanelState {
     pub fn set_path(&mut self, path: PathBuf) {
         self.canonical_path = path.canonicalize().ok();
         self.path = path;
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn canonical_path(&self) -> Option<&Path> {
+        self.canonical_path.as_deref()
+    }
+
+    pub fn set_canonical_path(&mut self, canonical: Option<PathBuf>) {
+        self.canonical_path = canonical;
+    }
+
+    pub fn history(&self) -> &Vec<PathBuf> {
+        &self.history
+    }
+
+    pub fn push_history(&mut self, path: PathBuf) {
+        self.history.push(path);
+    }
+
+    pub fn pop_history(&mut self) -> Option<PathBuf> {
+        self.history.pop()
+    }
+
+    pub fn sort_mode(&self) -> SortMode {
+        self.sort_mode
+    }
+
+    pub fn set_sort_mode(&mut self, mode: SortMode) {
+        self.sort_mode = mode;
+    }
+
+    pub fn sort_options(&self) -> &SortOptions {
+        &self.sort_options
+    }
+
+    pub fn set_sort_options(&mut self, opts: SortOptions) {
+        self.sort_options = opts;
+    }
+
+    pub fn listing_mode(&self) -> ListingMode {
+        self.listing_mode
+    }
+
+    pub fn set_listing_mode(&mut self, mode: ListingMode) {
+        self.listing_mode = mode;
+    }
+
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    pub fn set_show_hidden(&mut self, show: bool) {
+        self.show_hidden = show;
+    }
+
+    pub fn show_permissions(&self) -> bool {
+        self.show_permissions
+    }
+
+    pub fn set_show_permissions(&mut self, show: bool) {
+        self.show_permissions = show;
+    }
+
+    pub fn filter(&self) -> Option<&str> {
+        self.filter.as_deref()
+    }
+
+    pub fn set_filter(&mut self, f: Option<String>) {
+        self.filter = f;
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected_count
+    }
+
+    pub fn set_selected_count(&mut self, count: usize) {
+        self.selected_count = count;
+    }
+
+    pub fn selected_size(&self) -> u64 {
+        self.selected_size
+    }
+
+    pub fn set_selected_size(&mut self, size: u64) {
+        self.selected_size = size;
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.total_size
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub fn set_last_error(&mut self, err: Option<String>) {
+        self.last_error = err;
     }
 
     fn update_selection_stats(&mut self, size: u64, selected: bool) {
@@ -280,15 +380,6 @@ impl PanelState {
         }
     }
 
-    pub fn set_cursor(&mut self, idx: usize) {
-        if self.listing.entries.is_empty() {
-            self.cursor = 0;
-            self.scroll_offset = 0;
-        } else {
-            self.cursor = idx.min(self.listing.entries.len() - 1);
-        }
-    }
-
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
         self.listing.set_unfiltered(entries.clone());
         self.listing.set_entries(entries);
@@ -297,25 +388,8 @@ impl PanelState {
         self.recalculate_selection_stats();
     }
 
-    pub fn reset_cursor(&mut self) {
-        self.cursor = 0;
-        self.scroll_offset = 0;
-    }
-
     pub fn mark_unfiltered_dirty(&mut self) {
         self.listing.mark_unfiltered_dirty();
-    }
-
-    pub fn set_error(&mut self, msg: impl Into<String>) {
-        self.last_error = Some(msg.into());
-    }
-
-    pub fn clear_error(&mut self) {
-        self.last_error = None;
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.listing.entries.is_empty()
     }
 }
 

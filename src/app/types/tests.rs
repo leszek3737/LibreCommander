@@ -156,14 +156,14 @@ fn test_sort_mode_default() {
 fn test_panel_state_new() {
     let path = PathBuf::from("/test");
     let panel = PanelState::new(path.clone());
-    assert_eq!(panel.path, path);
+    assert_eq!(panel.path(), path);
     assert_eq!(panel.listing.entries.len(), 0);
     assert_eq!(panel.cursor, 0);
     assert_eq!(panel.scroll_offset, 0);
-    assert_eq!(panel.sort_mode, SortMode::default());
-    assert_eq!(panel.listing_mode, ListingMode::Long);
-    assert!(panel.show_hidden);
-    assert!(panel.filter.is_none());
+    assert_eq!(panel.sort_mode(), SortMode::default());
+    assert_eq!(panel.listing_mode(), ListingMode::Long);
+    assert!(panel.show_hidden());
+    assert!(panel.filter().is_none());
 }
 
 #[test]
@@ -204,8 +204,8 @@ fn test_panel_state_toggle_selection_toggle_on() {
     panel.cursor = 0;
     panel.toggle_selection();
     assert!(panel.listing.entries[0].selected);
-    assert_eq!(panel.selected_count, 1);
-    assert_eq!(panel.selected_size, 100);
+    assert_eq!(panel.selected_count(), 1);
+    assert_eq!(panel.selected_size(), 100);
 }
 
 #[test]
@@ -219,8 +219,8 @@ fn test_panel_state_toggle_selection_toggle_off() {
     assert!(panel.listing.entries[0].selected);
     panel.toggle_selection();
     assert!(!panel.listing.entries[0].selected);
-    assert_eq!(panel.selected_count, 0);
-    assert_eq!(panel.selected_size, 0);
+    assert_eq!(panel.selected_count(), 0);
+    assert_eq!(panel.selected_size(), 0);
 }
 
 #[test]
@@ -234,8 +234,8 @@ fn test_panel_state_set_selection_at_on() {
     panel.set_selection_at(0, true);
 
     assert!(panel.listing.entries[0].selected);
-    assert_eq!(panel.selected_count, 1);
-    assert_eq!(panel.selected_size, 100);
+    assert_eq!(panel.selected_count(), 1);
+    assert_eq!(panel.selected_size(), 100);
 }
 
 #[test]
@@ -249,8 +249,8 @@ fn test_panel_state_set_selection_at_off() {
     panel.set_selection_at(0, false);
 
     assert!(!panel.listing.entries[0].selected);
-    assert_eq!(panel.selected_count, 0);
-    assert_eq!(panel.selected_size, 0);
+    assert_eq!(panel.selected_count(), 0);
+    assert_eq!(panel.selected_size(), 0);
 }
 
 #[test]
@@ -397,8 +397,8 @@ fn test_app_state_substate_defaults() {
     let panels = PanelsState::new(current_dir.clone());
     let menu = MenuState::new(current_dir.clone());
 
-    assert_eq!(panels.left_panel.path, current_dir);
-    assert_eq!(panels.right_panel.path, PathBuf::from("/tmp"));
+    assert_eq!(panels.left_panel.path(), current_dir);
+    assert_eq!(panels.right_panel.path(), PathBuf::from("/tmp"));
     assert_eq!(panels.active_panel, ActivePanel::Left);
     assert_eq!(menu.directory_hotlist, vec![PathBuf::from("/tmp")]);
     assert_eq!(TextInput::default().cursor, 0);
@@ -431,7 +431,7 @@ fn test_text_input_mutations_clamp_cursor() {
 fn test_app_state_active_panel_left() {
     let state = AppState::new();
     let panel = state.active_panel();
-    assert_eq!(panel.path, state.left_panel.path);
+    assert_eq!(panel.path(), state.left_panel.path());
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn test_app_state_active_panel_right() {
     let mut state = AppState::new();
     state.active_panel = ActivePanel::Right;
     let panel = state.active_panel();
-    assert_eq!(panel.path, state.right_panel.path);
+    assert_eq!(panel.path(), state.right_panel.path());
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn test_app_state_active_panel_mut_left() {
     let mut state = AppState::new();
     let panel = state.active_panel_mut();
     panel.set_path(PathBuf::from("/modified"));
-    assert_eq!(state.left_panel.path, PathBuf::from("/modified"));
+    assert_eq!(state.left_panel.path(), PathBuf::from("/modified"));
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn test_app_state_active_panel_mut_right() {
     state.active_panel = ActivePanel::Right;
     let panel = state.active_panel_mut();
     panel.set_path(PathBuf::from("/modified"));
-    assert_eq!(state.right_panel.path, PathBuf::from("/modified"));
+    assert_eq!(state.right_panel.path(), PathBuf::from("/modified"));
 }
 
 #[test]
@@ -464,14 +464,14 @@ fn test_app_state_inactive_panel_left() {
     let mut state = AppState::new();
     state.active_panel = ActivePanel::Right;
     let panel = state.inactive_panel();
-    assert_eq!(panel.path, state.left_panel.path);
+    assert_eq!(panel.path(), state.left_panel.path());
 }
 
 #[test]
 fn test_app_state_inactive_panel_right() {
     let state = AppState::new();
     let panel = state.inactive_panel();
-    assert_eq!(panel.path, state.right_panel.path);
+    assert_eq!(panel.path(), state.right_panel.path());
 }
 
 #[test]
@@ -497,15 +497,17 @@ fn test_confirm_details_simple() {
 
 #[test]
 fn test_confirm_details_with_files() {
-    let files = vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")];
-    let cd = ConfirmDetails::with_files("Delete", "Delete 2 entries?", files.clone());
-    assert_eq!(cd.files.as_ref().unwrap(), &files);
+    let files = vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()];
+    let cd = ConfirmDetails::with_files("Delete", "Delete 2 entries?", files);
+    let displayed = cd.files.as_ref().unwrap();
+    assert_eq!(displayed[0], "/tmp/a.txt");
+    assert_eq!(displayed[1], "/tmp/b.txt");
 }
 
 #[test]
 fn test_confirm_details_with_empty_files() {
     let cd = ConfirmDetails::with_files("Delete", "Nothing?", vec![]);
-    assert!(cd.files.is_none());
+    assert_eq!(cd.files, Some(vec![]));
 }
 
 #[test]
@@ -561,16 +563,19 @@ fn test_dialog_kind_copy_move() {
         source: sources.clone(),
         dest: dest.clone(),
         is_move: true,
+        source_display: sources.iter().map(|p| p.display().to_string()).collect(),
     };
     if let DialogKind::CopyMove {
         source,
         dest: d,
         is_move,
+        source_display: sd,
     } = dialog
     {
         assert_eq!(source, sources);
         assert_eq!(d, dest);
         assert!(is_move);
+        assert_eq!(sd.len(), 2);
     } else {
         panic!("Expected CopyMove variant");
     }
@@ -775,9 +780,9 @@ fn test_total_size_computed_by_recalculate() {
         create_test_entry("c.txt", false, 300, 0o644, true),
     ];
     panel.recalculate_selection_stats();
-    assert_eq!(panel.total_size, 600);
-    assert_eq!(panel.selected_count, 1);
-    assert_eq!(panel.selected_size, 300);
+    assert_eq!(panel.total_size(), 600);
+    assert_eq!(panel.selected_count(), 1);
+    assert_eq!(panel.selected_size(), 300);
 }
 
 fn cha_entry(name: &str, mode: u32, size: u64, hidden: bool) -> FileEntry {
@@ -842,8 +847,8 @@ fn test_total_size_includes_all_entries() {
         create_test_entry("big.txt", false, 5000, 0o644, true),
     ];
     panel.recalculate_selection_stats();
-    assert_eq!(panel.total_size, 5050);
-    assert_eq!(panel.selected_size, 5000);
+    assert_eq!(panel.total_size(), 5050);
+    assert_eq!(panel.selected_size(), 5000);
 }
 
 #[test]
@@ -984,7 +989,12 @@ fn mtime_none_displays_unknown_and_sorts_after_known() {
         .name("unknown.txt")
         .path(PathBuf::from("unknown.txt"))
         .build();
-    assert_eq!(no_mtime.display_modified(), "Unknown");
+    let expected_epoch = chrono::DateTime::from_timestamp(0, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%d-%m-%y %H:%M")
+        .to_string();
+    assert_eq!(no_mtime.display_modified(), expected_epoch);
 
     let with_mtime = FileEntry::builder()
         .name("known.txt")

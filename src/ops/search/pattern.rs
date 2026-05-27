@@ -1,28 +1,32 @@
 use crate::ops::search::FileSearch;
+use memchr::memmem;
 
 pub(super) fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
     if needle_lower.is_empty() {
         return true;
     }
-    let needle_len = needle_lower.len();
-    let mut ring = vec!['\0'; needle_len];
-    let mut filled = 0usize;
-    let mut head = 0usize;
-
+    let needle_bytes: Vec<u8> = needle_lower
+        .iter()
+        .flat_map(|&c| (c as u32).to_ne_bytes())
+        .collect();
+    let mut haystack_bytes: Vec<u8> = Vec::with_capacity(haystack.len() * 4);
     for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
-        ring[head] = c;
-        head = (head + 1) % needle_len;
-        if filled < needle_len {
-            filled += 1;
-        }
-        if filled == needle_len
-            && needle_lower
-                .iter()
-                .enumerate()
-                .all(|(i, &nc)| ring[(head + i) % needle_len] == nc)
-        {
+        haystack_bytes.extend_from_slice(&(c as u32).to_ne_bytes());
+    }
+    if haystack_bytes.len() < needle_bytes.len() {
+        return false;
+    }
+    let finder = memmem::Finder::new(&needle_bytes);
+    let mut offset = 0;
+    while offset + needle_bytes.len() <= haystack_bytes.len() {
+        let Some(pos) = finder.find(&haystack_bytes[offset..]) else {
+            return false;
+        };
+        let aligned = offset + pos;
+        if aligned % 4 == 0 {
             return true;
         }
+        offset = aligned + 1;
     }
     false
 }
@@ -34,9 +38,19 @@ pub enum CompiledPattern {
         needle_ascii: Option<String>,
         insensitive: bool,
     },
+    /// Single-star wildcard or `*inner*` substring match.
+    ///
+    /// - One `*`: `prefix` holds text before `*`, `suffix` holds text after.
+    ///   E.g. `*.txt` → `prefix = None, suffix = Some(".txt")`.
+    /// - Two `*`s with only inner text (`*foo*`): `suffix` holds the inner
+    ///   substring and `contains = true` signals substring semantics.
     WildcardSimple {
         prefix: Option<Vec<char>>,
+        /// After a single `*`: the trailing text. When `contains` is true,
+        /// this holds the inner substring between two `*`s instead.
         suffix: Option<Vec<char>>,
+        /// When true, `suffix` is a substring needle (`*inner*`), not a
+        /// trailing suffix.
         contains: bool,
         insensitive: bool,
     },

@@ -61,48 +61,41 @@ pub fn user_menu_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
     config_home(env).map(|dir| dir.join("menu"))
 }
 
-pub fn terminal_state_file_path() -> PathBuf {
+pub fn terminal_state_file_path() -> Option<PathBuf> {
     terminal_state_file_path_with_env(&ProcessEnv)
 }
 
-pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> PathBuf {
-    cache_home(env)
-        .map(|dir| dir.join("terminal_state"))
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("lc_terminal_state_{}", std::process::id()))
+pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
+    cache_home(env).map(|dir| dir.join("terminal_state"))
+}
+
+fn xdg_dir(
+    env: &impl EnvProvider,
+    xdg_key: &str,
+    home_subdir: &str,
+    platform_fn: fn() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    env.var_os(xdg_key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|dir| dir.join(APP_NAME))
+        .or_else(|| {
+            env.var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(home_subdir).join(APP_NAME))
         })
+        .or_else(platform_fn)
 }
 
 fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
-    env.var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|dir| dir.join(APP_NAME))
-        .or_else(|| {
-            env.var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(".config").join(APP_NAME))
-        })
-        .or_else(platform_config_home)
+    xdg_dir(env, "XDG_CONFIG_HOME", ".config", platform_config_home)
 }
 
 pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
-    env.var_os("XDG_CACHE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|dir| dir.join(APP_NAME))
-        .or_else(|| {
-            env.var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(".cache").join(APP_NAME))
-        })
-        .or_else(platform_cache_home)
+    xdg_dir(env, "XDG_CACHE_HOME", ".cache", platform_cache_home)
 }
 
 /// On Windows, HOME/XDG are often unset; fall back to platform dirs.
@@ -176,7 +169,7 @@ mod tests {
 
         assert_eq!(
             terminal_state_file_path_with_env(&env),
-            PathBuf::from("/xdg/cache/lc/terminal_state")
+            Some(PathBuf::from("/xdg/cache/lc/terminal_state"))
         );
     }
 
@@ -186,7 +179,7 @@ mod tests {
 
         assert_eq!(
             terminal_state_file_path_with_env(&env),
-            PathBuf::from("/home/user/.cache/lc/terminal_state")
+            Some(PathBuf::from("/home/user/.cache/lc/terminal_state"))
         );
     }
 
@@ -198,16 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn terminal_state_path_falls_back_to_temp_when_no_env() {
+    fn terminal_state_path_returns_none_when_no_env() {
         let env = MapEnv::default();
-
-        let result = terminal_state_file_path_with_env(&env);
-        assert!(result.starts_with(std::env::temp_dir()));
-        assert!(
-            result
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("lc_terminal_state_"))
-        );
+        assert_eq!(terminal_state_file_path_with_env(&env), None);
     }
 
     #[test]
@@ -229,7 +215,7 @@ mod tests {
 
         assert_eq!(
             terminal_state_file_path_with_env(&env),
-            PathBuf::from("/home/user/.cache/lc/terminal_state")
+            Some(PathBuf::from("/home/user/.cache/lc/terminal_state"))
         );
     }
 
@@ -242,13 +228,6 @@ mod tests {
     #[test]
     fn terminal_state_path_rejects_relative_home() {
         let env = env(&[("HOME", "relative/home")]);
-
-        let result = terminal_state_file_path_with_env(&env);
-        assert!(result.starts_with(std::env::temp_dir()));
-        assert!(
-            result
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("lc_terminal_state_"))
-        );
+        assert_eq!(terminal_state_file_path_with_env(&env), None);
     }
 }

@@ -122,7 +122,7 @@ fn dialog_overlay_renders_error_text() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -140,7 +140,7 @@ fn dialog_overlay_centered() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer().clone();
     assert!(buf.cell((20, 7)).is_some());
@@ -157,7 +157,7 @@ fn dialog_with_long_title_does_not_overflow() {
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let text = buffer_to_string(buf);
@@ -177,7 +177,7 @@ fn help_dialog_renders_help_text() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -198,7 +198,7 @@ fn progress_dialog_nan_percent_handled() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let text = buffer_to_string(buf);
@@ -221,7 +221,7 @@ fn menu_dropdown_renders_over_panels() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -242,7 +242,7 @@ fn list_picker_overlay_renders_title() {
     let viewer_state: Option<viewer::ViewerState> = None;
 
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
 
     let buffer = terminal.backend().buffer();
@@ -257,7 +257,7 @@ fn menu_bar_rendered_at_top() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let cell = buf.cell((39, 0)).unwrap();
@@ -270,7 +270,7 @@ fn status_bar_at_bottom() {
     let mut terminal = test_terminal();
     let viewer_state: Option<viewer::ViewerState> = None;
     terminal
-        .draw(|f| render::render_ui(f, &state, &viewer_state, &None))
+        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let cell = buf.cell((2, 23)).unwrap();

@@ -77,7 +77,12 @@ pub(super) fn publish_temp_dir(
                         ),
                     )
                 })?;
-                fs::remove_dir(&backup.container)?;
+                if let Err(e) = fs::remove_dir(&backup.container) {
+                    debug_log!(
+                        "warning: failed to cleanup backup container {}: {e}",
+                        backup.container.display()
+                    );
+                }
             }
             Err(err)
         }
@@ -131,45 +136,11 @@ fn backup_path_for(dest: &Path, seq: u64) -> PathBuf {
 
 pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     if overwrite {
-        let need_remove = match fs::symlink_metadata(dest) {
-            Ok(meta) if meta.is_dir() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::IsADirectory,
-                    "cannot replace a directory with a file",
-                ));
-            }
-            Ok(_) => true,
-            Err(_) => false,
-        };
-        #[cfg(windows)]
-        if need_remove {
-            let mut os = dest.as_os_str().to_os_string();
-            os.push(".lc_bak");
-            let backup = PathBuf::from(os);
-            if backup.exists() {
-                fs::remove_file(&backup)?;
-            }
-            fs::rename(dest, &backup)?;
-            match fs::rename(temp, dest) {
-                Ok(()) => {
-                    let _ = fs::remove_file(&backup);
-                }
-                Err(err) => {
-                    if let Err(restore_err) = fs::rename(&backup, dest) {
-                        debug_log!(
-                            "failed to restore backup {} to {}: {restore_err}",
-                            backup.display(),
-                            dest.display()
-                        );
-                    }
-                    return Err(err);
-                }
-            }
-            return Ok(());
-        }
-        let _ = need_remove;
+        replace_file_inner(temp, dest, "cannot replace a directory with a file")?;
+    } else {
+        std::fs::rename(temp, dest)?;
     }
-    std::fs::rename(temp, dest)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -208,12 +179,14 @@ pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn replace_file_with_temp(temp: &Path, dest: &Path) -> io::Result<()> {
+    let msg = format!("cannot overwrite directory with file: {}", dest.display());
+    replace_file_inner(temp, dest, &msg)
+}
+
+fn replace_file_inner(temp: &Path, dest: &Path, dir_err_msg: &str) -> io::Result<()> {
     let need_remove = match fs::symlink_metadata(dest) {
         Ok(meta) if meta.is_dir() => {
-            return Err(io::Error::new(
-                io::ErrorKind::IsADirectory,
-                format!("cannot overwrite directory with file: {}", dest.display()),
-            ));
+            return Err(io::Error::new(io::ErrorKind::IsADirectory, dir_err_msg));
         }
         Ok(_) => true,
         Err(_) => false,

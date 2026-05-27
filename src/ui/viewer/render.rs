@@ -81,7 +81,7 @@ fn render_content_paragraph(
         if state.wrap_lines {
             paragraph = paragraph.wrap(Wrap { trim: false });
             if use_visual && sub_row > 0 {
-                paragraph = paragraph.scroll((sub_row as u16, 0));
+                paragraph = paragraph.scroll((sub_row.min(u16::MAX as usize) as u16, 0));
             }
         } else {
             paragraph = paragraph.scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
@@ -324,18 +324,19 @@ pub fn render_image_view_with_colors(
     render_viewer_status(f, inner_area, state, "Image", &position_text, colors);
 }
 
-pub fn render_loading(f: &mut Frame, area: Rect, path: &Path) {
-    render_loading_with_colors(f, area, path, &ColorPalette::default());
+pub fn render_loading(f: &mut Frame, area: Rect, path: &Path, spinner_frame: u64) {
+    render_loading_with_colors(f, area, path, &ColorPalette::default(), spinner_frame);
 }
 
-pub fn render_loading_with_colors(f: &mut Frame, area: Rect, path: &Path, colors: &ColorPalette) {
+pub fn render_loading_with_colors(
+    f: &mut Frame,
+    area: Rect,
+    path: &Path,
+    colors: &ColorPalette,
+    spinner_frame: u64,
+) {
     let spinner_chars = ['|', '/', '-', '\\'];
-    let idx = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        / 200;
-    let spinner = spinner_chars[idx as usize % spinner_chars.len()];
+    let spinner = spinner_chars[spinner_frame as usize % spinner_chars.len()];
 
     let name = path
         .file_name()

@@ -8,7 +8,6 @@ use crate::ops::search::{SearchOutcome, TruncationReason};
 
 pub(super) struct FileSearchContext<'a> {
     pub(super) outcome: &'a mut SearchOutcome<FileEntry>,
-    pub(super) item_count: &'a mut usize,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
     pub(super) cancel: Option<&'a AtomicBool>,
 }
@@ -25,8 +24,14 @@ pub(super) struct ContentSearchContext<'a> {
     pub(super) pattern_lower: &'a [char],
     pub(super) recursive: bool,
     pub(super) outcome: &'a mut SearchOutcome<(std::path::PathBuf, usize, String)>,
-    pub(super) item_count: &'a mut usize,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
+    pub(super) cancel: Option<&'a AtomicBool>,
+}
+
+impl ContentSearchContext<'_> {
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+    }
 }
 
 pub(super) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
@@ -43,14 +48,12 @@ pub(super) fn prepare_dir_scan<T>(
     depth: usize,
     max_depth: usize,
     max_items: usize,
-    item_count: &mut usize,
     outcome: &mut SearchOutcome<T>,
     extra_guard: impl Fn(&SearchOutcome<T>) -> bool,
+    guard_reason: TruncationReason,
 ) -> Option<std::fs::ReadDir> {
     if !extra_guard(outcome) {
-        outcome
-            .truncated
-            .get_or_insert(TruncationReason::ContentResultLimit);
+        outcome.truncated.get_or_insert(guard_reason);
         return None;
     }
     if depth >= max_depth {
@@ -59,7 +62,7 @@ pub(super) fn prepare_dir_scan<T>(
             .get_or_insert(TruncationReason::DepthLimit);
         return None;
     }
-    if *item_count >= max_items {
+    if outcome.items_scanned >= max_items {
         outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
         return None;
     }

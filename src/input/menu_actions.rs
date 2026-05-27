@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+const TREE_INITIAL_EXPAND_DEPTH: usize = 2;
+
 use lc::app::user_menu::MenuSource;
 use lc::app::{config, dir_tree, types::*, user_menu};
 use lc::menu::{MenuAction, menu_action_at};
@@ -45,9 +47,9 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
                 if !state
                     .hotlist()
                     .iter()
-                    .any(|p| p == &state.active_panel().path)
+                    .any(|p| p == state.active_panel().path())
                 {
-                    state.hotlist_push(state.active_panel().path.clone());
+                    state.hotlist_push(state.active_panel().path().to_path_buf());
                 }
                 state.status_message =
                     Some("Path added to hotlist (run Save Setup to persist)".to_string());
@@ -85,25 +87,30 @@ fn execute_panel_config_action(
         MenuAction::ToggleListingMode => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
-                panel.listing_mode = match panel.listing_mode {
+                panel.set_listing_mode(match panel.listing_mode() {
                     ListingMode::Long => ListingMode::Brief,
                     ListingMode::Brief => ListingMode::Long,
-                };
-                state.status_message = Some(format!("Layout changed to {:?}", panel.listing_mode));
+                });
+                state.status_message =
+                    Some(format!("Layout changed to {:?}", panel.listing_mode()));
             });
             None
         }
         MenuAction::CycleSortOrder => {
             with_menu_panel(state, |state| {
                 let p = state.active_panel_mut();
-                p.sort_mode = ops::cycle_sort_mode(p.sort_mode);
+                p.set_sort_mode(ops::cycle_sort_mode(p.sort_mode()));
                 rebuild_visible_entries(p, current_visible_height());
             });
             None
         }
         MenuAction::OpenFilter => {
             with_menu_panel(state, |state| {
-                state.dialog_input.text = state.active_panel().filter.clone().unwrap_or_default();
+                state.dialog_input.text = state
+                    .active_panel()
+                    .filter()
+                    .unwrap_or_default()
+                    .to_string();
                 state.dialog_input.cursor_end();
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Filter:".to_string(),
@@ -115,7 +122,7 @@ fn execute_panel_config_action(
         MenuAction::ResetPanelFilter => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
-                panel.filter = None;
+                panel.set_filter(None);
                 rebuild_visible_entries(panel, current_visible_height());
                 state.status_message = Some("Panel filter reset".to_string());
             });
@@ -124,10 +131,14 @@ fn execute_panel_config_action(
         MenuAction::TogglePermissions => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
-                panel.show_permissions = !panel.show_permissions;
+                panel.set_show_permissions(!panel.show_permissions());
                 state.status_message = Some(format!(
                     "Permissions: {}",
-                    if panel.show_permissions { "ON" } else { "OFF" }
+                    if panel.show_permissions() {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
                 ));
             });
             None
@@ -143,9 +154,13 @@ fn execute_nav_action(
     match action {
         MenuAction::DirectoryTree => {
             with_menu_panel(state, |state| {
-                let path = state.active_panel().path.clone();
-                let show_hidden = state.active_panel().show_hidden;
-                let tree = dir_tree::build_tree_with_diagnostics(&path, 2, show_hidden);
+                let path = state.active_panel().path().to_path_buf();
+                let show_hidden = state.active_panel().show_hidden();
+                let tree = dir_tree::build_tree_with_diagnostics(
+                    &path,
+                    TREE_INITIAL_EXPAND_DEPTH,
+                    show_hidden,
+                );
                 state.tree_root = path;
                 state.tree_entries = tree.entries;
                 state.tree_selected = 0;
@@ -231,7 +246,7 @@ fn execute_dialog_action(
 }
 
 pub fn open_user_menu(state: &mut AppState) {
-    let panel_dir = state.active_panel().path.clone();
+    let panel_dir = state.active_panel().path().to_path_buf();
     let current_file = state
         .active_panel()
         .current_entry()

@@ -27,19 +27,14 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
     ) -> SearchOutcome<FileEntry> {
-        let mut outcome = SearchOutcome::default();
-        let mut item_count: usize = 0;
-        let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
-        let mut visited = HashSet::new();
-        seed_visited_dir(path, &mut visited);
-        let mut ctx = FileSearchContext {
-            outcome: &mut outcome,
-            item_count: &mut item_count,
-            visited: &mut visited,
-            cancel: None,
-        };
-        search_files_recursive(path, &compiled_pattern, recursive, 0, &mut ctx);
-        outcome
+        let cancel = AtomicBool::new(false);
+        Self::search_files_with_diagnostics_cancellable(
+            path,
+            pattern,
+            recursive,
+            case_sensitive,
+            &cancel,
+        )
     }
 
     pub fn search_files_with_diagnostics_cancellable(
@@ -50,13 +45,11 @@ impl FileSearch {
         cancel: &AtomicBool,
     ) -> SearchOutcome<FileEntry> {
         let mut outcome = SearchOutcome::default();
-        let mut item_count: usize = 0;
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
         let mut visited = HashSet::new();
         seed_visited_dir(path, &mut visited);
         let mut ctx = FileSearchContext {
             outcome: &mut outcome,
-            item_count: &mut item_count,
             visited: &mut visited,
             cancel: Some(cancel),
         };
@@ -86,9 +79,9 @@ fn search_files_recursive(
         depth,
         MAX_SEARCH_DEPTH,
         MAX_SEARCH_ITEMS,
-        ctx.item_count,
         ctx.outcome,
         |_| true,
+        TruncationReason::ItemLimit,
     ) else {
         return;
     };
@@ -97,7 +90,7 @@ fn search_files_recursive(
         if ctx.is_cancelled() {
             return;
         }
-        if *ctx.item_count >= MAX_SEARCH_ITEMS {
+        if ctx.outcome.items_scanned >= MAX_SEARCH_ITEMS {
             ctx.outcome
                 .truncated
                 .get_or_insert(TruncationReason::ItemLimit);
@@ -125,7 +118,7 @@ fn search_files_recursive(
             }
         };
 
-        *ctx.item_count += 1;
+        ctx.outcome.items_scanned += 1;
 
         let name = entry.file_name();
         let name_lossy = name.to_string_lossy();
@@ -139,6 +132,9 @@ fn search_files_recursive(
             }
         }
 
+        // Symlinked files are included in results (pattern matched above).
+        // Symlinked directories are skipped for recursion to prevent
+        // infinite loops via cyclic symlinks.
         if file_type.is_symlink() {
             continue;
         }

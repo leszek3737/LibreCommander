@@ -13,7 +13,7 @@ fn menu_toggle_hidden_files_refreshes_active_panel() {
     let mut terminal = test_terminal();
     let mut state = state;
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.show_hidden = false;
+    state.left_panel.set_show_hidden(false);
     state.mode = AppMode::Menu;
     state.menu_selected = 3;
     state.menu_item_selected = 0;
@@ -28,7 +28,7 @@ fn menu_toggle_hidden_files_refreshes_active_panel() {
     );
 
     assert_eq!(state.mode, AppMode::Normal);
-    assert!(state.left_panel.show_hidden);
+    assert!(state.left_panel.show_hidden());
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn menu_toggle_hidden_files_reverse_refreshes_active_panel() {
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.show_hidden = true;
+    state.left_panel.set_show_hidden(true);
     state.mode = AppMode::Menu;
     state.menu_selected = 3;
     state.menu_item_selected = 0;
@@ -54,7 +54,7 @@ fn menu_toggle_hidden_files_reverse_refreshes_active_panel() {
         &mut terminal,
     );
 
-    assert!(!state.left_panel.show_hidden);
+    assert!(!state.left_panel.show_hidden());
 }
 
 #[test]
@@ -191,12 +191,14 @@ fn menu_sort_preserves_current_entry_focus() {
     ];
     state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
     state.left_panel.cursor = 0;
-    state.left_panel.sort_mode = lc::app::types::SortMode::NameDesc;
+    state
+        .left_panel
+        .set_sort_mode(lc::app::types::SortMode::NameDesc);
 
     run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
 
     assert_eq!(
-        state.left_panel.sort_mode,
+        state.left_panel.sort_mode(),
         lc::app::types::SortMode::NaturalNameAsc
     );
     assert_eq!(state.left_panel.listing.entries[0].name, "alpha.txt");
@@ -223,7 +225,7 @@ fn menu_reset_filter_preserves_current_entry_focus() {
         TestEntry::new("alpha.txt").build(),
         TestEntry::new("beta.txt").build(),
     ];
-    state.left_panel.filter = Some("beta".to_string());
+    state.left_panel.set_filter(Some("beta".to_string()));
 
     run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
 

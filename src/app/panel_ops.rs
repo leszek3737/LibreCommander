@@ -42,7 +42,7 @@ pub fn sync_watcher_job_state(
 }
 
 pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
-    match reader::read_directory(&panel.path) {
+    match reader::read_directory(panel.path()) {
         Ok((entries, errors)) => {
             update_panel_read_errors(panel, &errors);
             let current_name = current_panel_entry_name(panel);
@@ -50,13 +50,17 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             let new_unfiltered = entries;
             let new_filtered = filtered_sorted_entries(
                 &new_unfiltered,
-                panel.filter.as_deref(),
-                panel.sort_mode,
-                panel.sort_options,
-                panel.show_hidden,
+                panel.filter(),
+                panel.sort_mode(),
+                *panel.sort_options(),
+                panel.show_hidden(),
             );
             let mut sorted_unfiltered = new_unfiltered;
-            ops::sort_entries(&mut sorted_unfiltered, panel.sort_mode, panel.sort_options);
+            ops::sort_entries(
+                &mut sorted_unfiltered,
+                panel.sort_mode(),
+                *panel.sort_options(),
+            );
             panel.listing.set_unfiltered(sorted_unfiltered);
             panel.listing.set_entries(new_filtered);
             restore_panel_selection(panel, &saved);
@@ -68,7 +72,7 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             panel.listing.clear();
             panel.cursor = 0;
             panel.scroll_offset = 0;
-            panel.last_error = Some(e.to_string());
+            panel.set_last_error(Some(e.to_string()));
             panel.recalculate_selection_stats();
         }
     }
@@ -76,17 +80,17 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
 
 pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Error]) {
     if errors.is_empty() {
-        panel.last_error = None;
+        panel.set_last_error(None);
     } else {
         let error_summary = errors
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("; ");
-        panel.last_error = Some(format!(
+        panel.set_last_error(Some(format!(
             "{} file(s) failed to read: {error_summary}",
             errors.len()
-        ));
+        )));
     }
 }
 
@@ -131,10 +135,10 @@ pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
     let current_name = current_panel_entry_name(panel);
     let filtered = filtered_sorted_entries(
         &panel.listing.unfiltered_entries,
-        panel.filter.as_deref(),
-        panel.sort_mode,
-        panel.sort_options,
-        panel.show_hidden,
+        panel.filter(),
+        panel.sort_mode(),
+        *panel.sort_options(),
+        panel.show_hidden(),
     );
     panel.listing.set_entries(filtered);
     panel.recalculate_selection_stats();
@@ -154,6 +158,9 @@ pub(crate) fn entry_matches_panel(
 
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
     for entry in &mut panel.listing.entries {
+        entry.selected = saved.contains(&entry.path);
+    }
+    for entry in &mut panel.listing.unfiltered_entries {
         entry.selected = saved.contains(&entry.path);
     }
 }
@@ -234,11 +241,11 @@ pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     }
     let display = path.display().to_string();
     let panel = state.active_panel_mut();
-    panel.history.push(panel.path.clone());
+    panel.push_history(panel.path().to_path_buf());
     panel.set_path(path);
     panel.cursor = 0;
     panel.scroll_offset = 0;
-    panel.filter = None;
+    panel.set_filter(None);
     refresh_active(state);
     state.status_message = Some(format!("cd to {display}"));
 }

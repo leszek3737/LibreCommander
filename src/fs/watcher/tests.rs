@@ -84,7 +84,7 @@ fn convert_event_emits_all_create_paths() {
 
 #[test]
 fn convert_event_maps_split_rename_events() {
-    let pending: Mutex<HashMap<PathBuf, PendingFromEntry>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
     let from = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
         paths: vec![PathBuf::from("old")],
@@ -274,10 +274,10 @@ fn flush_pending_keeps_stale_from_when_queue_is_full() -> TestResult {
             .unwrap_or_else(|err| err.into_inner());
         pending.insert(
             parent_key.clone(),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: stale.clone(),
                 time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            },
+            }],
         );
     }
 
@@ -288,7 +288,10 @@ fn flush_pending_keeps_stale_from_when_queue_is_full() -> TestResult {
         .lock()
         .unwrap_or_else(|err| err.into_inner());
     assert_eq!(
-        pending.get(&parent_key).map(|e| e.path.clone()),
+        pending
+            .get(&parent_key)
+            .and_then(|v| v.first())
+            .map(|e| e.path.clone()),
         Some(stale)
     );
     drop(rx);
@@ -320,8 +323,8 @@ fn process_debounce_coalesces_suppressed_event() {
 }
 
 #[test]
-fn stale_from_emits_deleted_and_stores_new_from() {
-    let pending: Mutex<HashMap<PathBuf, PendingFromEntry>> = Mutex::new(HashMap::new());
+fn multiple_from_same_dir_buffered_and_paired_fifo() {
+    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
     let from1 = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
@@ -333,9 +336,14 @@ fn stale_from_emits_deleted_and_stores_new_from() {
         paths: vec![PathBuf::from("old_b")],
         attrs: Default::default(),
     };
-    let to = notify::Event {
+    let to_b = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)),
         paths: vec![PathBuf::from("new_b")],
+        attrs: Default::default(),
+    };
+    let to_a = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)),
+        paths: vec![PathBuf::from("new_a")],
         attrs: Default::default(),
     };
 
@@ -343,11 +351,21 @@ fn stale_from_emits_deleted_and_stores_new_from() {
     assert!(ev1.is_empty());
 
     let ev2 = convert_event_with_rename_pairing(from2, &pending);
-    assert!(matches!(ev2.as_slice(), [WatchEvent::Deleted(p)] if p == &PathBuf::from("old_a")));
-
-    let ev3 = convert_event_with_rename_pairing(to, &pending);
     assert!(
-        matches!(ev3.as_slice(), [WatchEvent::Renamed { from, to }] if from == &PathBuf::from("old_b") && to == &PathBuf::from("new_b"))
+        ev2.is_empty(),
+        "second From in same dir should not emit Deleted"
+    );
+
+    let ev3 = convert_event_with_rename_pairing(to_b, &pending);
+    assert!(
+        matches!(ev3.as_slice(), [WatchEvent::Renamed { from, to }] if from == &PathBuf::from("old_a") && to == &PathBuf::from("new_b")),
+        "first To pairs with first From (FIFO)"
+    );
+
+    let ev4 = convert_event_with_rename_pairing(to_a, &pending);
+    assert!(
+        matches!(ev4.as_slice(), [WatchEvent::Renamed { from, to }] if from == &PathBuf::from("old_b") && to == &PathBuf::from("new_a")),
+        "second To pairs with second From (FIFO)"
     );
 }
 
@@ -363,10 +381,10 @@ fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
             .unwrap_or_else(|err| err.into_inner());
         pending.insert(
             PathBuf::new(),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: PathBuf::from("/tmp/stale_file.txt"),
                 time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            },
+            }],
         );
     }
 
@@ -390,20 +408,20 @@ fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
 #[test]
 fn clear_pending_from_keeps_new_from_for_same_path() {
     let parent_key = PathBuf::new();
-    let pending: Mutex<HashMap<PathBuf, PendingFromEntry>> = Mutex::new(HashMap::new());
-    let old_time = Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1);
+    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
     let new_time = Instant::now();
     {
         let mut map = pending.lock().unwrap_or_else(|err| err.into_inner());
         map.insert(
             parent_key.clone(),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: PathBuf::from("/tmp/rename.txt"),
                 time: new_time,
-            },
+            }],
         );
     }
 
+    let old_time = Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1);
     clear_pending_from_if_unchanged(
         &pending,
         &parent_key,
@@ -427,10 +445,10 @@ fn flush_pending_keeps_fresh_from() -> TestResult {
             .unwrap_or_else(|err| err.into_inner());
         pending.insert(
             PathBuf::new(),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: PathBuf::from("/tmp/fresh_file.txt"),
                 time: Instant::now(),
-            },
+            }],
         );
     }
 
@@ -449,7 +467,7 @@ fn flush_pending_keeps_fresh_from() -> TestResult {
 
 #[test]
 fn per_parent_rename_pairing_does_not_mismatch_across_dirs() {
-    let pending: Mutex<HashMap<PathBuf, PendingFromEntry>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
     let dir_a = PathBuf::from("/dir_a");
     let dir_b = PathBuf::from("/dir_b");
@@ -499,19 +517,19 @@ fn per_parent_rename_pairing_does_not_mismatch_across_dirs() {
 }
 
 #[test]
-fn per_parent_rename_orphan_from_emits_deleted_for_same_parent_only() {
-    let pending: Mutex<HashMap<PathBuf, PendingFromEntry>> = Mutex::new(HashMap::new());
+fn multiple_from_same_parent_both_buffered() {
+    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
     let dir_a = PathBuf::from("/dir_a");
 
     let from1 = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
-        paths: vec![dir_a.join("stale.txt")],
+        paths: vec![dir_a.join("first.txt")],
         attrs: Default::default(),
     };
     let from2 = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
-        paths: vec![dir_a.join("fresh.txt")],
+        paths: vec![dir_a.join("second.txt")],
         attrs: Default::default(),
     };
 
@@ -519,11 +537,16 @@ fn per_parent_rename_orphan_from_emits_deleted_for_same_parent_only() {
     assert!(events1.is_empty());
 
     let events2 = convert_event_with_rename_pairing(from2, &pending);
-    assert_eq!(events2.len(), 1);
-    assert!(matches!(
-        &events2[0],
-        WatchEvent::Deleted(p) if p == &dir_a.join("stale.txt")
-    ));
+    assert!(
+        events2.is_empty(),
+        "second From should be buffered, not emit Deleted"
+    );
+
+    let map = pending.lock().unwrap_or_else(|err| err.into_inner());
+    let entries = map.get(&dir_a).expect("parent key should exist");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].path, dir_a.join("first.txt"));
+    assert_eq!(entries[1].path, dir_a.join("second.txt"));
 }
 
 #[test]
@@ -624,17 +647,17 @@ fn stale_from_per_parent_times_out_independently() -> TestResult {
             .unwrap_or_else(|err| err.into_inner());
         pending.insert(
             dir_a.clone(),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: dir_a.join("old_a.txt"),
                 time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            },
+            }],
         );
         pending.insert(
             dir_b.clone(),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: dir_b.join("fresh_b.txt"),
                 time: Instant::now(),
-            },
+            }],
         );
     }
 
@@ -670,10 +693,10 @@ fn pause_clears_pending_from_entries() -> TestResult {
             .unwrap_or_else(|err| err.into_inner());
         pending.insert(
             PathBuf::from("/some/dir"),
-            PendingFromEntry {
+            vec![PendingFromEntry {
                 path: PathBuf::from("/some/dir/old.txt"),
                 time: Instant::now(),
-            },
+            }],
         );
     }
 

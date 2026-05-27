@@ -64,7 +64,7 @@ pub struct Watcher {
     event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
-    pending_from: Arc<Mutex<HashMap<PathBuf, PendingFromEntry>>>,
+    pending_from: Arc<Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>>,
     overflow_pending: Arc<AtomicBool>,
     path_cache: HashMap<PathBuf, PathBuf>,
 }
@@ -73,7 +73,8 @@ impl Watcher {
     pub fn new(event_tx: Arc<SyncSender<WatchEvent>>) -> io::Result<Self> {
         let paused = Arc::new(AtomicBool::new(false));
         let debounce_state = Arc::new(Mutex::new(HashMap::new()));
-        let pending_from = Arc::new(Mutex::new(HashMap::new()));
+        let pending_from: Arc<Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let overflow_pending = Arc::new(AtomicBool::new(false));
         let primary = RecommendedWatcher::new(
             make_handler(
@@ -276,27 +277,31 @@ impl Watcher {
             let pending = lock_or_recover(&self.pending_from, "pending_from");
             pending
                 .iter()
-                .filter(|(_, entry)| entry.time.elapsed() >= PENDING_FROM_TIMEOUT)
-                .map(|(parent, entry)| (parent.clone(), entry.path.clone(), entry.time))
+                .flat_map(|(parent, entries)| {
+                    entries
+                        .iter()
+                        .filter(|entry| entry.time.elapsed() >= PENDING_FROM_TIMEOUT)
+                        .map(|entry| (parent.clone(), entry.path.clone(), entry.time))
+                })
                 .collect()
         };
 
         if !stale_entries.is_empty() {
-            let mut pending = lock_or_recover(&self.pending_from, "pending_from");
             for (parent_key, path, time) in stale_entries {
-                if let Some(entry) = pending.get(&parent_key)
-                    && entry.path == path
-                    && entry.time == time
-                {
-                    debug_log!(
-                        "stale rename From timed out: emitting Deleted for {} (parent {})",
-                        path.display(),
-                        parent_key.display(),
-                    );
-                    match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
-                        SendStatus::Full(_) => {}
-                        SendStatus::Sent | SendStatus::Disconnected => {
-                            pending.remove(&parent_key);
+                debug_log!(
+                    "stale rename From timed out: emitting Deleted for {} (parent {})",
+                    path.display(),
+                    parent_key.display(),
+                );
+                match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
+                    SendStatus::Full(_) => {}
+                    SendStatus::Sent | SendStatus::Disconnected => {
+                        let mut pending = lock_or_recover(&self.pending_from, "pending_from");
+                        if let Some(entries) = pending.get_mut(&parent_key) {
+                            entries.retain(|e| !(e.path == path && e.time == time));
+                            if entries.is_empty() {
+                                pending.remove(&parent_key);
+                            }
                         }
                     }
                 }
@@ -328,7 +333,7 @@ fn make_handler(
     event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
-    pending_from: Arc<Mutex<HashMap<PathBuf, PendingFromEntry>>>,
+    pending_from: Arc<Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>>,
     overflow_pending: Arc<AtomicBool>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
@@ -363,7 +368,12 @@ fn make_handler(
                     continue;
                 }
                 WatchEvent::Overflow => {
-                    let _ = try_send_event(&event_tx, watch_event);
+                    match try_send_event(&event_tx, watch_event) {
+                        SendStatus::Sent | SendStatus::Disconnected => {}
+                        SendStatus::Full(_) => {
+                            overflow_pending.store(true, Ordering::Release);
+                        }
+                    }
                     continue;
                 }
             };
@@ -460,23 +470,23 @@ fn reinsert_or_overflow(
 
 #[cfg(test)]
 fn clear_pending_from_if_unchanged(
-    pending_from: &Mutex<HashMap<PathBuf, PendingFromEntry>>,
+    pending_from: &Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>,
     parent_key: &Path,
     path: &Path,
     time: Instant,
 ) {
     let mut pending = lock_or_recover(pending_from, "pending_from");
-    if let Some(entry) = pending.get(parent_key)
-        && entry.path == path
-        && entry.time == time
-    {
-        pending.remove(parent_key);
+    if let Some(entries) = pending.get_mut(parent_key) {
+        entries.retain(|e| !(e.path == path && e.time == time));
+        if entries.is_empty() {
+            pending.remove(parent_key);
+        }
     }
 }
 
 fn lock_pending(
-    pending_from: &Mutex<HashMap<PathBuf, PendingFromEntry>>,
-) -> std::sync::MutexGuard<'_, HashMap<PathBuf, PendingFromEntry>> {
+    pending_from: &Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>,
+) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Vec<PendingFromEntry>>> {
     lock_or_recover(pending_from, "pending_from")
 }
 
@@ -529,7 +539,11 @@ fn process_debounce(
         if let Some(evt) = event {
             for p in paths {
                 if let Some(entry) = debounce.get_mut(*p) {
-                    entry.coalesced = Some(evt.clone());
+                    let deleted_wins = matches!(entry.coalesced, Some(WatchEvent::Deleted(_)))
+                        && !matches!(evt, WatchEvent::Deleted(_));
+                    if !deleted_wins {
+                        entry.coalesced = Some(evt.clone());
+                    }
                     entry.last_seen = now;
                 }
             }
@@ -558,31 +572,21 @@ fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexG
 
 fn convert_event_with_rename_pairing(
     event: notify::Event,
-    pending_from: &Mutex<HashMap<PathBuf, PendingFromEntry>>,
+    pending_from: &Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>,
 ) -> Vec<WatchEvent> {
     match &event.kind {
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
             if let Some(path) = event.paths.into_iter().next() {
                 let parent_key = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
                 let mut pending = lock_pending(pending_from);
-                let mut events = Vec::new();
-                if let Some(existing) = pending.get(&parent_key) {
-                    debug_log!(
-                        "orphan rename From: emitting Deleted for stale path {} (parent {})",
-                        existing.path.display(),
-                        parent_key.display(),
-                    );
-                    events.push(WatchEvent::Deleted(existing.path.clone()));
-                    pending.remove(&parent_key);
-                }
-                pending.insert(
-                    parent_key,
-                    PendingFromEntry {
+                pending
+                    .entry(parent_key)
+                    .or_default()
+                    .push(PendingFromEntry {
                         path,
                         time: Instant::now(),
-                    },
-                );
-                events
+                    });
+                Vec::new()
             } else {
                 Vec::new()
             }
@@ -594,7 +598,18 @@ fn convert_event_with_rename_pairing(
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
-            let from_entry = lock_pending(pending_from).remove(&parent_key);
+            let mut pending = lock_pending(pending_from);
+            let from_entry = match pending.get_mut(&parent_key) {
+                Some(entries) if !entries.is_empty() => {
+                    let entry = entries.remove(0);
+                    if entries.is_empty() {
+                        pending.remove(&parent_key);
+                    }
+                    Some(entry)
+                }
+                _ => None,
+            };
+            drop(pending);
             match (from_entry, to_path) {
                 (Some(entry), Some(to)) => vec![WatchEvent::Renamed {
                     from: entry.path,
@@ -634,17 +649,39 @@ fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<Wa
 }
 
 /// Returns true if the unwatch error indicates the watch is already gone.
-/// On Linux (inotify), the OS auto-removes watches when a directory is deleted,
-/// so subsequent unwatch calls fail with "No watch was found" or EINVAL.
+///
+/// - `WatchNotFound`: the watcher's internal map no longer tracks this path.
+/// - `Io(EINVAL)` on Linux (inotify): the OS auto-removed the watch when the
+///   directory was deleted, so `inotify_rm_watch` returns EINVAL.
+/// - `Io(ENOENT)` on macOS (kqueue): `kevent` `EV_DELETE` fails because the
+///   file is already gone.
 fn is_watch_already_gone_error(e: &notify::Error) -> bool {
-    let msg = e.to_string();
-    msg.contains("No watch was found") || msg.contains("Invalid argument")
+    match &e.kind {
+        notify::ErrorKind::WatchNotFound => true,
+        notify::ErrorKind::Io(io_err) => {
+            io_err.raw_os_error() == Some(22) || io_err.raw_os_error() == Some(2)
+        }
+        _ => false,
+    }
 }
 
 fn notify_to_io(err: &notify::Error) -> io::Error {
     io::Error::other(err.to_string())
 }
 
+/// Returns true if `path` likely resolves to `watched` even though `path` no
+/// longer exists on disk.
+///
+/// Two resolution strategies:
+/// 1. **Relative path:** join with the current working directory and compare
+///    the cleaned result to `watched`.
+///
+///    *TOCTOU note:* the cwd is read once and used immediately.  In a TUI file
+///    manager the process cwd changes only on explicit user navigation, so the
+///    race window is negligible.  The alternative — snapshotting cwd at watch
+///    time — would add bookkeeping complexity for no practical gain.
+///
+/// 2. **Dangling symlink:** resolve the symlink target and compare.
 fn path_points_to_missing_watch(path: &Path, watched: &Path) -> bool {
     if path.is_relative()
         && let Ok(current_dir) = std::env::current_dir()
@@ -673,4 +710,5 @@ fn normalize_missing_target(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

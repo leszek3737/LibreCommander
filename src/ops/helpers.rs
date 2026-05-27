@@ -27,7 +27,7 @@ pub(crate) fn lexical_path_starts_with(parent: &Path, child: &Path) -> bool {
     child != parent && child.starts_with(parent)
 }
 
-const MAX_RECURSION_DEPTH: u32 = 256;
+pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
 
 #[cfg(unix)]
 /// Return a stable filesystem identity for cycle detection.
@@ -59,7 +59,7 @@ fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
     }
 }
 
-fn dir_size_rec(path: &Path, depth: u32, visited: &mut HashSet<(u64, u64)>) -> io::Result<u64> {
+fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) -> io::Result<u64> {
     if depth >= MAX_RECURSION_DEPTH {
         debug_log!(
             "dir_size: depth limit ({MAX_RECURSION_DEPTH}) reached at {}",
@@ -83,22 +83,22 @@ fn dir_size_rec(path: &Path, depth: u32, visited: &mut HashSet<(u64, u64)>) -> i
                 continue;
             }
         };
-        let ft = match entry.file_type() {
-            Ok(ft) => ft,
+        let meta = match entry.path().symlink_metadata() {
+            Ok(m) => m,
             Err(e) => {
                 debug_log!(
-                    "dir_size: file_type failed for {}: {e}",
+                    "dir_size: symlink_metadata failed for {}: {e}",
                     entry.path().display()
                 );
                 continue;
             }
         };
+        let ft = meta.file_type();
         if ft.is_symlink() {
             continue;
         }
         if ft.is_dir() {
-            if let Ok(meta) = entry.metadata()
-                && let Some(key) = get_inode_key(&meta)
+            if let Some(key) = get_inode_key(&meta)
                 && !visited.insert(key)
             {
                 debug_log!(
@@ -113,14 +113,7 @@ fn dir_size_rec(path: &Path, depth: u32, visited: &mut HashSet<(u64, u64)>) -> i
             });
             total = total.saturating_add(child);
         } else {
-            let size = entry.metadata().map(|m| m.len()).unwrap_or_else(|e| {
-                debug_log!(
-                    "dir_size: metadata failed for {}: {e}",
-                    entry.path().display()
-                );
-                0
-            });
-            total = total.saturating_add(size);
+            total = total.saturating_add(meta.len());
         }
     }
     Ok(total)

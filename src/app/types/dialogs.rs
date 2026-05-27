@@ -5,7 +5,7 @@ use std::time::SystemTime;
 pub struct ConfirmDetails {
     pub title: String,
     pub message: String,
-    pub files: Option<Vec<PathBuf>>,
+    pub files: Option<Vec<String>>,
 }
 
 impl ConfirmDetails {
@@ -17,11 +17,11 @@ impl ConfirmDetails {
         }
     }
 
-    pub fn with_files(title: &str, message: &str, files: Vec<PathBuf>) -> Self {
+    pub fn with_files(title: &str, message: &str, files: Vec<String>) -> Self {
         Self {
             title: title.to_string(),
             message: message.to_string(),
-            files: if files.is_empty() { None } else { Some(files) },
+            files: Some(files),
         }
     }
 }
@@ -58,6 +58,7 @@ pub enum DialogKind {
         source: Vec<PathBuf>,
         dest: PathBuf,
         is_move: bool,
+        source_display: Vec<String>,
     },
     Properties {
         name: String,

@@ -270,7 +270,7 @@ fn report_file_active(
 fn copy_entry(
     src: &Path,
     dest: &Path,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(u64),
     overwrite: bool,
 ) -> io::Result<()> {
@@ -279,7 +279,6 @@ fn copy_entry(
             file_ops::copy_symlink(src, dest, overwrite).map(|_| ())
         }
         Ok(meta) if meta.is_dir() => {
-            let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
             thread::scope(|scope| {
@@ -288,7 +287,7 @@ fn copy_entry(
                         src,
                         dest,
                         &progress_tx,
-                        &cancel_token,
+                        cancel,
                         overwrite,
                     );
                     let _ = result_tx.send(result);
@@ -297,7 +296,6 @@ fn copy_entry(
             })
         }
         Ok(_) => {
-            let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
             thread::scope(|scope| {
@@ -306,7 +304,7 @@ fn copy_entry(
                         src,
                         dest,
                         &progress_tx,
-                        &cancel_token,
+                        cancel,
                         overwrite,
                     );
                     let _ = result_tx.send(result);
@@ -321,22 +319,16 @@ fn copy_entry(
 fn move_entry(
     src: &Path,
     dest: &Path,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(u64),
     overwrite: bool,
 ) -> io::Result<()> {
-    let cancel_token = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let (progress_tx, progress_rx) = mpsc::channel::<u64>();
     let (result_tx, result_rx) = mpsc::channel::<io::Result<()>>();
     thread::scope(|scope| {
         scope.spawn(|| {
-            let result = file_ops::move_entry_with_progress(
-                src,
-                dest,
-                &progress_tx,
-                &cancel_token,
-                overwrite,
-            );
+            let result =
+                file_ops::move_entry_with_progress(src, dest, &progress_tx, cancel, overwrite);
             let _ = result_tx.send(result);
         });
         wait_for_result_with_progress(&result_rx, &progress_rx, on_progress)
@@ -378,13 +370,13 @@ fn batch_copy(
     cancel: &Option<Arc<AtomicBool>>,
     overwrite: bool,
 ) -> BatchReport {
-    let operation_cancel = cancel.clone();
+    let cancel_token = cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     execute_batch_generic(
         paths,
         dest_dir,
-        |src, dest, on_progress| {
-            copy_entry(src, dest, operation_cancel.clone(), on_progress, overwrite)
-        },
+        |src, dest, on_progress| copy_entry(src, dest, &cancel_token, on_progress, overwrite),
         progress,
         cancel,
     )
@@ -397,13 +389,13 @@ fn batch_move(
     cancel: &Option<Arc<AtomicBool>>,
     overwrite: bool,
 ) -> BatchReport {
-    let operation_cancel = cancel.clone();
+    let cancel_token = cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     execute_batch_generic(
         paths,
         dest_dir,
-        |src, dest, on_progress| {
-            move_entry(src, dest, operation_cancel.clone(), on_progress, overwrite)
-        },
+        |src, dest, on_progress| move_entry(src, dest, &cancel_token, on_progress, overwrite),
         progress,
         cancel,
     )
