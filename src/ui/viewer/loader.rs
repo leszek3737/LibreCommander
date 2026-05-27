@@ -1,4 +1,6 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
@@ -8,6 +10,8 @@ use ansi_to_tui::IntoText;
 use ratatui::text::Text;
 
 use super::open::ViewerState;
+
+const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct ViewerLoader {
     pub receiver: mpsc::Receiver<std::io::Result<ViewerState>>,
@@ -47,58 +51,93 @@ impl Drop for ViewerLoader {
     }
 }
 
-const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
-
 pub fn run_chafa(path: &Path, width: u16, height: u16) -> Text<'static> {
     let size_str = format!("{}x{}", width, height);
-    let mut child = match std::process::Command::new("chafa")
+    // Keep terminal probing and passthrough disabled. If chafa talks directly
+    // to the terminal, crossterm can read those responses as viewer input and
+    // open the search dialog instead of showing the image preview.
+    let child = Command::new("chafa")
         .arg("-f")
         .arg("symbols")
+        .arg("--probe")
+        .arg("off")
+        .arg("--passthrough")
+        .arg("none")
+        .arg("--polite")
+        .arg("on")
         .arg("--size")
         .arg(&size_str)
         .arg("--")
         .arg(path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
-    };
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
 
-    let deadline = Instant::now() + CHAFA_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let out = child
-                    .wait_with_output()
-                    .unwrap_or_else(|_| std::process::Output {
-                        status,
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                    });
-                if out.status.success() {
-                    return match out.stdout.into_text() {
-                        Ok(text) => text,
-                        Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
-                    };
-                }
-                let err_msg = String::from_utf8_lossy(&out.stderr);
-                return Text::raw(format!("Chafa error: {}", err_msg));
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Text::raw("Chafa timed out".to_string());
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                return Text::raw(format!("Chafa wait error: {}", e));
-            }
+    match child.and_then(wait_for_chafa_output) {
+        Ok(out) if out.status.success() => match out.stdout.into_text() {
+            Ok(text) => text,
+            Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
+        },
+        Ok(out) => {
+            let err_msg = String::from_utf8_lossy(&out.stderr);
+            Text::raw(format!("Chafa error: {}", err_msg))
         }
+        Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
     }
+}
+
+fn wait_for_chafa_output(mut child: Child) -> std::io::Result<Output> {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = read_pipe_in_background(stdout);
+    let stderr_reader = read_pipe_in_background(stderr);
+    let deadline = Instant::now() + CHAFA_TIMEOUT;
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = join_pipe_reader(stdout_reader);
+            let stderr = join_pipe_reader(stderr_reader);
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let status = child.wait()?;
+            let stdout = join_pipe_reader(stdout_reader);
+            let stderr = join_pipe_reader(stderr_reader);
+            return Ok(Output {
+                status,
+                stdout,
+                stderr: if stderr.is_empty() {
+                    b"Chafa timed out".to_vec()
+                } else {
+                    stderr
+                },
+            });
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn read_pipe_in_background<R>(pipe: Option<R>) -> JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
+fn join_pipe_reader(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
+    handle.join().unwrap_or_default()
 }
 
 pub struct ImagePreviewLoader {
