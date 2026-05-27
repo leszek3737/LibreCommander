@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
 use super::{ArchiveEntry, ArchiveError, ArchiveFormat};
@@ -40,6 +40,12 @@ pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>,
 }
 
 fn validate_entry_path(entry_path: &Path, dest: &Path) -> Result<std::path::PathBuf, ArchiveError> {
+    if entry_path.is_absolute() {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "absolute path detected: {}",
+            entry_path.display()
+        )));
+    }
     // Reject any entry containing parent-directory components
     for component in entry_path.components() {
         if let std::path::Component::ParentDir = component {
@@ -138,7 +144,7 @@ pub fn extract_tar(
     if result.is_err() {
         for p in extracted_paths.iter().rev() {
             if p.is_dir() {
-                let _ = fs::remove_dir_all(p);
+                let _ = fs::remove_dir(p);
             } else {
                 let _ = fs::remove_file(p);
             }
@@ -187,7 +193,9 @@ fn create_tar_xz(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    let tmp_tar = std::env::temp_dir().join(format!("lc-xz-tar-{}", std::process::id()));
+    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_tar = std::env::temp_dir().join(format!("lc-xz-tar-{}-{count}", std::process::id()));
     let tmp_dest = dest.with_extension("tar.xz.tmp");
 
     // Build tar to temp file
@@ -201,12 +209,19 @@ fn create_tar_xz(
     }
 
     // Compress tar temp file to output
-    let mut input = std::io::BufReader::new(File::open(&tmp_tar)?);
-    let mut output = File::create(&tmp_dest)?;
-    lzma_rs::xz_compress(&mut input, &mut output)
-        .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+    let result = (|| -> Result<(), ArchiveError> {
+        let mut input = std::io::BufReader::new(File::open(&tmp_tar)?);
+        let mut output = File::create(&tmp_dest)?;
+        lzma_rs::xz_compress(&mut input, &mut output)
+            .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+        Ok(())
+    })();
 
     let _ = fs::remove_file(&tmp_tar);
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_dest);
+        return result;
+    }
     fs::rename(&tmp_dest, dest)?;
     Ok(())
 }
@@ -264,12 +279,16 @@ fn wrap_decompress(file: File, format: ArchiveFormat) -> Result<Box<dyn Read>, A
             Ok(Box::new(decoder))
         }
         ArchiveFormat::TarXz => {
-            let tmp_path =
-                std::env::temp_dir().join(format!("lc-xz-decompress-{}", std::process::id()));
+            static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let tmp_path = std::env::temp_dir()
+                .join(format!("lc-xz-decompress-{}-{count}", std::process::id()));
             let mut tmp_file = File::create(&tmp_path)?;
             let mut reader = std::io::BufReader::new(file);
-            lzma_rs::xz_decompress(&mut reader, &mut tmp_file)
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+            if let Err(e) = lzma_rs::xz_decompress(&mut reader, &mut tmp_file) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(ArchiveError::InvalidArchive(e.to_string()));
+            }
             drop(tmp_file);
             let mut tmp_file = File::open(&tmp_path)?;
             tmp_file.seek(io::SeekFrom::Start(0))?;

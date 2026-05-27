@@ -5,7 +5,6 @@ use lc::{app, ui};
 use app::types::AppState;
 use ui::dialogs;
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn to_ui_dialog<'a>(
     dialog_kind: &'a app::types::DialogKind,
     state: &'a AppState,
@@ -84,13 +83,15 @@ pub(super) fn to_ui_dialog<'a>(
             source,
             entries,
             dest_input,
-        } => dialogs::DialogKind::ArchiveExtract {
-            source: Cow::Owned(source.display().to_string()),
-            entry_count: entries.len(),
-            dest_value: Cow::Borrowed(&dest_input.text),
-            dest_cursor: dest_input.cursor,
-            selection: state.dialog_selection,
-        },
+        } => {
+            let info = format!("{}\n{} entries", source.display(), entries.len());
+            dialogs::DialogKind::ArchiveExtract {
+                info: Cow::Owned(info),
+                dest_value: Cow::Borrowed(&dest_input.text),
+                dest_cursor: dest_input.cursor,
+                selection: state.dialog_selection,
+            }
+        }
         app::types::DialogKind::ArchiveCreate {
             sources,
             dest_input,

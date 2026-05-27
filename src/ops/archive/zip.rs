@@ -39,8 +39,14 @@ pub fn list_zip(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 }
 
 fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathBuf, ArchiveError> {
+    let entry_path = Path::new(entry_name);
+    if entry_path.is_absolute() {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "absolute path detected: {entry_name}"
+        )));
+    }
     // Reject any entry containing parent-directory components
-    for component in Path::new(entry_name).components() {
+    for component in entry_path.components() {
         if let std::path::Component::ParentDir = component {
             return Err(ArchiveError::InvalidArchive(format!(
                 "path traversal detected: {entry_name}"
@@ -124,7 +130,7 @@ pub fn extract_zip(
     if result.is_err() {
         for p in extracted_paths.iter().rev() {
             if p.is_dir() {
-                let _ = fs::remove_dir_all(p);
+                let _ = fs::remove_dir(p);
             } else {
                 let _ = fs::remove_file(p);
             }
@@ -206,7 +212,7 @@ fn add_dir_to_zip(
             .strip_prefix(base)
             .map_err(|_| ArchiveError::InvalidArchive("strip_prefix failed".into()))?
             .to_string_lossy()
-            .into_owned();
+            .replace('\\', "/");
 
         let meta = fs::symlink_metadata(&path)?;
         if meta.is_symlink() {

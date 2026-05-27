@@ -277,7 +277,6 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn handle_input_action(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -296,17 +295,9 @@ fn handle_input_action(
             return;
         }
         InputAction::CreateDirectory => {
-            match validate_path_name(&input) {
-                ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => {
-                    state.status_message = Some("Directory name cannot be empty".to_string());
-                    return;
-                }
-                ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(p);
-                    return;
-                }
-                ValidationResult::InvalidOctal(_) => return,
+            if let Err(msg) = validate_create_or_rename(&input, "Directory name") {
+                state.status_message = Some(msg);
+                return;
             }
             let target = fs::path::resolve_user_path(state.active_panel().path(), &input);
             if let Err(err) = ops::create_directory(&target) {
@@ -314,17 +305,9 @@ fn handle_input_action(
             }
         }
         InputAction::Rename => {
-            match validate_path_name(&input) {
-                ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => {
-                    state.status_message = Some("New name cannot be empty".to_string());
-                    return;
-                }
-                ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(p);
-                    return;
-                }
-                ValidationResult::InvalidOctal(_) => return,
+            if let Err(msg) = validate_create_or_rename(&input, "New name") {
+                state.status_message = Some(msg);
+                return;
             }
             if let Some(entry) = state.active_panel().current_entry()
                 && input != entry.name
@@ -379,6 +362,15 @@ fn handle_input_action(
     }
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
+    }
+}
+
+fn validate_create_or_rename(input: &str, label: &str) -> Result<(), String> {
+    match validate_path_name(input) {
+        ValidationResult::Valid => Ok(()),
+        ValidationResult::EmptyInput => Err(format!("{label} cannot be empty")),
+        ValidationResult::InvalidPath(p) => Err(p),
+        ValidationResult::InvalidOctal(_) => Err(String::new()),
     }
 }
 
@@ -503,6 +495,14 @@ fn handle_archive_extract_dialog(
             dismiss_dialog(state);
             return;
         }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        KeyCode::Enter if state.dialog_selection == 1 => {
+            dismiss_dialog(state);
+            return;
+        }
         KeyCode::Enter => {
             let (source, dest_text) = if let AppMode::Dialog(DialogKind::ArchiveExtract {
                 ref source,
@@ -541,6 +541,14 @@ fn handle_archive_create_dialog(
 ) {
     match key {
         KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        KeyCode::Enter if state.dialog_selection == 1 => {
             dismiss_dialog(state);
             return;
         }

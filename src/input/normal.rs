@@ -96,6 +96,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
 fn handle_f7_key(state: &mut AppState) {
     if let Some(entry) = state.active_panel().current_entry()
         && entry.name != ".."
+        && !entry.is_dir()
         && file_type::is_archive(&entry.name)
     {
         show_archive_dialog(state);
@@ -111,6 +112,7 @@ fn handle_f7_key(state: &mut AppState) {
 fn handle_f12_key(state: &mut AppState) {
     if let Some(entry) = state.active_panel().current_entry()
         && entry.name != ".."
+        && !entry.is_dir()
         && file_type::is_archive(&entry.name)
     {
         show_archive_dialog(state);
@@ -377,7 +379,7 @@ pub(crate) fn handle_enter_key<B: ratatui::backend::Backend>(
         p.scroll_offset = 0;
         panel_ops::refresh_active(state);
         reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
-    } else if entry.name != ".." && file_type::is_archive(&entry.name) {
+    } else if entry.name != ".." && !entry.is_dir() && file_type::is_archive(&entry.name) {
         let path = entry.path.clone();
         *viewer_loader = Some(viewer::ViewerState::open_background(path));
         state.prev_mode = None;

@@ -38,8 +38,14 @@ pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 }
 
 fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<std::path::PathBuf, ArchiveError> {
+    let entry_path = Path::new(entry_name);
+    if entry_path.is_absolute() {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "absolute path detected: {entry_name}"
+        )));
+    }
     // Reject any entry containing parent-directory components
-    for component in Path::new(entry_name).components() {
+    for component in entry_path.components() {
         if let std::path::Component::ParentDir = component {
             return Err(ArchiveError::InvalidArchive(format!(
                 "path traversal detected: {entry_name}"
@@ -139,7 +145,7 @@ pub fn extract_7z(
     if result.is_err() {
         for p in extracted_paths.iter().rev() {
             if p.is_dir() {
-                let _ = fs::remove_dir_all(p);
+                let _ = fs::remove_dir(p);
             } else {
                 let _ = fs::remove_file(p);
             }
@@ -186,5 +192,7 @@ pub fn create_7z(
     _progress: &Sender<u64>,
     _cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    Err(ArchiveError::UnsupportedFormat)
+    Err(ArchiveError::InvalidArchive(
+        "7z archive creation is not supported. Use zip or tar format instead.".into(),
+    ))
 }

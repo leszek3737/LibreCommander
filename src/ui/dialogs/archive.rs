@@ -9,12 +9,10 @@ use crate::ui::theme::{ColorPalette, Theme};
 
 use super::layout::dialog_block;
 
-#[allow(clippy::too_many_arguments)]
 pub fn render_archive_extract_dialog(
     f: &mut Frame,
     area: Rect,
-    source: &str,
-    entry_count: usize,
+    info: &str,
     dest_value: &str,
     dest_cursor: usize,
     selection: usize,
@@ -28,33 +26,15 @@ pub fn render_archive_extract_dialog(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(inner);
 
-    let source_line = Line::from(vec![
-        Span::styled("Source: ", Theme::dialog_with_colors(colors)),
-        Span::styled(source, Theme::highlight_with_colors(colors)),
-    ]);
-    f.render_widget(Paragraph::new(source_line), chunks[0]);
+    let info_line = Line::from(Span::styled(info, Theme::highlight_with_colors(colors)));
+    f.render_widget(Paragraph::new(info_line), chunks[0]);
 
-    let entries_text = format!("{entry_count} entries");
-    let entries_line = Line::from(vec![
-        Span::styled("Entries: ", Theme::dialog_with_colors(colors)),
-        Span::styled(entries_text, Theme::highlight_with_colors(colors)),
-    ]);
-    f.render_widget(Paragraph::new(entries_line), chunks[1]);
-
-    let dest_label = Paragraph::new(Line::from(Span::styled(
-        "Destination:",
-        Theme::dialog_with_colors(colors),
-    )));
-    f.render_widget(dest_label, chunks[2]);
-
-    render_input_field(f, chunks[3], dest_value, dest_cursor, colors);
+    render_input_field(f, chunks[1], dest_value, dest_cursor, colors);
 
     let buttons = [
         (
@@ -74,7 +54,7 @@ pub fn render_archive_extract_dialog(
             "[ Cancel ]",
         ),
     ];
-    render_button_row(f, chunks[4], &buttons);
+    render_button_row(f, chunks[2], &buttons);
 }
 
 pub fn render_archive_create_dialog(
