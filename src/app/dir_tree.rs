@@ -1,7 +1,26 @@
 use crate::debug_log;
 use std::collections::HashSet;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+#[cfg(windows)]
+fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    (
+        metadata.volume_serial_number().map(u64::from).unwrap_or(0),
+        metadata.file_index().unwrap_or(0),
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_key(_metadata: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
 
 use crate::ops::sorting::cmp_ignore_case;
 
@@ -52,7 +71,7 @@ pub fn build_tree_with_diagnostics(
     let mut diagnostics = Vec::new();
     let mut visited = HashSet::new();
     if let Ok(meta) = root.metadata() {
-        let _ = visited.insert((meta.dev(), meta.ino()));
+        let _ = visited.insert(file_key(&meta));
     }
     build_tree_recursive(
         root,
@@ -149,7 +168,7 @@ fn build_tree_recursive(
         if should_recurse {
             let child_path = out[inserted_idx].path.clone();
             let key = match child_path.metadata().ok() {
-                Some(m) => (m.dev(), m.ino()),
+                Some(m) => file_key(&m),
                 None => continue,
             };
             if visited.insert(key) {
@@ -217,7 +236,7 @@ pub fn toggle_expand_with_diagnostics(
         let mut diagnostics = Vec::new();
         let mut visited = HashSet::new();
         if let Ok(meta) = path.metadata() {
-            let _ = visited.insert((meta.dev(), meta.ino()));
+            let _ = visited.insert(file_key(&meta));
         }
         build_tree_recursive(
             &path,

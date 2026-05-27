@@ -44,7 +44,7 @@ pub fn sync_watcher_paths(
     let left = state.left_panel.path().to_path_buf();
     let right = state.right_panel.path().to_path_buf();
 
-    let (desired, _) = canonical_desired_paths(&left, &right);
+    let desired = canonical_desired_paths(&left, &right);
     let current: HashSet<PathBuf> = watcher.watched_dirs().into_iter().collect();
 
     let mut had_error = false;
@@ -70,12 +70,12 @@ pub fn sync_watcher_paths(
     }
 }
 
-fn canonical_desired_paths(left: &Path, right: &Path) -> (HashSet<PathBuf>, bool) {
+fn canonical_desired_paths(left: &Path, right: &Path) -> HashSet<PathBuf> {
     let mut desired = HashSet::new();
     for path in [left, right] {
         desired.insert(crate::fs::path::clean_path(path));
     }
-    (desired, true)
+    desired
 }
 
 pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {

@@ -56,6 +56,7 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
         match fs::hard_link(&temp, dest) {
             Ok(()) => {
                 cleanup_file(&temp);
+                return Ok(bytes);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 cleanup_file(&temp);
@@ -64,10 +65,11 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
                     format!("destination already exists: {}", dest.display()),
                 ));
             }
-            Err(e) => {
-                cleanup_file(&temp);
-                return Err(e);
-            }
+            Err(_) => {}
+        }
+        if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
+            cleanup_file(&temp);
+            return Err(err);
         }
         Ok(bytes)
     }

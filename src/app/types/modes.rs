@@ -49,10 +49,11 @@ pub enum PendingAction {
 impl CompareMode {
     pub const ALL: [Self; 3] = [Self::Quick, Self::Size, Self::Thorough];
 
-    const _ASSERT_COMPLETE: () = assert!(matches!(
-        Self::ALL,
-        [Self::Quick, Self::Size, Self::Thorough]
-    ));
+    const _ASSERT_COMPLETE: () = {
+        let _ = |m: Self| match m {
+            Self::Quick | Self::Size | Self::Thorough => {}
+        };
+    };
 }
 
 impl PendingAction {

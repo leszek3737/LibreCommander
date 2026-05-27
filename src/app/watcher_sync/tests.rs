@@ -137,12 +137,11 @@ fn canonical_desired_paths_normalizes_paths_without_io() {
     let dir = tempfile::tempdir().unwrap();
     let other = dir.path().join("other");
 
-    let (desired, all_paths_present) = canonical_desired_paths(dir.path(), &other);
+    let desired = canonical_desired_paths(dir.path(), &other);
 
     assert_eq!(desired.len(), 2);
     assert!(desired.contains(&crate::fs::path::clean_path(dir.path())));
     assert!(desired.contains(&crate::fs::path::clean_path(&other)));
-    assert!(all_paths_present);
 }
 
 #[test]

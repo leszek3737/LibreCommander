@@ -74,7 +74,9 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
         Err(err) => return Err(err),
     };
     use std::os::windows::fs::MetadataExt;
-    let same = src_meta.volume_serial_number() == dest_meta.volume_serial_number()
+    let same = src_meta.volume_serial_number().is_some()
+        && src_meta.volume_serial_number() == dest_meta.volume_serial_number()
+        && src_meta.file_index().is_some()
         && src_meta.file_index() == dest_meta.file_index();
     if same {
         return Err(io::Error::new(
