@@ -76,21 +76,8 @@ fn copy_to_temp(
 ) -> io::Result<u64> {
     let dest_file = File::create_new(temp_dest)?;
 
-    #[cfg(target_os = "linux")]
-    {
-        let file_size = metadata.len();
-        if file_size > 0 {
-            if let Ok(written) =
-                try_copy_file_range(&src_file, &dest_file, file_size, progress_tx, cancel)
-            {
-                preserve_permissions(temp_dest, metadata)?;
-                return Ok(written);
-            }
-        }
-    }
-
-    // TODO: macOS fcopyfile() zero-copy path. Requires safe wrapper (libc
-    // fcopyfile needs unsafe) or a third-party crate wrapping it safely.
+    // TODO: zero-copy paths (Linux copy_file_range, macOS fcopyfile) when
+    // stabilized APIs or safe wrappers become available.
 
     let mut reader = src_file;
     let mut writer = dest_file;
@@ -224,60 +211,6 @@ fn preserve_permissions(dest: &Path, metadata: &fs::Metadata) -> io::Result<()> 
 #[cfg(not(unix))]
 fn preserve_permissions(_dest: &Path, _metadata: &fs::Metadata) -> io::Result<()> {
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn try_copy_file_range(
-    src: &File,
-    dest: &File,
-    file_size: u64,
-    progress_tx: &std::sync::mpsc::Sender<u64>,
-    cancel: &AtomicBool,
-) -> io::Result<u64> {
-    use std::os::linux::fs::copy_file_range as cfr;
-
-    let mut total_written = 0_u64;
-    let mut pending_delta = 0_u64;
-    let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
-    let mut bytes_since_progress_check: u64 = 0;
-
-    while total_written < file_size {
-        if cancel.load(Ordering::Relaxed) {
-            if pending_delta > 0 {
-                let _ = progress_tx.send(pending_delta);
-            }
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
-        }
-
-        let remaining = file_size - total_written;
-        let to_transfer = remaining.min(BUFFER_SIZE as u64);
-
-        let copied = cfr(src, None, dest, None, to_transfer)?;
-
-        if copied == 0 {
-            break;
-        }
-
-        total_written += copied as u64;
-        pending_delta += copied as u64;
-        bytes_since_progress_check += copied as u64;
-
-        if bytes_since_progress_check >= PROGRESS_CHECK_BYTES as u64 {
-            bytes_since_progress_check = 0;
-            let now = Instant::now();
-            if now.duration_since(last_progress) >= PROGRESS_THROTTLE {
-                let _ = progress_tx.send(pending_delta);
-                pending_delta = 0;
-                last_progress = now;
-            }
-        }
-    }
-
-    if pending_delta > 0 {
-        let _ = progress_tx.send(pending_delta);
-    }
-
-    Ok(total_written)
 }
 
 #[cfg(test)]
