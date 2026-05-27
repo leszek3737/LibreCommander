@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app::types::PendingAction;
-use crate::ops::{file_ops, helpers};
+use crate::ops::{archive, file_ops, helpers};
 
 pub struct BatchReport {
     pub errors: Vec<String>,
@@ -23,6 +23,8 @@ impl BatchReport {
             "Copy" => "Copied",
             "Move" => "Moved",
             "Delete" => "Deleted",
+            "Extract" => "Extracted",
+            "Archive" => "Archived",
             other => other,
         };
         let error_count = self.errors.len();
@@ -161,6 +163,14 @@ pub fn execute_batch_with_byte_progress(
             overwrite,
         } => batch_move(&sources, &dest, &mut progress, cancel, overwrite),
         PendingAction::Delete { paths } => batch_delete(&paths, &mut progress, cancel),
+        PendingAction::ExtractArchive { source, dest } => {
+            batch_extract_archive(&source, &dest, &mut progress, cancel)
+        }
+        PendingAction::CreateArchive {
+            sources,
+            dest,
+            format,
+        } => batch_create_archive(&sources, &dest, format, &mut progress, cancel),
     };
     report.action_label = action_label;
     report
@@ -694,6 +704,202 @@ fn batch_delete(
         canceled,
         action_label: "Unknown",
     }
+}
+
+fn batch_extract_archive(
+    source: &Path,
+    dest: &Path,
+    progress: &mut impl FnMut(BatchProgress),
+    cancel: &Option<Arc<AtomicBool>>,
+) -> BatchReport {
+    let start_time = Instant::now();
+    let source_size = helpers::path_size(source).unwrap_or(0);
+    let cancel_token = cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+    report_progress(
+        progress,
+        &ProgressSnapshot {
+            completed: 0,
+            total: 1,
+            current: Some(source),
+            bytes_done: 0,
+            bytes_total: source_size,
+            current_file_bytes: 0,
+            current_file_total: source_size,
+            start_time,
+        },
+    );
+
+    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+    let (result_tx, result_rx) = mpsc::channel::<Result<(), archive::ArchiveError>>();
+
+    let cancel_clone = Arc::clone(&cancel_token);
+    let source_buf = source.to_path_buf();
+    let dest_buf = dest.to_path_buf();
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let result = archive::extract::extract_archive(
+                &source_buf,
+                &dest_buf,
+                &progress_tx,
+                &cancel_clone,
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let mut bytes_done = 0_u64;
+        loop {
+            match result_rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => {
+                    for delta in progress_rx.try_iter() {
+                        bytes_done = bytes_done.saturating_add(delta);
+                    }
+                    let errors = match result {
+                        Ok(()) => Vec::new(),
+                        Err(ref e) => vec![format!("{}: {e}", source.display())],
+                    };
+                    let is_interrupt = matches!(&result, Err(archive::ArchiveError::Io(e)) if e.kind() == io::ErrorKind::Interrupted);
+                    return BatchReport {
+                        errors,
+                        success_count: if result.is_ok() { 1 } else { 0 },
+                        canceled: is_interrupt && is_canceled(cancel),
+                        action_label: "Unknown",
+                    };
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    for delta in progress_rx.try_iter() {
+                        bytes_done = bytes_done.saturating_add(delta);
+                    }
+                    report_progress(
+                        progress,
+                        &ProgressSnapshot {
+                            completed: 0,
+                            total: 1,
+                            current: Some(source),
+                            bytes_done,
+                            bytes_total: source_size.max(bytes_done),
+                            current_file_bytes: bytes_done,
+                            current_file_total: source_size.max(bytes_done),
+                            start_time,
+                        },
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    for delta in progress_rx.try_iter() {
+                        bytes_done = bytes_done.saturating_add(delta);
+                    }
+                    return BatchReport {
+                        errors: vec![format!("{}: operation worker failed", source.display())],
+                        success_count: 0,
+                        canceled: is_canceled(cancel),
+                        action_label: "Unknown",
+                    };
+                }
+            }
+        }
+    })
+}
+
+fn batch_create_archive(
+    sources: &[PathBuf],
+    dest: &Path,
+    format: archive::ArchiveFormat,
+    progress: &mut impl FnMut(BatchProgress),
+    cancel: &Option<Arc<AtomicBool>>,
+) -> BatchReport {
+    let start_time = Instant::now();
+    let total_size = helpers::sum_sizes(&helpers::path_sizes(sources));
+    let cancel_token = cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+
+    report_progress(
+        progress,
+        &ProgressSnapshot {
+            completed: 0,
+            total: 1,
+            current: Some(dest),
+            bytes_done: 0,
+            bytes_total: total_size,
+            current_file_bytes: 0,
+            current_file_total: total_size,
+            start_time,
+        },
+    );
+
+    let (progress_tx, progress_rx) = mpsc::channel::<u64>();
+    let (result_tx, result_rx) = mpsc::channel::<Result<(), archive::ArchiveError>>();
+
+    let cancel_clone = Arc::clone(&cancel_token);
+    let sources_buf = sources.to_vec();
+    let dest_buf = dest.to_path_buf();
+
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let result = archive::create::create_archive(
+                &sources_buf,
+                &dest_buf,
+                format,
+                &progress_tx,
+                &cancel_clone,
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let mut bytes_done = 0_u64;
+        loop {
+            match result_rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => {
+                    for delta in progress_rx.try_iter() {
+                        bytes_done = bytes_done.saturating_add(delta);
+                    }
+                    let errors = match result {
+                        Ok(()) => Vec::new(),
+                        Err(ref e) => vec![format!("{}: {e}", dest.display())],
+                    };
+                    let is_interrupt = matches!(&result, Err(archive::ArchiveError::Io(e)) if e.kind() == io::ErrorKind::Interrupted);
+                    return BatchReport {
+                        errors,
+                        success_count: if result.is_ok() { 1 } else { 0 },
+                        canceled: is_interrupt && is_canceled(cancel),
+                        action_label: "Unknown",
+                    };
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    for delta in progress_rx.try_iter() {
+                        bytes_done = bytes_done.saturating_add(delta);
+                    }
+                    report_progress(
+                        progress,
+                        &ProgressSnapshot {
+                            completed: 0,
+                            total: 1,
+                            current: Some(dest),
+                            bytes_done,
+                            bytes_total: total_size.max(bytes_done),
+                            current_file_bytes: bytes_done,
+                            current_file_total: total_size.max(bytes_done),
+                            start_time,
+                        },
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    for delta in progress_rx.try_iter() {
+                        bytes_done = bytes_done.saturating_add(delta);
+                    }
+                    return BatchReport {
+                        errors: vec![format!("{}: operation worker failed", dest.display())],
+                        success_count: 0,
+                        canceled: is_canceled(cancel),
+                        action_label: "Unknown",
+                    };
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]

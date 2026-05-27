@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::dialogs::{DialogKind, PickerKind};
+use crate::ops::archive::ArchiveFormat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompareMode {
@@ -44,6 +45,15 @@ pub enum PendingAction {
     Delete {
         paths: Vec<PathBuf>,
     },
+    ExtractArchive {
+        source: PathBuf,
+        dest: PathBuf,
+    },
+    CreateArchive {
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+        format: ArchiveFormat,
+    },
 }
 
 impl CompareMode {
@@ -62,7 +72,7 @@ impl PendingAction {
             Self::Copy { overwrite, .. } | Self::Move { overwrite, .. } => {
                 *overwrite = true;
             }
-            Self::Delete { .. } => {}
+            Self::Delete { .. } | Self::ExtractArchive { .. } | Self::CreateArchive { .. } => {}
         }
     }
 }

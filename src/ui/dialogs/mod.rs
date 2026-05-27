@@ -4,6 +4,7 @@ use ratatui::{Frame, widgets::Clear};
 
 use super::theme::{ColorPalette, Theme};
 
+mod archive;
 mod confirm;
 mod help;
 mod input;
@@ -69,12 +70,26 @@ pub enum DialogKind<'a> {
         selection: usize,
         files: Cow<'a, [String]>,
     },
+    ArchiveExtract {
+        source: Cow<'a, str>,
+        entry_count: usize,
+        dest_value: Cow<'a, str>,
+        dest_cursor: usize,
+        selection: usize,
+    },
+    ArchiveCreate {
+        source_count: usize,
+        dest_value: Cow<'a, str>,
+        dest_cursor: usize,
+        selection: usize,
+    },
 }
 
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
     render_dialog_with_colors(f, dialog, &ColorPalette::default());
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors: &ColorPalette) {
     if matches!(dialog, DialogKind::OverwriteConfirm { files, .. } if files.is_empty()) {
         return;
@@ -158,6 +173,40 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
         }
         DialogKind::OverwriteConfirm { selection, files } => {
             render_overwrite_dialog(f, dialog_area, *selection, files.as_ref(), colors);
+        }
+        DialogKind::ArchiveExtract {
+            source,
+            entry_count,
+            dest_value,
+            dest_cursor,
+            selection,
+        } => {
+            archive::render_archive_extract_dialog(
+                f,
+                dialog_area,
+                source.as_ref(),
+                *entry_count,
+                dest_value.as_ref(),
+                *dest_cursor,
+                *selection,
+                colors,
+            );
+        }
+        DialogKind::ArchiveCreate {
+            source_count,
+            dest_value,
+            dest_cursor,
+            selection,
+        } => {
+            archive::render_archive_create_dialog(
+                f,
+                dialog_area,
+                *source_count,
+                dest_value.as_ref(),
+                *dest_cursor,
+                *selection,
+                colors,
+            );
         }
     }
 }

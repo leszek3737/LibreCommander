@@ -2,8 +2,10 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use lc::app::types::{AppMode, AppState, InputAction};
+use lc::app::file_type;
+use lc::app::types::{AppMode, AppState, InputAction, PickerKind};
 use lc::app::{panel_ops, shell};
+use lc::ops::archive;
 use lc::ui::viewer;
 
 use crate::{
@@ -58,11 +60,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             });
         }
         KeyCode::F(7) => {
-            state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
-                prompt: "Create directory:".to_string(),
-                action: InputAction::CreateDirectory,
-            });
-            state.dialog_input.clear();
+            handle_f7_key(state);
         }
         KeyCode::F(8) => {
             confirm_delete(state);
@@ -88,8 +86,50 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
                 });
             }
         }
+        KeyCode::F(12) => {
+            handle_f12_key(state);
+        }
         _ => {}
     }
+}
+
+fn handle_f7_key(state: &mut AppState) {
+    if let Some(entry) = state.active_panel().current_entry()
+        && entry.name != ".."
+        && file_type::is_archive(&entry.name)
+    {
+        show_archive_dialog(state);
+    } else {
+        state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
+            prompt: "Create directory:".to_string(),
+            action: InputAction::CreateDirectory,
+        });
+        state.dialog_input.clear();
+    }
+}
+
+fn handle_f12_key(state: &mut AppState) {
+    if let Some(entry) = state.active_panel().current_entry()
+        && entry.name != ".."
+        && file_type::is_archive(&entry.name)
+    {
+        show_archive_dialog(state);
+        return;
+    }
+    let paths = selected_or_current_paths(state);
+    if !paths.is_empty() {
+        let dest_input = lc::app::types::TextInput {
+            text: String::new(),
+            cursor: 0,
+        };
+        state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveCreate {
+            sources: paths,
+            dest_input,
+        });
+        return;
+    }
+    state.picker_selected = 0;
+    state.mode = AppMode::ListPicker(PickerKind::ArchiveMenu);
 }
 
 pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
@@ -311,15 +351,18 @@ pub(crate) fn reposition_cursor_to_entry(
     }
 }
 
-pub(crate) fn handle_enter_key(state: &mut AppState, visible: usize) {
-    let entry_info = state.active_panel().current_entry().and_then(|e| {
-        if e.is_dir() {
-            Some((e.path.clone(), e.name == ".."))
-        } else {
-            None
-        }
-    });
-    if let Some((path, is_dotdot)) = entry_info {
+pub(crate) fn handle_enter_key<B: ratatui::backend::Backend>(
+    state: &mut AppState,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    visible: usize,
+    _terminal: &mut ratatui::Terminal<B>,
+) {
+    let Some(entry) = state.active_panel().current_entry() else {
+        return;
+    };
+    if entry.is_dir() {
+        let path = entry.path.clone();
+        let is_dotdot = entry.name == "..";
         let prev_dir_name = if is_dotdot {
             file_name_str(state.active_panel().path())
         } else {
@@ -334,7 +377,37 @@ pub(crate) fn handle_enter_key(state: &mut AppState, visible: usize) {
         p.scroll_offset = 0;
         panel_ops::refresh_active(state);
         reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
+    } else if entry.name != ".." && file_type::is_archive(&entry.name) {
+        let path = entry.path.clone();
+        *viewer_loader = Some(viewer::ViewerState::open_background(path));
+        state.prev_mode = None;
+        state.mode = AppMode::Viewing;
     }
+}
+
+pub(crate) fn show_archive_dialog(state: &mut AppState) {
+    let entry = match state.active_panel().current_entry() {
+        Some(e) => e,
+        None => return,
+    };
+    let source = entry.path.clone();
+    let entries = match archive::list::list_archive(&source) {
+        Ok(list) => list,
+        Err(e) => {
+            state.status_message = Some(format!("Failed to list archive: {e}"));
+            return;
+        }
+    };
+    let path_str = state.active_panel().path().display().to_string();
+    let dest_input = lc::app::types::TextInput {
+        text: path_str.clone(),
+        cursor: path_str.len(),
+    };
+    state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveExtract {
+        source,
+        entries,
+        dest_input,
+    });
 }
 
 pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_height: u16) {

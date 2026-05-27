@@ -59,8 +59,8 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
     KeyBinding {
         mode: "Normal",
         key: "F7",
-        action: "Mkdir",
-        description: "Create directory",
+        action: "Mkdir/ArchiveExtract",
+        description: "Create directory or extract archive",
     },
     KeyBinding {
         mode: "Normal",
@@ -223,6 +223,12 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
         key: "Alt+X",
         action: "CommandLine",
         description: "Open command line",
+    },
+    KeyBinding {
+        mode: "Normal",
+        key: "F12",
+        action: "ArchiveMenu",
+        description: "Archive operations menu",
     },
     // ── Viewer ───────────────────────────────────────────────────────────────
     KeyBinding {

@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use super::text_input::TextInput;
+use crate::ops::archive::ArchiveEntry;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmDetails {
     pub title: String,
@@ -73,6 +76,15 @@ pub enum DialogKind {
     OverwriteConfirm {
         conflicting: Vec<String>,
     },
+    ArchiveExtract {
+        source: PathBuf,
+        entries: Vec<ArchiveEntry>,
+        dest_input: TextInput,
+    },
+    ArchiveCreate {
+        sources: Vec<PathBuf>,
+        dest_input: TextInput,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,4 +93,5 @@ pub enum PickerKind {
     Hotlist,
     CompareMode,
     UserMenu,
+    ArchiveMenu,
 }

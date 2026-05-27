@@ -1,3 +1,4 @@
+pub mod archive;
 pub(crate) mod batch;
 pub(crate) mod chunk_copy;
 pub(crate) mod compare;

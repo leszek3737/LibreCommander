@@ -16,6 +16,8 @@ pub(crate) fn action_label(action: &PendingAction) -> &'static str {
         PendingAction::Copy { .. } => "Copy",
         PendingAction::Move { .. } => "Move",
         PendingAction::Delete { .. } => "Delete",
+        PendingAction::ExtractArchive { .. } => "Extract",
+        PendingAction::CreateArchive { .. } => "Archive",
     }
 }
 
@@ -284,6 +286,19 @@ mod tests {
 
         let del = PendingAction::Delete { paths: vec![] };
         assert_eq!(action_label(&del), "Delete");
+
+        let extract = PendingAction::ExtractArchive {
+            source: PathBuf::new(),
+            dest: PathBuf::new(),
+        };
+        assert_eq!(action_label(&extract), "Extract");
+
+        let create = PendingAction::CreateArchive {
+            sources: vec![],
+            dest: PathBuf::new(),
+            format: crate::ops::archive::ArchiveFormat::Zip,
+        };
+        assert_eq!(action_label(&create), "Archive");
     }
 
     #[test]
