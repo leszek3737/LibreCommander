@@ -78,10 +78,11 @@ pub struct Settings {
 
 impl Settings {
     pub fn from_state(state: &AppState) -> Self {
+        let sort_options = state.panel(state.active_panel).sort_options();
         Self {
             active_panel: state.active_panel,
-            dir_first: state.left_panel.sort_options.dir_first,
-            sensitive: state.left_panel.sort_options.sensitive,
+            dir_first: sort_options.dir_first,
+            sensitive: sort_options.sensitive,
             left: panel_to_persisted(&state.left_panel),
             right: panel_to_persisted(&state.right_panel),
             hotlist: state.directory_hotlist.clone(),
@@ -96,11 +97,9 @@ impl Settings {
             dir_first: self.dir_first,
             sensitive: self.sensitive,
         };
-        state.left_panel.sort_options = sort_opts;
-        state.right_panel.sort_options = sort_opts;
-        if !self.hotlist.is_empty() || state.directory_hotlist.is_empty() {
-            state.hotlist_set(self.hotlist);
-        }
+        state.left_panel.set_sort_options(sort_opts);
+        state.right_panel.set_sort_options(sort_opts);
+        state.hotlist_set(self.hotlist);
     }
 }
 
@@ -155,12 +154,12 @@ impl From<PersistedSetup> for Settings {
 
 fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
     PersistedPanel {
-        path: path_to_utf8_string(&panel.path),
-        listing_mode: panel.listing_mode,
-        sort_mode: panel.sort_mode,
-        filter: panel.filter.clone().unwrap_or_default(),
-        show_hidden: panel.show_hidden,
-        show_permissions: panel.show_permissions,
+        path: path_to_utf8_string(panel.path()),
+        listing_mode: panel.listing_mode(),
+        sort_mode: panel.sort_mode(),
+        filter: panel.filter().unwrap_or_default().to_string(),
+        show_hidden: panel.show_hidden(),
+        show_permissions: panel.show_permissions(),
     }
 }
 
@@ -257,21 +256,21 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
         let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
         let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if resolved.is_dir() {
-            panel.path = resolved.clone();
-            panel.canonical_path = Some(resolved);
+            panel.set_path(resolved.clone());
+            panel.set_canonical_path(Some(resolved));
         } else {
             crate::debug_log!("configured panel path ignored: {}", path.display());
         }
     }
-    panel.listing_mode = persisted.listing_mode;
-    panel.sort_mode = persisted.sort_mode;
-    panel.filter = if persisted.filter.trim().is_empty() {
+    panel.set_listing_mode(persisted.listing_mode);
+    panel.set_sort_mode(persisted.sort_mode);
+    panel.set_filter(if persisted.filter.trim().is_empty() {
         None
     } else {
         Some(persisted.filter.clone())
-    };
-    panel.show_hidden = persisted.show_hidden;
-    panel.show_permissions = persisted.show_permissions;
+    });
+    panel.set_show_hidden(persisted.show_hidden);
+    panel.set_show_permissions(persisted.show_permissions);
 }
 
 #[cfg(test)]
@@ -304,8 +303,14 @@ mod tests {
         let settings = Settings::from_state(&state);
 
         assert_eq!(settings.active_panel, ActivePanel::Right);
-        assert_eq!(settings.dir_first, state.left_panel.sort_options.dir_first);
-        assert_eq!(settings.sensitive, state.left_panel.sort_options.sensitive);
+        assert_eq!(
+            settings.dir_first,
+            state.panel(state.active_panel).sort_options().dir_first
+        );
+        assert_eq!(
+            settings.sensitive,
+            state.panel(state.active_panel).sort_options().sensitive
+        );
         assert_eq!(settings.left.path, tmp_dir.to_str().map(String::from));
         assert_eq!(settings.left.listing_mode, ListingMode::Brief);
         assert_eq!(settings.left.sort_mode, SortMode::SizeDesc);
@@ -337,18 +342,18 @@ mod tests {
         settings.apply_to_state(&mut state);
 
         assert_eq!(state.active_panel, ActivePanel::Right);
-        assert!(state.left_panel.sort_options.dir_first);
-        assert!(!state.left_panel.sort_options.sensitive);
-        assert!(state.right_panel.sort_options.dir_first);
-        assert!(!state.right_panel.sort_options.sensitive);
+        assert!(state.left_panel.sort_options().dir_first);
+        assert!(!state.left_panel.sort_options().sensitive);
+        assert!(state.right_panel.sort_options().dir_first);
+        assert!(!state.right_panel.sort_options().sensitive);
         assert_eq!(
-            state.left_panel.path,
+            state.left_panel.path(),
             tmp_dir.canonicalize().unwrap_or(tmp_dir)
         );
-        assert_eq!(state.left_panel.listing_mode, ListingMode::Brief);
-        assert_eq!(state.left_panel.sort_mode, SortMode::ExtensionAsc);
-        assert_eq!(state.left_panel.filter, Some("txt".to_string()));
-        assert!(!state.left_panel.show_hidden);
+        assert_eq!(state.left_panel.listing_mode(), ListingMode::Brief);
+        assert_eq!(state.left_panel.sort_mode(), SortMode::ExtensionAsc);
+        assert_eq!(state.left_panel.filter(), Some("txt"));
+        assert!(!state.left_panel.show_hidden());
         assert_eq!(state.directory_hotlist, hotlist);
     }
 

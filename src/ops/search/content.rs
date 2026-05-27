@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::{memchr, memmem};
 
@@ -30,8 +31,24 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
     ) -> SearchOutcome<(PathBuf, usize, String)> {
+        let cancel = AtomicBool::new(false);
+        Self::search_content_with_diagnostics_cancellable(
+            path,
+            pattern,
+            recursive,
+            case_sensitive,
+            &cancel,
+        )
+    }
+
+    pub fn search_content_with_diagnostics_cancellable(
+        path: &Path,
+        pattern: &str,
+        recursive: bool,
+        case_sensitive: bool,
+        cancel: &AtomicBool,
+    ) -> SearchOutcome<(PathBuf, usize, String)> {
         let mut outcome = SearchOutcome::default();
-        let mut item_count: usize = 0;
         search_content_recursive(
             path,
             pattern,
@@ -39,7 +56,7 @@ impl FileSearch {
             case_sensitive,
             0,
             &mut outcome,
-            &mut item_count,
+            Some(cancel),
         );
         outcome
     }
@@ -52,7 +69,7 @@ fn search_content_recursive(
     case_sensitive: bool,
     depth: usize,
     outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
-    item_count: &mut usize,
+    cancel: Option<&AtomicBool>,
 ) {
     let pattern_lower: Vec<char> = if !case_sensitive {
         pattern.chars().flat_map(|c| c.to_lowercase()).collect()
@@ -68,13 +85,16 @@ fn search_content_recursive(
         pattern_lower: &pattern_lower,
         recursive,
         outcome,
-        item_count,
         visited: &mut visited,
+        cancel,
     };
     search_content_recursive_inner(path, depth, &mut ctx);
 }
 
 fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSearchContext<'_>) {
+    if ctx.is_cancelled() {
+        return;
+    }
     if !path.is_dir() {
         return;
     }
@@ -83,14 +103,17 @@ fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSe
         depth,
         MAX_SEARCH_DEPTH,
         MAX_SEARCH_ITEMS,
-        ctx.item_count,
         ctx.outcome,
         |o| o.matches.len() < MAX_CONTENT_RESULTS,
+        TruncationReason::ContentResultLimit,
     ) else {
         return;
     };
 
     for entry in entries {
+        if ctx.is_cancelled() {
+            return;
+        }
         if process_content_entry(entry, path, depth, ctx) {
             return;
         }
@@ -103,7 +126,12 @@ fn process_content_entry(
     depth: usize,
     ctx: &mut ContentSearchContext<'_>,
 ) -> bool {
-    if *ctx.item_count >= MAX_SEARCH_ITEMS || ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS {
+    if ctx.is_cancelled() {
+        return true;
+    }
+    if ctx.outcome.items_scanned >= MAX_SEARCH_ITEMS
+        || ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS
+    {
         ctx.outcome
             .truncated
             .get_or_insert(if ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS {
@@ -134,8 +162,13 @@ fn process_content_entry(
         }
     };
 
-    *ctx.item_count += 1;
+    ctx.outcome.items_scanned += 1;
 
+    // Both symlinked files and directories are skipped in content search.
+    // Reading file contents through symlinks could follow links outside the
+    // search tree or into circular structures. This differs from name search,
+    // which includes symlinked files in results (only recursing into symlinked
+    // directories is prevented there).
     if file_type.is_symlink() {
         return false;
     }
@@ -169,6 +202,7 @@ fn process_content_entry(
                 ctx.pattern_lower,
                 target_meta.len(),
                 ctx.outcome,
+                ctx.cancel,
             );
         }
     }
@@ -182,6 +216,7 @@ fn search_in_file(
     pattern_lower: &[char],
     file_len: u64,
     outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+    cancel: Option<&AtomicBool>,
 ) {
     if pattern.is_empty() {
         return;
@@ -212,6 +247,9 @@ fn search_in_file(
         match reader.read_until(b'\n', &mut line_buf) {
             Ok(0) => break,
             Ok(bytes_read) => {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return;
+                }
                 line_no += 1;
                 let line = if line_buf.last() == Some(&b'\n') {
                     &line_buf[..bytes_read - 1]
@@ -241,7 +279,7 @@ fn search_in_file(
                 }
 
                 let line_text = match std::str::from_utf8(line) {
-                    Ok(s) => s.strip_suffix('\r').unwrap_or(s).to_owned(),
+                    Ok(s) => s.strip_suffix('\r').unwrap_or(s),
                     Err(_) => {
                         non_utf8_lines += 1;
                         if non_utf8_lines <= 3 {
@@ -254,17 +292,14 @@ fn search_in_file(
                         continue;
                     }
                 };
-                let match_found = if case_sensitive {
-                    true
-                } else {
-                    contains_case_insensitive(&line_text, pattern_lower)
-                };
 
-                if match_found {
-                    outcome
-                        .matches
-                        .push((path.to_path_buf(), line_no, line_text));
+                if !case_sensitive && !contains_case_insensitive(line_text, pattern_lower) {
+                    continue;
                 }
+
+                outcome
+                    .matches
+                    .push((path.to_path_buf(), line_no, line_text.to_owned()));
             }
             Err(err) => {
                 outcome

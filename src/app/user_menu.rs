@@ -95,7 +95,7 @@ pub struct SubstContext<'a> {
 const NON_UTF8_ERR: &str = "non-UTF-8 path not supported in menu";
 
 pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, String> {
-    let mut out = String::with_capacity(cmd.len());
+    let mut out = String::with_capacity(cmd.len() * 2);
     let mut chars = cmd.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -155,6 +155,12 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
 }
 
 fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
+    if path.is_absolute() && path.parent().is_none() {
+        return path
+            .to_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| NON_UTF8_ERR.to_owned());
+    }
     path.strip_prefix(active_dir)
         .ok()
         .and_then(|p| p.to_str())
@@ -378,16 +384,7 @@ pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<Loade
             panel_dir.display()
         )
     })?;
-    let metadata = fs::metadata(&path)
-        .map_err(|e| format!("Failed to stat menu file {}: {e}", path.display()))?;
-    if metadata.len() > MAX_MENU_FILE_BYTES {
-        return Err(format!(
-            "Menu file too large ({} bytes, max {MAX_MENU_FILE_BYTES}): {}",
-            metadata.len(),
-            path.display()
-        ));
-    }
-    let mut content = String::with_capacity(metadata.len() as usize);
+    let mut content = String::new();
     File::open(&path)
         .map_err(|e| format!("Failed to open menu file {}: {e}", path.display()))?
         .take(MAX_MENU_FILE_BYTES)

@@ -71,6 +71,10 @@ fn validate_octal(input: &str) -> ValidationResult {
 
 fn dismiss_dialog_and_restore(state: &mut AppState) {
     state.mode = AppMode::Normal;
+    state.pending_action = None;
+    state.pending_menu_command = None;
+    state.status_message = None;
+    state.dialog_selection = 0;
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
@@ -252,11 +256,11 @@ fn handle_find_file(state: &mut AppState, running_job: &mut Option<RunningJob>, 
 }
 
 fn handle_quick_cd(state: &mut AppState, input: &str) {
-    let expanded = fs::path::resolve_user_path(&state.active_panel().path, input);
+    let expanded = fs::path::resolve_user_path(state.active_panel().path(), input);
 
     if expanded.is_dir() {
         let panel = state.active_panel_mut();
-        panel.history.push(panel.path.clone());
+        panel.push_history(panel.path().to_path_buf());
         panel.set_path(expanded.clone());
         panel.cursor = 0;
         panel.scroll_offset = 0;
@@ -277,7 +281,7 @@ fn handle_input_action(
     running_job: &mut Option<RunningJob>,
     action: &InputAction,
     terminal_height: u16,
-) -> bool {
+) {
     let input = state.dialog_input.text.clone();
     match action {
         InputAction::ViewerSearch => {
@@ -286,22 +290,22 @@ fn handle_input_action(
             }
             state.mode = AppMode::Viewing;
             state.dialog_input.clear();
-            return true;
+            return;
         }
         InputAction::CreateDirectory => {
             match validate_path_name(&input) {
                 ValidationResult::Valid => {}
                 ValidationResult::EmptyInput => {
                     state.status_message = Some("Directory name cannot be empty".to_string());
-                    return false;
+                    return;
                 }
                 ValidationResult::InvalidPath(p) => {
                     state.status_message = Some(p);
-                    return false;
+                    return;
                 }
-                _ => return false,
+                ValidationResult::InvalidOctal(_) => return,
             }
-            let target = fs::path::resolve_user_path(&state.active_panel().path, &input);
+            let target = fs::path::resolve_user_path(state.active_panel().path(), &input);
             if let Err(err) = ops::create_directory(&target) {
                 state.status_message = Some(format!("Create directory failed: {err}"));
             }
@@ -311,13 +315,13 @@ fn handle_input_action(
                 ValidationResult::Valid => {}
                 ValidationResult::EmptyInput => {
                     state.status_message = Some("New name cannot be empty".to_string());
-                    return false;
+                    return;
                 }
                 ValidationResult::InvalidPath(p) => {
                     state.status_message = Some(p);
-                    return false;
+                    return;
                 }
-                _ => return false,
+                ValidationResult::InvalidOctal(_) => return,
             }
             if let Some(entry) = state.active_panel().current_entry()
                 && input != entry.name
@@ -331,13 +335,13 @@ fn handle_input_action(
                 ValidationResult::Valid => {}
                 ValidationResult::EmptyInput => {
                     state.status_message = Some("Octal mode cannot be empty".to_string());
-                    return false;
+                    return;
                 }
                 ValidationResult::InvalidOctal(o) => {
                     state.status_message = Some(format!("Invalid octal mode '{o}'"));
-                    return false;
+                    return;
                 }
-                _ => return false,
+                ValidationResult::InvalidPath(_) => return,
             }
             let mode = parse_octal_mode(&input).unwrap_or(0);
             if let Some(entry) = state.active_panel().current_entry()
@@ -348,11 +352,11 @@ fn handle_input_action(
         }
         InputAction::Filter => {
             let panel = state.active_panel_mut();
-            panel.filter = if input.trim().is_empty() {
+            panel.set_filter(if input.trim().is_empty() {
                 None
             } else {
                 Some(input)
-            };
+            });
             if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
                 refresh_active(state);
             } else {
@@ -362,7 +366,7 @@ fn handle_input_action(
         InputAction::QuickCd => handle_quick_cd(state, &input),
         InputAction::FindFile => {
             handle_find_file(state, running_job, &input);
-            return false;
+            return;
         }
     }
     state.mode = AppMode::Normal;
@@ -373,7 +377,6 @@ fn handle_input_action(
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
-    false
 }
 
 fn apply_text_edit(state: &mut AppState, key: KeyCode) {
@@ -413,10 +416,10 @@ fn handle_input_dialog(
     action: &InputAction,
     key: KeyCode,
     terminal_height: u16,
-) -> bool {
+) {
     match key {
         KeyCode::Enter => {
-            handle_input_action(state, viewer_state, running_job, action, terminal_height)
+            handle_input_action(state, viewer_state, running_job, action, terminal_height);
         }
         KeyCode::Esc => {
             if *action == InputAction::ViewerSearch {
@@ -428,11 +431,9 @@ fn handle_input_dialog(
             if let Some(panel) = state.menu_restore_panel.take() {
                 set_active_panel(state, panel);
             }
-            false
         }
         _ => {
             apply_text_edit(state, key);
-            false
         }
     }
 }
@@ -472,6 +473,7 @@ fn handle_copymove_dialog(
             source,
             dest,
             is_move,
+            ..
         }) = &state.mode
         {
             if *is_move {
@@ -559,33 +561,23 @@ pub(crate) fn handle_dialog(
         return;
     }
 
-    let input_action = if let AppMode::Dialog(DialogKind::Input { ref action, .. }) = state.mode {
-        Some(*action)
-    } else {
-        None
-    };
-
-    let dk = if let AppMode::Dialog(ref dk) = state.mode {
-        dk
-    } else {
+    let AppMode::Dialog(dk) = &state.mode else {
         return;
     };
 
-    match dk {
+    match dk.clone() {
         DialogKind::Confirm(_) => {
             handle_confirm_dialog(state, running_job, key);
         }
-        DialogKind::Input { .. } => {
-            if let Some(action) = input_action {
-                let _ = handle_input_dialog(
-                    state,
-                    viewer_state,
-                    running_job,
-                    &action,
-                    key,
-                    terminal_size.height,
-                );
-            }
+        DialogKind::Input { action, .. } => {
+            handle_input_dialog(
+                state,
+                viewer_state,
+                running_job,
+                &action,
+                key,
+                terminal_size.height,
+            );
         }
         DialogKind::Error(_) => {
             handle_error_dialog(state, key);

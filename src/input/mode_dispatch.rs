@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::prelude::*;
 
 use lc::app::panel_ops;
-use lc::app::types::{self, AppMode, AppState, DialogKind, InputAction};
+use lc::app::types::{AppMode, AppState, DialogKind, InputAction};
 use lc::menu::{menu_item_count, menu_total_count};
 use lc::ui::viewer;
 
@@ -14,17 +14,24 @@ use crate::{
 const VIEWER_CHROME_HEIGHT: u16 = 3;
 const HORIZONTAL_SCROLL_STEP: usize = 4;
 
-pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
-    types::restore_prev_mode(state);
-    state.search_query.clear();
-    state.search_cursor = 0;
-    let panel = state.active_panel_mut();
-    panel.filter = None;
-    if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
+fn refresh_or_rebuild(state: &mut AppState, visible_height: usize) {
+    let needs_refresh = {
+        let panel = state.active_panel();
+        panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty()
+    };
+    if needs_refresh {
         panel_ops::refresh_active(state);
     } else {
-        panel_ops::rebuild_visible_entries(panel, visible_height);
+        panel_ops::rebuild_visible_entries(state.active_panel_mut(), visible_height);
     }
+}
+
+pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
+    state.restore_prev_mode();
+    state.search_query.clear();
+    state.search_cursor = 0;
+    state.active_panel_mut().set_filter(None);
+    refresh_or_rebuild(state, visible_height);
 }
 
 pub(crate) fn initiate_search(
@@ -38,18 +45,13 @@ pub(crate) fn initiate_search(
     state.search_cursor = state.search_query.len();
     let filter_query = state.search_query.clone();
     state.mode = AppMode::Search;
-    let panel = state.active_panel_mut();
-    panel.filter = Some(filter_query);
-    if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
-        panel_ops::refresh_active(state);
-    } else {
-        panel_ops::rebuild_visible_entries(panel, visible_height);
-    }
+    state.active_panel_mut().set_filter(Some(filter_query));
+    refresh_or_rebuild(state, visible_height);
 }
 
 pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
+    _viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
     key: KeyCode,
     modifiers: KeyModifiers,
@@ -59,7 +61,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     let visible = panel_ops::panel_visible_height(terminal_height);
     match key {
         KeyCode::F(_) => {
-            handle_function_keys(state, viewer_state, viewer_loader, key, terminal);
+            handle_function_keys(state, viewer_loader, key, terminal);
         }
         KeyCode::Up
         | KeyCode::Down
@@ -76,7 +78,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
         KeyCode::Enter if !modifiers.contains(KeyModifiers::ALT) => {
             handle_enter_key(state, visible);
         }
-        KeyCode::Char('u' | 's' | 'h' | 'r' | 'o') if modifiers == KeyModifiers::CONTROL => {
+        KeyCode::Char('u' | 's' | 'h' | 'r' | 'o') if modifiers.contains(KeyModifiers::CONTROL) => {
             handle_ctrl_keys(state, key, terminal_height);
         }
         KeyCode::Enter | KeyCode::Backspace | KeyCode::Char(_)
@@ -106,7 +108,7 @@ pub(crate) fn handle_viewer_mode(
         if matches!(key, KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q')) {
             viewer_loader.take();
             *image_preview_loader = None;
-            types::restore_prev_mode(state);
+            state.restore_prev_mode();
             *viewer_state = None;
         }
         return;
@@ -119,7 +121,7 @@ pub(crate) fn handle_viewer_mode(
         match key {
             KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
                 *image_preview_loader = None;
-                types::restore_prev_mode(state);
+                state.restore_prev_mode();
                 *viewer_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => vs.scroll_up(1),
@@ -167,7 +169,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_he
             } else {
                 let filter_query = Some(state.search_query.clone());
                 let panel = state.active_panel_mut();
-                panel.filter = filter_query;
+                panel.set_filter(filter_query);
                 panel_ops::rebuild_visible_entries(panel, visible);
             }
         }
@@ -176,7 +178,7 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_he
             state.search_cursor = state.search_query.len();
             let filter_query = state.search_query.clone();
             let panel = state.active_panel_mut();
-            panel.filter = Some(filter_query);
+            panel.set_filter(Some(filter_query));
             panel_ops::rebuild_visible_entries(panel, visible);
         }
         _ => {}
@@ -218,7 +220,7 @@ pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
             );
         }
     } else if state.mode == prev {
-        types::restore_prev_mode(state);
+        state.restore_prev_mode();
     }
 }
 
@@ -239,7 +241,7 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
 
     match key {
         KeyCode::Esc | KeyCode::F(9 | 10) => {
-            types::restore_prev_mode(state);
+            state.restore_prev_mode();
         }
         KeyCode::Left => {
             state.menu_selected = if state.menu_selected == 0 {

@@ -34,6 +34,11 @@ pub struct ViewerState {
     pub(crate) cached_content_width: RefCell<usize>,
     pub(crate) file_truncated: bool,
     pub cached_image_size: Option<(u16, u16)>,
+    // Stored here (rather than a separate render-only struct) because
+    // `scroll.rs::set_image_preview` and `render.rs::draw_image` both
+    // operate on `&mut ViewerState` / `&ViewerState` directly. Moving it
+    // out would require a separate render-state struct plumbed through
+    // every viewer call — not worth the churn for a single cached field.
     pub cached_image_text: Option<ratatui::text::Text<'static>>,
 }
 
@@ -138,8 +143,7 @@ impl ViewerState {
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
 
-        let has_invalid_utf8 =
-            !raw_bytes.is_empty() && open_as_text && std::str::from_utf8(&raw_bytes).is_err();
+        let has_invalid_utf8 = !raw_bytes.is_empty() && std::str::from_utf8(&raw_bytes).is_err();
 
         let line_offsets = if !open_as_text {
             Vec::new()

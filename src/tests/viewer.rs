@@ -25,17 +25,10 @@ fn f3_viewer_clears_stale_prev_mode() {
         .enumerate()
         .map(|(i, e)| (e.path.clone(), i))
         .collect();
-    let mut viewer: Option<viewer::ViewerState> = None;
     let mut loader = None;
     let mut terminal = test_terminal();
 
-    super::super::handle_function_keys(
-        &mut state,
-        &mut viewer,
-        &mut loader,
-        KeyCode::F(3),
-        &mut terminal,
-    );
+    super::super::handle_function_keys(&mut state, &mut loader, KeyCode::F(3), &mut terminal);
 
     assert!(matches!(state.mode, AppMode::Viewing));
     assert!(state.prev_mode.is_none());

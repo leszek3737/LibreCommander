@@ -3,19 +3,18 @@
 //! and will only compile on Unix platforms.
 
 use chrono::{DateTime, Local};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use crate::app::types::{PanelListing, PanelState, compute_category};
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
-/// 1024 covers typical multi-user systems; entries are evicted arbitrarily when exceeded.
+/// 1024 covers typical multi-user systems; oldest entries are evicted (FIFO) when exceeded.
 const CACHE_MAX_SIZE: usize = 1024;
 
 #[cfg(test)]
@@ -25,56 +24,56 @@ pub use crate::app::types::FileEntry;
 
 struct UidCache {
     uid_to_name: HashMap<u32, Arc<str>>,
+    uid_order: VecDeque<u32>,
     gid_to_name: HashMap<u32, Arc<str>>,
+    gid_order: VecDeque<u32>,
 }
 
-// Design note: thread_local caches are per-thread. When rayon spawns
-// directory reads on multiple threads, each thread starts with an empty
-// cache, reducing the hit rate. For the typical interactive session this
-// is acceptable — most lookups happen on one or two threads. If rayon
-// usage grows, consider replacing this with a shared cache behind a
-// mutex (e.g. once_cell::sync::Lazy<Mutex<UidCache>>).
-thread_local! {
-    static UID_CACHE: RefCell<UidCache> = RefCell::new(UidCache {
+static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
+    Mutex::new(UidCache {
         uid_to_name: HashMap::new(),
+        uid_order: VecDeque::new(),
         gid_to_name: HashMap::new(),
-    });
-}
+        gid_order: VecDeque::new(),
+    })
+});
 
 #[cfg(unix)]
 fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
-    UID_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.uid_to_name.len() >= CACHE_MAX_SIZE
-            && let Some(evicted) = cache.uid_to_name.keys().next().copied()
-        {
-            cache.uid_to_name.remove(&evicted);
-        }
-        if cache.gid_to_name.len() >= CACHE_MAX_SIZE
-            && let Some(evicted) = cache.gid_to_name.keys().next().copied()
-        {
-            cache.gid_to_name.remove(&evicted);
-        }
-        let owner = cache
-            .uid_to_name
-            .entry(uid)
-            .or_insert_with(|| {
-                users::get_user_by_uid(uid)
-                    .map(|u| Arc::from(u.name().to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| Arc::from(uid.to_string()))
-            })
-            .clone();
-        let group = cache
-            .gid_to_name
-            .entry(gid)
-            .or_insert_with(|| {
-                users::get_group_by_gid(gid)
-                    .map(|g| Arc::from(g.name().to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| Arc::from(gid.to_string()))
-            })
-            .clone();
-        (owner, group)
-    })
+    let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.uid_to_name.len() >= CACHE_MAX_SIZE
+        && let Some(old) = cache.uid_order.pop_front()
+    {
+        cache.uid_to_name.remove(&old);
+    }
+    if cache.gid_to_name.len() >= CACHE_MAX_SIZE
+        && let Some(old) = cache.gid_order.pop_front()
+    {
+        cache.gid_to_name.remove(&old);
+    }
+    // TODO: `users` crate v0.11.0 is unmaintained (no release since 2022).
+    // Consider switching to `uzers` or raw `nix::unistd` before next release.
+    let owner = if let Some(name) = cache.uid_to_name.get(&uid) {
+        name.clone()
+    } else {
+        cache.uid_order.push_back(uid);
+        let name: Arc<str> = users::get_user_by_uid(uid)
+            .map(|u| Arc::from(u.name().to_string_lossy().into_owned()))
+            .unwrap_or_else(|| Arc::from(uid.to_string()));
+        cache.uid_to_name.insert(uid, name.clone());
+        name
+    };
+    let group = if let Some(name) = cache.gid_to_name.get(&gid) {
+        name.clone()
+    } else {
+        cache.gid_order.push_back(gid);
+        let name: Arc<str> = users::get_group_by_gid(gid)
+            .map(|g| Arc::from(g.name().to_string_lossy().into_owned()))
+            .unwrap_or_else(|| Arc::from(gid.to_string()));
+        cache.gid_to_name.insert(gid, name.clone());
+        name
+    };
+    (owner, group)
 }
 
 #[cfg(not(unix))]
@@ -270,11 +269,8 @@ pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
         }
     } else {
         let new_idx = panel.listing.unfiltered_entries.len();
+        panel.listing.path_index.insert(entry.path.clone(), new_idx);
         panel.listing.unfiltered_entries.push(entry);
-        panel.listing.path_index.insert(
-            panel.listing.unfiltered_entries[new_idx].path.clone(),
-            new_idx,
-        );
     }
 }
 
@@ -284,15 +280,16 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
     }
 
     ensure_path_index(panel);
-    if !panel.listing.path_index.contains_key(path) {
-        return;
+    if let Some(idx) = panel.listing.path_index.remove(path) {
+        let last = panel.listing.unfiltered_entries.len() - 1;
+        if idx < last {
+            let last_path = panel.listing.unfiltered_entries[last].path.clone();
+            panel.listing.unfiltered_entries.swap_remove(idx);
+            panel.listing.path_index.insert(last_path, idx);
+        } else {
+            panel.listing.unfiltered_entries.pop();
+        }
     }
-
-    panel
-        .listing
-        .unfiltered_entries
-        .retain(|e| is_parent_entry(e) || e.path != path);
-    rebuild_path_index(&mut panel.listing);
 }
 
 pub fn format_date(time: SystemTime) -> String {
@@ -665,7 +662,7 @@ mod tests {
     fn test_upsert_adds_hidden_to_unfiltered() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("visible.txt", false)]);
         panel.listing.unfiltered_entries = panel.listing.entries.clone();
-        panel.show_hidden = false;
+        panel.set_show_hidden(false);
         upsert_entry(&mut panel, test_entry(".hidden", false));
 
         assert!(
@@ -680,7 +677,7 @@ mod tests {
     #[test]
     fn test_upsert_with_empty_unfiltered_inserts_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("main.rs", false)]);
-        panel.filter = Some("*.rs".to_string());
+        panel.set_filter(Some("*.rs".to_string()));
 
         upsert_entry(&mut panel, test_entry("notes.txt", false));
 
@@ -693,7 +690,7 @@ mod tests {
         let mut panel = test_panel(vec![parent_entry(), test_entry("file.txt", false)]);
         panel.listing.unfiltered_entries = panel.listing.entries.clone();
 
-        remove_entry(&mut panel, &std::env::temp_dir());
+        remove_entry(&mut panel, &std::env::temp_dir().join("file.txt"));
 
         assert!(
             panel

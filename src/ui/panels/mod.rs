@@ -251,7 +251,7 @@ pub fn render_panel_with_colors(
         Theme::border_inactive_with_colors(colors)
     };
 
-    let title = format!(" {} ", panel.path.display());
+    let title = format!(" {} ", panel.path().display());
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -285,10 +285,10 @@ pub fn render_panel_with_colors(
         let cat = entry.category();
         let bold = entry.is_dir() || entry.is_executable();
 
-        let string_line = match panel.listing_mode {
+        let string_line = match panel.listing_mode() {
             ListingMode::Long => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
-                format_entry_line(entry, width, panel.show_permissions, &cat, icon_theme)
+                format_entry_line(entry, width, panel.show_permissions(), &cat, icon_theme)
             }
             ListingMode::Brief => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
@@ -324,7 +324,7 @@ pub fn render_panel_with_colors(
     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
     if panel.listing.entries.is_empty()
-        && let Some(ref err) = panel.last_error
+        && let Some(err) = panel.last_error()
     {
         let err_text =
             Paragraph::new(format!(" Error: {err}")).style(Theme::error_with_colors(colors));
@@ -535,12 +535,12 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
     let mut summary = String::new();
     write!(summary, " {}/{} {}%", pos, total, pct).ok();
 
-    if panel.selected_count > 0 {
+    if panel.selected_count() > 0 {
         write!(
             summary,
-            " Sel: {} [{}]",
-            panel.selected_count,
-            format_size(panel.selected_size)
+            " ({} {})",
+            panel.selected_count(),
+            format_size(panel.selected_size())
         )
         .ok();
     }
@@ -570,7 +570,7 @@ pub fn render_status_bar_with_colors(
     {
         let entry = &panel.listing.entries[panel.cursor];
         let display_name = sanitize_for_display(&entry.name);
-        let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions);
+        let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions());
         let full_info = format!("{display_name} | {metadata}");
         let full_width = UnicodeWidthStr::width(full_info.as_str());
 

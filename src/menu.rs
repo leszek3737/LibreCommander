@@ -4,52 +4,6 @@ use unicode_width::UnicodeWidthStr;
 const MENU_TITLE_PADDING: usize = 2;
 const MENU_TITLE_SEPARATOR: usize = 1;
 
-pub const MENU_TITLES: [&str; 5] = ["Left", "File", "Command", "Options", "Right"];
-
-pub const MENU_ITEMS: [&[&str]; 5] = [
-    &[
-        "Listing mode...",
-        "Sort order...",
-        "Filter...",
-        "Refresh panel",
-    ],
-    &[
-        "User menu",
-        "View file",
-        "Edit file",
-        "Copy",
-        "Move",
-        "Mkdir",
-        "Delete",
-        "Rename",
-        "Chmod",
-        "Quit",
-    ],
-    &[
-        "Directory tree",
-        "Find file",
-        "Swap panels",
-        "Switch panels",
-        "Compare dirs",
-        "History",
-        "Directory hotlist",
-        "Command line",
-    ],
-    &[
-        "Show hidden files",
-        "Show permissions",
-        "Add to hotlist",
-        "Reset filter",
-        "Save setup",
-    ],
-    &[
-        "Listing mode...",
-        "Sort order...",
-        "Filter...",
-        "Refresh panel",
-    ],
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MenuAction {
@@ -82,88 +36,167 @@ pub enum MenuAction {
     CommandLine,
 }
 
-const LEFT_RIGHT_MENU_ACTIONS: [MenuAction; 4] = [
-    MenuAction::ToggleListingMode,
-    MenuAction::CycleSortOrder,
-    MenuAction::OpenFilter,
-    MenuAction::RefreshPanel,
+#[derive(Debug, Clone, Copy)]
+pub struct MenuEntry {
+    pub title: &'static str,
+    pub items: &'static [&'static str],
+    pub actions: &'static [MenuAction],
+}
+
+pub const MENUS: [MenuEntry; 5] = [
+    MenuEntry {
+        title: "Left",
+        items: &[
+            "Listing mode...",
+            "Sort order...",
+            "Filter...",
+            "Refresh panel",
+        ],
+        actions: &[
+            MenuAction::ToggleListingMode,
+            MenuAction::CycleSortOrder,
+            MenuAction::OpenFilter,
+            MenuAction::RefreshPanel,
+        ],
+    },
+    MenuEntry {
+        title: "File",
+        items: &[
+            "User menu",
+            "View file",
+            "Edit file",
+            "Copy",
+            "Move",
+            "Mkdir",
+            "Delete",
+            "Rename",
+            "Chmod",
+            "Quit",
+        ],
+        actions: &[
+            MenuAction::OpenUserMenu,
+            MenuAction::ViewFile,
+            MenuAction::EditFile,
+            MenuAction::Copy,
+            MenuAction::Move,
+            MenuAction::MakeDirectory,
+            MenuAction::Delete,
+            MenuAction::Rename,
+            MenuAction::Chmod,
+            MenuAction::Quit,
+        ],
+    },
+    MenuEntry {
+        title: "Command",
+        items: &[
+            "Directory tree",
+            "Find file",
+            "Swap panels",
+            "Switch panels",
+            "Compare dirs",
+            "History",
+            "Directory hotlist",
+            "Command line",
+        ],
+        actions: &[
+            MenuAction::DirectoryTree,
+            MenuAction::FindFile,
+            MenuAction::SwapPanels,
+            MenuAction::SwitchPanels,
+            MenuAction::CompareDirs,
+            MenuAction::History,
+            MenuAction::DirectoryHotlist,
+            MenuAction::CommandLine,
+        ],
+    },
+    MenuEntry {
+        title: "Options",
+        items: &[
+            "Show hidden files",
+            "Show permissions",
+            "Add to hotlist",
+            "Reset filter",
+            "Save setup",
+        ],
+        actions: &[
+            MenuAction::ToggleHiddenFiles,
+            MenuAction::TogglePermissions,
+            MenuAction::SaveCurrentPathToHotlist,
+            MenuAction::ResetPanelFilter,
+            MenuAction::SaveSetup,
+        ],
+    },
+    MenuEntry {
+        title: "Right",
+        items: &[
+            "Listing mode...",
+            "Sort order...",
+            "Filter...",
+            "Refresh panel",
+        ],
+        actions: &[
+            MenuAction::ToggleListingMode,
+            MenuAction::CycleSortOrder,
+            MenuAction::OpenFilter,
+            MenuAction::RefreshPanel,
+        ],
+    },
 ];
 
-const FILE_MENU_ACTIONS: [MenuAction; 10] = [
-    MenuAction::OpenUserMenu,
-    MenuAction::ViewFile,
-    MenuAction::EditFile,
-    MenuAction::Copy,
-    MenuAction::Move,
-    MenuAction::MakeDirectory,
-    MenuAction::Delete,
-    MenuAction::Rename,
-    MenuAction::Chmod,
-    MenuAction::Quit,
+pub const MENU_TITLES: [&str; 5] = [
+    MENUS[0].title,
+    MENUS[1].title,
+    MENUS[2].title,
+    MENUS[3].title,
+    MENUS[4].title,
 ];
 
-const COMMAND_MENU_ACTIONS: [MenuAction; 8] = [
-    MenuAction::DirectoryTree,
-    MenuAction::FindFile,
-    MenuAction::SwapPanels,
-    MenuAction::SwitchPanels,
-    MenuAction::CompareDirs,
-    MenuAction::History,
-    MenuAction::DirectoryHotlist,
-    MenuAction::CommandLine,
+pub const MENU_ITEMS: [&[&str]; 5] = [
+    MENUS[0].items,
+    MENUS[1].items,
+    MENUS[2].items,
+    MENUS[3].items,
+    MENUS[4].items,
 ];
 
-const OPTIONS_MENU_ACTIONS: [MenuAction; 5] = [
-    MenuAction::ToggleHiddenFiles,
-    MenuAction::TogglePermissions,
-    MenuAction::SaveCurrentPathToHotlist,
-    MenuAction::ResetPanelFilter,
-    MenuAction::SaveSetup,
-];
-
-const MENU_ACTIONS: [&[MenuAction]; 5] = [
-    &LEFT_RIGHT_MENU_ACTIONS,
-    &FILE_MENU_ACTIONS,
-    &COMMAND_MENU_ACTIONS,
-    &OPTIONS_MENU_ACTIONS,
-    &LEFT_RIGHT_MENU_ACTIONS,
+pub const MENU_ACTIONS: [&[MenuAction]; 5] = [
+    MENUS[0].actions,
+    MENUS[1].actions,
+    MENUS[2].actions,
+    MENUS[3].actions,
+    MENUS[4].actions,
 ];
 
 const _: () = {
-    assert!(MENU_ITEMS.len() == MENU_ACTIONS.len());
-    assert!(MENU_ITEMS.len() == MENU_TITLES.len());
-    assert!(LEFT_RIGHT_MENU_ACTIONS.len() == MENU_ITEMS[0].len());
-    assert!(FILE_MENU_ACTIONS.len() == MENU_ITEMS[1].len());
-    assert!(COMMAND_MENU_ACTIONS.len() == MENU_ITEMS[2].len());
-    assert!(OPTIONS_MENU_ACTIONS.len() == MENU_ITEMS[3].len());
+    let mut i = 0;
+    while i < MENUS.len() {
+        assert!(MENUS[i].items.len() == MENUS[i].actions.len());
+        i += 1;
+    }
 };
 
 pub fn menu_action_at(menu: usize, item: usize) -> Option<MenuAction> {
-    MENU_ACTIONS
+    MENUS
         .get(menu)
-        .and_then(|actions| actions.get(item))
+        .and_then(|entry| entry.actions.get(item))
         .copied()
 }
 
 pub fn menu_item_count(menu: usize) -> usize {
-    MENU_ACTIONS.get(menu).map_or(0, |actions| actions.len())
+    MENUS.get(menu).map_or(0, |entry| entry.items.len())
 }
 
 pub fn menu_total_count() -> usize {
-    MENU_ACTIONS.len()
+    MENUS.len()
 }
 
 pub fn menu_bar_text_width() -> u16 {
-    let titles_width: u16 = MENU_TITLES
+    let titles_width: u16 = MENUS
         .iter()
-        .map(|title| menu_title_width(title))
+        .map(|entry| menu_title_width(entry.title))
         .try_fold(0u16, |acc, w| acc.checked_add(w))
         .unwrap_or(u16::MAX);
-    let separator_width: u16 = MENU_TITLES
-        .len()
-        .saturating_sub(1)
-        .try_into()
-        .unwrap_or(u16::MAX);
+    let separator_width: u16 = MENUS.len().saturating_sub(1).try_into().unwrap_or(u16::MAX);
     titles_width.saturating_add(separator_width)
 }
 
@@ -177,8 +210,8 @@ pub fn menu_title_width(title: &str) -> u16 {
 
 pub fn menu_title_x(width: u16, index: usize) -> u16 {
     let mut x = menu_bar_start_x(width);
-    for title in MENU_TITLES.iter().take(index) {
-        x = x.saturating_add(menu_title_width(title) + MENU_TITLE_SEPARATOR as u16);
+    for entry in MENUS.iter().take(index) {
+        x = x.saturating_add(menu_title_width(entry.title) + MENU_TITLE_SEPARATOR as u16);
     }
     x
 }
@@ -206,7 +239,7 @@ mod tests {
     fn menu_action_at_maps_file_and_command_menus() {
         assert_eq!(menu_action_at(1, 7), Some(MenuAction::Rename));
         assert_eq!(menu_action_at(2, 4), Some(MenuAction::CompareDirs));
-        assert_eq!(MENU_ITEMS[2][7], "Command line");
+        assert_eq!(MENUS[2].items[7], "Command line");
         assert_eq!(menu_action_at(2, 7), Some(MenuAction::CommandLine));
     }
 

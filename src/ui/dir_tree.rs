@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::Path;
 
@@ -16,6 +17,8 @@ use crate::ui::theme::{ColorPalette, Theme};
 
 const HELP_TEXT: &str = " Enter: expand/collapse  c: cd  Esc: close  PgUp/PgDn: scroll";
 
+/// 80 spaces — supports up to 40 indentation levels (2 spaces each).
+/// Deeper nesting silently stops indenting; this is fine for practical use.
 const INDENT_BUF: &str =
     "                                                                                ";
 
@@ -24,13 +27,13 @@ fn indent_for_depth(depth: usize) -> &'static str {
     &INDENT_BUF[..needed.min(INDENT_BUF.len())]
 }
 
-fn truncate_name(name: &str, max_width: usize) -> String {
+fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     if max_width == 0 {
-        return String::new();
+        return Cow::Borrowed("");
     }
     let name_width = UnicodeWidthStr::width(name);
     if name_width <= max_width {
-        return name.to_string();
+        return Cow::Borrowed(name);
     }
     let truncate_to = max_width.saturating_sub(1);
     let mut result = String::new();
@@ -44,7 +47,7 @@ fn truncate_name(name: &str, max_width: usize) -> String {
         taken += cw;
     }
     result.push('…');
-    result
+    Cow::Owned(result)
 }
 
 fn render_tree_scrollbar(
@@ -118,8 +121,9 @@ fn render_tree_entries(
     content_width: u16,
     colors: &ColorPalette,
 ) {
-    for (offset, entry) in entries[row_range.clone()].iter().enumerate() {
-        let row = row_range.start + offset;
+    let row_start = row_range.start;
+    for (offset, entry) in entries[row_range].iter().enumerate() {
+        let row = row_start + offset;
         let y = inner.y + offset as u16;
         if y >= inner.y + inner.height.saturating_sub(1) {
             break;

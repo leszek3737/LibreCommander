@@ -27,11 +27,7 @@ static TEST_CACHE_HOME: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
 fn log_path() -> std::path::PathBuf {
     #[cfg(test)]
-    if let Some(cache_dir) = TEST_CACHE_HOME
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
+    if let Some(cache_dir) = lock_recover(&TEST_CACHE_HOME).as_ref() {
         return cache_dir.join("lc").join("debug.log");
     }
 
@@ -59,9 +55,15 @@ fn stderr_fallback(msg: &str) {
     let _ = std::io::stderr().flush();
 }
 
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| {
+        stderr_fallback("[lc:debug_log:mutex_poison] recovering from poisoned mutex — another thread panicked while holding the lock");
+        e.into_inner()
+    })
+}
+
 pub fn log(args: std::fmt::Arguments<'_>) {
-    let mut guard: MutexGuard<'_, Option<std::fs::File>> =
-        LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard: MutexGuard<'_, Option<std::fs::File>> = lock_recover(&LOG_FILE);
     let freshly_opened = guard.is_none();
     if freshly_opened {
         match ensure_log_file() {
@@ -97,6 +99,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         if let Err(e) = writeln!(file, "[{timestamp}] {args}") {
             stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
         }
+        let _ = file.flush();
     }
 }
 
@@ -122,27 +125,26 @@ mod tests {
     impl TestCacheHome {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("create temporary cache directory");
-            *TEST_CACHE_HOME.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(dir.path().to_owned());
+            *lock_recover(&TEST_CACHE_HOME) = Some(dir.path().to_owned());
             Self { _dir: dir }
         }
     }
 
     impl Drop for TestCacheHome {
         fn drop(&mut self) {
-            *TEST_CACHE_HOME.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *lock_recover(&TEST_CACHE_HOME) = None;
         }
     }
 
     fn reset_for_test() {
-        let mut guard = LOG_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = lock_recover(&LOG_FILE);
         *guard = None;
         CHECK_COUNTER.store(0, Ordering::SeqCst);
     }
 
     #[test]
     fn log_writes_to_file() {
-        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = lock_recover(&TEST_MUTEX);
         let _cache_home = TestCacheHome::new();
         let path = log_path();
         reset_for_test();
@@ -163,7 +165,7 @@ mod tests {
 
     #[test]
     fn log_truncates_oversized_file() {
-        let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = lock_recover(&TEST_MUTEX);
         let _cache_home = TestCacheHome::new();
         let path = log_path();
         reset_for_test();

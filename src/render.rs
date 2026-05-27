@@ -1,3 +1,4 @@
+use crate::render_dialog_map;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     prelude::*,
@@ -21,8 +22,8 @@ use ui::{dialogs, panels, viewer};
 pub(crate) fn render_ui(
     f: &mut Frame,
     state: &AppState,
-    viewer_state: &Option<viewer::ViewerState>,
-    viewer_loader: &Option<viewer::ViewerLoader>,
+    viewer_state: Option<&viewer::ViewerState>,
+    viewer_loader: Option<&viewer::ViewerLoader>,
 ) {
     let colors = &state.theme_colors;
     let icon_theme = colors.icon_theme();
@@ -43,9 +44,17 @@ pub(crate) fn render_ui(
             return;
         }
         if let Some(loader) = viewer_loader {
-            viewer::render_loading_with_colors(f, f.area(), &loader.path, colors);
+            viewer::render_loading_with_colors(
+                f,
+                f.area(),
+                &loader.path,
+                colors,
+                state.viewer_spinner_frame,
+            );
             return;
         }
+        // Viewing mode entered but no state or loader ready yet — fall through
+        // to the normal panel layout so the screen isn't blank.
     }
 
     if state.mode == AppMode::DirectoryTree {
@@ -107,7 +116,7 @@ pub(crate) fn render_ui(
     };
     panels::render_status_bar_with_colors(f, main_layout[2], active, colors);
 
-    let cmd_text: std::borrow::Cow<'_, str> = if state.mode == AppMode::CommandLine {
+    let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
         let (before, after) =
             safe_split_at(&state.command_line.text, state.command_line.byte_pos());
         format!("$ {before}_{after}").into()
@@ -115,10 +124,10 @@ pub(crate) fn render_ui(
         let (before, after) = safe_split_at(&state.search_query, state.search_cursor);
         format!("Search: {before}_{after}").into()
     } else if let Some(ref msg) = state.status_message {
-        std::borrow::Cow::Borrowed(msg.as_str())
+        Cow::Borrowed(msg.as_str())
     } else {
         let ap = state.active_panel();
-        ap.path.to_string_lossy()
+        ap.path().to_string_lossy()
     };
     let cmd_paragraph =
         ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar_with_colors(colors));
@@ -131,7 +140,7 @@ pub(crate) fn render_ui(
 
 fn render_overlays(f: &mut Frame, state: &AppState, menu_bar_area: Rect, colors: &ColorPalette) {
     if let AppMode::Dialog(ref dialog_kind) = state.mode {
-        let ui_dialog = to_ui_dialog(dialog_kind, state);
+        let ui_dialog = render_dialog_map::to_ui_dialog(dialog_kind, state);
         dialogs::render_dialog_with_colors(f, &ui_dialog, colors);
     }
 
@@ -188,8 +197,7 @@ fn render_list_picker_overlay(
             );
         }
         PickerKind::CompareMode => {
-            static COMPARE_MODES: std::sync::LazyLock<[String; 3]> =
-                std::sync::LazyLock::new(|| ["Quick".into(), "Size".into(), "Thorough".into()]);
+            const COMPARE_MODES: [&str; 3] = ["Quick", "Size", "Thorough"];
             let items = &COMPARE_MODES[..];
             let selected = state.picker_selected.min(items.len().saturating_sub(1));
             dialogs::render_list_picker_with_colors(
@@ -214,144 +222,5 @@ fn render_list_picker_overlay(
                 colors,
             );
         }
-    }
-}
-
-fn to_ui_dialog<'a>(
-    dialog_kind: &'a app::types::DialogKind,
-    state: &'a AppState,
-) -> dialogs::DialogKind<'a> {
-    match dialog_kind {
-        app::types::DialogKind::Confirm(cd) => dialogs::DialogKind::Confirm {
-            title: Cow::Borrowed(&cd.title),
-            message: Cow::Borrowed(&cd.message),
-            selection: state.dialog_selection,
-            files: cd
-                .files
-                .as_ref()
-                .map(|fps| fps.iter().map(|p| p.display().to_string()).collect())
-                .map_or_else(|| Cow::Borrowed(&[][..]), Cow::Owned),
-        },
-        app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
-            title: Cow::Borrowed("Input"),
-            prompt: Cow::Borrowed(prompt),
-            value: Cow::Borrowed(&state.dialog_input.text),
-            cursor_pos: state.dialog_input.cursor,
-        },
-        app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
-            title: Cow::Borrowed("Error"),
-            message: Cow::Borrowed(msg),
-        },
-        app::types::DialogKind::Help {
-            message,
-            scroll_offset,
-        } => dialogs::DialogKind::Help {
-            title: Cow::Borrowed("Help"),
-            message: Cow::Borrowed(message),
-            scroll_offset: *scroll_offset,
-        },
-        app::types::DialogKind::Progress {
-            message,
-            progress_fraction,
-            cancellable,
-        } => dialogs::DialogKind::Progress {
-            title: Cow::Borrowed("Progress"),
-            message: Cow::Borrowed(message),
-            percent: *progress_fraction * 100.0,
-            cancellable: *cancellable,
-        },
-        app::types::DialogKind::CopyMove {
-            source,
-            dest,
-            is_move,
-        } => {
-            let action = if *is_move { "Move" } else { "Copy" };
-            let msg = format!(
-                "{} {} item(s)\nfrom: {}\n  to: {}",
-                action,
-                source.len(),
-                source
-                    .first()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
-                dest.display(),
-            );
-            dialogs::DialogKind::Confirm {
-                title: Cow::Borrowed(if *is_move {
-                    "Move Confirm"
-                } else {
-                    "Copy Confirm"
-                }),
-                message: Cow::Owned(msg),
-                selection: state.dialog_selection,
-                files: Cow::Owned(source.iter().map(|p| p.display().to_string()).collect()),
-            }
-        }
-        app::types::DialogKind::Properties { .. } => properties_to_ui_dialog(dialog_kind),
-        app::types::DialogKind::OverwriteConfirm { conflicting } => {
-            dialogs::DialogKind::OverwriteConfirm {
-                selection: state.dialog_selection,
-                files: Cow::Borrowed(conflicting),
-            }
-        }
-    }
-}
-
-fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind<'_> {
-    let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) = match dialog_kind {
-        app::types::DialogKind::Properties {
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            is_dir,
-            is_symlink,
-        } => (
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            is_dir,
-            is_symlink,
-        ),
-        _ => {
-            return dialogs::DialogKind::Error {
-                title: Cow::Borrowed("Internal Error"),
-                message: Cow::Borrowed("Expected Properties dialog"),
-            };
-        }
-    };
-    let file_type = if *is_symlink {
-        "Symlink"
-    } else if *is_dir {
-        "Directory"
-    } else {
-        "File"
-    };
-    use chrono::TimeZone;
-    let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
-        chrono::Local
-            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-            .single()
-            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string()
-    } else {
-        "Unknown".to_string()
-    };
-    dialogs::DialogKind::Properties {
-        info: dialogs::PropertiesInfo {
-            name: name.clone(),
-            size: app::types::FileEntry::format_size(*size),
-            mtime: mtime_str,
-            permissions: app::types::FileEntry::display_permissions_raw(*permissions),
-            owner: owner.clone(),
-            group: group.clone(),
-            file_type: file_type.to_string(),
-        },
     }
 }

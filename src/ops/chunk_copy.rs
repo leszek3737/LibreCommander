@@ -75,6 +75,10 @@ fn copy_to_temp(
     cancel: &AtomicBool,
 ) -> io::Result<u64> {
     let dest_file = File::create_new(temp_dest)?;
+
+    // TODO: zero-copy paths (Linux copy_file_range, macOS fcopyfile) when
+    // stabilized APIs or safe wrappers become available.
+
     let mut reader = src_file;
     let mut writer = dest_file;
     let mut buf = vec![0_u8; BUFFER_SIZE];
@@ -145,12 +149,20 @@ fn publish_temp(
         Err(_) => {}
     }
 
-    if dest.try_exists().unwrap_or(true) {
-        cleanup_file(temp_dest);
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "destination file already exists",
-        ));
+    match dest.try_exists() {
+        Ok(true) => {
+            cleanup_file(temp_dest);
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination file already exists",
+            ));
+        }
+        Err(e) => {
+            debug_log!("publish_temp: cannot stat dest {}: {e}", dest.display());
+            cleanup_file(temp_dest);
+            return Err(e);
+        }
+        Ok(false) => {}
     }
 
     fs::rename(temp_dest, dest).inspect_err(|_| {

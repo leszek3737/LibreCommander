@@ -1,12 +1,42 @@
 use crate::debug_log;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+#[cfg(windows)]
+fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    (
+        metadata.volume_serial_number().map(u64::from).unwrap_or(0),
+        metadata.file_index().unwrap_or(0),
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_key(_metadata: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
 
 use crate::ops::sorting::cmp_ignore_case;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TreeDiagnosticKind {
+    #[default]
+    ReadDir,
+    ReadDirEntry,
+    ReadMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TreeDiagnostic {
     pub path: PathBuf,
     pub message: String,
+    pub kind: TreeDiagnosticKind,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,6 +69,10 @@ pub fn build_tree_with_diagnostics(
 ) -> TreeBuildResult {
     let mut entries = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut visited = HashSet::new();
+    if let Ok(meta) = root.metadata() {
+        let _ = visited.insert(file_key(&meta));
+    }
     build_tree_recursive(
         root,
         0,
@@ -46,6 +80,7 @@ pub fn build_tree_with_diagnostics(
         show_hidden,
         &mut entries,
         &mut diagnostics,
+        &mut visited,
     );
     TreeBuildResult {
         entries,
@@ -60,6 +95,7 @@ fn build_tree_recursive(
     show_hidden: bool,
     out: &mut Vec<TreeEntry>,
     diagnostics: &mut Vec<TreeDiagnostic>,
+    visited: &mut HashSet<(u64, u64)>,
 ) {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -67,6 +103,7 @@ fn build_tree_recursive(
             diagnostics.push(TreeDiagnostic {
                 path: dir.to_path_buf(),
                 message: format!("Failed to read directory: {err}"),
+                kind: TreeDiagnosticKind::ReadDir,
             });
             return;
         }
@@ -80,6 +117,7 @@ fn build_tree_recursive(
                 diagnostics.push(TreeDiagnostic {
                     path: dir.to_path_buf(),
                     message: format!("Failed to read directory entry: {err}"),
+                    kind: TreeDiagnosticKind::ReadDirEntry,
                 });
                 continue;
             }
@@ -94,20 +132,19 @@ fn build_tree_recursive(
             continue;
         }
 
-        let metadata = match path.symlink_metadata() {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                diagnostics.push(TreeDiagnostic {
-                    path,
-                    message: format!("Failed to read metadata: {err}"),
-                });
-                continue;
-            }
-        };
-        let is_dir = if metadata.is_symlink() {
-            path.metadata().map(|m| m.is_dir()).unwrap_or(false)
-        } else {
-            metadata.is_dir()
+        let is_dir = match path.metadata() {
+            Ok(m) => m.is_dir(),
+            Err(_) => match path.symlink_metadata() {
+                Ok(_) => false,
+                Err(err) => {
+                    diagnostics.push(TreeDiagnostic {
+                        path,
+                        message: format!("Failed to read metadata: {err}"),
+                        kind: TreeDiagnosticKind::ReadMetadata,
+                    });
+                    continue;
+                }
+            },
         };
         let expanded = is_dir && current_depth < max_expand_depth;
 
@@ -130,14 +167,22 @@ fn build_tree_recursive(
 
         if should_recurse {
             let child_path = out[inserted_idx].path.clone();
-            build_tree_recursive(
-                &child_path,
-                current_depth + 1,
-                max_expand_depth,
-                show_hidden,
-                out,
-                diagnostics,
-            );
+            let key = match child_path.metadata().ok() {
+                Some(m) => file_key(&m),
+                None => continue,
+            };
+            if visited.insert(key) {
+                build_tree_recursive(
+                    &child_path,
+                    current_depth + 1,
+                    max_expand_depth,
+                    show_hidden,
+                    out,
+                    diagnostics,
+                    visited,
+                );
+                visited.remove(&key);
+            }
         }
     }
 }
@@ -189,6 +234,10 @@ pub fn toggle_expand_with_diagnostics(
     } else {
         let mut children = Vec::new();
         let mut diagnostics = Vec::new();
+        let mut visited = HashSet::new();
+        if let Ok(meta) = path.metadata() {
+            let _ = visited.insert(file_key(&meta));
+        }
         build_tree_recursive(
             &path,
             depth + 1,
@@ -196,11 +245,12 @@ pub fn toggle_expand_with_diagnostics(
             show_hidden,
             &mut children,
             &mut diagnostics,
+            &mut visited,
         );
 
         let root_read_failed = diagnostics
             .iter()
-            .any(|diag| diag.path == path && diag.message.starts_with("Failed to read directory:"));
+            .any(|diag| diag.path == path && diag.kind == TreeDiagnosticKind::ReadDir);
         let insert_pos = index + 1;
         entries.splice(insert_pos..insert_pos, children);
         entries[index].expanded = !root_read_failed;

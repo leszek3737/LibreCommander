@@ -77,7 +77,7 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
             }
         }
         KeyCode::Char('a') => {
-            let cur = state.active_panel().path.clone();
+            let cur = state.active_panel().path().to_path_buf();
             if state.hotlist().iter().any(|p| p == &cur) {
                 state.status_message = Some("Directory already in hotlist".to_string());
             } else {
@@ -96,8 +96,8 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
 }
 
 fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
-    const MODES: [CompareMode; 3] = [CompareMode::Quick, CompareMode::Size, CompareMode::Thorough];
-    let len = MODES.len();
+    let modes = CompareMode::ALL;
+    let len = modes.len();
     match key {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
@@ -115,7 +115,7 @@ fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
             state.picker_selected = len - 1;
         }
         KeyCode::Enter => {
-            let chosen = MODES[state.picker_selected.min(len - 1)];
+            let chosen = modes[state.picker_selected.min(len - 1)];
             state.mode = AppMode::Normal;
             compare_directories(state, chosen);
         }
@@ -145,8 +145,8 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
             let idx = state.picker_selected.min(len.saturating_sub(1));
             state.mode = AppMode::Normal;
             if let Some(entry) = state.user_menu_entries.get(idx).cloned() {
-                let active_dir = state.active_panel().path.clone();
-                let other_dir = state.inactive_panel().path.clone();
+                let active_dir = state.active_panel().path().to_path_buf();
+                let other_dir = state.inactive_panel().path().to_path_buf();
                 let current_file = state
                     .active_panel()
                     .current_entry()

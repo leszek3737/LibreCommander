@@ -42,11 +42,10 @@ pub struct AppState {
     pub tree_scroll: usize,
     pub last_click_time: Option<std::time::Instant>,
     pub last_click_position: Option<(u16, u16)>,
-    pub scroll_accel: u8,
-    pub last_scroll_time: Option<std::time::Instant>,
     pub drag_anchor_index: Option<usize>,
     pub theme_colors: ColorPalette,
-    pub viewer_spinner_frame: Option<std::time::Instant>,
+    pub viewer_spinner_frame: u64,
+    pub viewer_spinner_last_tick: Option<std::time::Instant>,
 }
 
 impl AppState {
@@ -86,11 +85,10 @@ impl AppState {
             tree_scroll: 0,
             last_click_time: None,
             last_click_position: None,
-            scroll_accel: 0,
-            last_scroll_time: None,
             drag_anchor_index: None,
             theme_colors: crate::ui::theme::DEFAULT_COLORS,
-            viewer_spinner_frame: None,
+            viewer_spinner_frame: 0,
+            viewer_spinner_last_tick: None,
         }
     }
 
@@ -143,6 +141,9 @@ impl AppState {
     }
 
     pub fn hotlist_push(&mut self, path: PathBuf) {
+        if self.directory_hotlist.iter().any(|p| p == &path) {
+            return;
+        }
         self.directory_hotlist.push(path);
         self.rebuild_hotlist_cache();
     }
@@ -205,6 +206,8 @@ impl Default for AppState {
     }
 }
 
-pub fn restore_prev_mode(state: &mut AppState) {
-    state.mode = state.prev_mode.take().unwrap_or(AppMode::Normal);
+impl AppState {
+    pub fn restore_prev_mode(&mut self) {
+        self.mode = self.prev_mode.take().unwrap_or(AppMode::Normal);
+    }
 }

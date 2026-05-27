@@ -118,10 +118,20 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
         }
     }
     let is_under_temp = {
-        let canonical_temp = std::env::temp_dir()
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
-        canonical.starts_with(&canonical_temp)
+        let raw_temp = std::env::temp_dir();
+        if canonical.starts_with(&raw_temp) {
+            true
+        } else if let Ok(ct) = raw_temp.canonicalize() {
+            canonical.starts_with(&ct)
+        } else if let Ok(target) = fs::read_link(&raw_temp) {
+            let resolved = match raw_temp.parent() {
+                Some(p) => p.join(&target),
+                None => target,
+            };
+            canonical.starts_with(&resolved)
+        } else {
+            false
+        }
     };
     for critical in CRITICAL_DIR_PREFIXES {
         if !is_under_temp && canonical.starts_with(Path::new(*critical)) {

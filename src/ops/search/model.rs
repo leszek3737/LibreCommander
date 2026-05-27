@@ -13,6 +13,7 @@ pub struct SearchOutcome<T> {
     pub matches: Vec<T>,
     pub errors: Vec<String>,
     pub truncated: Option<TruncationReason>,
+    pub items_scanned: usize,
 }
 
 impl<T> Default for SearchOutcome<T> {
@@ -21,6 +22,7 @@ impl<T> Default for SearchOutcome<T> {
             matches: Vec::new(),
             errors: Vec::new(),
             truncated: None,
+            items_scanned: 0,
         }
     }
 }

@@ -104,7 +104,7 @@ pub fn render_properties_dialog(
     f.render_widget(block, area);
 
     let lines = vec![
-        Line::from(format!("Name: {}", info.name)),
+        Line::from(format!("Name: {display_name}")),
         Line::from(format!("Type: {}", info.file_type)),
         Line::from(format!("Size: {}", info.size)),
         Line::from(format!("Modified: {}", info.mtime)),

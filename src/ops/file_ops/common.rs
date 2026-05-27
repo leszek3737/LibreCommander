@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(super) const MAX_RECURSION_DEPTH: usize = 256;
+pub(super) use crate::ops::helpers::MAX_RECURSION_DEPTH;
 
 pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
     if cancel.load(Ordering::Relaxed) {
@@ -65,7 +65,29 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
+    let src_meta = fs::symlink_metadata(src)?;
+    let dest_meta = match fs::symlink_metadata(dest) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    use std::os::windows::fs::MetadataExt;
+    let same = src_meta.volume_serial_number().is_some()
+        && src_meta.volume_serial_number() == dest_meta.volume_serial_number()
+        && src_meta.file_index().is_some()
+        && src_meta.file_index() == dest_meta.file_index();
+    if same {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "source and destination are the same file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
         (Some(s), Some(d)) => s == d,
@@ -77,7 +99,6 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
             "source and destination are the same file",
         ));
     }
-
     Ok(())
 }
 

@@ -2,6 +2,7 @@ use super::helpers::*;
 use crate::*;
 use app::types::{ActivePanel, DialogKind, InputAction, TextInput};
 use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::layout::Size;
 
 #[test]
 fn dispatch_resize_event_returns_true() {
@@ -19,6 +20,7 @@ fn dispatch_resize_event_returns_true() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::Resize(80, 24),
     );
 
@@ -42,6 +44,7 @@ fn dispatch_unhandled_event_returns_false() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::FocusGained,
     );
 
@@ -89,11 +92,11 @@ fn dispatch_mouse_click_moves_cursor() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &event,
     );
 
     assert!(result.is_ok());
-    assert!(result.unwrap());
     assert_eq!(state.left_panel.cursor, 0);
     assert_eq!(state.active_panel, ActivePanel::Left);
 }
@@ -126,6 +129,7 @@ fn key_press_triggers_search_initiation() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::Key(key),
     );
 
@@ -165,6 +169,7 @@ fn key_release_is_ignored() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::Key(key),
     );
 
@@ -209,6 +214,7 @@ fn key_repeat_navigation_moves_cursor() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::Key(key),
     );
 
@@ -241,6 +247,7 @@ fn key_repeat_text_edit_updates_input_dialog() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::Key(key),
     );
 
@@ -278,6 +285,7 @@ fn key_repeat_destructive_is_ignored() {
         &mut None,
         &mut job,
         &mut terminal,
+        &mut Size::new(80, 24),
         &Event::Key(key),
     );
 

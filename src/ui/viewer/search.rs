@@ -158,66 +158,90 @@ impl ViewerState {
                 pos = abs_offset + 1;
             }
         } else {
-            let lossy = String::from_utf8_lossy(&self.raw_bytes);
-            let mut lower_buf = String::with_capacity(lossy.len());
-            let mut byte_map: Vec<usize> = Vec::with_capacity(lossy.len());
-            for (byte_pos, ch) in lossy.char_indices() {
-                for lc in ch.to_lowercase() {
-                    for _ in 0..lc.len_utf8() {
-                        byte_map.push(byte_pos);
-                    }
-                    lower_buf.push(lc);
-                }
-            }
-            let mut search_start = 0;
-            while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
-                let abs_pos = search_start + pos;
-                let advance = lower_buf[abs_pos..]
-                    .chars()
-                    .next()
-                    .map_or(1, |c| c.len_utf8());
-                search_start = abs_pos + advance;
+            const CHUNK_SIZE: usize = 1024 * 1024;
+            let query_lower_len = lower_query.len();
+            let overlap_bytes = query_lower_len * 3 + 16;
+            let total_len = self.raw_bytes.len();
+            let mut chunk_start: usize = 0;
 
-                let orig_byte = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
-                let match_end_in_lower = abs_pos + lower_query.len();
-                let orig_byte_end = byte_map
-                    .get(match_end_in_lower)
-                    .copied()
-                    .unwrap_or(lossy.len());
-                let match_byte_len = if orig_byte_end > orig_byte {
-                    (orig_byte_end - orig_byte).min(self.raw_bytes.len().saturating_sub(orig_byte))
-                } else {
-                    let max_len = self.raw_bytes.len().saturating_sub(orig_byte);
-                    if max_len == 0 {
-                        0
+            while chunk_start < total_len {
+                let primary_end = (chunk_start + CHUNK_SIZE).min(total_len);
+                let buf_end = (primary_end + overlap_bytes).min(total_len);
+                let slice = &self.raw_bytes[chunk_start..buf_end];
+
+                let lossy = String::from_utf8_lossy(slice);
+                let mut lower_buf = String::with_capacity(lossy.len());
+                let mut byte_map: Vec<usize> = Vec::with_capacity(lossy.len());
+                for (byte_pos, ch) in lossy.char_indices() {
+                    for lc in ch.to_lowercase() {
+                        for _ in 0..lc.len_utf8() {
+                            byte_map.push(byte_pos);
+                        }
+                        lower_buf.push(lc);
+                    }
+                }
+
+                let mut search_start = 0;
+                while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
+                    let abs_pos = search_start + pos;
+                    let advance = lower_buf[abs_pos..]
+                        .chars()
+                        .next()
+                        .map_or(1, |c| c.len_utf8());
+                    search_start = abs_pos + advance;
+
+                    let orig_byte_in_slice = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
+                    let orig_byte = chunk_start + orig_byte_in_slice;
+
+                    if orig_byte >= primary_end {
+                        continue;
+                    }
+
+                    let match_end_in_lower = abs_pos + lower_query.len();
+                    let orig_byte_end_in_slice = byte_map
+                        .get(match_end_in_lower)
+                        .copied()
+                        .unwrap_or(lossy.len());
+                    let orig_byte_end = chunk_start + orig_byte_end_in_slice;
+
+                    let match_byte_len = if orig_byte_end > orig_byte {
+                        (orig_byte_end - orig_byte)
+                            .min(self.raw_bytes.len().saturating_sub(orig_byte))
                     } else {
-                        let first = self.raw_bytes[orig_byte];
-                        let char_len = if first & 0x80 == 0 {
-                            1
-                        } else if first & 0xE0 == 0xC0 {
-                            2
-                        } else if first & 0xF0 == 0xE0 {
-                            3
-                        } else if first & 0xF8 == 0xF0 {
-                            4
+                        let max_len = self.raw_bytes.len().saturating_sub(orig_byte);
+                        if max_len == 0 {
+                            0
                         } else {
-                            1
-                        };
-                        char_len.min(max_len)
+                            let first = self.raw_bytes[orig_byte];
+                            let char_len = if first & 0x80 == 0 {
+                                1
+                            } else if first & 0xE0 == 0xC0 {
+                                2
+                            } else if first & 0xF0 == 0xE0 {
+                                3
+                            } else if first & 0xF8 == 0xF0 {
+                                4
+                            } else {
+                                1
+                            };
+                            char_len.min(max_len)
+                        }
+                    };
+                    if match_byte_len == 0 {
+                        continue;
                     }
-                };
-                if match_byte_len == 0 {
-                    continue;
+
+                    let global_idx = self.search_matches.len();
+                    Self::push_match_segments(
+                        &mut self.search_matches,
+                        &mut self.search_matches_by_line,
+                        orig_byte,
+                        match_byte_len,
+                        global_idx,
+                    );
                 }
 
-                let global_idx = self.search_matches.len();
-                Self::push_match_segments(
-                    &mut self.search_matches,
-                    &mut self.search_matches_by_line,
-                    orig_byte,
-                    match_byte_len,
-                    global_idx,
-                );
+                chunk_start = primary_end;
             }
         }
 

@@ -20,10 +20,6 @@ impl TextInput {
         self.text.graphemes(true).count()
     }
 
-    pub fn char_count(&self) -> usize {
-        self.text.chars().count()
-    }
-
     pub fn byte_pos(&self) -> usize {
         self.text
             .grapheme_indices(true)
@@ -36,7 +32,11 @@ impl TextInput {
         self.clamp_cursor();
         let pos = self.byte_pos();
         self.text.insert(pos, c);
-        self.cursor = self.text[..pos + c.len_utf8()].graphemes(true).count();
+        if c.is_ascii() {
+            self.cursor += 1;
+        } else {
+            self.cursor = self.text[..pos + c.len_utf8()].graphemes(true).count();
+        }
         true
     }
 

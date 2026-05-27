@@ -44,8 +44,19 @@ impl Drop for RunningJob {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             std::thread::spawn(move || {
-                if let Err(e) = handle.join() {
-                    debug_log!("worker thread panicked during tear-down: {:?}", e);
+                let (tx, rx) = mpsc::channel();
+                let _ = std::thread::spawn(move || {
+                    let result = handle.join();
+                    let _ = tx.send(result);
+                });
+                match rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(Err(e)) => {
+                        debug_log!("worker thread panicked during tear-down: {:?}", e);
+                    }
+                    Err(_) => {
+                        debug_log!("worker thread did not finish within 5 s — abandoning reaper");
+                    }
+                    Ok(Ok(())) => {}
                 }
             });
         }
@@ -99,7 +110,7 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
         state.status_message = Some("Another job is already running".to_string());
         return;
     }
-    let dir = state.active_panel().path.clone();
+    let dir = state.active_panel().path().to_path_buf();
     let pattern_owned = pattern.to_string();
     let (sender, receiver) = mpsc::sync_channel(64);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -205,21 +216,34 @@ pub fn poll_running_job(
         finish_search_job(state, &outcome, &pattern, search_origin, refresh_both);
         dirty = true;
     } else if let Some(job) = running_job.as_mut() {
-        // No Finished received — check if worker died (panicked before sending)
         let worker_finished = job.handle.as_ref().is_some_and(JoinHandle::is_finished);
-        if worker_finished
-            && let Some(handle) = job.handle.take()
-            && let Err(panic_payload) = handle.join()
-        {
-            debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
-            let _ = running_job.take();
-            state.mode = AppMode::Normal;
-            if let Some(panel) = state.menu_restore_panel.take() {
-                state.active_panel = panel;
+        if worker_finished && let Some(handle) = job.handle.take() {
+            match handle.join() {
+                Err(panic_payload) => {
+                    debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
+                    let _ = running_job.take();
+                    state.mode = AppMode::Normal;
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        state.active_panel = panel;
+                    }
+                    state.status_message =
+                        Some("Operation failed: worker thread panicked".to_string());
+                    refresh_both(state);
+                    dirty = true;
+                }
+                Ok(()) => {
+                    debug_log!("worker exited normally without sending Finished — cleaning up");
+                    let _ = running_job.take();
+                    state.mode = AppMode::Normal;
+                    if let Some(panel) = state.menu_restore_panel.take() {
+                        state.active_panel = panel;
+                    }
+                    state.status_message =
+                        Some("Operation completed (worker finished without report)".to_string());
+                    refresh_both(state);
+                    dirty = true;
+                }
             }
-            state.status_message = Some("Operation failed: worker thread panicked".to_string());
-            refresh_both(state);
-            dirty = true;
         }
     }
 
@@ -227,31 +251,33 @@ pub fn poll_running_job(
 }
 
 fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool) -> String {
-    let current = progress
-        .current
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "done".to_string());
+    use std::fmt::Write;
 
-    let mut message = format!("{} of {}: {current}", progress.completed, progress.total);
+    let mut buf = String::with_capacity(128);
+    if canceling {
+        buf.push_str("Canceling: ");
+    }
+    let _ = write!(buf, "{} of {}: ", progress.completed, progress.total);
+    if let Some(path) = progress.current.as_ref().and_then(|p| p.file_name()) {
+        let _ = buf.write_str(&path.to_string_lossy());
+    } else {
+        buf.push_str("done");
+    }
     if progress.bytes_total > 0 {
-        message.push_str(&format!(
-            " | {} / {} | {}/s",
+        buf.push_str(" | ");
+        let _ = write!(
+            buf,
+            "{} / {} | {}/s",
             ops::batch::BatchProgress::format_bytes(progress.bytes_done),
             ops::batch::BatchProgress::format_bytes(progress.bytes_total),
             ops::batch::BatchProgress::format_bytes(progress.speed() as u64),
-        ));
+        );
         if let Some(eta) = progress.eta() {
-            message.push_str(&format!(" | ETA {}", format_duration_short(eta)));
+            buf.push_str(" | ETA ");
+            let _ = write!(buf, "{}", format_duration_short(eta));
         }
     }
-
-    if canceling {
-        format!("Canceling: {message}")
-    } else {
-        message
-    }
+    buf
 }
 
 fn format_duration_short(duration: Duration) -> String {

@@ -8,10 +8,49 @@
 
 use std::cmp::Ordering;
 
+const INLINE_CAP: usize = 24;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SegData {
+    Inline([u8; INLINE_CAP], u8),
+    Heap(Box<[u8]>),
+}
+
+impl SegData {
+    fn from_slice(s: &[u8]) -> Self {
+        if s.len() <= INLINE_CAP {
+            let mut buf = [0u8; INLINE_CAP];
+            buf[..s.len()].copy_from_slice(s);
+            SegData::Inline(buf, s.len() as u8)
+        } else {
+            SegData::Heap(s.to_vec().into_boxed_slice())
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            SegData::Inline(buf, len) => &buf[..*len as usize],
+            SegData::Heap(bx) => bx,
+        }
+    }
+}
+
+impl Ord for SegData {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_slice().cmp(other.as_slice())
+    }
+}
+
+impl PartialOrd for SegData {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum NatKeySegment {
-    Text(Box<[u8]>),
-    Num(Box<[u8]>),
+    Text(SegData),
+    Num(SegData),
 }
 
 fn strip_leading_zeros(digits: &[u8]) -> &[u8] {
@@ -27,12 +66,14 @@ impl Ord for NatKeySegment {
         match (self, other) {
             (NatKeySegment::Text(a), NatKeySegment::Text(b)) => a.cmp(b),
             (NatKeySegment::Num(a), NatKeySegment::Num(b)) => {
-                let has_leading_zero = a.first() == Some(&b'0') || b.first() == Some(&b'0');
+                let as_ = a.as_slice();
+                let bs = b.as_slice();
+                let has_leading_zero = as_.first() == Some(&b'0') || bs.first() == Some(&b'0');
                 if has_leading_zero {
                     a.cmp(b)
                 } else {
-                    let sa = strip_leading_zeros(a);
-                    let sb = strip_leading_zeros(b);
+                    let sa = strip_leading_zeros(as_);
+                    let sb = strip_leading_zeros(bs);
                     sa.len().cmp(&sb.len()).then(sa.cmp(sb))
                 }
             }
@@ -58,19 +99,25 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
             while i < name.len() && name[i].is_ascii_digit() {
                 i += 1;
             }
-            segments.push(NatKeySegment::Num(
-                name[start..i].to_vec().into_boxed_slice(),
-            ));
+            segments.push(NatKeySegment::Num(SegData::from_slice(&name[start..i])));
         } else {
             let start = i;
             while i < name.len() && !name[i].is_ascii_digit() {
                 i += 1;
             }
-            let mut text = name[start..i].to_vec();
-            if insensitive {
-                text.make_ascii_lowercase();
+            let slice = &name[start..i];
+            if insensitive && slice.len() <= INLINE_CAP {
+                let mut buf = [0u8; INLINE_CAP];
+                buf[..slice.len()].copy_from_slice(slice);
+                buf[..slice.len()].make_ascii_lowercase();
+                segments.push(NatKeySegment::Text(SegData::Inline(buf, slice.len() as u8)));
+            } else {
+                let mut text = slice.to_vec();
+                if insensitive {
+                    text.make_ascii_lowercase();
+                }
+                segments.push(NatKeySegment::Text(SegData::from_slice(&text)));
             }
-            segments.push(NatKeySegment::Text(text.into_boxed_slice()));
         }
     }
 
@@ -461,12 +508,12 @@ mod tests {
     #[test]
     fn test_nat_key_segment_cross_variant() {
         assert!(
-            NatKeySegment::Text(b"a".to_vec().into_boxed_slice())
-                < NatKeySegment::Num(b"1".to_vec().into_boxed_slice())
+            NatKeySegment::Text(SegData::from_slice(b"a"))
+                < NatKeySegment::Num(SegData::from_slice(b"1"))
         );
         assert!(
-            NatKeySegment::Num(b"1".to_vec().into_boxed_slice())
-                > NatKeySegment::Text(b"a".to_vec().into_boxed_slice())
+            NatKeySegment::Num(SegData::from_slice(b"1"))
+                > NatKeySegment::Text(SegData::from_slice(b"a"))
         );
     }
 
@@ -582,14 +629,14 @@ mod tests {
 
     #[test]
     fn test_nat_key_segment_text_case_sensitive_direct() {
-        let foo = NatKeySegment::Text(b"Foo".to_vec().into_boxed_slice());
-        let foo_lower = NatKeySegment::Text(b"foo".to_vec().into_boxed_slice());
+        let foo = NatKeySegment::Text(SegData::from_slice(b"Foo"));
+        let foo_lower = NatKeySegment::Text(SegData::from_slice(b"foo"));
         assert_ne!(
             foo, foo_lower,
             "Text segments are compared bytewise, no case folding"
         );
-        let bar = NatKeySegment::Text(b"Bar".to_vec().into_boxed_slice());
-        let bar_lower = NatKeySegment::Text(b"bar".to_vec().into_boxed_slice());
+        let bar = NatKeySegment::Text(SegData::from_slice(b"Bar"));
+        let bar_lower = NatKeySegment::Text(SegData::from_slice(b"bar"));
         assert_ne!(bar, bar_lower);
         assert!(bar < foo);
     }

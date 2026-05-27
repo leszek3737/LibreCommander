@@ -961,22 +961,30 @@ mod tests {
 
     #[test]
     fn test_copy_dir_recursive_exceeds_depth_limit() {
-        let tmp = unique_temp_dir();
-        let src = tmp.join("deep");
-        std::fs::create_dir(&src).unwrap();
+        // Run in a thread with a large stack to avoid SIGABRT from deep recursion
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let tmp = unique_temp_dir();
+                let src = tmp.join("deep");
+                std::fs::create_dir(&src).unwrap();
 
-        let mut current = src.clone();
-        for _ in 0..257 {
-            current.push("d");
-        }
-        std::fs::create_dir_all(&current).unwrap();
+                let mut current = src.clone();
+                for _ in 0..257 {
+                    current.push("d");
+                }
+                std::fs::create_dir_all(&current).unwrap();
 
-        let dest = tmp.join("dest");
-        let err = copy::copy_dir_recursive(&src, &dest, false).unwrap_err();
-        let msg = format!("{}", err);
-        assert!(msg.contains(&format!(">{}", common::MAX_RECURSION_DEPTH)));
-        assert!(!dest.exists());
+                let dest = tmp.join("dest");
+                let err = copy::copy_dir_recursive(&src, &dest, false).unwrap_err();
+                let msg = format!("{}", err);
+                assert!(msg.contains(&format!(">{}", common::MAX_RECURSION_DEPTH)));
+                assert!(!dest.exists());
 
-        std::fs::remove_dir_all(&tmp).unwrap();
+                std::fs::remove_dir_all(&tmp).unwrap();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
