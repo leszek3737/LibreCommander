@@ -269,7 +269,7 @@ because `src/main.rs` is **~3000 lines** — reading it linearly is wasteful.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **LibreCommander** (3276 symbols, 11901 relationships, 287 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **LibreCommander** (3277 symbols, 11916 relationships, 287 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
