@@ -8,6 +8,7 @@ use lc::app::shell;
 use lc::app::types::*;
 use lc::fs;
 use lc::ops;
+use lc::ops::archive::ArchiveFormat;
 use lc::ui::{dialogs, viewer};
 
 use crate::app::panel_ops::{
@@ -137,6 +138,7 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
             overwrite,
         } => (sources, dest, *overwrite),
         PendingAction::Delete { .. } => return None,
+        PendingAction::ExtractArchive { .. } | PendingAction::CreateArchive { .. } => return None,
     };
     if overwrite {
         return None;
@@ -293,17 +295,9 @@ fn handle_input_action(
             return;
         }
         InputAction::CreateDirectory => {
-            match validate_path_name(&input) {
-                ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => {
-                    state.status_message = Some("Directory name cannot be empty".to_string());
-                    return;
-                }
-                ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(p);
-                    return;
-                }
-                ValidationResult::InvalidOctal(_) => return,
+            if let Err(msg) = validate_create_or_rename(&input, "Directory name") {
+                state.status_message = Some(msg);
+                return;
             }
             let target = fs::path::resolve_user_path(state.active_panel().path(), &input);
             if let Err(err) = ops::create_directory(&target) {
@@ -311,17 +305,9 @@ fn handle_input_action(
             }
         }
         InputAction::Rename => {
-            match validate_path_name(&input) {
-                ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => {
-                    state.status_message = Some("New name cannot be empty".to_string());
-                    return;
-                }
-                ValidationResult::InvalidPath(p) => {
-                    state.status_message = Some(p);
-                    return;
-                }
-                ValidationResult::InvalidOctal(_) => return,
+            if let Err(msg) = validate_create_or_rename(&input, "New name") {
+                state.status_message = Some(msg);
+                return;
             }
             if let Some(entry) = state.active_panel().current_entry()
                 && input != entry.name
@@ -379,34 +365,17 @@ fn handle_input_action(
     }
 }
 
-fn apply_text_edit(state: &mut AppState, key: KeyCode) {
-    match key {
-        KeyCode::Backspace => {
-            state.dialog_input.backspace();
-        }
-        KeyCode::Delete => {
-            state.dialog_input.delete_forward();
-        }
-        KeyCode::Char(c) => {
-            if state.dialog_input.text.len() + c.len_utf8() > MAX_DIALOG_INPUT_BYTES {
-                return;
-            }
-            state.dialog_input.insert_char(c);
-        }
-        KeyCode::Left => {
-            state.dialog_input.cursor_left();
-        }
-        KeyCode::Right => {
-            state.dialog_input.cursor_right();
-        }
-        KeyCode::Home => {
-            state.dialog_input.cursor_start();
-        }
-        KeyCode::End => {
-            state.dialog_input.cursor_end();
-        }
-        _ => {}
+fn validate_create_or_rename(input: &str, label: &str) -> Result<(), String> {
+    match validate_path_name(input) {
+        ValidationResult::Valid => Ok(()),
+        ValidationResult::EmptyInput => Err(format!("{label} cannot be empty")),
+        ValidationResult::InvalidPath(p) => Err(p),
+        ValidationResult::InvalidOctal(_) => Err(String::new()),
     }
+}
+
+fn apply_text_edit(state: &mut AppState, key: KeyCode) {
+    apply_dialog_text_edit(&mut state.dialog_input, key);
 }
 
 fn handle_input_dialog(
@@ -456,6 +425,168 @@ fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>
 fn handle_properties_dialog(state: &mut AppState, key: KeyCode) {
     if matches!(key, KeyCode::Enter | KeyCode::Esc) {
         dismiss_dialog_and_restore(state);
+    }
+}
+
+fn archive_format_from_path(path: &std::path::Path) -> Option<ArchiveFormat> {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("zip") => Some(ArchiveFormat::Zip),
+        Some("tar") => Some(ArchiveFormat::Tar),
+        Some("7z") => Some(ArchiveFormat::SevenZ),
+        Some("tgz") => Some(ArchiveFormat::TarGz),
+        Some("tbz2") => Some(ArchiveFormat::TarBz2),
+        Some("txz") => Some(ArchiveFormat::TarXz),
+        Some("tzst") => Some(ArchiveFormat::TarZst),
+        _ => {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let lower = name.to_ascii_lowercase();
+                if lower.ends_with(".tar.gz") {
+                    return Some(ArchiveFormat::TarGz);
+                }
+                if lower.ends_with(".tar.bz2") {
+                    return Some(ArchiveFormat::TarBz2);
+                }
+                if lower.ends_with(".tar.xz") {
+                    return Some(ArchiveFormat::TarXz);
+                }
+                if lower.ends_with(".tar.zst") {
+                    return Some(ArchiveFormat::TarZst);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn apply_dialog_text_edit(dest_input: &mut TextInput, key: KeyCode) {
+    match key {
+        KeyCode::Backspace => {
+            dest_input.backspace();
+        }
+        KeyCode::Delete => {
+            dest_input.delete_forward();
+        }
+        KeyCode::Char(c) => {
+            if dest_input.text.len() + c.len_utf8() > MAX_DIALOG_INPUT_BYTES {
+                return;
+            }
+            dest_input.insert_char(c);
+        }
+        KeyCode::Left => dest_input.cursor_left(),
+        KeyCode::Right => dest_input.cursor_right(),
+        KeyCode::Home => dest_input.cursor_start(),
+        KeyCode::End => dest_input.cursor_end(),
+        _ => {}
+    }
+}
+
+fn handle_archive_extract_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    match key {
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        KeyCode::Enter if state.dialog_selection == 1 => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Enter => {
+            let (source, dest_text) = if let AppMode::Dialog(DialogKind::ArchiveExtract {
+                ref source,
+                ref dest_input,
+                ..
+            }) = state.mode
+            {
+                (source.clone(), dest_input.text.clone())
+            } else {
+                return;
+            };
+            if dest_text.trim().is_empty() {
+                state.status_message = Some("Destination path cannot be empty".to_string());
+                return;
+            }
+            let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
+            state.pending_action = Some(PendingAction::ExtractArchive { source, dest });
+            start_confirmed_action(state, running_job);
+            finish_confirmed_action(state);
+            return;
+        }
+        _ => {}
+    }
+    if let AppMode::Dialog(DialogKind::ArchiveExtract {
+        ref mut dest_input, ..
+    }) = state.mode
+    {
+        apply_dialog_text_edit(dest_input, key);
+    }
+}
+
+fn handle_archive_create_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    key: KeyCode,
+) {
+    match key {
+        KeyCode::Esc => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Left | KeyCode::Right => {
+            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            return;
+        }
+        KeyCode::Enter if state.dialog_selection == 1 => {
+            dismiss_dialog(state);
+            return;
+        }
+        KeyCode::Enter => {
+            let (sources, dest_text) = if let AppMode::Dialog(DialogKind::ArchiveCreate {
+                ref sources,
+                ref dest_input,
+            }) = state.mode
+            {
+                (sources.clone(), dest_input.text.clone())
+            } else {
+                return;
+            };
+            if dest_text.trim().is_empty() {
+                state.status_message = Some("Archive path cannot be empty".to_string());
+                return;
+            }
+            let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
+            let Some(format) = archive_format_from_path(&dest) else {
+                state.status_message = Some("Unsupported archive format. Use: zip, tar, tar.gz, tar.bz2, tar.xz, tar.zst, 7z".to_string());
+                return;
+            };
+            state.pending_action = Some(PendingAction::CreateArchive {
+                sources,
+                dest,
+                format,
+            });
+            start_confirmed_action(state, running_job);
+            finish_confirmed_action(state);
+            return;
+        }
+        _ => {}
+    }
+    if let AppMode::Dialog(DialogKind::ArchiveCreate {
+        ref mut dest_input, ..
+    }) = state.mode
+    {
+        apply_dialog_text_edit(dest_input, key);
     }
 }
 
@@ -593,6 +724,12 @@ pub(crate) fn handle_dialog(
         }
         DialogKind::OverwriteConfirm { .. } => {
             handle_overwrite_dialog(state, running_job, key);
+        }
+        DialogKind::ArchiveExtract { .. } => {
+            handle_archive_extract_dialog(state, running_job, key);
+        }
+        DialogKind::ArchiveCreate { .. } => {
+            handle_archive_create_dialog(state, running_job, key);
         }
         // unreachable: Help handled above; arm kept for match exhaustiveness
         DialogKind::Help { .. } => {}

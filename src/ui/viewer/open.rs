@@ -141,6 +141,14 @@ impl ViewerState {
             .unwrap_or(raw_bytes.len());
         let mime =
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
+
+        // If it's an archive, list contents as text instead of showing hex
+        if crate::app::file_type::is_archive(&path.to_string_lossy())
+            && let Some(state) = Self::open_as_archive_listing(path, file_size)
+        {
+            return Ok(state);
+        }
+
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
 
         let has_invalid_utf8 = !raw_bytes.is_empty() && std::str::from_utf8(&raw_bytes).is_err();
@@ -203,6 +211,48 @@ impl ViewerState {
         super::loader::ViewerLoader::start(path)
     }
 
+    fn open_as_archive_listing(path: &Path, file_size: usize) -> Option<Self> {
+        let text = Self::format_archive_listing(path).ok()?;
+        let raw_bytes = text.into_bytes();
+        let line_offsets = Self::compute_line_offsets(&raw_bytes);
+        let line_count = if raw_bytes.is_empty() {
+            1
+        } else {
+            line_offsets.len()
+        };
+        let max_line_width = if !raw_bytes.is_empty() {
+            Self::compute_max_line_width(&line_offsets, &raw_bytes)
+        } else {
+            0
+        };
+        Some(ViewerState {
+            file_path: path.to_path_buf(),
+            line_offsets,
+            scroll_offset: 0,
+            horizontal_offset: 0,
+            line_count,
+            search_query: None,
+            search_matches: Vec::new(),
+            search_matches_by_line: Vec::new(),
+            current_match: None,
+            wrap_lines: false,
+            show_line_numbers: true,
+            view_mode: ViewMode::Text,
+            raw_bytes,
+            max_line_width,
+            detected_mime: Some("text/plain".to_string()),
+            file_size,
+            has_invalid_utf8: false,
+            originally_binary: false,
+            visual_heights: RefCell::new(Vec::new()),
+            visual_offsets: RefCell::new(Vec::new()),
+            cached_content_width: RefCell::new(0),
+            file_truncated: false,
+            cached_image_size: None,
+            cached_image_text: None,
+        })
+    }
+
     #[must_use]
     pub fn is_hex_mode(&self) -> bool {
         matches!(self.view_mode, ViewMode::Hex)
@@ -210,5 +260,39 @@ impl ViewerState {
 
     pub fn image_content_size(area_width: u16, area_height: u16) -> (u16, u16) {
         (area_width, area_height.saturating_sub(3))
+    }
+
+    fn format_archive_listing(path: &Path) -> Result<String, ()> {
+        use crate::ops::archive::list::list_archive;
+        use std::fmt::Write;
+
+        let entries = list_archive(path).map_err(|_| ())?;
+        let mut out = String::new();
+
+        writeln!(out, "Archive: {}", path.display()).ok();
+        writeln!(out, "Entries: {}", entries.len()).ok();
+        writeln!(out).ok();
+        writeln!(out, "  {:<8} {:<20} Name", "Size", "Modified").ok();
+        writeln!(out, "  {:<8} {:<20} ----", "----", "--------").ok();
+
+        for entry in &entries {
+            let size = if entry.is_dir {
+                "<DIR>".to_string()
+            } else {
+                crate::app::types::format_size(entry.size)
+            };
+            let mtime = entry
+                .modified
+                .map(crate::app::types::format_time)
+                .unwrap_or_default();
+            let name = if entry.is_dir {
+                format!("{}/", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            writeln!(out, "  {size:<8} {mtime:<20} {name}").ok();
+        }
+
+        Ok(out)
     }
 }

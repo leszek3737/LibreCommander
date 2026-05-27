@@ -79,6 +79,28 @@ pub(super) fn to_ui_dialog<'a>(
                 files: Cow::Borrowed(conflicting),
             }
         }
+        app::types::DialogKind::ArchiveExtract {
+            source,
+            entries,
+            dest_input,
+        } => {
+            let info = format!("{}\n{} entries", source.display(), entries.len());
+            dialogs::DialogKind::ArchiveExtract {
+                info: Cow::Owned(info),
+                dest_value: Cow::Borrowed(&dest_input.text),
+                dest_cursor: dest_input.cursor,
+                selection: state.dialog_selection,
+            }
+        }
+        app::types::DialogKind::ArchiveCreate {
+            sources,
+            dest_input,
+        } => dialogs::DialogKind::ArchiveCreate {
+            source_count: sources.len(),
+            dest_value: Cow::Borrowed(&dest_input.text),
+            dest_cursor: dest_input.cursor,
+            selection: state.dialog_selection,
+        },
     }
 }
 

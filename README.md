@@ -7,6 +7,7 @@ A fast, Rust-based file manager inspired by Midnight Commander.
 - **Dual-panel interface** - Navigate and manage files in two panels side-by-side
 - **Async file operations** - Copy, move, delete, rename, chmod files and directories with background progress and cancellation
 - **Safe recursive copy/move/delete** - Handles directories with symlink preservation, no-clobber copy, cross-device fallback, partial-copy cleanup, and cancellation safeguards
+- **Archive support** - Browse, extract, and create archives (ZIP, TAR/GZ/BZ2/XZ/ZST, 7Z)
 - **Advanced search** - Incremental panel filter, recursive file search (glob patterns), content search (grep-like)
 - **File viewer** - Built-in text viewer with search, hex dump, line numbers, and word wrap
 - **Directory tree** - Interactive expandable directory tree view
@@ -70,6 +71,14 @@ cargo install --path .
 | `infer` 0.19 | MIME type detection |
 | `filetime` 0.2 | File modification time handling |
 | `ansi-to-tui` 8 | Parse ANSI sequences for image viewing |
+| `zip` 8.6 | ZIP archive support (bzip2, zstd, lzma, deflate64) |
+| `tar` 0.4 | TAR archive support |
+| `flate2` 1.1 | Gzip compression |
+| `zstd` 0.13 | Zstandard compression |
+| `ruzstd` 0.8 | Zstandard decompression |
+| `sevenz-rust` 0.6 | 7z archive support |
+| `bzip2` 0.6 | Bzip2 compression |
+| `lzma-rs` 0.3 | LZMA/XZ compression |
 | `memchr` 2 | Fast byte scanning for content detection/search |
 | `shlex` 2 | Shell-style splitting/quoting |
 | `unicode-segmentation` 1 | Unicode grapheme-aware text editing |
@@ -95,7 +104,7 @@ Dev dependency: `tempfile` 3 (for tests).
 | `Tab` | Switch between panels |
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
-| `Enter` | Open directory / Execute file |
+| `Enter` | Open directory / Preview archive |
 | `Alt+Backspace` | Go to previous directory (history) |
 | `Home` | Go to first entry |
 | `End` | Go to last entry |
@@ -107,13 +116,14 @@ Dev dependency: `tempfile` 3 (for tests).
 
 | Key | Action |
 |-----|--------|
-| `F3` | View file |
+| `F3` | View file / Preview archive contents |
 | `F4` | Edit file (opens in `$EDITOR`) |
 | `F5` | Copy file(s) |
 | `F6` | Move file(s) |
-| `F7` | Create directory |
+| `F7` | Create directory / Extract archive |
 | `F8` | Delete file(s) |
 | `F11` | Rename file or directory |
+| `F12` | Archive operations menu |
 | `Alt+Enter` | Show file properties |
 | `Insert` | Toggle file selection |
 | `Shift+↑` | Extend selection upward |
@@ -401,6 +411,34 @@ chafa is not bundled with lc. If missing, the viewer shows
 - The result is cached — subsequent frames only clone the cached `Text`,
   keeping **60 FPS** rendering.
 - Preview size adapts to the terminal area, leaving one line for the status bar.
+
+## Archive Support
+
+lc supports browsing, extracting, and creating archives. Supported formats:
+
+| Format | Extension | Read | Write |
+|--------|-----------|------|-------|
+| ZIP | `.zip` | Yes | Yes |
+| TAR | `.tar` | Yes | Yes |
+| TAR+Gzip | `.tar.gz`, `.tgz` | Yes | Yes |
+| TAR+Bzip2 | `.tar.bz2`, `.tbz`, `.tbz2` | Yes | Yes |
+| TAR+XZ | `.tar.xz`, `.txz` | Yes | Yes |
+| TAR+Zstd | `.tar.zst`, `.tzst` | Yes | Yes |
+| 7z | `.7z` | Yes | No |
+
+### Archive Operations
+
+| Key | Action |
+|-----|--------|
+| `Enter` on archive | Preview archive contents in viewer |
+| `F3` on archive | Preview archive contents in viewer |
+| `F7` on archive | Extract archive |
+| `F12` | Archive menu (extract/create) |
+| `F12` with selected files | Create archive from selection |
+
+Extract dialog shows archive contents and lets you specify the destination directory. Create dialog lets you choose the archive name and format (zip, tar.gz, tar.xz, tar).
+
+All archive operations run in the background with progress reporting and cancellation support.
 
 ## Search
 

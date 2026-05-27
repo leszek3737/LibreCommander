@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 
-use ratatui::{Frame, widgets::Clear};
+use ratatui::{Frame, layout::Rect, widgets::Clear};
 
 use super::theme::{ColorPalette, Theme};
 
+mod archive;
 mod confirm;
 mod help;
 mod input;
@@ -69,6 +70,18 @@ pub enum DialogKind<'a> {
         selection: usize,
         files: Cow<'a, [String]>,
     },
+    ArchiveExtract {
+        info: Cow<'a, str>,
+        dest_value: Cow<'a, str>,
+        dest_cursor: usize,
+        selection: usize,
+    },
+    ArchiveCreate {
+        source_count: usize,
+        dest_value: Cow<'a, str>,
+        dest_cursor: usize,
+        selection: usize,
+    },
 }
 
 pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
@@ -87,6 +100,15 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
     let bg_block = ratatui::widgets::Block::default().style(Theme::dialog_with_colors(colors));
     f.render_widget(bg_block, dialog_area);
 
+    dispatch_dialog_render(f, dialog, dialog_area, colors);
+}
+
+fn dispatch_dialog_render(
+    f: &mut Frame,
+    dialog: &DialogKind<'_>,
+    area: Rect,
+    colors: &ColorPalette,
+) {
     match dialog {
         DialogKind::Confirm {
             title,
@@ -96,7 +118,7 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
         } => {
             render_confirm_dialog(
                 f,
-                dialog_area,
+                area,
                 title.as_ref(),
                 message.as_ref(),
                 *selection,
@@ -112,7 +134,7 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
         } => {
             render_input_dialog(
                 f,
-                dialog_area,
+                area,
                 title.as_ref(),
                 prompt.as_ref(),
                 value.as_ref(),
@@ -121,7 +143,7 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
             );
         }
         DialogKind::Error { title, message } => {
-            render_error_dialog(f, dialog_area, title.as_ref(), message.as_ref(), colors);
+            render_error_dialog(f, area, title.as_ref(), message.as_ref(), colors);
         }
         DialogKind::Help {
             title,
@@ -130,7 +152,7 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
         } => {
             render_help_dialog(
                 f,
-                dialog_area,
+                area,
                 title.as_ref(),
                 message.as_ref(),
                 *scroll_offset,
@@ -145,7 +167,7 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
         } => {
             render_progress_dialog(
                 f,
-                dialog_area,
+                area,
                 title.as_ref(),
                 message.as_ref(),
                 *percent,
@@ -153,12 +175,56 @@ pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors:
                 colors,
             );
         }
+        other => dispatch_special_dialog_render(f, other, area, colors),
+    }
+}
+
+fn dispatch_special_dialog_render(
+    f: &mut Frame,
+    dialog: &DialogKind<'_>,
+    area: Rect,
+    colors: &ColorPalette,
+) {
+    match dialog {
         DialogKind::Properties { info } => {
-            render_properties_dialog(f, dialog_area, info, colors);
+            render_properties_dialog(f, area, info, colors);
         }
         DialogKind::OverwriteConfirm { selection, files } => {
-            render_overwrite_dialog(f, dialog_area, *selection, files.as_ref(), colors);
+            render_overwrite_dialog(f, area, *selection, files.as_ref(), colors);
         }
+        DialogKind::ArchiveExtract {
+            info,
+            dest_value,
+            dest_cursor,
+            selection,
+        } => {
+            archive::render_archive_extract_dialog(
+                f,
+                area,
+                info.as_ref(),
+                dest_value.as_ref(),
+                *dest_cursor,
+                *selection,
+                colors,
+            );
+        }
+        DialogKind::ArchiveCreate {
+            source_count,
+            dest_value,
+            dest_cursor,
+            selection,
+        } => {
+            archive::render_archive_create_dialog(
+                f,
+                area,
+                *source_count,
+                dest_value.as_ref(),
+                *dest_cursor,
+                *selection,
+                colors,
+            );
+        }
+        _ => unreachable!("all dialog kinds handled"),
     }
 }
 

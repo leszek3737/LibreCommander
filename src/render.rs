@@ -222,5 +222,17 @@ fn render_list_picker_overlay(
                 colors,
             );
         }
+        PickerKind::ArchiveMenu => {
+            const ITEMS: [&str; 2] = ["Extract Archive", "Create Archive"];
+            let selected = state.picker_selected.min(ITEMS.len().saturating_sub(1));
+            dialogs::render_list_picker_with_colors(
+                f,
+                "Archive Operations",
+                &ITEMS,
+                selected,
+                "Enter: select  Esc: cancel",
+                colors,
+            );
+        }
     }
 }

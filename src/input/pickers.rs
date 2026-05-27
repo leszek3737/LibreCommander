@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
 
-use lc::app::user_menu::MenuSource;
-use lc::app::{types::*, user_menu};
+use lc::app::{file_type, types::*, user_menu, user_menu::MenuSource};
 use lc::ops;
 
 use crate::app::panel_ops::refresh_active;
@@ -190,6 +189,65 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
     }
 }
 
+fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
+    const ITEMS: [&str; 2] = ["Extract Archive", "Create Archive"];
+    let len = ITEMS.len();
+    match key {
+        KeyCode::Esc => {
+            state.mode = AppMode::Normal;
+        }
+        KeyCode::Up if state.picker_selected > 0 => {
+            state.picker_selected -= 1;
+        }
+        KeyCode::Down if state.picker_selected + 1 < len => {
+            state.picker_selected += 1;
+        }
+        KeyCode::Home => {
+            state.picker_selected = 0;
+        }
+        KeyCode::End => {
+            state.picker_selected = len - 1;
+        }
+        KeyCode::Enter => {
+            let choice = state.picker_selected;
+            state.mode = AppMode::Normal;
+            match choice {
+                0 => {
+                    if let Some(entry) = state.active_panel().current_entry() {
+                        if entry.name != ".." && file_type::is_archive(&entry.name) {
+                            super::normal::show_archive_dialog(state);
+                        } else {
+                            state.status_message =
+                                Some("Cursor is not on an archive file".to_string());
+                        }
+                    }
+                }
+                1 => {
+                    let paths = super::normal::selected_or_current_paths(state);
+                    if paths.is_empty() {
+                        state.status_message = Some("No files selected".to_string());
+                    } else {
+                        show_create_dialog(state, paths);
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn show_create_dialog(state: &mut AppState, sources: Vec<PathBuf>) {
+    let dest_input = TextInput {
+        text: String::new(),
+        cursor: 0,
+    };
+    state.mode = AppMode::Dialog(DialogKind::ArchiveCreate {
+        sources,
+        dest_input,
+    });
+}
+
 pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
     let kind = if let AppMode::ListPicker(ref k) = state.mode {
         *k
@@ -209,6 +267,9 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
         }
         PickerKind::UserMenu => {
             handle_user_menu_picker(state, key);
+        }
+        PickerKind::ArchiveMenu => {
+            handle_archive_menu_picker(state, key);
         }
     }
 }
