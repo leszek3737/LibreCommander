@@ -42,6 +42,8 @@ pub(crate) use input::normal::{
 };
 
 const EVENT_POLL_TIMEOUT_MS: u64 = 33;
+const SPINNER_TICK_INTERVAL: Duration = Duration::from_millis(200);
+const WATCH_CHANNEL_CAPACITY: usize = 2048;
 
 pub(crate) fn file_name_str(p: &std::path::Path) -> Option<String> {
     p.file_name().map(|n| n.to_string_lossy().into_owned())
@@ -109,7 +111,7 @@ fn main() {
         let backend = CrosstermBackend::new(io::stdout());
         match Terminal::new(backend) {
             Ok(mut terminal) => run_app(&mut terminal),
-            Err(err) => Err(err),
+            Err(e) => Err(e),
         }
     };
 
@@ -144,9 +146,9 @@ fn poll_viewer_loader(
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {
             let now = std::time::Instant::now();
-            let should_redraw = state.viewer_spinner_last_tick.is_none_or(|last| {
-                now.duration_since(last) >= std::time::Duration::from_millis(200)
-            });
+            let should_redraw = state
+                .viewer_spinner_last_tick
+                .is_none_or(|last| now.duration_since(last) >= SPINNER_TICK_INTERVAL);
             if should_redraw {
                 state.viewer_spinner_last_tick = Some(now);
                 state.viewer_spinner_frame = state.viewer_spinner_frame.wrapping_add(1);
@@ -257,7 +259,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut viewer_loader: Option<viewer::ViewerLoader> = None;
     let mut image_preview_loader: Option<viewer::ImagePreviewLoader> = None;
     let mut running_job: Option<RunningJob> = None;
-    let (watch_tx, watch_rx) = mpsc::sync_channel(2048);
+    let (watch_tx, watch_rx) = mpsc::sync_channel(WATCH_CHANNEL_CAPACITY);
     let mut watcher = match fs::watcher::Watcher::new(Arc::new(watch_tx)) {
         Ok(w) => Some(w),
         Err(err) => {
@@ -306,9 +308,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             if let Err(e) = terminal.draw(|f| {
                 render::render_ui(f, &state, viewer_state.as_ref(), viewer_loader.as_ref())
             }) {
-                if let Some(j) = running_job.as_mut() {
-                    j.shutdown()
-                }
+                shutdown_job(&mut running_job);
                 return Err(e);
             }
             dirty = false;
@@ -317,9 +317,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             let key = match event::read() {
                 Ok(k) => k,
                 Err(e) => {
-                    if let Some(j) = running_job.as_mut() {
-                        j.shutdown()
-                    }
+                    shutdown_job(&mut running_job);
                     return Err(e);
                 }
             };
@@ -336,11 +334,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         }
 
         if state.should_quit {
-            if let Some(j) = running_job.as_mut() {
-                j.shutdown()
-            }
+            shutdown_job(&mut running_job);
             return Ok(());
         }
+    }
+}
+
+fn shutdown_job(job: &mut Option<RunningJob>) {
+    if let Some(j) = job.as_mut() {
+        j.shutdown();
     }
 }
 
@@ -354,7 +356,7 @@ fn recover_terminal_state() -> io::Result<()> {
         if let Err(e) = std::fs::remove_file(&terminal_state_file) {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
-        resume_result.or(leave_result)?;
+        resume_result.and(leave_result)?;
     }
     Ok(())
 }

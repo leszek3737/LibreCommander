@@ -20,61 +20,33 @@ fn remove_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
-const CRITICAL_DIRS: &[&str] = &[
-    "/",
-    "/Applications",
-    "/System",
-    "/bin",
-    "/boot",
-    "/dev",
-    "/etc",
-    "/lib",
-    "/lib64",
-    "/nix",
-    "/private",
-    "/private/etc",
-    "/private/tmp",
-    "/private/var",
-    "/proc",
-    "/sbin",
-    "/sys",
-    "/usr",
-    "/var",
-];
+macro_rules! define_critical_lists {
+    (
+        common: [$($common:literal),* $(,)?],
+        macos_dirs_extra: [$($md:literal),* $(,)?],
+        linux_dirs_extra: [$($ld:literal),* $(,)?],
+        macos_prefixes_extra: [$($mp:literal),* $(,)?],
+        linux_prefixes_extra: [$($lp:literal),* $(,)?],
+    ) => {
+        #[cfg(target_os = "macos")]
+        const CRITICAL_DIRS: &[&str] = &["/", $($common),*, $($md),*];
+        #[cfg(not(target_os = "macos"))]
+        const CRITICAL_DIRS: &[&str] = &["/", $($common),*, $($ld),*];
+        #[cfg(target_os = "macos")]
+        const CRITICAL_DIR_PREFIXES: &[&str] = &[$($common),*, $($mp),*];
+        #[cfg(not(target_os = "macos"))]
+        const CRITICAL_DIR_PREFIXES: &[&str] = &[$($common),*, $($lp),*];
+    };
+}
 
-#[cfg(not(target_os = "macos"))]
-const CRITICAL_DIRS: &[&str] = &[
-    "/", "/System", "/bin", "/boot", "/dev", "/etc", "/flatpak", "/gnu", "/lib", "/lib64", "/nix",
-    "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
-];
-
-#[cfg(target_os = "macos")]
-const CRITICAL_DIR_PREFIXES: &[&str] = &[
-    "/Applications",
-    "/System",
-    "/bin",
-    "/boot",
-    "/dev",
-    "/etc",
-    "/lib",
-    "/lib64",
-    "/nix",
-    "/private/etc",
-    "/private/tmp",
-    "/private/var",
-    "/proc",
-    "/sbin",
-    "/sys",
-    "/usr",
-    "/var",
-];
-
-#[cfg(not(target_os = "macos"))]
-const CRITICAL_DIR_PREFIXES: &[&str] = &[
-    "/System", "/bin", "/boot", "/dev", "/etc", "/flatpak", "/gnu", "/lib", "/lib64", "/nix",
-    "/proc", "/sbin", "/snap", "/sys", "/usr", "/var",
-];
+define_critical_lists! {
+    common: ["/System", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/nix",
+             "/proc", "/sbin", "/sys", "/usr", "/var"],
+    macos_dirs_extra: ["/Applications", "/private", "/private/etc", "/private/tmp", "/private/var"],
+    linux_dirs_extra: ["/flatpak", "/gnu", "/snap"],
+    macos_prefixes_extra: ["/Applications", "/private/etc", "/private/tmp", "/private/var"],
+    linux_prefixes_extra: ["/flatpak", "/gnu", "/snap"],
+}
 
 const DELETE_MAX_DEPTH: usize = 256;
 
@@ -135,12 +107,6 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
     };
     for critical in CRITICAL_DIR_PREFIXES {
         if !is_under_temp && canonical.starts_with(Path::new(*critical)) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("refusing to delete critical system directory: {critical}"),
-            ));
-        }
-        if !is_under_temp && path.starts_with(Path::new(*critical)) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),

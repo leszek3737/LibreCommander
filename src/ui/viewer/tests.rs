@@ -520,7 +520,7 @@ fn test_line_number_width_expands_for_large_files() {
 #[test]
 fn test_horizontal_scroll_uses_dynamic_line_number_width() {
     let content = (1..=10_000)
-        .map(|_| "abcdefghijkl".to_string())
+        .map(|_| "abcdefghijkl")
         .collect::<Vec<_>>()
         .join("\n");
     let file = create_test_file(&content);

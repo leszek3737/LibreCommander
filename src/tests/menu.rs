@@ -6,12 +6,11 @@ use app::types::{ActivePanel, PickerKind};
 #[test]
 fn menu_toggle_hidden_files_refreshes_active_panel() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let state = AppState {
+    let mut terminal = test_terminal();
+    let mut state = AppState {
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
-    let mut terminal = test_terminal();
-    let mut state = state;
     state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.set_show_hidden(false);
     state.mode = AppMode::Menu;
@@ -130,13 +129,12 @@ fn menu_rename_confirms_and_renames_file() {
 #[test]
 fn menu_history_opens_picker() {
     let mut terminal = test_terminal();
-    let state = AppState {
+    let mut state = AppState {
         mode: AppMode::Menu,
         menu_selected: 2,
         menu_item_selected: 5,
         ..Default::default()
     };
-    let mut state = state;
     state.command_history.push_back("ls -la".to_string());
 
     handle_menu_mode(

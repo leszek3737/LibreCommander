@@ -71,8 +71,12 @@ fn search_content_recursive(
     outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
     cancel: Option<&AtomicBool>,
 ) {
-    let pattern_lower: Vec<char> = if !case_sensitive {
-        pattern.chars().flat_map(|c| c.to_lowercase()).collect()
+    let pattern_bytes: Vec<u8> = if !case_sensitive {
+        pattern
+            .chars()
+            .flat_map(|c| c.to_lowercase())
+            .flat_map(|c| (c as u32).to_ne_bytes())
+            .collect()
     } else {
         Vec::new()
     };
@@ -82,7 +86,7 @@ fn search_content_recursive(
     let mut ctx = ContentSearchContext {
         pattern,
         case_sensitive,
-        pattern_lower: &pattern_lower,
+        pattern_bytes: &pattern_bytes,
         recursive,
         outcome,
         visited: &mut visited,
@@ -199,7 +203,7 @@ fn process_content_entry(
                 &entry_path,
                 ctx.pattern,
                 ctx.case_sensitive,
-                ctx.pattern_lower,
+                ctx.pattern_bytes,
                 target_meta.len(),
                 ctx.outcome,
                 ctx.cancel,
@@ -213,7 +217,7 @@ fn search_in_file(
     path: &Path,
     pattern: &str,
     case_sensitive: bool,
-    pattern_lower: &[char],
+    pattern_bytes: &[u8],
     file_len: u64,
     outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
     cancel: Option<&AtomicBool>,
@@ -293,7 +297,7 @@ fn search_in_file(
                     }
                 };
 
-                if !case_sensitive && !contains_case_insensitive(line_text, pattern_lower) {
+                if !case_sensitive && !contains_case_insensitive(line_text, pattern_bytes) {
                     continue;
                 }
 

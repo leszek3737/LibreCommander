@@ -64,13 +64,13 @@ pub fn render_list_picker_with_colors<T: AsRef<str>>(
             }
         };
         let end_idx = (start_idx + visible_height).min(items.len());
-        let list_items: Vec<ListItem> = items[start_idx..end_idx]
-            .iter()
-            .map(|s| ListItem::new(s.as_ref()))
-            .collect();
-        let list = List::new(list_items)
-            .highlight_style(Theme::highlight_bold_with_colors(colors))
-            .highlight_symbol("> ");
+        let list = List::new(
+            items[start_idx..end_idx]
+                .iter()
+                .map(|s| ListItem::new(s.as_ref())),
+        )
+        .highlight_style(Theme::highlight_bold_with_colors(colors))
+        .highlight_symbol("> ");
         let mut list_state = ListState::default();
         list_state.select(Some(clamped_selected - start_idx));
         f.render_stateful_widget(list, chunks[0], &mut list_state);

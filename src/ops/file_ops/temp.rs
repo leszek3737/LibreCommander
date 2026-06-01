@@ -10,13 +10,17 @@ use super::common::remove_any;
 
 pub(super) static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
+fn suffixed_path(dest: &Path, tag: &str, seq: u64) -> PathBuf {
     let mut name = dest
         .file_name()
-        .map(|name| name.to_os_string())
+        .map(|n| n.to_os_string())
         .unwrap_or_else(|| "copy".into());
-    name.push(format!(".lc-dir-copy-{}-{}.tmp", std::process::id(), seq));
+    name.push(format!(".lc-dir-{tag}-{}-{}.tmp", std::process::id(), seq));
     dest.with_file_name(name)
+}
+
+pub(super) fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
+    suffixed_path(dest, "copy", seq)
 }
 
 pub(super) fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
@@ -126,12 +130,7 @@ pub(super) fn move_existing_dest_to_backup(dest: &Path) -> io::Result<Option<Des
 }
 
 fn backup_path_for(dest: &Path, seq: u64) -> PathBuf {
-    let mut name = dest
-        .file_name()
-        .map(|name| name.to_os_string())
-        .unwrap_or_else(|| "copy".into());
-    name.push(format!(".lc-dir-backup-{}-{}.tmp", std::process::id(), seq));
-    dest.with_file_name(name)
+    suffixed_path(dest, "backup", seq)
 }
 
 pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {

@@ -978,7 +978,7 @@ mod tests {
                 let dest = tmp.join("dest");
                 let err = copy::copy_dir_recursive(&src, &dest, false).unwrap_err();
                 let msg = format!("{}", err);
-                assert!(msg.contains(&format!(">{}", common::MAX_RECURSION_DEPTH)));
+                assert!(msg.contains(&format!(">={}", common::MAX_RECURSION_DEPTH)));
                 assert!(!dest.exists());
 
                 std::fs::remove_dir_all(&tmp).unwrap();

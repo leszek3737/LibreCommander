@@ -21,7 +21,7 @@ impl FileSearchContext<'_> {
 pub(super) struct ContentSearchContext<'a> {
     pub(super) pattern: &'a str,
     pub(super) case_sensitive: bool,
-    pub(super) pattern_lower: &'a [char],
+    pub(super) pattern_bytes: &'a [u8],
     pub(super) recursive: bool,
     pub(super) outcome: &'a mut SearchOutcome<(std::path::PathBuf, usize, String)>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
