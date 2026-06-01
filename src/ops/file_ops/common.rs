@@ -132,12 +132,9 @@ pub(super) fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Resu
 
     loop {
         if let Ok(canonical_ancestor) = ancestor.canonicalize() {
-            // SAFETY: ancestor is always a parent of path by construction
-            // (ancestor starts as path, then walks up via .parent())
-            #[allow(clippy::expect_used)]
             let suffix = path
                 .strip_prefix(ancestor)
-                .expect("ancestor must be a parent of path");
+                .unwrap_or_else(|_| Path::new(""));
             return normalize_suffix(canonical_ancestor, suffix);
         }
 
@@ -170,7 +167,9 @@ pub(super) fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<P
 }
 
 pub(super) fn remove_any(path: &Path) -> io::Result<()> {
-    if path.is_dir() {
+    if path.is_symlink() {
+        std::fs::remove_file(path)
+    } else if path.is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
