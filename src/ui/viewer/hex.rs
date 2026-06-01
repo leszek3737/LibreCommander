@@ -1,7 +1,8 @@
 pub const HEX_OFFSET_PREFIX_WIDTH: usize = 10;
 pub const HEX_BYTES_PER_LINE: usize = 16;
 pub const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
-pub const HEX_LINE_WIDTH: usize = 10 + HEX_PART_WIDTH + 2 + HEX_BYTES_PER_LINE + 1;
+pub const HEX_LINE_WIDTH: usize =
+    HEX_OFFSET_PREFIX_WIDTH + HEX_PART_WIDTH + 2 + HEX_BYTES_PER_LINE + 1;
 
 #[cfg(test)]
 #[must_use]

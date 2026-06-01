@@ -392,6 +392,7 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     rebuild_visible_entries(&mut panel, None);
     assert!(panel.listing.entries.len() > 1);
 
+    // Hardcoded nonexistent path — test-only fixture to trigger a read error; must not appear in production code.
     panel.set_path(PathBuf::from("/nonexistent_dir_for_test_12345"));
     full_refresh_panel(&mut panel);
 
@@ -415,6 +416,7 @@ fn full_refresh_recovers_after_error() {
     let file = dir.path().join("recovery.txt");
     fs::write(&file, b"hello").unwrap();
 
+    // Hardcoded nonexistent path — test-only fixture to simulate an unreadable directory; must not appear in production code.
     panel.set_path(PathBuf::from("/nonexistent_for_error_test_xyz"));
     full_refresh_panel(&mut panel);
     assert!(panel.listing.entries.is_empty());
@@ -506,6 +508,7 @@ fn event_is_panel_dir_uses_cached_canonical_path() {
 #[test]
 fn set_path_updates_canonical_path() {
     let dir = tempfile::tempdir().unwrap();
+    // Hardcoded nonexistent path — test-only fixture to verify canonical_path() is None for missing dirs; must not appear in production code.
     let mut panel = PanelState::new(PathBuf::from("/nonexistent"));
 
     assert!(panel.canonical_path().is_none());
@@ -585,6 +588,8 @@ fn created_child_file_appears_in_panel() {
 fn deleted_root_dir_stays_at_root_and_refreshes() {
     let (tx, rx) = mpsc::sync_channel(256);
     let mut state = AppState::new();
+    // Hardcoded filesystem root — test-only fixture for the edge case where the panel is at "/";
+    // safe because "/" always exists, but this pattern must not appear in production code.
     state.left_panel.set_path(PathBuf::from("/"));
 
     tx.send(WatchEvent::Deleted(PathBuf::from("/"))).unwrap();

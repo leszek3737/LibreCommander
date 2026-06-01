@@ -1,3 +1,7 @@
+// Grapheme boundaries are recomputed from scratch on every edit (O(n) in text
+// length). Incremental tracking is possible but adds significant complexity
+// (combining marks, ZWJ sequences, regional indicators). Revisit only if
+// profiling shows this is a bottleneck for realistic command-line input.
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, PartialEq, Default)]

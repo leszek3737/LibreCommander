@@ -152,8 +152,8 @@ pub(crate) fn entry_matches_panel(
     show_hidden: bool,
 ) -> bool {
     entry.name == ".."
-        || (show_hidden || !entry.cha.is_hidden())
-            && compiled_filter.is_none_or(|pat| pat.matches(&entry.name))
+        || ((show_hidden || !entry.cha.is_hidden())
+            && compiled_filter.is_none_or(|pat| pat.matches(&entry.name)))
 }
 
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
@@ -176,6 +176,8 @@ fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
     }
 }
 
+// Usable panel rows for a standard 24-row terminal (24 − LAYOUT_OVERHEAD_ROWS = 18).
+// Used when crossterm::terminal::size() fails (e.g. piped stdout, no tty).
 const FALLBACK_VISIBLE_HEIGHT: usize = 18;
 
 pub fn current_visible_height() -> usize {

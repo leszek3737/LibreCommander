@@ -43,22 +43,28 @@ impl Drop for RunningJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            std::thread::spawn(move || {
-                let (tx, rx) = mpsc::channel();
-                let _ = std::thread::spawn(move || {
-                    let result = handle.join();
-                    let _ = tx.send(result);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                std::thread::spawn(move || {
+                    let (tx, rx) = mpsc::channel();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = std::thread::spawn(move || {
+                            let result = handle.join();
+                            let _ = tx.send(result);
+                        });
+                    }));
+                    match rx.recv_timeout(Duration::from_secs(5)) {
+                        Ok(Err(e)) => {
+                            debug_log!("worker thread panicked during tear-down: {:?}", e);
+                        }
+                        Err(_) => {
+                            debug_log!(
+                                "worker thread did not finish within 5 s — abandoning reaper"
+                            );
+                        }
+                        Ok(Ok(())) => {}
+                    }
                 });
-                match rx.recv_timeout(Duration::from_secs(5)) {
-                    Ok(Err(e)) => {
-                        debug_log!("worker thread panicked during tear-down: {:?}", e);
-                    }
-                    Err(_) => {
-                        debug_log!("worker thread did not finish within 5 s — abandoning reaper");
-                    }
-                    Ok(Ok(())) => {}
-                }
-            });
+            }));
         }
     }
 }

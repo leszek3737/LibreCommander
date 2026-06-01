@@ -53,12 +53,12 @@ fn resume_terminal_stdout() -> io::Result<()> {
 }
 
 struct TerminalRestoreGuard {
-    restore_ok: bool,
+    already_restored: bool,
 }
 
 impl Drop for TerminalRestoreGuard {
     fn drop(&mut self) {
-        if !self.restore_ok
+        if !self.already_restored
             && let Err(err) = resume_terminal_stdout()
         {
             debug_log!("Terminal restore failed: {err}");
@@ -121,7 +121,9 @@ pub fn run_shell_command(
     }
 
     push_history(state, cmd);
-    let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
+    let mut restore_guard = TerminalRestoreGuard {
+        already_restored: false,
+    };
     let (shell, flag) = get_shell(for_menu);
     let status = Command::new(&shell)
         .arg(flag)
@@ -142,7 +144,7 @@ pub fn run_shell_command(
     // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for.
     let _ = io::stdin().read_line(&mut buf);
     match resume_terminal_stdout() {
-        Ok(()) => restore_guard.restore_ok = true,
+        Ok(()) => restore_guard.already_restored = true,
         Err(e) => {
             state.status_message = Some(format!("Terminal restore failed: {e}"));
         }
@@ -158,7 +160,9 @@ pub fn toggle_external_view(
 ) -> io::Result<()> {
     suspend_terminal_stdout()?;
 
-    let mut restore_guard = TerminalRestoreGuard { restore_ok: false };
+    let mut restore_guard = TerminalRestoreGuard {
+        already_restored: false,
+    };
 
     // Show message to user.
     println!("External view active. Press Enter/Esc/Ctrl+O to return to Libre Commander.");
@@ -192,7 +196,7 @@ pub fn toggle_external_view(
     raw_result?;
 
     resume_terminal_stdout()?;
-    restore_guard.restore_ok = true;
+    restore_guard.already_restored = true;
 
     // Refresh display.
     refresh_both(state);

@@ -94,6 +94,7 @@ fn compare_directories_size_mode_reports_mismatches() {
         .filter(|e| e.name != ".." && e.selected)
         .collect();
     assert!(!left_selected.is_empty());
+    assert!(left_selected.iter().any(|e| e.name == "file.txt"));
 }
 
 #[test]

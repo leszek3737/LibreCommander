@@ -130,6 +130,11 @@ impl Watcher {
     /// only; changes within child subtrees require a full panel refresh.
     pub fn watch(&mut self, path: &Path) -> io::Result<()> {
         let original = path.to_path_buf();
+
+        // TOCTOU: if the path vanishes between canonicalize and watch(),
+        // watch() fails and the error propagates to the caller. If it
+        // vanishes *after* a successful watch(), the OS emits events that
+        // trigger cleanup in unwatch/is_watch_already_gone_error.
         let path = path.canonicalize().map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -407,19 +412,19 @@ fn flush_expired(debounce: &mut HashMap<PathBuf, PendingEntry>) -> Vec<ExpiredDe
     let now = Instant::now();
     let mut flushed = Vec::new();
 
-    let expired_paths = debounce
-        .iter()
-        .filter(|(_, entry)| now.duration_since(entry.last_seen) >= DEBOUNCE_DURATION)
-        .map(|(path, _)| path.clone())
-        .collect::<Vec<_>>();
-
-    for path in expired_paths {
-        if let Some(mut entry) = debounce.remove(&path)
-            && let Some(event) = entry.coalesced.take()
-        {
-            flushed.push(ExpiredDebouncedEvent { path, event });
+    debounce.retain(|path, entry| {
+        if now.duration_since(entry.last_seen) >= DEBOUNCE_DURATION {
+            if let Some(event) = entry.coalesced.take() {
+                flushed.push(ExpiredDebouncedEvent {
+                    path: path.clone(),
+                    event,
+                });
+            }
+            false
+        } else {
+            true
         }
-    }
+    });
 
     flushed
 }
@@ -659,7 +664,8 @@ fn is_watch_already_gone_error(e: &notify::Error) -> bool {
     match &e.kind {
         notify::ErrorKind::WatchNotFound => true,
         notify::ErrorKind::Io(io_err) => {
-            io_err.raw_os_error() == Some(22) || io_err.raw_os_error() == Some(2)
+            io_err.raw_os_error() == Some(libc::EINVAL)
+                || io_err.raw_os_error() == Some(libc::ENOENT)
         }
         _ => false,
     }

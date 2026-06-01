@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[test]
 fn shift_down_toggles_current_then_moves() {
     let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
@@ -32,7 +32,7 @@ fn shift_down_toggles_current_then_moves() {
 #[test]
 fn shift_up_toggles_current_then_moves() {
     let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
@@ -59,7 +59,7 @@ fn shift_up_toggles_current_then_moves() {
 #[test]
 fn shift_selection_preserves_unrelated_entries() {
     let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).selected().build(),
         TestEntry::new("b.txt").size(20).build(),
@@ -88,7 +88,7 @@ fn shift_selection_preserves_unrelated_entries() {
 #[test]
 fn shift_arrow_then_shift_arrow_toggles_two() {
     let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries = vec![
         TestEntry::new("a.txt").size(10).build(),
         TestEntry::new("b.txt").size(20).build(),
@@ -218,7 +218,7 @@ fn selected_or_current_paths_all_dotdot_selected_fallback() {
 
 #[test]
 fn reposition_cursor_finds_matching_name() {
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries = vec![
         TestEntry::new("a").build(),
         TestEntry::new("b").build(),
@@ -232,7 +232,7 @@ fn reposition_cursor_finds_matching_name() {
 
 #[test]
 fn reposition_cursor_no_match_leaves_cursor() {
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries =
         vec![TestEntry::new("a").build(), TestEntry::new("b").build()];
     state.left_panel.cursor = 1;
@@ -243,7 +243,7 @@ fn reposition_cursor_no_match_leaves_cursor() {
 
 #[test]
 fn reposition_cursor_none_name_unchanged() {
-    let mut state = AppState::default();
+    let mut state = AppState::new();
     state.left_panel.listing.entries = vec![TestEntry::new("a").build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;

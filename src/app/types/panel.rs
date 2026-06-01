@@ -121,7 +121,7 @@ impl PanelState {
         self.canonical_path = canonical;
     }
 
-    pub fn history(&self) -> &Vec<PathBuf> {
+    pub fn history(&self) -> &[PathBuf] {
         &self.history
     }
 
@@ -279,12 +279,11 @@ impl PanelState {
             return;
         }
 
-        let selection: HashMap<_, _> = self
-            .listing
-            .entries
-            .iter()
-            .map(|entry| (entry.path.as_path(), entry.selected))
-            .collect();
+        let cap = self.listing.entries.len();
+        let mut selection = HashMap::with_capacity(cap);
+        for entry in &self.listing.entries {
+            selection.insert(entry.path.as_path(), entry.selected);
+        }
 
         for entry in &mut self.listing.unfiltered_entries {
             if let Some(selected) = selection.get(entry.path.as_path()) {
@@ -354,7 +353,7 @@ impl PanelState {
             return;
         }
 
-        let max_index = self.listing.entries.len().saturating_sub(1);
+        let max_index = self.listing.entries.len() - 1;
 
         if self.cursor >= max_index {
             self.cursor = 0;

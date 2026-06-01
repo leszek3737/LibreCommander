@@ -53,7 +53,7 @@ pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)>
 }
 
 fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
-    if let Ok(meta) = std::fs::metadata(path)
+    if let Ok(meta) = std::fs::symlink_metadata(path)
         && meta.is_dir()
         && let Some(key) = get_inode_key(&meta)
     {

@@ -13,6 +13,8 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
     meta.mode()
 }
 
+// Non-Unix platforms lack Unix permission bits, so we synthesize a mode from the
+// file type plus a reasonable default (rw-r--r--) for display consistency.
 #[cfg(not(unix))]
 pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
     let type_bits = if meta.is_dir() {
@@ -28,8 +30,10 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
 #[cfg(unix)]
 fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
+    // ctime_nsec should always fit in u32, but clamp to 0 if the OS returns garbage.
     let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
     if secs >= 0 {
+        // Cap at 999ms to stay within Duration's valid nanosecond range.
         let nsecs = nsecs.min(999_999_999);
         UNIX_EPOCH.checked_add(Duration::new(secs as u64, nsecs))
     } else {
@@ -37,6 +41,7 @@ fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     }
 }
 
+// ctime (inode change time) is a Unix-only concept; other platforms have no equivalent.
 #[cfg(not(unix))]
 fn change_time(_meta: &fs::Metadata) -> Option<SystemTime> {
     None
@@ -49,6 +54,8 @@ macro_rules! cfg_trivial {
             $meta.$call()
         }
         #[cfg(not(unix))]
+        // These fields are Unix-only concepts (uid, gid, device ID, link count);
+        // returning 0 lets the rest of the code compile without guarding every access.
         $vis fn $name(_: &fs::Metadata) -> $ret {
             0
         }
@@ -150,6 +157,7 @@ impl ChaMode {
     }
 }
 
+// Recognizable sentinel so dummy dirs sort to the epoch and callers can detect them.
 const DIR_SENTINEL_MTIME: SystemTime = UNIX_EPOCH;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +181,8 @@ impl Cha {
             kind,
             mode,
             len: meta.len(),
+            // .ok() silently drops unsupported-FS errors — better to show no timestamp
+            // than to crash or skip the entire entry.
             mtime: meta.modified().ok(),
             btime: meta.created().ok(),
             ctime: change_time(meta),
@@ -192,15 +202,21 @@ impl Cha {
         link_meta: &fs::Metadata,
         target_meta: Option<&fs::Metadata>,
     ) -> Self {
+        // Symlink mode carries only the permission bits; the type is forced to
+        // 0o120000 (symlink) regardless of the link's own stored type.
         let link_mode = ChaMode::new(0o120000 | (file_mode(link_meta) & 0o7777));
 
         if let Some(target) = target_meta {
+            // Resolved link: use the *target's* metadata for size/times/ownership
+            // but keep the symlink mode so the UI shows it as a link.
             let mut kind = ChaKind::FOLLOW;
             if target.is_dir() {
                 kind.insert(ChaKind::DIR_TARGET);
             }
             Self::from_meta_base(target, kind, link_mode)
         } else {
+            // Orphan/broken symlink: fall back to link's own metadata and strip
+            // execute bits — we can't know the target's true permissions.
             Self::from_meta_base(
                 link_meta,
                 ChaKind::empty(),

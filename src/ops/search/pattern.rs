@@ -1,14 +1,10 @@
 use crate::ops::search::FileSearch;
 use memchr::memmem;
 
-pub(super) fn contains_case_insensitive(haystack: &str, needle_lower: &[char]) -> bool {
-    if needle_lower.is_empty() {
+pub(super) fn contains_case_insensitive(haystack: &str, needle_bytes: &[u8]) -> bool {
+    if needle_bytes.is_empty() {
         return true;
     }
-    let needle_bytes: Vec<u8> = needle_lower
-        .iter()
-        .flat_map(|&c| (c as u32).to_ne_bytes())
-        .collect();
     let mut haystack_bytes: Vec<u8> = Vec::with_capacity(haystack.len() * 4);
     for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
         haystack_bytes.extend_from_slice(&(c as u32).to_ne_bytes());
@@ -35,6 +31,7 @@ pub enum CompiledPattern {
     Plain {
         needle: Vec<char>,
         needle_str: String,
+        needle_bytes: Vec<u8>,
         needle_ascii: Option<String>,
         insensitive: bool,
     },
@@ -49,6 +46,9 @@ pub enum CompiledPattern {
         /// After a single `*`: the trailing text. When `contains` is true,
         /// this holds the inner substring between two `*`s instead.
         suffix: Option<Vec<char>>,
+        /// Pre-computed string versions for case-sensitive fast path.
+        prefix_str: Option<String>,
+        suffix_str: Option<String>,
         /// When true, `suffix` is a substring needle (`*inner*`), not a
         /// trailing suffix.
         contains: bool,
@@ -76,9 +76,14 @@ impl CompiledPattern {
                 None
             };
             let needle_str: String = needle.iter().collect();
+            let needle_bytes: Vec<u8> = needle
+                .iter()
+                .flat_map(|&c| (c as u32).to_ne_bytes())
+                .collect();
             return Self::Plain {
                 needle,
                 needle_str,
+                needle_bytes,
                 needle_ascii,
                 insensitive,
             };
@@ -103,13 +108,17 @@ impl CompiledPattern {
         let star_count = pattern.chars().filter(|&c| c == '*').count();
         if star_count == 1 {
             let pos = pattern.find('*')?;
-            let prefix_str = &pattern[..pos];
-            let suffix_str = &pattern[pos + 1..];
-            let prefix = Self::maybe_lower(prefix_str, insensitive);
-            let suffix = Self::maybe_lower(suffix_str, insensitive);
+            let pre = &pattern[..pos];
+            let suf = &pattern[pos + 1..];
+            let prefix = Self::maybe_lower(pre, insensitive);
+            let suffix = Self::maybe_lower(suf, insensitive);
+            let prefix_str = (!pre.is_empty()).then(|| pre.to_owned());
+            let suffix_str = (!suf.is_empty()).then(|| suf.to_owned());
             return Some(Self::WildcardSimple {
                 prefix,
                 suffix,
+                prefix_str,
+                suffix_str,
                 contains: false,
                 insensitive,
             });
@@ -130,9 +139,12 @@ impl CompiledPattern {
             let suffix_empty = suffix_str.is_empty();
             if prefix_empty && suffix_empty {
                 let inner = Self::maybe_lower(inner_str, insensitive)?;
+                let inner_str_owned = inner_str.to_owned();
                 return Some(Self::WildcardSimple {
                     prefix: None,
                     suffix: Some(inner),
+                    prefix_str: None,
+                    suffix_str: Some(inner_str_owned),
                     contains: true,
                     insensitive,
                 });
@@ -155,12 +167,13 @@ impl CompiledPattern {
     pub fn matches(&self, name: &str) -> bool {
         match self {
             Self::Plain {
-                needle,
+                needle: _,
                 needle_str: _,
+                needle_bytes,
                 needle_ascii,
                 insensitive: true,
             } => {
-                if needle.is_empty() {
+                if needle_bytes.is_empty() {
                     return true;
                 }
                 if let Some(ascii_needle) = needle_ascii
@@ -171,11 +184,12 @@ impl CompiledPattern {
                         .windows(ascii_needle.len())
                         .any(|w| w.eq_ignore_ascii_case(ascii_needle.as_bytes()));
                 }
-                contains_case_insensitive(name, needle)
+                contains_case_insensitive(name, needle_bytes)
             }
             Self::Plain {
                 needle: _,
                 needle_str,
+                needle_bytes: _,
                 needle_ascii: _,
                 insensitive: false,
             } => {
@@ -187,45 +201,19 @@ impl CompiledPattern {
             Self::WildcardSimple {
                 prefix,
                 suffix,
+                prefix_str,
+                suffix_str,
                 contains,
                 insensitive,
-            } => {
-                let name_chars: Vec<char> = if *insensitive {
-                    name.chars().flat_map(|c| c.to_lowercase()).collect()
-                } else {
-                    name.chars().collect()
-                };
-                if *contains {
-                    return suffix.as_deref().is_some_and(|suffix_chars| {
-                        name_chars
-                            .windows(suffix_chars.len())
-                            .any(|window| window == suffix_chars)
-                    });
-                }
-                let prefix_len = prefix.as_ref().map_or(0, |p: &Vec<char>| p.len());
-                let suffix_len = suffix.as_ref().map_or(0, |s: &Vec<char>| s.len());
-                if name_chars.len() < prefix_len + suffix_len {
-                    return false;
-                }
-                if let Some(prefix_chars) = prefix {
-                    if name_chars.len() < prefix_chars.len() {
-                        return false;
-                    }
-                    if name_chars[..prefix_chars.len()] != prefix_chars[..] {
-                        return false;
-                    }
-                }
-                if let Some(suffix_chars) = suffix {
-                    if name_chars.len() < suffix_chars.len() {
-                        return false;
-                    }
-                    let start = name_chars.len() - suffix_chars.len();
-                    if name_chars[start..] != suffix_chars[..] {
-                        return false;
-                    }
-                }
-                true
-            }
+            } => Self::match_wildcard_simple(
+                name,
+                prefix,
+                suffix,
+                prefix_str,
+                suffix_str,
+                contains,
+                insensitive,
+            ),
             // NOTE: to_lowercase() can expand one char to multiple (e.g. İ -> i + \u{307}).
             // The matcher treats each folded char independently, so `?` may partially
             // match a multi-char lowercase expansion. Known limitation for Turkish İ,
@@ -240,6 +228,71 @@ impl CompiledPattern {
                 Self::greedy_wildcard_match(&name_chars, chars)
             }
         }
+    }
+
+    fn match_wildcard_simple(
+        name: &str,
+        prefix: &Option<Vec<char>>,
+        suffix: &Option<Vec<char>>,
+        prefix_str: &Option<String>,
+        suffix_str: &Option<String>,
+        contains: &bool,
+        insensitive: &bool,
+    ) -> bool {
+        if !insensitive {
+            if *contains {
+                return suffix_str.as_deref().is_some_and(|s| name.contains(s));
+            }
+            let prefix_len = prefix_str.as_ref().map_or(0, String::len);
+            let suffix_len = suffix_str.as_ref().map_or(0, String::len);
+            if name.len() < prefix_len + suffix_len {
+                return false;
+            }
+            if prefix_str
+                .as_ref()
+                .is_some_and(|p| !name.starts_with(p.as_str()))
+            {
+                return false;
+            }
+            if suffix_str
+                .as_ref()
+                .is_some_and(|s| !name.ends_with(s.as_str()))
+            {
+                return false;
+            }
+            return true;
+        }
+        let name_chars: Vec<char> = name.chars().flat_map(|c| c.to_lowercase()).collect();
+        if *contains {
+            return suffix.as_deref().is_some_and(|suffix_chars| {
+                name_chars
+                    .windows(suffix_chars.len())
+                    .any(|window| window == suffix_chars)
+            });
+        }
+        let prefix_len = prefix.as_ref().map_or(0, |p: &Vec<char>| p.len());
+        let suffix_len = suffix.as_ref().map_or(0, |s: &Vec<char>| s.len());
+        if name_chars.len() < prefix_len + suffix_len {
+            return false;
+        }
+        if let Some(prefix_chars) = prefix {
+            if name_chars.len() < prefix_chars.len() {
+                return false;
+            }
+            if name_chars[..prefix_chars.len()] != prefix_chars[..] {
+                return false;
+            }
+        }
+        if let Some(suffix_chars) = suffix {
+            if name_chars.len() < suffix_chars.len() {
+                return false;
+            }
+            let start = name_chars.len() - suffix_chars.len();
+            if name_chars[start..] != suffix_chars[..] {
+                return false;
+            }
+        }
+        true
     }
 
     fn greedy_wildcard_match(name: &[char], pattern: &[char]) -> bool {

@@ -14,6 +14,7 @@ const MODE_SYMLINK: u32 = 0o120000;
 const MODE_TYPE_MASK: u32 = 0o170000;
 
 const DEFAULT_FILE_MODE: u32 = 0o100644;
+const BYTES_PER_UNIT: f64 = 1024.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileSize(pub u64);
@@ -24,14 +25,14 @@ impl std::fmt::Display for FileSize {
         let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
         let mut size_f = size as f64;
         let mut unit_idx = 0;
-        while size_f >= 1024.0 && unit_idx < units.len() - 1 {
-            size_f /= 1024.0;
+        while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
+            size_f /= BYTES_PER_UNIT;
             unit_idx += 1;
         }
         if unit_idx > 0 {
             size_f = (size_f * 10.0).round() / 10.0;
-            if size_f >= 1024.0 && unit_idx < units.len() - 1 {
-                size_f /= 1024.0;
+            if size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
+                size_f /= BYTES_PER_UNIT;
                 unit_idx += 1;
             }
         }

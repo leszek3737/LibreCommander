@@ -6,6 +6,7 @@ use super::panel::{ActivePanel, PanelState};
 use super::text_input::TextInput;
 use crate::app::dir_tree::TreeEntry;
 use crate::app::user_menu::{MenuEntry, MenuSource};
+use crate::debug_log;
 use crate::ui::theme::ColorPalette;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +51,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let current_dir = std::env::current_dir().unwrap_or_else(|e| {
+            debug_log!("current_dir failed: {e}, falling back to temp_dir");
+            std::env::temp_dir()
+        });
 
         Self {
             left_panel: PanelState::new(current_dir.clone()),

@@ -1017,6 +1017,7 @@ dependencies = [
  "filetime",
  "flate2",
  "infer",
+ "libc",
  "lzma-rs",
  "memchr",
  "notify",

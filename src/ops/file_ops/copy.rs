@@ -65,6 +65,7 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
                     format!("destination already exists: {}", dest.display()),
                 ));
             }
+            // Intentional: hardlink is opportunistic; swap_temp_to_dest serves as rename fallback
             Err(_) => {}
         }
         if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
@@ -164,9 +165,9 @@ fn copy_dir_recursive_with_progress_inner(
     depth: usize,
 ) -> io::Result<u64> {
     check_canceled(ctx.cancel)?;
-    if depth > MAX_RECURSION_DEPTH {
+    if depth >= MAX_RECURSION_DEPTH {
         return Err(io::Error::other(format!(
-            "directory too deeply nested (>{MAX_RECURSION_DEPTH} levels): {}",
+            "directory too deeply nested (>={MAX_RECURSION_DEPTH} levels): {}",
             src.display()
         )));
     }

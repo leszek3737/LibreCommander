@@ -45,7 +45,16 @@ fn move_entry_impl(
     if src == dest {
         return Ok(());
     }
+    if let Err(e) = src.symlink_metadata() {
+        return Err(io::Error::new(
+            e.kind(),
+            format!("cannot move: source does not exist: {}", src.display()),
+        ));
+    }
     let same_file = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
+        // .ok() intentional: canonicalize follows symlinks and fails on broken
+        // symlinks or missing targets.  Treating that as "not the same file" is
+        // correct — the move proceeds and fs::rename handles the real operation.
         (Some(s), Some(d)) => s == d,
         _ => false,
     };
