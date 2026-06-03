@@ -1,7 +1,11 @@
 use super::helpers::*;
 use crate::input::dialogs;
-use crate::*;
-use app::types::{DialogKind, PendingAction, PickerKind};
+use crate::render;
+use crate::{confirm_delete, confirm_file_transfer};
+use crossterm::event::KeyCode;
+use lc::app;
+use lc::app::types::{AppMode, AppState, DialogKind, PendingAction, PickerKind};
+use lc::ui::viewer;
 use ratatui::layout::Size;
 use ratatui::{Terminal, backend::TestBackend};
 

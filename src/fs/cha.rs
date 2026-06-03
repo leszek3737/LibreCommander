@@ -225,6 +225,22 @@ impl Cha {
         }
     }
 
+    pub fn regular_file(size: u64) -> Self {
+        Self {
+            kind: ChaKind::empty(),
+            mode: ChaMode::new(0o100644),
+            len: size,
+            mtime: Some(UNIX_EPOCH),
+            btime: Some(UNIX_EPOCH),
+            ctime: None,
+            atime: None,
+            uid: 0,
+            gid: 0,
+            dev: 0,
+            nlink: 1,
+        }
+    }
+
     pub fn dummy_dir() -> Self {
         Self {
             kind: ChaKind::empty(),

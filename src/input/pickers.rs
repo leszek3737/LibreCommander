@@ -288,11 +288,7 @@ pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
     let report = ops::compare_entries(left_entries, right_entries, mode);
     ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 
-    let mode_name = match mode {
-        CompareMode::Quick => "Quick",
-        CompareMode::Size => "Size",
-        CompareMode::Thorough => "Thorough",
-    };
+    let mode_name = mode.label();
     state.status_message = None;
     state.dialog_selection = 0;
     state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(

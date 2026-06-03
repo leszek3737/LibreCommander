@@ -1,28 +1,16 @@
 use super::helpers::*;
-use crate::*;
-use app::types::{ActivePanel, DialogKind, InputAction, TextInput};
+use crossterm::event::KeyCode;
 use crossterm::event::{Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-use ratatui::layout::Size;
+use lc::app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction, TextInput};
 
 #[test]
 fn dispatch_resize_event_returns_true() {
-    let mut state = AppState {
-        ..Default::default()
-    };
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
+    let mut state = AppState::default();
     let mut terminal = test_terminal();
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::Resize(80, 24),
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::Resize(80, 24));
 
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -30,23 +18,12 @@ fn dispatch_resize_event_returns_true() {
 
 #[test]
 fn dispatch_unhandled_event_returns_false() {
-    let mut state = AppState {
-        ..Default::default()
-    };
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
+    let mut state = AppState::default();
     let mut terminal = test_terminal();
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::FocusGained,
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::FocusGained);
 
     assert!(result.is_ok());
     assert!(!result.unwrap());
@@ -62,17 +39,14 @@ fn dispatch_mouse_click_moves_cursor() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    populate_panel(
-        &mut state.left_panel,
-        vec![
-            TestEntry::new("a.txt")
-                .path(tmp.path().join("a.txt"))
-                .build(),
-            TestEntry::new("b.txt")
-                .path(tmp.path().join("b.txt"))
-                .build(),
-        ],
-    );
+    state.left_panel.set_entries(vec![
+        TestEntry::new("a.txt")
+            .path(tmp.path().join("a.txt"))
+            .build(),
+        TestEntry::new("b.txt")
+            .path(tmp.path().join("b.txt"))
+            .build(),
+    ]);
     state.left_panel.cursor = 1;
 
     let event = Event::Mouse(crossterm::event::MouseEvent {
@@ -81,20 +55,11 @@ fn dispatch_mouse_click_moves_cursor() {
         row: 2,
         modifiers: KeyModifiers::NONE,
     });
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &event,
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &event);
 
     assert!(result.is_ok());
     assert_eq!(state.left_panel.cursor, 0);
@@ -109,29 +74,17 @@ fn key_press_triggers_search_initiation() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    populate_panel(
-        &mut state.left_panel,
-        vec![
-            TestEntry::new("alpha.txt")
-                .path(tmp.path().join("alpha.txt"))
-                .build(),
-        ],
-    );
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
+    state.left_panel.set_entries(vec![
+        TestEntry::new("alpha.txt")
+            .path(tmp.path().join("alpha.txt"))
+            .build(),
+    ]);
     let mut terminal = test_terminal();
     let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::Key(key),
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
     assert!(result.is_ok());
     assert!(matches!(state.mode, AppMode::Search));
@@ -145,16 +98,11 @@ fn key_release_is_ignored() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    populate_panel(
-        &mut state.left_panel,
-        vec![
-            TestEntry::new("alpha.txt")
-                .path(tmp.path().join("alpha.txt"))
-                .build(),
-        ],
-    );
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
+    state.left_panel.set_entries(vec![
+        TestEntry::new("alpha.txt")
+            .path(tmp.path().join("alpha.txt"))
+            .build(),
+    ]);
     let mut terminal = test_terminal();
     let key = KeyEvent::new_with_kind(
         KeyCode::Char('a'),
@@ -162,16 +110,9 @@ fn key_release_is_ignored() {
         KeyEventKind::Release,
     );
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::Key(key),
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
     assert!(result.is_ok());
     assert!(matches!(state.mode, AppMode::Normal));
@@ -188,35 +129,23 @@ fn key_repeat_navigation_moves_cursor() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    populate_panel(
-        &mut state.left_panel,
-        vec![
-            TestEntry::new("a.txt")
-                .path(tmp.path().join("a.txt"))
-                .build(),
-            TestEntry::new("b.txt")
-                .path(tmp.path().join("b.txt"))
-                .build(),
-            TestEntry::new("c.txt")
-                .path(tmp.path().join("c.txt"))
-                .build(),
-        ],
-    );
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
+    state.left_panel.set_entries(vec![
+        TestEntry::new("a.txt")
+            .path(tmp.path().join("a.txt"))
+            .build(),
+        TestEntry::new("b.txt")
+            .path(tmp.path().join("b.txt"))
+            .build(),
+        TestEntry::new("c.txt")
+            .path(tmp.path().join("c.txt"))
+            .build(),
+    ]);
     let mut terminal = test_terminal();
     let key = KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat);
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::Key(key),
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
     assert!(result.is_ok());
     assert_eq!(state.left_panel.cursor, 1);
@@ -235,21 +164,12 @@ fn key_repeat_text_edit_updates_input_dialog() {
         },
         ..Default::default()
     };
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
     let mut terminal = test_terminal();
     let key = KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Repeat);
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::Key(key),
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
     assert!(result.is_ok());
     assert_eq!(state.dialog_input.text, "a");
@@ -265,31 +185,30 @@ fn key_repeat_destructive_is_ignored() {
         ..Default::default()
     };
     state.left_panel.set_path(tmp.path().to_path_buf());
-    populate_panel(
-        &mut state.left_panel,
-        vec![
-            TestEntry::new("victim.txt")
-                .path(tmp.path().join("victim.txt"))
-                .build(),
-        ],
-    );
-    let mut viewer: Option<viewer::ViewerState> = None;
-    let mut job: Option<RunningJob> = None;
+    state.left_panel.set_entries(vec![
+        TestEntry::new("victim.txt")
+            .path(tmp.path().join("victim.txt"))
+            .build(),
+    ]);
     let mut terminal = test_terminal();
     let key = KeyEvent::new_with_kind(KeyCode::F(8), KeyModifiers::NONE, KeyEventKind::Repeat);
 
-    let result = super::super::dispatch_event(
-        &mut state,
-        &mut viewer,
-        &mut None,
-        &mut None,
-        &mut job,
-        &mut terminal,
-        &mut Size::new(80, 24),
-        &Event::Key(key),
-    );
+    let DispatchResult {
+        handled: result, ..
+    } = dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
     assert!(result.is_ok());
     assert!(matches!(state.mode, AppMode::Normal));
     assert!(state.pending_action.is_none());
+}
+
+#[test]
+fn dispatch_test_event_exposes_viewer_and_job() {
+    let mut state = AppState::default();
+    let mut terminal = test_terminal();
+
+    let res = dispatch_test_event(&mut state, &mut terminal, &Event::FocusGained);
+
+    assert!(res.viewer.is_none());
+    assert!(res.job.is_none());
 }

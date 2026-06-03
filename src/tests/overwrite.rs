@@ -1,6 +1,6 @@
 use crate::input::dialogs;
-use crate::*;
-use app::types::{ActivePanel, PendingAction};
+use lc::app::types::{ActivePanel, AppState, PendingAction};
+use lc::ops::archive::ArchiveFormat;
 use std::path::PathBuf;
 
 #[test]
@@ -13,7 +13,7 @@ fn check_overwrite_no_conflicts_returns_none() {
     std::fs::write(src.join("new.txt"), b"hello").unwrap();
 
     let state = AppState {
-        pending_action: Some(app::types::PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy {
             sources: vec![src.join("new.txt")],
             dest,
             overwrite: false,
@@ -35,7 +35,7 @@ fn check_overwrite_one_conflict_returns_some() {
     std::fs::write(dest.join("clash.txt"), b"dest").unwrap();
 
     let state = AppState {
-        pending_action: Some(app::types::PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy {
             sources: vec![src.join("clash.txt")],
             dest,
             overwrite: false,
@@ -60,7 +60,7 @@ fn check_overwrite_all_conflicts_returns_all_names() {
     std::fs::write(dest.join("b.txt"), b"b").unwrap();
 
     let state = AppState {
-        pending_action: Some(app::types::PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy {
             sources: vec![src.join("a.txt"), src.join("b.txt")],
             dest,
             overwrite: false,
@@ -81,7 +81,7 @@ fn check_overwrite_source_equals_dest_skipped() {
     std::fs::write(&file, b"data").unwrap();
 
     let state = AppState {
-        pending_action: Some(app::types::PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy {
             sources: vec![file],
             dest: tmp.path().to_path_buf(),
             overwrite: false,
@@ -105,7 +105,7 @@ fn check_overwrite_broken_symlink_at_dest_is_conflict() {
     std::os::unix::fs::symlink("/nonexistent/broken", dest.join("link.txt")).unwrap();
 
     let state = AppState {
-        pending_action: Some(app::types::PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy {
             sources: vec![src.join("link.txt")],
             dest,
             overwrite: false,
@@ -118,14 +118,14 @@ fn check_overwrite_broken_symlink_at_dest_is_conflict() {
 }
 
 #[test]
-fn check_overwrite_conflict_move_conflict() {
+fn check_overwrite_move_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
     let dest = tmp.path().join("dest");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::create_dir_all(&dest).unwrap();
-    std::fs::write(src.join("file.txt"), "a").unwrap();
-    std::fs::write(dest.join("file.txt"), "b").unwrap();
+    std::fs::write(src.join("file.txt"), b"a").unwrap();
+    std::fs::write(dest.join("file.txt"), b"b").unwrap();
     let state = AppState {
         active_panel: ActivePanel::Left,
         pending_action: Some(PendingAction::Move {
@@ -140,12 +140,12 @@ fn check_overwrite_conflict_move_conflict() {
 }
 
 #[test]
-fn check_overwrite_conflict_move_same_file_no_conflict() {
+fn check_overwrite_move_same_file_no_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
     let file = src.join("file.txt");
-    std::fs::write(&file, "a").unwrap();
+    std::fs::write(&file, b"a").unwrap();
     let state = AppState {
         active_panel: ActivePanel::Left,
         pending_action: Some(PendingAction::Move {
@@ -160,14 +160,14 @@ fn check_overwrite_conflict_move_same_file_no_conflict() {
 }
 
 #[test]
-fn check_overwrite_conflict_move_overwrite_no_conflict() {
+fn check_overwrite_move_overwrite_no_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("src");
     let dest = tmp.path().join("dest");
     std::fs::create_dir_all(&src).unwrap();
     std::fs::create_dir_all(&dest).unwrap();
-    std::fs::write(src.join("file.txt"), "a").unwrap();
-    std::fs::write(dest.join("file.txt"), "b").unwrap();
+    std::fs::write(src.join("file.txt"), b"a").unwrap();
+    std::fs::write(dest.join("file.txt"), b"b").unwrap();
     let state = AppState {
         active_panel: ActivePanel::Left,
         pending_action: Some(PendingAction::Move {
@@ -182,7 +182,7 @@ fn check_overwrite_conflict_move_overwrite_no_conflict() {
 }
 
 #[test]
-fn check_overwrite_conflict_delete_no_conflict() {
+fn check_overwrite_delete_no_conflict() {
     let state = AppState {
         pending_action: Some(PendingAction::Delete {
             paths: vec![PathBuf::from("/tmp/nonexistent")],
@@ -191,4 +191,35 @@ fn check_overwrite_conflict_delete_no_conflict() {
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
     assert!(conflicts.is_none());
+}
+
+#[test]
+fn check_overwrite_extract_archive_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("archive.tar.gz");
+    let dest = tmp.path().join("dest");
+    std::fs::write(&src, b"fake").unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::ExtractArchive { source: src, dest }),
+        ..Default::default()
+    };
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
+
+#[test]
+fn check_overwrite_create_archive_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("out.tar.gz");
+    let file = tmp.path().join("file.txt");
+    std::fs::write(&file, b"data").unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::CreateArchive {
+            sources: vec![file],
+            dest,
+            format: ArchiveFormat::TarGz,
+        }),
+        ..Default::default()
+    };
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
 }

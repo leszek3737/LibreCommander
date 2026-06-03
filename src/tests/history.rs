@@ -1,6 +1,7 @@
 use crate::input::pickers;
-use crate::*;
-use app::types::PickerKind;
+use crossterm::event::KeyCode;
+use lc::app::shell;
+use lc::app::types::{AppMode, AppState, PickerKind};
 
 #[test]
 fn history_dedup_consecutive() {
@@ -103,4 +104,43 @@ fn history_whitespace_after_valid_command() {
     shell::push_history(&mut state, "   ");
     assert_eq!(state.command_history.len(), 1);
     assert_eq!(state.command_history[0], "ls -la");
+}
+
+#[test]
+fn history_picker_home_sets_cursor_to_first() {
+    let mut state = AppState::default();
+    state.command_history.push_back("cmd1".to_string());
+    state.command_history.push_back("cmd2".to_string());
+    state.command_history.push_back("cmd3".to_string());
+    state.mode = AppMode::ListPicker(PickerKind::History);
+    state.picker_selected = 2;
+
+    pickers::handle_list_picker(&mut state, KeyCode::Home);
+
+    assert_eq!(state.picker_selected, 0);
+}
+
+#[test]
+fn history_picker_end_sets_cursor_to_last() {
+    let mut state = AppState::default();
+    state.command_history.push_back("cmd1".to_string());
+    state.command_history.push_back("cmd2".to_string());
+    state.command_history.push_back("cmd3".to_string());
+    state.mode = AppMode::ListPicker(PickerKind::History);
+    state.picker_selected = 0;
+
+    pickers::handle_list_picker(&mut state, KeyCode::End);
+
+    assert_eq!(state.picker_selected, 2);
+}
+
+#[test]
+fn history_dedup_non_consecutive_moves_to_end() {
+    let mut state = AppState::default();
+    shell::push_history(&mut state, "echo A");
+    shell::push_history(&mut state, "echo B");
+    shell::push_history(&mut state, "echo A");
+    assert_eq!(state.command_history.len(), 2);
+    assert_eq!(state.command_history[0], "echo B");
+    assert_eq!(state.command_history[1], "echo A");
 }

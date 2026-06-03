@@ -1,7 +1,8 @@
 use super::helpers::*;
 use crate::input::mode_dispatch::{handle_menu_mode, run_selected_menu_action};
-use crate::*;
-use app::types::{ActivePanel, PickerKind};
+use crossterm::event::KeyCode;
+use lc::app;
+use lc::app::types::{ActivePanel, AppMode, AppState, PickerKind};
 
 #[test]
 fn menu_toggle_hidden_files_refreshes_active_panel() {
@@ -98,7 +99,8 @@ fn menu_rename_confirms_and_renames_file() {
     std::fs::write(&old_path, "content").unwrap();
     let mut terminal = test_terminal();
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![TestEntry::new("old.txt").path(old_path).build()];
+    state.left_panel.listing.entries =
+        vec![TestEntry::new("old.txt").path(&old_path).size(1).build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     state.mode = AppMode::Menu;
@@ -123,7 +125,22 @@ fn menu_rename_confirms_and_renames_file() {
     ));
     state.dialog_input.text = "new.txt".to_string();
     state.dialog_input.cursor = state.dialog_input.text.len();
-    assert_eq!(state.dialog_input.text, "new.txt");
+
+    crate::input::dialogs::handle_dialog(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        ratatui::layout::Size::new(80, 24),
+    );
+
+    assert_eq!(state.mode, AppMode::Normal);
+    let new_path = dir.path().join("new.txt");
+    assert!(new_path.exists(), "new.txt should exist after rename");
+    assert!(
+        !old_path.exists(),
+        "old.txt should no longer exist after rename"
+    );
 }
 
 #[test]

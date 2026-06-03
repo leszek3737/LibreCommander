@@ -97,11 +97,10 @@ pub fn push_history(state: &mut AppState, cmd: &str) {
     if cmd.trim().is_empty() {
         return;
     }
-    if state.command_history.back().is_none_or(|last| last != cmd) {
-        state.command_history.push_back(cmd.to_string());
-        if state.command_history.len() > MAX_HISTORY {
-            state.command_history.pop_front();
-        }
+    state.command_history.retain(|entry| entry != cmd);
+    state.command_history.push_back(cmd.to_string());
+    if state.command_history.len() > MAX_HISTORY {
+        state.command_history.pop_front();
     }
 }
 
