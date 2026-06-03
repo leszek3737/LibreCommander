@@ -23,8 +23,6 @@ mod render_dialog_map;
 
 use app::job_runner::{RunningJob, poll_running_job};
 #[cfg(test)]
-use app::shell;
-#[cfg(test)]
 use app::types::PanelState;
 use app::types::{AppMode, AppState, DialogKind, ViewMode};
 use app::{panel_ops, paths, watcher_sync};

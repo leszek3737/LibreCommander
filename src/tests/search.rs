@@ -1,48 +1,9 @@
 use super::helpers::*;
+use crate::apply_search_filter;
 use crate::input::mode_dispatch::handle_search_mode;
-use crate::*;
-
-#[test]
-fn search_enter_clears_filter_and_refreshes_from_disk() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    std::fs::write(temp_dir.path().join("alpha.txt"), b"alpha").unwrap();
-    std::fs::write(temp_dir.path().join("beta.txt"), b"beta").unwrap();
-    let mut state = AppState {
-        mode: AppMode::Search,
-        search_query: "alpha".to_string(),
-        search_cursor: 5,
-        ..Default::default()
-    };
-    state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.listing.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
-    state.left_panel.listing.unfiltered_entries = vec![
-        TestEntry::new("alpha.txt").size(1).build(),
-        TestEntry::new("beta.txt").size(2).build(),
-    ];
-    state.left_panel.set_filter(Some("alpha".to_string()));
-
-    handle_search_mode(&mut state, KeyCode::Enter, 24);
-
-    assert_eq!(state.mode, AppMode::Normal);
-    assert_eq!(state.search_query, "");
-    assert_eq!(state.left_panel.filter(), None);
-    assert!(
-        state
-            .left_panel
-            .listing
-            .entries
-            .iter()
-            .any(|entry| entry.name == "alpha.txt")
-    );
-    assert!(
-        state
-            .left_panel
-            .listing
-            .entries
-            .iter()
-            .any(|entry| entry.name == "beta.txt")
-    );
-}
+use crossterm::event::KeyCode;
+use lc::app;
+use lc::app::types::{AppMode, AppState};
 
 #[test]
 fn search_enter_preserves_current_entry_focus() {
@@ -65,7 +26,7 @@ fn search_enter_preserves_current_entry_focus() {
     ];
     state.left_panel.set_filter(Some("beta".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Enter, 24);
+    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
 
     assert_eq!(
         state
@@ -92,7 +53,7 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
     state.left_panel.listing.unfiltered_dirty = true;
     state.left_panel.set_filter(Some("fresh".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Enter, 24);
+    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
 
     assert!(
         state
@@ -132,7 +93,7 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
     ];
     state.left_panel.set_filter(Some("alpha".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Enter, 24);
+    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
 
     assert_eq!(state.mode, AppMode::Normal);
     assert_eq!(state.search_query, "");
@@ -169,7 +130,7 @@ fn search_mode_with_empty_panel_handles_esc_gracefully() {
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
     handle_search_mode(&mut state, KeyCode::Esc, 20);
-    assert!(matches!(state.mode, AppMode::Normal));
+    assert_eq!(state.mode, AppMode::Normal);
 }
 
 #[test]
@@ -187,8 +148,9 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
 #[test]
 fn apply_search_filter_exact_match() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries =
-        vec![TestEntry::new("foo").build(), TestEntry::new("bar").build()];
+    let entries = vec![TestEntry::new("foo").build(), TestEntry::new("bar").build()];
+    state.left_panel.listing.entries = entries.clone();
+    state.left_panel.listing.unfiltered_entries = entries;
     state.left_panel.set_filter(Some("foo".to_string()));
     apply_search_filter(&mut state.left_panel);
     let names: Vec<_> = state
@@ -204,8 +166,9 @@ fn apply_search_filter_exact_match() {
 #[test]
 fn apply_search_filter_no_match_clears_entries() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries =
-        vec![TestEntry::new("a").build(), TestEntry::new("b").build()];
+    let entries = vec![TestEntry::new("a").build(), TestEntry::new("b").build()];
+    state.left_panel.listing.entries = entries.clone();
+    state.left_panel.listing.unfiltered_entries = entries;
     state.left_panel.set_filter(Some("xyz".to_string()));
     apply_search_filter(&mut state.left_panel);
     assert!(state.left_panel.listing.entries.is_empty());

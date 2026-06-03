@@ -59,6 +59,14 @@ pub enum PendingAction {
 impl CompareMode {
     pub const ALL: [Self; 3] = [Self::Quick, Self::Size, Self::Thorough];
 
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Quick => "Quick",
+            Self::Size => "Size",
+            Self::Thorough => "Thorough",
+        }
+    }
+
     const _ASSERT_COMPLETE: () = {
         let _ = |m: Self| match m {
             Self::Quick | Self::Size | Self::Thorough => {}
