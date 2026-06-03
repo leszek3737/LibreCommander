@@ -77,7 +77,7 @@ bitflags::bitflags! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChaType {
+pub(crate) enum ChaType {
     File,
     Dir,
     Link,
@@ -89,6 +89,7 @@ pub enum ChaType {
 }
 
 impl ChaType {
+    #[inline]
     fn from_mode(mode: u32) -> Self {
         match mode & 0o170000 {
             0o100000 => Self::File,
@@ -107,51 +108,63 @@ impl ChaType {
 pub struct ChaMode(u32);
 
 impl ChaMode {
+    #[inline]
     pub fn new(mode: u32) -> Self {
         Self(mode)
     }
 
+    #[inline]
     pub fn mode_u32(&self) -> u32 {
         self.0
     }
 
-    pub fn typ(&self) -> ChaType {
+    #[inline]
+    pub(crate) fn typ(&self) -> ChaType {
         ChaType::from_mode(self.0)
     }
 
-    pub fn is_file(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_file(&self) -> bool {
         self.typ() == ChaType::File
     }
 
-    pub fn is_dir(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_dir(&self) -> bool {
         self.typ() == ChaType::Dir
     }
 
-    pub fn is_link(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_link(&self) -> bool {
         self.typ() == ChaType::Link
     }
 
-    pub fn is_block(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_block(&self) -> bool {
         self.typ() == ChaType::Block
     }
 
-    pub fn is_char(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_char(&self) -> bool {
         self.typ() == ChaType::Char
     }
 
-    pub fn is_socket(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_socket(&self) -> bool {
         self.typ() == ChaType::Socket
     }
 
-    pub fn is_fifo(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_fifo(&self) -> bool {
         self.typ() == ChaType::Fifo
     }
 
+    #[inline]
     pub fn permissions(&self) -> u32 {
         self.0 & 0o7777
     }
 
-    pub fn is_executable(&self) -> bool {
+    #[inline]
+    pub(crate) fn is_executable(&self) -> bool {
         let p = self.permissions();
         (p & 0o111) != 0
     }
@@ -257,6 +270,7 @@ impl Cha {
         }
     }
 
+    #[inline]
     pub fn is_dir(&self) -> bool {
         self.mode.is_dir() || (self.mode.is_link() && self.kind.contains(ChaKind::DIR_TARGET))
     }
@@ -306,34 +320,42 @@ impl Cha {
         self.mode.is_executable()
     }
 
+    #[inline]
     pub fn len(&self) -> u64 {
         self.len
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    #[inline]
     pub fn mtime(&self) -> Option<SystemTime> {
         self.mtime
     }
 
+    #[inline]
     pub fn btime(&self) -> Option<SystemTime> {
         self.btime
     }
 
+    #[inline]
     pub fn atime(&self) -> Option<SystemTime> {
         self.atime
     }
 
+    #[inline]
     pub fn ctime(&self) -> Option<SystemTime> {
         self.ctime
     }
 
+    #[inline]
     pub fn dev(&self) -> u64 {
         self.dev
     }
 
+    #[inline]
     pub fn nlink(&self) -> u64 {
         self.nlink
     }
@@ -398,45 +420,39 @@ fn write_perm_triple(f: &mut fmt::Formatter<'_>, m: u32, bits: &PermBits) -> fmt
     Ok(())
 }
 
+const OWNER_BITS: PermBits = PermBits {
+    read_bit: 0o400,
+    write_bit: 0o200,
+    exec_bit: 0o100,
+    special_bit: 0o4000,
+    special_exec: 's',
+    special_noexec: 'S',
+};
+
+const GROUP_BITS: PermBits = PermBits {
+    read_bit: 0o040,
+    write_bit: 0o020,
+    exec_bit: 0o010,
+    special_bit: 0o2000,
+    special_exec: 's',
+    special_noexec: 'S',
+};
+
+const OTHERS_BITS: PermBits = PermBits {
+    read_bit: 0o004,
+    write_bit: 0o002,
+    exec_bit: 0o001,
+    special_bit: 0o1000,
+    special_exec: 't',
+    special_noexec: 'T',
+};
+
 impl fmt::Display for ChaMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let m = self.0;
-        write_perm_triple(
-            f,
-            m,
-            &PermBits {
-                read_bit: 0o400,
-                write_bit: 0o200,
-                exec_bit: 0o100,
-                special_bit: 0o4000,
-                special_exec: 's',
-                special_noexec: 'S',
-            },
-        )?;
-        write_perm_triple(
-            f,
-            m,
-            &PermBits {
-                read_bit: 0o040,
-                write_bit: 0o020,
-                exec_bit: 0o010,
-                special_bit: 0o2000,
-                special_exec: 's',
-                special_noexec: 'S',
-            },
-        )?;
-        write_perm_triple(
-            f,
-            m,
-            &PermBits {
-                read_bit: 0o004,
-                write_bit: 0o002,
-                exec_bit: 0o001,
-                special_bit: 0o1000,
-                special_exec: 't',
-                special_noexec: 'T',
-            },
-        )
+        write_perm_triple(f, m, &OWNER_BITS)?;
+        write_perm_triple(f, m, &GROUP_BITS)?;
+        write_perm_triple(f, m, &OTHERS_BITS)
     }
 }
 

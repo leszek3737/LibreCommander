@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use lc::app::file_type;
-use lc::app::types::{AppMode, AppState, InputAction, PickerKind};
+use lc::app::types::{AppMode, AppState, FileEntry, InputAction, PickerKind};
 use lc::app::{panel_ops, shell};
 use lc::ops::archive;
 use lc::ui::viewer;
@@ -66,8 +66,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             confirm_delete(state);
         }
         KeyCode::F(9) => {
-            state.prev_mode = Some(state.mode.clone());
-            state.mode = AppMode::Menu;
+            state.prev_mode = Some(std::mem::replace(&mut state.mode, AppMode::Menu));
             state.menu_item_selected = 0;
         }
         KeyCode::F(10) => {
@@ -95,9 +94,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
 
 fn handle_f7_key(state: &mut AppState) {
     if let Some(entry) = state.active_panel().current_entry()
-        && entry.name != ".."
-        && !entry.is_dir()
-        && file_type::is_archive(&entry.name)
+        && is_archive_file(entry)
     {
         show_archive_dialog(state);
     } else {
@@ -111,9 +108,7 @@ fn handle_f7_key(state: &mut AppState) {
 
 fn handle_f12_key(state: &mut AppState) {
     if let Some(entry) = state.active_panel().current_entry()
-        && entry.name != ".."
-        && !entry.is_dir()
-        && file_type::is_archive(&entry.name)
+        && is_archive_file(entry)
     {
         show_archive_dialog(state);
         return;
@@ -215,10 +210,7 @@ pub(crate) fn confirm_file_transfer(
         return;
     }
     let dest_dir = state.inactive_panel().path().to_path_buf();
-    let file_names: Vec<String> = panel_ops::file_names_from_paths(&paths)
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
+    let file_names: Vec<String> = display_file_names(&paths);
     let msg = if paths.len() == 1 {
         let name = file_names[0].as_str();
         format!("{verb} '{name}' to '{}'?", dest_dir.display())
@@ -241,10 +233,7 @@ pub(crate) fn confirm_delete(state: &mut AppState) {
     if paths.is_empty() {
         return;
     }
-    let file_names: Vec<String> = panel_ops::file_names_from_paths(&paths)
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
+    let file_names: Vec<String> = display_file_names(&paths);
     let msg = if paths.len() == 1 {
         let name = file_names[0].as_str();
         format!("Delete '{name}'?")
@@ -379,7 +368,7 @@ pub(crate) fn handle_enter_key<B: ratatui::backend::Backend>(
         p.scroll_offset = 0;
         panel_ops::refresh_active(state);
         reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
-    } else if entry.name != ".." && !entry.is_dir() && file_type::is_archive(&entry.name) {
+    } else if is_archive_file(entry) {
         let path = entry.path.clone();
         *viewer_loader = Some(viewer::ViewerState::open_background(path));
         state.prev_mode = None;
@@ -524,4 +513,15 @@ pub(crate) fn selected_or_current_paths(state: &AppState) -> Vec<PathBuf> {
     }
 
     selected
+}
+
+fn is_archive_file(entry: &FileEntry) -> bool {
+    !entry.is_dir() && file_type::is_archive(&entry.name)
+}
+
+fn display_file_names(paths: &[PathBuf]) -> Vec<String> {
+    panel_ops::file_names_from_paths(paths)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect()
 }

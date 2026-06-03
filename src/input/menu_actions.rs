@@ -87,12 +87,16 @@ fn execute_panel_config_action(
         MenuAction::ToggleListingMode => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
-                panel.set_listing_mode(match panel.listing_mode() {
+                let new_mode = match panel.listing_mode() {
                     ListingMode::Long => ListingMode::Brief,
                     ListingMode::Brief => ListingMode::Long,
-                });
-                state.status_message =
-                    Some(format!("Layout changed to {:?}", panel.listing_mode()));
+                };
+                panel.set_listing_mode(new_mode);
+                let label = match new_mode {
+                    ListingMode::Long => "Long",
+                    ListingMode::Brief => "Brief",
+                };
+                state.status_message = Some(format!("Layout changed to {label}"));
             });
             None
         }
@@ -131,15 +135,10 @@ fn execute_panel_config_action(
         MenuAction::TogglePermissions => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
-                panel.set_show_permissions(!panel.show_permissions());
-                state.status_message = Some(format!(
-                    "Permissions: {}",
-                    if panel.show_permissions() {
-                        "ON"
-                    } else {
-                        "OFF"
-                    }
-                ));
+                let show = !panel.show_permissions();
+                panel.set_show_permissions(show);
+                state.status_message =
+                    Some(format!("Permissions: {}", if show { "ON" } else { "OFF" }));
             });
             None
         }
@@ -270,18 +269,24 @@ pub fn open_user_menu(state: &mut AppState) {
             state.mode = AppMode::Dialog(DialogKind::Error(message));
         }
         Ok(loaded) => {
-            let mut messages: Vec<String> = Vec::new();
-            if let Some(warning) = loaded.warnings.first() {
-                messages.push(format!(
+            let mut status_parts: String = String::new();
+            for warning in &loaded.warnings {
+                if !status_parts.is_empty() {
+                    status_parts.push_str(" | ");
+                }
+                status_parts.push_str(&format!(
                     "User menu warning: Line {}: {}",
                     warning.line, warning.message
                 ));
             }
             if loaded.source == MenuSource::Local {
-                messages.push("Local .mc.menu loaded — commands require confirmation".to_string());
+                if !status_parts.is_empty() {
+                    status_parts.push_str(" | ");
+                }
+                status_parts.push_str("Local .mc.menu loaded — commands require confirmation");
             }
-            if !messages.is_empty() {
-                state.status_message = Some(messages.join(" | "));
+            if !status_parts.is_empty() {
+                state.status_message = Some(status_parts);
             }
             state.user_menu_source = loaded.source;
             state.user_menu_set(loaded.entries);

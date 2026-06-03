@@ -66,9 +66,7 @@ pub fn handle_mouse_event(
     };
 
     match button {
-        MouseButton::Left => {
-            handle_left_down(state, viewer_state, viewer_loader, running_job, &pos)
-        }
+        MouseButton::Left => handle_left_down(state, viewer_loader, running_job, &pos),
         MouseButton::Middle => handle_middle_down(state, &pos),
         MouseButton::Right => handle_right_down(state, &pos),
     }
@@ -76,7 +74,6 @@ pub fn handle_mouse_event(
 
 fn handle_left_down(
     state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
@@ -97,16 +94,12 @@ fn handle_left_down(
         return Some(outcome);
     }
 
-    handle_mouse_panels(state, _viewer_state, viewer_loader, pos);
+    handle_mouse_panels(state, viewer_loader, pos);
     None
 }
 
 fn handle_middle_down(state: &mut AppState, pos: &MousePosition) -> Option<MouseOutcome> {
-    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
-    if pos.row > panel_start_row
-        && pos.row < panel_end_row
-        && !matches!(state.mode, AppMode::Dialog(_))
-    {
+    if in_panel_file_rows(pos) && !matches!(state.mode, AppMode::Dialog(_)) {
         if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
             return Some(MouseOutcome::Consumed);
         }
@@ -129,8 +122,7 @@ fn handle_right_down(state: &mut AppState, pos: &MousePosition) -> Option<MouseO
     if matches!(state.mode, AppMode::Menu) {
         return Some(MouseOutcome::NormalKey(KeyCode::Esc));
     }
-    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
-    if pos.row > panel_start_row && pos.row < panel_end_row {
+    if in_panel_file_rows(pos) {
         return Some(MouseOutcome::NormalKey(KeyCode::Esc));
     }
     Some(MouseOutcome::Consumed)
@@ -138,6 +130,11 @@ fn handle_right_down(state: &mut AppState, pos: &MousePosition) -> Option<MouseO
 
 fn panel_bounds(height: u16) -> (u16, u16) {
     (1u16, height.saturating_sub(4))
+}
+
+fn in_panel_file_rows(pos: &MousePosition) -> bool {
+    let (start, end) = panel_bounds(pos.height);
+    pos.row > start && pos.row < end
 }
 
 fn handle_mouse_scroll(
@@ -187,10 +184,10 @@ fn handle_mouse_scroll(
     if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
         return;
     }
-    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
-    if pos.row < panel_start_row || pos.row > panel_end_row {
+    if !in_panel_file_rows(pos) {
         return;
     }
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
     let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
     let visible_rows = panel_height.saturating_sub(2) as usize;
     let mid_col = pos.width / 2;
@@ -226,7 +223,7 @@ fn apply_scroll_delta(current: usize, delta: isize, visible: usize, total: usize
         current.saturating_sub(delta.unsigned_abs())
     } else {
         let max_scroll = total.saturating_sub(visible);
-        (current + delta as usize).min(max_scroll)
+        (current + delta.unsigned_abs()).min(max_scroll)
     }
 }
 
@@ -276,10 +273,12 @@ fn dialog_geometry(pos: &MousePosition) -> DialogGeometry {
     }
 }
 
-fn hit_button_row(geo: &DialogGeometry, pos: &MousePosition) -> bool {
-    pos.row == geo.btn_row
-        && pos.col >= geo.dialog_left
-        && pos.col < geo.dialog_left + geo.dialog_width
+impl DialogGeometry {
+    fn hit_button_row(&self, pos: &MousePosition) -> bool {
+        pos.row == self.btn_row
+            && pos.col >= self.dialog_left
+            && pos.col < self.dialog_left + self.dialog_width
+    }
 }
 
 fn handle_confirm_click(
@@ -289,7 +288,7 @@ fn handle_confirm_click(
 ) -> Option<MouseOutcome> {
     let geo = dialog_geometry(pos);
 
-    if hit_button_row(&geo, pos) {
+    if geo.hit_button_row(pos) {
         let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
         if state.dialog_selection == new_sel {
             if new_sel == 0 {
@@ -331,7 +330,7 @@ fn handle_overwrite_click(
 ) -> Option<MouseOutcome> {
     let geo = dialog_geometry(pos);
 
-    if hit_button_row(&geo, pos) {
+    if geo.hit_button_row(pos) {
         let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
         if state.dialog_selection == new_sel {
             match new_sel {
@@ -361,7 +360,7 @@ fn handle_progress_click(
 ) -> Option<MouseOutcome> {
     let geo = dialog_geometry(pos);
 
-    if hit_button_row(&geo, pos)
+    if geo.hit_button_row(pos)
         && let Some(job) = running_job.as_ref()
     {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -465,7 +464,6 @@ fn handle_mouse_function_bar(state: &mut AppState, pos: &MousePosition) -> Optio
 
 fn handle_mouse_panels(
     state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
     viewer_loader: &mut Option<viewer::ViewerLoader>,
     pos: &MousePosition,
 ) {
@@ -475,11 +473,10 @@ fn handle_mouse_panels(
         return;
     }
 
-    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
-
-    if pos.row <= panel_start_row || pos.row >= panel_end_row {
+    if !in_panel_file_rows(pos) {
         return;
     }
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
 
     let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
     let mid_col = pos.width / 2;
@@ -558,10 +555,10 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
         return;
     }
 
-    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
-    if pos.row <= panel_start_row || pos.row >= panel_end_row {
+    if !in_panel_file_rows(pos) {
         return;
     }
+    let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
 
     let anchor = match state.drag_anchor_index {
         Some(idx) => idx,

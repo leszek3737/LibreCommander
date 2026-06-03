@@ -2,12 +2,14 @@
 //! Note: This module uses Unix-specific APIs (MetadataExt, uid/gid lookups)
 //! and will only compile on Unix platforms.
 
+#[cfg(test)]
 use chrono::{DateTime, Local};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(test)]
 use std::time::SystemTime;
 
 use crate::app::types::{PanelListing, PanelState, compute_category};
@@ -41,21 +43,14 @@ static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
 #[cfg(unix)]
 fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
     let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if cache.uid_to_name.len() >= CACHE_MAX_SIZE
-        && let Some(old) = cache.uid_order.pop_front()
-    {
-        cache.uid_to_name.remove(&old);
-    }
-    if cache.gid_to_name.len() >= CACHE_MAX_SIZE
-        && let Some(old) = cache.gid_order.pop_front()
-    {
-        cache.gid_to_name.remove(&old);
-    }
-    // TODO: `users` crate v0.11.0 is unmaintained (no release since 2022).
-    // Consider switching to `uzers` or raw `nix::unistd` before next release.
     let owner = if let Some(name) = cache.uid_to_name.get(&uid) {
         name.clone()
     } else {
+        if cache.uid_to_name.len() >= CACHE_MAX_SIZE
+            && let Some(old) = cache.uid_order.pop_front()
+        {
+            cache.uid_to_name.remove(&old);
+        }
         cache.uid_order.push_back(uid);
         let name: Arc<str> = users::get_user_by_uid(uid)
             .map(|u| Arc::from(u.name().to_string_lossy().into_owned()))
@@ -66,6 +61,11 @@ fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
     let group = if let Some(name) = cache.gid_to_name.get(&gid) {
         name.clone()
     } else {
+        if cache.gid_to_name.len() >= CACHE_MAX_SIZE
+            && let Some(old) = cache.gid_order.pop_front()
+        {
+            cache.gid_to_name.remove(&old);
+        }
         cache.gid_order.push_back(gid);
         let name: Arc<str> = users::get_group_by_gid(gid)
             .map(|g| Arc::from(g.name().to_string_lossy().into_owned()))
@@ -89,7 +89,7 @@ fn file_name_from_path(path: &Path) -> String {
     path.file_name()
         .unwrap_or_default()
         .to_string_lossy()
-        .to_string()
+        .into_owned()
 }
 
 fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
@@ -165,7 +165,7 @@ pub fn ensure_path_index(panel: &mut PanelState) {
 }
 
 pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
-    let mut entries = Vec::new();
+    let mut entries = Vec::with_capacity(256);
     let mut errors = Vec::new();
 
     if path != Path::new("/") {
@@ -292,6 +292,7 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
     }
 }
 
+#[cfg(test)]
 pub fn format_date(time: SystemTime) -> String {
     let datetime: DateTime<Local> = DateTime::from(time);
     let now = Local::now();
@@ -304,11 +305,13 @@ pub fn format_date(time: SystemTime) -> String {
     }
 }
 
+#[cfg(test)]
 #[cfg(unix)]
 pub fn is_executable(mode: u32) -> bool {
     (mode & 0o100) != 0 || (mode & 0o010) != 0 || (mode & 0o001) != 0
 }
 
+#[cfg(test)]
 #[cfg(not(unix))]
 pub fn is_executable(_mode: u32) -> bool {
     false

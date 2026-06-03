@@ -4,6 +4,13 @@ use lc::app::{shell, types::*};
 
 use crate::app::panel_ops::refresh_active;
 
+fn cancel_command_input(state: &mut AppState) {
+    state.mode = AppMode::Normal;
+    state.command_line.clear();
+    state.command_draft.clear();
+    state.history_index = None;
+}
+
 fn command_execute(state: &mut AppState) {
     let cmd = std::mem::take(&mut state.command_line.text);
     state.command_line.cursor = 0;
@@ -37,26 +44,24 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('c') => {
-                state.mode = AppMode::Normal;
-                state.command_line.clear();
-                state.command_draft.clear();
-                state.history_index = None;
+                cancel_command_input(state);
                 return;
             }
-            _ => return,
+            _ => {}
         }
+        return;
     }
 
     if key.modifiers.contains(KeyModifiers::ALT) {
+        if key.code == KeyCode::Backspace && state.command_line.delete_word_backward() {
+            state.history_index = None;
+        }
         return;
     }
 
     match key.code {
         KeyCode::Esc => {
-            state.mode = AppMode::Normal;
-            state.command_line.clear();
-            state.command_draft.clear();
-            state.history_index = None;
+            cancel_command_input(state);
         }
         KeyCode::Enter => {
             command_execute(state);
@@ -83,7 +88,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
             state.command_line.text = state.command_history[idx].clone();
             state.command_line.cursor_end();
         }
-        KeyCode::Down => {
+        KeyCode::Down if !state.command_history.is_empty() => {
             if let Some(idx) = state.history_index {
                 if idx + 1 < state.command_history.len() {
                     state.history_index = Some(idx + 1);

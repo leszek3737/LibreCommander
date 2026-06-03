@@ -1,7 +1,7 @@
 use crate::debug_log;
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -64,7 +64,7 @@ pub struct Watcher {
     event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
-    pending_from: Arc<Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>>,
+    pending_from: Arc<Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>>,
     overflow_pending: Arc<AtomicBool>,
     path_cache: HashMap<PathBuf, PathBuf>,
 }
@@ -73,7 +73,7 @@ impl Watcher {
     pub fn new(event_tx: Arc<SyncSender<WatchEvent>>) -> io::Result<Self> {
         let paused = Arc::new(AtomicBool::new(false));
         let debounce_state = Arc::new(Mutex::new(HashMap::new()));
-        let pending_from: Arc<Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>> =
+        let pending_from: Arc<Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let overflow_pending = Arc::new(AtomicBool::new(false));
         let primary = RecommendedWatcher::new(
@@ -338,7 +338,7 @@ fn make_handler(
     event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
-    pending_from: Arc<Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>>,
+    pending_from: Arc<Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>>,
     overflow_pending: Arc<AtomicBool>,
 ) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |result| {
@@ -373,12 +373,7 @@ fn make_handler(
                     continue;
                 }
                 WatchEvent::Overflow => {
-                    match try_send_event(&event_tx, watch_event) {
-                        SendStatus::Sent | SendStatus::Disconnected => {}
-                        SendStatus::Full(_) => {
-                            overflow_pending.store(true, Ordering::Release);
-                        }
-                    }
+                    send_overflow_or_flag(&event_tx, &overflow_pending);
                     continue;
                 }
             };
@@ -434,18 +429,32 @@ fn send_expired_events(
     debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
     flushed: Vec<ExpiredDebouncedEvent>,
 ) {
+    let mut reinserts: Vec<(PathBuf, WatchEvent)> = Vec::new();
     for expired in flushed {
-        let path = expired.path;
         match try_send_event(event_tx, expired.event) {
             SendStatus::Sent | SendStatus::Disconnected => {}
             SendStatus::Full(event) => {
-                let mut debounce = lock_or_recover(debounce_state, "watcher");
-                debounce.entry(path).or_insert(PendingEntry {
-                    last_seen: Instant::now(),
-                    coalesced: Some(event),
-                });
+                reinserts.push((expired.path, event));
             }
         }
+    }
+    if !reinserts.is_empty() {
+        let mut debounce = lock_or_recover(debounce_state, "watcher");
+        for (path, event) in reinserts {
+            debounce.entry(path).or_insert(PendingEntry {
+                last_seen: Instant::now(),
+                coalesced: Some(event),
+            });
+        }
+    }
+}
+
+fn send_overflow_or_flag(event_tx: &SyncSender<WatchEvent>, overflow_pending: &AtomicBool) {
+    match try_send_event(event_tx, WatchEvent::Overflow) {
+        SendStatus::Full(_) => {
+            overflow_pending.store(true, Ordering::Release);
+        }
+        SendStatus::Sent | SendStatus::Disconnected => {}
     }
 }
 
@@ -468,14 +477,12 @@ fn reinsert_or_overflow(
         coalesced: Some(event),
     });
     drop(debounce);
-    if event_tx.try_send(WatchEvent::Overflow).is_err() {
-        overflow_pending.store(true, Ordering::Release);
-    }
+    send_overflow_or_flag(event_tx, overflow_pending);
 }
 
 #[cfg(test)]
 fn clear_pending_from_if_unchanged(
-    pending_from: &Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>,
+    pending_from: &Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>,
     parent_key: &Path,
     path: &Path,
     time: Instant,
@@ -489,19 +496,6 @@ fn clear_pending_from_if_unchanged(
     }
 }
 
-fn lock_pending(
-    pending_from: &Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>,
-) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Vec<PendingFromEntry>>> {
-    lock_or_recover(pending_from, "pending_from")
-}
-
-/// Process debounce for watched paths.
-///
-/// Returns `(should_emit, expired_events)` where:
-/// - `should_emit`: caller should forward the current event downstream
-///   (`false` means the event was suppressed/coalesced by debounce)
-/// - `expired_events`: entries whose debounce window has elapsed;
-///   these should always be sent regardless of `should_emit`
 fn process_debounce(
     debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
     paths: &[&Path],
@@ -577,17 +571,17 @@ fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexG
 
 fn convert_event_with_rename_pairing(
     event: notify::Event,
-    pending_from: &Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>>,
+    pending_from: &Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>,
 ) -> Vec<WatchEvent> {
     match &event.kind {
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
             if let Some(path) = event.paths.into_iter().next() {
                 let parent_key = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                let mut pending = lock_pending(pending_from);
+                let mut pending = lock_or_recover(pending_from, "pending_from");
                 pending
                     .entry(parent_key)
                     .or_default()
-                    .push(PendingFromEntry {
+                    .push_back(PendingFromEntry {
                         path,
                         time: Instant::now(),
                     });
@@ -603,17 +597,17 @@ fn convert_event_with_rename_pairing(
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
-            let mut pending = lock_pending(pending_from);
-            let from_entry = match pending.get_mut(&parent_key) {
-                Some(entries) if !entries.is_empty() => {
-                    let entry = entries.remove(0);
-                    if entries.is_empty() {
-                        pending.remove(&parent_key);
-                    }
-                    Some(entry)
+            let mut pending = lock_or_recover(pending_from, "pending_from");
+            let (from_entry, should_remove) = match pending.get_mut(&parent_key) {
+                Some(entries) => {
+                    let entry = entries.pop_front();
+                    (entry, entries.is_empty())
                 }
-                _ => None,
+                None => (None, false),
             };
+            if should_remove {
+                pending.remove(&parent_key);
+            }
             drop(pending);
             match (from_entry, to_path) {
                 (Some(entry), Some(to)) => vec![WatchEvent::Renamed {
@@ -634,13 +628,13 @@ fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
         EventKind::Create(_) => map_paths(event.paths, WatchEvent::Created),
         EventKind::Remove(_) => map_paths(event.paths, WatchEvent::Deleted),
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::Both)) => {
-            if event.paths.len() == 2 {
-                vec![WatchEvent::Renamed {
-                    from: event.paths[0].clone(),
-                    to: event.paths[1].clone(),
-                }]
+            let mut paths = event.paths;
+            if paths.len() == 2 {
+                let from = paths.swap_remove(0);
+                let to = paths.swap_remove(0);
+                vec![WatchEvent::Renamed { from, to }]
             } else {
-                map_paths(event.paths, WatchEvent::Modified)
+                map_paths(paths, WatchEvent::Modified)
             }
         }
         EventKind::Modify(_) => map_paths(event.paths, WatchEvent::Modified),

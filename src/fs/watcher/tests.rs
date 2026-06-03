@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::mpsc;
 
@@ -84,7 +85,7 @@ fn convert_event_emits_all_create_paths() {
 
 #[test]
 fn convert_event_maps_split_rename_events() {
-    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
     let from = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
         paths: vec![PathBuf::from("old")],
@@ -121,10 +122,7 @@ fn flush_pending_emits_coalesced_event_after_debounce_window() -> TestResult {
 
     let path = PathBuf::from("/tmp/test_file.txt");
     {
-        let mut debounce = watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut debounce = watcher.debounce_state.lock().unwrap();
         debounce.insert(
             path.clone(),
             PendingEntry {
@@ -150,10 +148,7 @@ fn flush_pending_does_not_emit_while_paused() -> TestResult {
 
     let path = PathBuf::from("/tmp/test_file.txt");
     {
-        let mut debounce = watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut debounce = watcher.debounce_state.lock().unwrap();
         debounce.insert(
             path.clone(),
             PendingEntry {
@@ -183,10 +178,7 @@ fn flush_pending_does_not_block_when_queue_is_full() -> TestResult {
     let first = PathBuf::from("/tmp/first.txt");
     let expired = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
     {
-        let mut debounce = watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut debounce = watcher.debounce_state.lock().unwrap();
         debounce.insert(
             first.clone(),
             PendingEntry {
@@ -199,14 +191,8 @@ fn flush_pending_does_not_block_when_queue_is_full() -> TestResult {
     watcher.flush_pending();
 
     assert!(rx.try_recv().is_err());
-    let debounce = watcher
-        .debounce_state
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    let Some(entry) = debounce.get(&PathBuf::from("/tmp/first.txt")) else {
-        assert!(debounce.contains_key(&PathBuf::from("/tmp/first.txt")));
-        return Ok(());
-    };
+    let debounce = watcher.debounce_state.lock().unwrap();
+    let entry = debounce.get(&PathBuf::from("/tmp/first.txt")).unwrap();
     assert!(entry.last_seen > expired);
     assert!(matches!(entry.coalesced, Some(WatchEvent::Modified(_))));
     Ok(())
@@ -220,10 +206,7 @@ fn flush_pending_retries_full_debounced_event() -> TestResult {
 
     let path = PathBuf::from("/tmp/retry.txt");
     {
-        let mut debounce = watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut debounce = watcher.debounce_state.lock().unwrap();
         debounce.insert(
             path.clone(),
             PendingEntry {
@@ -241,14 +224,8 @@ fn flush_pending_retries_full_debounced_event() -> TestResult {
     assert!(rx.try_recv().is_err());
 
     {
-        let mut debounce = watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let Some(entry) = debounce.get_mut(&path) else {
-            assert!(debounce.contains_key(&path));
-            return Ok(());
-        };
+        let mut debounce = watcher.debounce_state.lock().unwrap();
+        let entry = debounce.get_mut(&path).unwrap();
         entry.last_seen = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
     }
 
@@ -268,29 +245,23 @@ fn flush_pending_keeps_stale_from_when_queue_is_full() -> TestResult {
     let parent_key = PathBuf::new();
 
     {
-        let mut pending = watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut pending = watcher.pending_from.lock().unwrap();
         pending.insert(
             parent_key.clone(),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: stale.clone(),
                 time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            }],
+            }]),
         );
     }
 
     watcher.flush_pending();
 
-    let pending = watcher
-        .pending_from
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let pending = watcher.pending_from.lock().unwrap();
     assert_eq!(
         pending
             .get(&parent_key)
-            .and_then(|v| v.first())
+            .and_then(|v| v.front())
             .map(|e| e.path.clone()),
         Some(stale)
     );
@@ -314,17 +285,14 @@ fn process_debounce_coalesces_suppressed_event() {
     assert!(!emit2);
     assert!(flushed2.is_empty());
 
-    let map = debounce_state.lock().unwrap_or_else(|err| err.into_inner());
-    let Some(entry) = map.get(&path) else {
-        assert!(map.contains_key(&path));
-        return;
-    };
+    let map = debounce_state.lock().unwrap();
+    let entry = map.get(&path).unwrap();
     assert!(entry.coalesced.is_some());
 }
 
 #[test]
 fn multiple_from_same_dir_buffered_and_paired_fifo() {
-    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
     let from1 = notify::Event {
         kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
@@ -375,16 +343,13 @@ fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
     let watcher = Watcher::new(Arc::new(tx))?;
 
     {
-        let mut pending = watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut pending = watcher.pending_from.lock().unwrap();
         pending.insert(
             PathBuf::new(),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: PathBuf::from("/tmp/stale_file.txt"),
                 time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            }],
+            }]),
         );
     }
 
@@ -395,29 +360,23 @@ fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
         matches!(evt, WatchEvent::Deleted(p) if p.as_path() == Path::new("/tmp/stale_file.txt"))
     );
 
-    assert!(
-        watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(watcher.pending_from.lock().unwrap().is_empty());
     Ok(())
 }
 
 #[test]
 fn clear_pending_from_keeps_new_from_for_same_path() {
     let parent_key = PathBuf::new();
-    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
     let new_time = Instant::now();
     {
-        let mut map = pending.lock().unwrap_or_else(|err| err.into_inner());
+        let mut map = pending.lock().unwrap();
         map.insert(
             parent_key.clone(),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: PathBuf::from("/tmp/rename.txt"),
                 time: new_time,
-            }],
+            }]),
         );
     }
 
@@ -429,7 +388,7 @@ fn clear_pending_from_keeps_new_from_for_same_path() {
         old_time,
     );
 
-    let map = pending.lock().unwrap_or_else(|err| err.into_inner());
+    let map = pending.lock().unwrap();
     assert!(map.contains_key(&parent_key));
 }
 
@@ -439,35 +398,26 @@ fn flush_pending_keeps_fresh_from() -> TestResult {
     let watcher = Watcher::new(Arc::new(tx))?;
 
     {
-        let mut pending = watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut pending = watcher.pending_from.lock().unwrap();
         pending.insert(
             PathBuf::new(),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: PathBuf::from("/tmp/fresh_file.txt"),
                 time: Instant::now(),
-            }],
+            }]),
         );
     }
 
     watcher.flush_pending();
 
     assert!(rx.try_recv().is_err());
-    assert!(
-        !watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty()
-    );
+    assert!(!watcher.pending_from.lock().unwrap().is_empty());
     Ok(())
 }
 
 #[test]
 fn per_parent_rename_pairing_does_not_mismatch_across_dirs() {
-    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
     let dir_a = PathBuf::from("/dir_a");
     let dir_b = PathBuf::from("/dir_b");
@@ -518,7 +468,7 @@ fn per_parent_rename_pairing_does_not_mismatch_across_dirs() {
 
 #[test]
 fn multiple_from_same_parent_both_buffered() {
-    let pending: Mutex<HashMap<PathBuf, Vec<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
     let dir_a = PathBuf::from("/dir_a");
 
@@ -542,7 +492,7 @@ fn multiple_from_same_parent_both_buffered() {
         "second From should be buffered, not emit Deleted"
     );
 
-    let map = pending.lock().unwrap_or_else(|err| err.into_inner());
+    let map = pending.lock().unwrap();
     let entries = map.get(&dir_a).expect("parent key should exist");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].path, dir_a.join("first.txt"));
@@ -556,10 +506,7 @@ fn pause_clears_debounce_state() -> TestResult {
 
     let path = PathBuf::from("/tmp/test_pause_clear.txt");
     {
-        let mut debounce = watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut debounce = watcher.debounce_state.lock().unwrap();
         debounce.insert(
             path,
             PendingEntry {
@@ -573,11 +520,7 @@ fn pause_clears_debounce_state() -> TestResult {
 
     watcher.pause();
     assert!(
-        watcher
-            .debounce_state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .is_empty(),
+        watcher.debounce_state.lock().unwrap().is_empty(),
         "pause should clear debounce_state"
     );
 
@@ -603,7 +546,7 @@ fn reinsert_or_overflow_sends_overflow_marker() -> TestResult {
         "overflow_pending should be false when send succeeds"
     );
 
-    let state = debounce.lock().unwrap_or_else(|err| err.into_inner());
+    let state = debounce.lock().unwrap();
     assert!(state.contains_key(&PathBuf::from("/tmp/test_overflow.txt")));
     Ok(())
 }
@@ -622,7 +565,7 @@ fn reinsert_or_overflow_sets_pending_flag_on_full_queue() -> TestResult {
         "overflow_pending should be true when Overflow send fails"
     );
 
-    let state = debounce.lock().unwrap_or_else(|err| err.into_inner());
+    let state = debounce.lock().unwrap();
     assert!(state.contains_key(&PathBuf::from("/tmp/test_overflow_pending.txt")));
 
     assert!(
@@ -641,23 +584,20 @@ fn stale_from_per_parent_times_out_independently() -> TestResult {
     let dir_b = PathBuf::from("/dir_b");
 
     {
-        let mut pending = watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut pending = watcher.pending_from.lock().unwrap();
         pending.insert(
             dir_a.clone(),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: dir_a.join("old_a.txt"),
                 time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            }],
+            }]),
         );
         pending.insert(
             dir_b.clone(),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: dir_b.join("fresh_b.txt"),
                 time: Instant::now(),
-            }],
+            }]),
         );
     }
 
@@ -671,10 +611,7 @@ fn stale_from_per_parent_times_out_independently() -> TestResult {
 
     assert!(rx.try_recv().is_err(), "dir_b should not time out yet");
 
-    let pending = watcher
-        .pending_from
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let pending = watcher.pending_from.lock().unwrap();
     assert!(pending.contains_key(&dir_b));
     assert!(!pending.contains_key(&dir_a));
     Ok(())
@@ -685,27 +622,20 @@ fn pause_clears_pending_from_entries() -> TestResult {
     let (tx, _rx) = mpsc::sync_channel(2048);
     let watcher = Watcher::new(Arc::new(tx))?;
 
-    // Insert a pending_from entry
     {
-        let mut pending = watcher
-            .pending_from
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
+        let mut pending = watcher.pending_from.lock().unwrap();
         pending.insert(
             PathBuf::from("/some/dir"),
-            vec![PendingFromEntry {
+            VecDeque::from([PendingFromEntry {
                 path: PathBuf::from("/some/dir/old.txt"),
                 time: Instant::now(),
-            }],
+            }]),
         );
     }
 
     watcher.pause();
 
-    let pending = watcher
-        .pending_from
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let pending = watcher.pending_from.lock().unwrap();
     assert!(
         pending.is_empty(),
         "pause() should clear all pending_from entries"
