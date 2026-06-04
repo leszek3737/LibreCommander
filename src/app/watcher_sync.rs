@@ -174,15 +174,12 @@ fn accumulate_changes(
                 if event_is_panel_dir_cached(&from, right_cache) {
                     changes.right_dir_event = Some(DirEvent::Rename { to: to.clone() });
                 }
-                if event_is_panel_dir_cached(&to, left_cache)
-                    || event_is_panel_dir_cached(&to, right_cache)
+                if event_is_panel_dir_cached(&to, left_cache) && changes.left_dir_event.is_none() {
+                    changes.left_dir_event = Some(DirEvent::Touch);
+                }
+                if event_is_panel_dir_cached(&to, right_cache) && changes.right_dir_event.is_none()
                 {
-                    if changes.left_dir_event.is_none() {
-                        changes.left_dir_event = Some(DirEvent::Touch);
-                    }
-                    if changes.right_dir_event.is_none() {
-                        changes.right_dir_event = Some(DirEvent::Touch);
-                    }
+                    changes.right_dir_event = Some(DirEvent::Touch);
                 }
                 if from.file_name().is_some() {
                     changes.file_events.insert(from, DedupKind::Remove);
@@ -418,26 +415,24 @@ fn event_is_panel_dir_cached(path: &Path, cache: &PanelCache) -> bool {
         return false;
     }
 
-    if path == cache.clean {
+    let path_clean = crate::fs::path::clean_path(path);
+    if path_clean == cache.clean {
         return true;
     }
 
-    if let Some(ref c) = cache.canonical {
-        if path == c {
-            return true;
-        }
-        return path.canonicalize().is_ok_and(|p| p == *c);
-    }
-
-    let path_canonical = path.canonicalize().ok();
-    if path_canonical.as_ref().is_some_and(|p| *p == cache.clean) {
+    if let Some(ref c) = cache.canonical
+        && path_clean == c.as_path()
+    {
         return true;
     }
 
-    path_canonical
-        .as_ref()
-        .is_some_and(|pc| Some(pc) == cache.canonical.as_ref())
-        || cache.canonical.as_ref().is_some_and(|pr| path == pr)
+    if let Some(ref canonical_clean) = cache.canonical_clean
+        && path_clean == *canonical_clean
+    {
+        return true;
+    }
+
+    false
 }
 
 fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {

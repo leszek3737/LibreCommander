@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::Local;
@@ -22,8 +22,6 @@ const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
 /// filesystem latency is expected to be high.
 static LOG_FILE: Mutex<Option<BufWriter<std::fs::File>>> = Mutex::new(None);
 
-static DIR_CREATED: AtomicBool = AtomicBool::new(false);
-
 #[cfg(test)]
 static TEST_CACHE_HOME: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
@@ -43,9 +41,7 @@ const CHECK_INTERVAL: u32 = 256;
 
 fn ensure_log_file() -> std::io::Result<BufWriter<std::fs::File>> {
     let path = log_path();
-    if let Some(parent) = path.parent()
-        && !DIR_CREATED.swap(true, Ordering::Relaxed)
-    {
+    if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     OpenOptions::new()
@@ -85,8 +81,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         }
     }
     let count = CHECK_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let need_flush = count.is_multiple_of(CHECK_INTERVAL);
-    let need_size_check = freshly_opened || need_flush;
+    let need_size_check = freshly_opened || count.is_multiple_of(CHECK_INTERVAL);
     if need_size_check
         && guard
             .as_ref()
@@ -111,9 +106,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         if let Err(e) = writeln!(bw, "[{timestamp}] {args}") {
             stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
         }
-        if need_flush {
-            let _ = bw.flush();
-        }
+        let _ = bw.flush();
     }
 }
 
@@ -154,7 +147,6 @@ mod tests {
         let mut guard = lock_recover(&LOG_FILE);
         *guard = None;
         CHECK_COUNTER.store(0, Ordering::SeqCst);
-        DIR_CREATED.store(false, Ordering::SeqCst);
     }
 
     #[test]

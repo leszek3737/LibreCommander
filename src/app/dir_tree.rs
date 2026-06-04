@@ -132,12 +132,11 @@ fn build_tree_recursive(
             continue;
         }
 
-        // Use symlink_metadata first to avoid following symlinks on the first
-        // syscall. For non-symlink entries this resolves in a single stat call.
-        // Only when the entry is a symlink do we issue a second call via
-        // metadata() to check if the target is a directory.
-        let is_dir = match path.symlink_metadata() {
-            Ok(m) if !m.file_type().is_symlink() => m.is_dir(),
+        // Prefer entry.file_type() which is already cached from read_dir on
+        // most platforms, avoiding a syscall. Only for symlinks or when
+        // file_type() fails do we fall back to path metadata.
+        let is_dir = match entry.file_type() {
+            Ok(ft) if !ft.is_symlink() => ft.is_dir(),
             Ok(_) => path.metadata().is_ok_and(|m| m.is_dir()),
             Err(err) => {
                 diagnostics.push(TreeDiagnostic {

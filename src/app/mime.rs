@@ -113,7 +113,11 @@ pub fn category_from_ext(name: &str) -> FileCategory {
 }
 
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
-    s.len() >= suffix.len() && s[s.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    s.len() >= suffix.len()
+        && s.chars()
+            .rev()
+            .zip(suffix.chars().rev())
+            .all(|(a, b)| a.eq_ignore_ascii_case(&b))
 }
 
 #[must_use]
