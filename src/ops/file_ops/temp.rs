@@ -1,5 +1,5 @@
 use crate::debug_log;
-use crate::ops::helpers::cleanup_dir;
+use crate::ops::helpers::{cleanup_dir, cleanup_dir_all};
 
 use std::fs;
 use std::io;
@@ -7,6 +7,36 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::common::remove_any;
+
+pub(crate) struct TempDirGuard {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl TempDirGuard {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            committed: false,
+        }
+    }
+
+    pub(crate) fn commit(&mut self) {
+        self.committed = true;
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            cleanup_dir_all(&self.path);
+        }
+    }
+}
 
 pub(super) static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -23,12 +53,16 @@ pub(super) fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     suffixed_path(dest, "copy", seq)
 }
 
-pub(super) fn reserve_temp_dir_for(dest: &Path) -> io::Result<PathBuf> {
+pub(super) fn reserve_temp_dir_for(dest: &Path) -> io::Result<TempDirGuard> {
+    // 128 attempts balances collision avoidance against starvation;
+    // the counter (TEMP_DIR_COUNTER) spaces names linearly so even with
+    // high contention the odds of exceeding 128 unique conflicts are
+    // negligibly small.
     for _ in 0..128 {
         let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp = temp_dir_path_for(dest, seq);
         match fs::create_dir(&temp) {
-            Ok(()) => return Ok(temp),
+            Ok(()) => return Ok(TempDirGuard::new(temp)),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
         }
@@ -49,9 +83,9 @@ pub(super) fn publish_temp_dir(
     temp_dest: &Path,
     dest: &Path,
     overwrite: bool,
-    src_perms: &fs::Permissions,
+    src_perms: fs::Permissions,
 ) -> io::Result<()> {
-    fs::set_permissions(temp_dest, src_perms.clone())?;
+    fs::set_permissions(temp_dest, src_perms)?;
     if !overwrite {
         return fs::rename(temp_dest, dest);
     }
@@ -188,33 +222,45 @@ fn replace_file_inner(temp: &Path, dest: &Path, dir_err_msg: &str) -> io::Result
             return Err(io::Error::new(io::ErrorKind::IsADirectory, dir_err_msg));
         }
         Ok(_) => true,
-        Err(_) => false,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err),
     };
+    // On Windows, overwriting a file that another process has open can
+    // fail with a sharing violation.  The rename-to-.lc_bak trick works
+    // around this: the running file handle stays valid because the inode
+    // (NTFS File Record Segment) is preserved across the rename.
+    //
+    // If the process crashes between rename(dest → .lc_bak) and
+    // rename(temp → dest), a stale .lc_bak is left behind.  The next
+    // replace attempt will notice the existing .lc_bak and remove it
+    // before proceeding, so the orphan is self-healing.
     #[cfg(windows)]
-    if need_remove {
-        let mut os = dest.as_os_str().to_os_string();
-        os.push(".lc_bak");
-        let backup = PathBuf::from(os);
-        if backup.exists() {
-            fs::remove_file(&backup)?;
-        }
-        fs::rename(dest, &backup)?;
-        match fs::rename(temp, dest) {
-            Ok(()) => {
-                let _ = fs::remove_file(&backup);
+    {
+        if need_remove {
+            let mut os = dest.as_os_str().to_os_string();
+            os.push(".lc_bak");
+            let backup = PathBuf::from(os);
+            if fs::symlink_metadata(&backup).is_ok() {
+                fs::remove_file(&backup)?;
             }
-            Err(err) => {
-                if let Err(restore_err) = fs::rename(&backup, dest) {
-                    debug_log!(
-                        "failed to restore backup {} to {}: {restore_err}",
-                        backup.display(),
-                        dest.display()
-                    );
+            fs::rename(dest, &backup)?;
+            match fs::rename(temp, dest) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&backup);
                 }
-                return Err(err);
+                Err(err) => {
+                    if let Err(restore_err) = fs::rename(&backup, dest) {
+                        debug_log!(
+                            "failed to restore backup {} to {}: {restore_err}",
+                            backup.display(),
+                            dest.display()
+                        );
+                    }
+                    return Err(err);
+                }
             }
+            return Ok(());
         }
-        return Ok(());
     }
     let _ = need_remove;
     fs::rename(temp, dest)

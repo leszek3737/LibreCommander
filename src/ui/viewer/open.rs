@@ -306,7 +306,7 @@ impl ViewerState {
             let name = if entry.is_dir {
                 format!("{}/", entry.name)
             } else {
-                entry.name.clone()
+                entry.name.to_string()
             };
             writeln!(out, "  {size:<8} {mtime:<20} {name}").map_err(|_| ())?;
         }

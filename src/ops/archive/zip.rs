@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::SystemTime;
@@ -11,62 +12,129 @@ use zip::write::SimpleFileOptions;
 use super::{ArchiveEntry, ArchiveError};
 
 const MAX_LIST_ENTRIES: usize = 100_000;
+const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
+const ZIP_COPY_BUF_SIZE: usize = 65536;
+
+fn copy_with_progress(
+    reader: &mut dyn io::Read,
+    writer: &mut dyn io::Write,
+    progress: &Sender<u64>,
+) -> io::Result<u64> {
+    let mut buf = [0u8; ZIP_COPY_BUF_SIZE];
+    let mut total: u64 = 0;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        writer.write_all(&buf[..n])?;
+        total = total.saturating_add(n as u64);
+        let _ = progress.send(n as u64);
+    }
+    writer.flush()?;
+    Ok(total)
+}
+
+fn map_zip_err(e: impl std::fmt::Display) -> ArchiveError {
+    ArchiveError::InvalidArchive(e.to_string())
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ArchiveError::Io(Arc::new(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Operation canceled",
+        ))));
+    }
+    Ok(())
+}
+
+fn compression_method_name(method: CompressionMethod) -> &'static str {
+    match method {
+        CompressionMethod::Stored => "Stored",
+        CompressionMethod::Deflated => "Deflated",
+        CompressionMethod::Deflate64 => "Deflate64",
+        CompressionMethod::Bzip2 => "Bzip2",
+        CompressionMethod::Lzma => "Lzma",
+        CompressionMethod::Ppmd => "Ppmd",
+        CompressionMethod::Zstd => "Zstd",
+        CompressionMethod::Xz => "Xz",
+        CompressionMethod::Aes => "Aes",
+        _ => "Unknown",
+    }
+}
 
 pub fn list_zip(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     let file = File::open(path)?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+    let mut archive = ZipArchive::new(file).map_err(map_zip_err)?;
 
-    let mut entries = Vec::new();
+    let capacity = archive.len().min(MAX_LIST_ENTRIES);
+    let mut entries = Vec::with_capacity(capacity);
     for i in 0..archive.len() {
         if entries.len() >= MAX_LIST_ENTRIES {
             break;
         }
-        let entry = archive
-            .by_index(i)
-            .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+        let entry = archive.by_index(i).map_err(map_zip_err)?;
 
         entries.push(ArchiveEntry {
-            name: entry.name().to_string(),
+            name: entry.name().to_string().into_boxed_str(),
             size: entry.size(),
             compressed_size: entry.compressed_size(),
             modified: entry.last_modified().map(zip_datetime_to_system_time),
             is_dir: entry.is_dir(),
-            method: format!("{:?}", entry.compression()),
+            method: compression_method_name(entry.compression()).into(),
         });
     }
     Ok(entries)
 }
 
-fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathBuf, ArchiveError> {
-    let entry_path = Path::new(entry_name);
-    if entry_path.is_absolute() {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "absolute path detected: {entry_name}"
-        )));
-    }
-    // Reject any entry containing parent-directory components
-    for component in entry_path.components() {
-        if let std::path::Component::ParentDir = component {
-            return Err(ArchiveError::InvalidArchive(format!(
-                "path traversal detected: {entry_name}"
-            )));
+fn extract_zip_entries(
+    archive: &mut ZipArchive<File>,
+    dest: &Path,
+    progress: &Sender<u64>,
+    cancel: &AtomicBool,
+    extracted_paths: &mut Vec<PathBuf>,
+) -> Result<(), ArchiveError> {
+    fs::create_dir_all(dest)?;
+    for i in 0..archive.len() {
+        check_cancel(cancel)?;
+
+        let mut entry = archive.by_index(i).map_err(map_zip_err)?;
+
+        #[cfg(unix)]
+        if entry.is_symlink() {
+            let _ = progress.send(entry.size());
+            continue;
+        }
+
+        let outpath = super::sanitize_entry_path(entry.name(), dest)?;
+
+        if entry.is_dir() {
+            fs::create_dir_all(&outpath)?;
+            extracted_paths.push(outpath);
+            let _ = progress.send(entry.size());
+        } else {
+            if let Some(parent) = outpath.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut outfile = File::create(&outpath)?;
+            copy_with_progress(&mut entry, &mut outfile, progress)?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Some(mode) = entry.unix_mode() {
+                    let safe_mode = mode & !0o7000;
+                    fs::set_permissions(&outpath, fs::Permissions::from_mode(safe_mode))?;
+                }
+            }
+
+            extracted_paths.push(outpath);
         }
     }
-    let outpath = dest.join(entry_name);
-    let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
-    let canonical_out = outpath
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.join(outpath.file_name().unwrap_or_default()))
-        .unwrap_or_else(|| outpath.clone());
-
-    if !canonical_out.starts_with(&canonical_dest) {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "path traversal detected: {entry_name}"
-        )));
-    }
-    Ok(outpath)
+    Ok(())
 }
 
 pub fn extract_zip(
@@ -76,61 +144,16 @@ pub fn extract_zip(
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
     let file = File::open(path)?;
-    let mut archive =
-        ZipArchive::new(file).map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+    let mut archive = ZipArchive::new(file).map_err(map_zip_err)?;
 
     let mut extracted_paths: Vec<PathBuf> = Vec::new();
 
-    let result = (|| -> Result<(), ArchiveError> {
-        for i in 0..archive.len() {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ArchiveError::Io(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operation canceled",
-                )));
-            }
-
-            let mut entry = archive
-                .by_index(i)
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
-
-            #[cfg(unix)]
-            if entry.is_symlink() {
-                continue;
-            }
-
-            let outpath = sanitize_entry_path(entry.name(), dest)?;
-
-            if entry.is_dir() {
-                fs::create_dir_all(&outpath)?;
-                extracted_paths.push(outpath);
-            } else {
-                if let Some(parent) = outpath.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let mut outfile = File::create(&outpath)?;
-                io::copy(&mut entry, &mut outfile)?;
-                extracted_paths.push(outpath.clone());
-
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Some(mode) = entry.unix_mode() {
-                        let safe_mode = mode & !0o7000;
-                        fs::set_permissions(&outpath, fs::Permissions::from_mode(safe_mode))?;
-                    }
-                }
-            }
-
-            let _ = progress.send(entry.size());
-        }
-        Ok(())
-    })();
+    let result = extract_zip_entries(&mut archive, dest, progress, cancel, &mut extracted_paths);
 
     if result.is_err() {
         for p in extracted_paths.iter().rev() {
             if p.is_dir() {
-                let _ = fs::remove_dir(p);
+                let _ = fs::remove_dir_all(p);
             } else {
                 let _ = fs::remove_file(p);
             }
@@ -138,6 +161,33 @@ pub fn extract_zip(
     }
 
     result
+}
+
+fn add_sources_to_zip(
+    sources: &[PathBuf],
+    zip: &mut zip::ZipWriter<File>,
+    options: &SimpleFileOptions,
+    progress: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), ArchiveError> {
+    for source in sources {
+        check_cancel(cancel)?;
+
+        if source.is_dir() {
+            add_dir_to_zip(zip, source, source, options, progress, cancel)?;
+        } else {
+            let name = source
+                .file_name()
+                .ok_or_else(|| map_zip_err("Invalid file name"))?
+                .to_string_lossy();
+            zip.start_file(&*name, *options).map_err(map_zip_err)?;
+            let mut file = File::open(source)?;
+            let bytes = io::copy(&mut file, zip)?;
+            let _ = progress.send(bytes);
+        }
+    }
+
+    Ok(())
 }
 
 pub fn create_zip(
@@ -151,43 +201,24 @@ pub fn create_zip(
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(6));
+        .compression_level(Some(DEFAULT_COMPRESSION_LEVEL));
 
-    let result = (|| -> Result<(), ArchiveError> {
-        for source in sources {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ArchiveError::Io(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operation canceled",
-                )));
-            }
+    let result = add_sources_to_zip(sources, &mut zip, &options, progress, cancel);
 
-            if source.is_dir() {
-                add_dir_to_zip(&mut zip, source, source, &options, progress, cancel)?;
-            } else {
-                let name = source
-                    .file_name()
-                    .ok_or_else(|| ArchiveError::InvalidArchive("Invalid file name".into()))?
-                    .to_string_lossy();
-                zip.start_file(&name, options)
-                    .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
-                let mut file = File::open(source)?;
-                let bytes = io::copy(&mut file, &mut zip)?;
-                let _ = progress.send(bytes);
-            }
+    match result {
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_dest);
+            Err(e)
         }
-
-        zip.finish()
-            .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
-        Ok(())
-    })();
-
-    if let Err(e) = &result {
-        let _ = fs::remove_file(&tmp_dest);
-        return Err(e.clone());
+        Ok(()) => {
+            if let Err(e) = zip.finish().map_err(map_zip_err) {
+                let _ = fs::remove_file(&tmp_dest);
+                return Err(e);
+            }
+            fs::rename(&tmp_dest, dest)?;
+            Ok(())
+        }
     }
-    fs::rename(&tmp_dest, dest)?;
-    Ok(())
 }
 
 fn add_dir_to_zip(
@@ -199,18 +230,13 @@ fn add_dir_to_zip(
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
     for entry in fs::read_dir(dir)? {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ArchiveError::Io(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Operation canceled",
-            )));
-        }
+        check_cancel(cancel)?;
 
         let entry = entry?;
         let path = entry.path();
         let name = path
             .strip_prefix(base)
-            .map_err(|_| ArchiveError::InvalidArchive("strip_prefix failed".into()))?
+            .map_err(|_| map_zip_err("strip_prefix failed"))?
             .to_string_lossy()
             .replace('\\', "/");
 
@@ -219,12 +245,10 @@ fn add_dir_to_zip(
             continue;
         }
         if path.is_dir() {
-            zip.add_directory(&name, *options)
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+            zip.add_directory(&name, *options).map_err(map_zip_err)?;
             add_dir_to_zip(zip, base, &path, options, progress, cancel)?;
         } else {
-            zip.start_file(&name, *options)
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+            zip.start_file(&name, *options).map_err(map_zip_err)?;
             let mut file = File::open(&path)?;
             let bytes = io::copy(&mut file, zip)?;
             let _ = progress.send(bytes);

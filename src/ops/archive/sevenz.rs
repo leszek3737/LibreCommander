@@ -1,24 +1,27 @@
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use super::{ArchiveEntry, ArchiveError};
 
 const MAX_LIST_ENTRIES: usize = 100_000;
+const READ_BUF_SIZE: usize = 65536;
 
 pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     let archive = sevenz_rust::Archive::open(path)
         .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
 
-    let mut entries = Vec::new();
+    let capacity = archive.files.len().min(MAX_LIST_ENTRIES);
+    let mut entries = Vec::with_capacity(capacity);
     for entry in &archive.files {
         if entries.len() >= MAX_LIST_ENTRIES {
             break;
         }
         entries.push(ArchiveEntry {
-            name: entry.name().to_string(),
+            name: entry.name().to_string().into_boxed_str(),
             size: entry.size(),
             compressed_size: entry.compressed_size,
             modified: if entry.has_last_modified_date {
@@ -28,44 +31,13 @@ pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
             },
             is_dir: entry.is_directory(),
             method: if entry.has_stream {
-                "Compressed".to_string()
+                Box::<str>::from("Compressed")
             } else {
-                String::new()
+                Box::<str>::default()
             },
         });
     }
     Ok(entries)
-}
-
-fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<std::path::PathBuf, ArchiveError> {
-    let entry_path = Path::new(entry_name);
-    if entry_path.is_absolute() {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "absolute path detected: {entry_name}"
-        )));
-    }
-    // Reject any entry containing parent-directory components
-    for component in entry_path.components() {
-        if let std::path::Component::ParentDir = component {
-            return Err(ArchiveError::InvalidArchive(format!(
-                "path traversal detected: {entry_name}"
-            )));
-        }
-    }
-    let outpath = dest.join(entry_name);
-    let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
-    let canonical_out = outpath
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.join(outpath.file_name().unwrap_or_default()))
-        .unwrap_or_else(|| outpath.clone());
-
-    if !canonical_out.starts_with(&canonical_dest) {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "path traversal detected: {entry_name}"
-        )));
-    }
-    Ok(outpath)
 }
 
 struct Canceled;
@@ -90,22 +62,19 @@ pub fn extract_7z(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    let dest_owned = dest.to_path_buf();
-    let cancel_owned = cancel;
-    let progress_owned = progress.clone();
-
     let mut extracted_paths: Vec<std::path::PathBuf> = Vec::new();
     let result = (|| -> Result<(), ArchiveError> {
+        fs::create_dir_all(dest)?;
         let mut reader = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
             .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
 
         reader
             .for_each_entries(|entry, reader| {
-                if cancel_owned.load(Ordering::Relaxed) {
+                if cancel.load(Ordering::Relaxed) {
                     return Err(Canceled.into());
                 }
 
-                let outpath = match sanitize_entry_path(entry.name(), &dest_owned) {
+                let outpath = match super::sanitize_entry_path(entry.name(), dest) {
                     Ok(p) => p,
                     Err(e) => return Err(PathTraversal(e.to_string()).into()),
                 };
@@ -119,22 +88,21 @@ pub fn extract_7z(
                     }
                     let file = File::create(&outpath).map_err(sevenz_rust::Error::io)?;
                     let mut writer = BufWriter::new(file);
-                    let bytes_written =
-                        read_with_cancel(reader, &mut writer, cancel_owned, entry.size())
+                    let mut buf = [0u8; READ_BUF_SIZE];
+                    let _bytes_written =
+                        read_with_cancel(reader, &mut writer, cancel, progress, &mut buf)
                             .map_err(sevenz_rust::Error::io)?;
                     extracted_paths.push(outpath);
-
-                    let _ = progress_owned.send(bytes_written);
                 }
 
                 Ok(true)
             })
             .map_err(|e| {
-                if cancel_owned.load(Ordering::Relaxed) {
-                    ArchiveError::Io(io::Error::new(
+                if cancel.load(Ordering::Relaxed) {
+                    ArchiveError::Io(Arc::new(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "Operation canceled",
-                    ))
+                    )))
                 } else {
                     ArchiveError::InvalidArchive(e.to_string())
                 }
@@ -145,7 +113,7 @@ pub fn extract_7z(
     if result.is_err() {
         for p in extracted_paths.iter().rev() {
             if p.is_dir() {
-                let _ = fs::remove_dir(p);
+                let _ = fs::remove_dir_all(p);
             } else {
                 let _ = fs::remove_file(p);
             }
@@ -159,9 +127,9 @@ fn read_with_cancel(
     reader: &mut dyn Read,
     writer: &mut dyn io::Write,
     cancel: &AtomicBool,
-    declared_size: u64,
+    progress: &Sender<u64>,
+    buf: &mut [u8],
 ) -> io::Result<u64> {
-    let mut buf = [0u8; 8192];
     let mut total: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -170,7 +138,7 @@ fn read_with_cancel(
                 "Operation canceled",
             ));
         }
-        let n = match reader.read(&mut buf) {
+        let n = match reader.read(buf) {
             Ok(0) => break,
             Ok(n) => n,
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -178,14 +146,16 @@ fn read_with_cancel(
         };
         writer.write_all(&buf[..n])?;
         total = total.saturating_add(n as u64);
-        if declared_size > 0 && total >= declared_size {
-            break;
-        }
+        let _ = progress.send(n as u64);
     }
     writer.flush()?;
     Ok(total)
 }
 
+/// 7z archive creation is not supported.
+///
+/// The `sevenz_rust` crate provides read-only access to 7z archives.
+/// Use zip or tar format for creating archives instead.
 pub fn create_7z(
     _sources: &[std::path::PathBuf],
     _dest: &Path,
@@ -195,4 +165,37 @@ pub fn create_7z(
     Err(ArchiveError::InvalidArchive(
         "7z archive creation is not supported. Use zip or tar format instead.".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+
+    #[test]
+    fn create_7z_returns_unsupported() {
+        let (tx, _rx) = mpsc::channel();
+        let result = create_7z(
+            &[],
+            PathBuf::from("test.7z").as_path(),
+            &tx,
+            &AtomicBool::new(false),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sanitize_rejects_absolute_path() {
+        let dest = PathBuf::from("/tmp");
+        let result = super::super::sanitize_entry_path("/etc/passwd", &dest);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sanitize_rejects_parent_dir() {
+        let dest = PathBuf::from("/tmp");
+        let result = super::super::sanitize_entry_path("../passwd", &dest);
+        assert!(result.is_err());
+    }
 }
