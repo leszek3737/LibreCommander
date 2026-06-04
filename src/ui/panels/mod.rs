@@ -439,14 +439,18 @@ pub fn render_scrollbar_with_colors(
         Style::default().fg(Theme::scrollbar_inactive_with_colors(colors))
     };
 
-    let lines: Vec<Line<'_>> = (0..height)
-        .map(|i| {
-            let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
-            Line::from(Span::styled(if in_thumb { "█" } else { "│" }, style))
-        })
-        .collect();
+    let mut scrollbar = String::with_capacity(height * 4);
+    for i in 0..height {
+        let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
+        scrollbar.push_str(if in_thumb { "█" } else { "│" });
+        if i < height - 1 {
+            scrollbar.push('\n');
+        }
+    }
 
-    let paragraph = Paragraph::new(lines).block(Block::default().padding(Padding::new(0, 0, 0, 0)));
+    let paragraph = Paragraph::new(scrollbar)
+        .style(style)
+        .block(Block::default().padding(Padding::new(0, 0, 0, 0)));
 
     f.render_widget(paragraph, area);
 }

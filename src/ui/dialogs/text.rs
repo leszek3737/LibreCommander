@@ -8,7 +8,7 @@ fn truncate_suffix<'a>(s: &'a str, max_width: usize) -> Cow<'a, str> {
             .chars()
             .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
             .sum();
-        if total_width <= suffix_budget {
+        if total_width <= max_width {
             return Cow::Borrowed(s);
         }
         let mut remaining = total_width;
