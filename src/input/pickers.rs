@@ -216,14 +216,11 @@ fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
 }
 
 fn show_create_dialog(state: &mut AppState, sources: Vec<PathBuf>) {
-    let dest_input = TextInput {
-        text: String::new(),
-        cursor: 0,
-    };
-    state.mode = AppMode::Dialog(DialogKind::ArchiveCreate {
+    let dest_input = TextInput::new();
+    state.mode = AppMode::Dialog(DialogKind::ArchiveCreate(Box::new(ArchiveCreateDetails {
         sources,
         dest_input,
-    });
+    })));
 }
 
 pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {

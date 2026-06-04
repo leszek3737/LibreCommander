@@ -125,7 +125,12 @@ impl PanelState {
         &self.history
     }
 
+    const MAX_HISTORY: usize = 256;
+
     pub fn push_history(&mut self, path: PathBuf) {
+        if self.history.len() >= Self::MAX_HISTORY {
+            self.history.remove(0);
+        }
         self.history.push(path);
     }
 
@@ -220,11 +225,7 @@ impl PanelState {
     }
 
     pub fn current_entry(&self) -> Option<&FileEntry> {
-        if self.cursor < self.listing.entries.len() {
-            Some(&self.listing.entries[self.cursor])
-        } else {
-            None
-        }
+        self.listing.entries.get(self.cursor)
     }
 
     pub fn toggle_selection(&mut self) {
@@ -279,26 +280,36 @@ impl PanelState {
             return;
         }
 
-        let cap = self.listing.entries.len();
-        let mut selection = HashMap::with_capacity(cap);
-        for entry in &self.listing.entries {
-            selection.insert(entry.path.as_path(), entry.selected);
-        }
+        let index: HashMap<PathBuf, usize> = self
+            .listing
+            .unfiltered_entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.path.clone(), i))
+            .collect();
 
-        for entry in &mut self.listing.unfiltered_entries {
-            if let Some(selected) = selection.get(entry.path.as_path()) {
-                entry.selected = *selected;
+        for entry in &self.listing.entries {
+            if let Some(&idx) = index.get(&entry.path)
+                && let Some(ue) = self.listing.unfiltered_entries.get_mut(idx)
+            {
+                ue.selected = entry.selected;
             }
         }
     }
 
-    pub fn selected_entries(&self) -> Vec<&FileEntry> {
-        let source = if self.listing.unfiltered_entries.is_empty() {
+    fn source_entries(&self) -> &[FileEntry] {
+        if self.listing.unfiltered_entries.is_empty() {
             &self.listing.entries
         } else {
             &self.listing.unfiltered_entries
-        };
-        source.iter().filter(|e| e.selected).collect()
+        }
+    }
+
+    pub fn selected_entries(&self) -> Vec<&FileEntry> {
+        self.source_entries()
+            .iter()
+            .filter(|e| e.selected)
+            .collect()
     }
 
     pub fn clear_selection(&mut self) {
@@ -313,21 +324,19 @@ impl PanelState {
     }
 
     pub fn recalculate_selection_stats(&mut self) {
-        self.selected_count = 0;
-        self.selected_size = 0;
-        self.total_size = 0;
-        let source = if self.listing.unfiltered_entries.is_empty() {
-            &self.listing.entries
-        } else {
-            &self.listing.unfiltered_entries
-        };
-        for entry in source {
-            self.total_size = self.total_size.saturating_add(entry.size());
+        let mut selected_count: usize = 0;
+        let mut selected_size: u64 = 0;
+        let mut total_size: u64 = 0;
+        for entry in self.source_entries() {
+            total_size = total_size.saturating_add(entry.size());
             if entry.selected {
-                self.selected_count = self.selected_count.saturating_add(1);
-                self.selected_size = self.selected_size.saturating_add(entry.size());
+                selected_count = selected_count.saturating_add(1);
+                selected_size = selected_size.saturating_add(entry.size());
             }
         }
+        self.selected_count = selected_count;
+        self.selected_size = selected_size;
+        self.total_size = total_size;
     }
 
     pub fn move_cursor_up(&mut self, max_height: usize) {
@@ -385,6 +394,10 @@ impl PanelState {
         self.cursor = 0;
         self.scroll_offset = 0;
         self.recalculate_selection_stats();
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.listing.mark_dirty();
     }
 
     pub fn mark_unfiltered_dirty(&mut self) {

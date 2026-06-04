@@ -136,6 +136,18 @@ fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
 }
 
 #[inline]
+fn exact_name_match(name: &str, expected: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        name == expected
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        name.eq_ignore_ascii_case(expected)
+    }
+}
+
+#[inline]
 pub fn is_archive(name: &str) -> bool {
     has_any_suffix(name, ARCHIVE_SUFFIXES)
 }
@@ -169,7 +181,7 @@ pub fn is_video(name: &str) -> bool {
 pub fn is_config(name: &str) -> bool {
     CONFIG_EXACT_NAMES
         .iter()
-        .any(|&n| name.eq_ignore_ascii_case(n))
+        .any(|&n| exact_name_match(name, n))
         || CONFIG_PREFIXES.iter().any(|&p| name.starts_with(p))
         || has_any_suffix(name, CONFIG_SUFFIXES)
 }

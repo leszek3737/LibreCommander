@@ -1,27 +1,45 @@
-// Grapheme boundaries are recomputed from scratch on every edit (O(n) in text
-// length). Incremental tracking is possible but adds significant complexity
-// (combining marks, ZWJ sequences, regional indicators). Revisit only if
-// profiling shows this is a bottleneck for realistic command-line input.
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Single-line editable text field with a grapheme-cluster cursor.
+///
+/// # Invariants
+///
+/// * `cursor <= grapheme_count` at all times (enforced by every mutating method).
+/// * `grapheme_count` is kept in sync with `text` and is O(1) to read, except
+///   after direct `.text =` assignments which must be followed by
+///   [`recompute_grapheme_count`] or [`cursor_end`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextInput {
     pub text: String,
     pub cursor: usize,
+    grapheme_count: usize,
 }
 
 impl TextInput {
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            cursor: 0,
+            grapheme_count: 0,
+        }
+    }
+
+    pub fn recompute_grapheme_count(&mut self) {
+        self.grapheme_count = self.text.graphemes(true).count();
+    }
+
     pub fn clamp_cursor(&mut self) {
-        self.cursor = self.cursor.min(self.grapheme_count());
+        self.cursor = self.cursor.min(self.grapheme_count);
     }
 
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.grapheme_count = 0;
     }
 
     pub fn grapheme_count(&self) -> usize {
-        self.text.graphemes(true).count()
+        self.grapheme_count
     }
 
     pub fn byte_pos(&self) -> usize {
@@ -32,16 +50,17 @@ impl TextInput {
             .unwrap_or(self.text.len())
     }
 
-    pub fn insert_char(&mut self, c: char) -> bool {
+    pub fn insert_char(&mut self, c: char) {
         self.clamp_cursor();
         let pos = self.byte_pos();
         self.text.insert(pos, c);
         if c.is_ascii() {
             self.cursor += 1;
+            self.grapheme_count += 1;
         } else {
             self.cursor = self.text[..pos + c.len_utf8()].graphemes(true).count();
+            self.recompute_grapheme_count();
         }
-        true
     }
 
     pub fn backspace(&mut self) -> bool {
@@ -50,6 +69,7 @@ impl TextInput {
             return false;
         }
         self.cursor -= 1;
+        self.grapheme_count -= 1;
         let pos = self.byte_pos();
         let end = self.text[pos..]
             .graphemes(true)
@@ -72,6 +92,7 @@ impl TextInput {
             .map(|g| pos + g.len())
             .unwrap_or_else(|| self.text.len());
         self.text.drain(pos..end);
+        self.grapheme_count -= 1;
         true
     }
 
@@ -82,7 +103,7 @@ impl TextInput {
 
     pub fn cursor_right(&mut self) {
         self.clamp_cursor();
-        if self.cursor < self.grapheme_count() {
+        if self.cursor < self.grapheme_count {
             self.cursor += 1;
         }
     }
@@ -92,7 +113,8 @@ impl TextInput {
     }
 
     pub fn cursor_end(&mut self) {
-        self.cursor = self.grapheme_count();
+        self.recompute_grapheme_count();
+        self.cursor = self.grapheme_count;
     }
 
     pub fn delete_word_backward(&mut self) -> bool {
@@ -112,13 +134,16 @@ impl TextInput {
         let removed_graphemes = text[word_start..].graphemes(true).count();
         self.text.drain(word_start..pos);
         self.cursor = self.cursor.saturating_sub(removed_graphemes);
+        self.grapheme_count -= removed_graphemes;
         removed_graphemes > 0
     }
 
     pub fn drain_to_start(&mut self) {
         self.clamp_cursor();
         let pos = self.byte_pos();
+        let removed = self.cursor;
         self.text.drain(..pos);
         self.cursor = 0;
+        self.grapheme_count -= removed;
     }
 }

@@ -14,6 +14,19 @@ pub trait EnvProvider {
 
 pub struct ProcessEnv;
 
+impl ProcessEnv {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ProcessEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EnvProvider for ProcessEnv {
     fn var_os(&self, key: &str) -> Option<OsString> {
         std::env::var_os(key)
@@ -28,6 +41,7 @@ pub struct MapEnv {
 
 #[cfg(test)]
 impl MapEnv {
+    #[must_use]
     pub fn new(values: &[(&str, &OsStr)]) -> Self {
         Self {
             values: values
@@ -45,26 +59,32 @@ impl EnvProvider for MapEnv {
     }
 }
 
+#[must_use]
 pub fn config_file_path() -> Option<PathBuf> {
     config_file_path_with_env(&ProcessEnv)
 }
 
+#[must_use]
 pub fn config_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
     config_home(env).map(|dir| dir.join("config.toml"))
 }
 
+#[must_use]
 pub fn user_menu_path() -> Option<PathBuf> {
     user_menu_path_with_env(&ProcessEnv)
 }
 
+#[must_use]
 pub fn user_menu_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
     config_home(env).map(|dir| dir.join("menu"))
 }
 
+#[must_use]
 pub fn terminal_state_file_path() -> Option<PathBuf> {
     terminal_state_file_path_with_env(&ProcessEnv)
 }
 
+#[must_use]
 pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
     cache_home(env).map(|dir| dir.join("terminal_state"))
 }
@@ -94,6 +114,7 @@ fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
     xdg_dir(env, "XDG_CONFIG_HOME", ".config", platform_config_home)
 }
 
+#[must_use]
 pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
     xdg_dir(env, "XDG_CACHE_HOME", ".cache", platform_cache_home)
 }

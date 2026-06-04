@@ -22,7 +22,7 @@ impl Default for SortOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SortMode {
     #[default]
@@ -40,7 +40,45 @@ pub enum SortMode {
     BtimeDesc,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+impl SortMode {
+    #[must_use]
+    pub fn is_ascending(self) -> bool {
+        matches!(
+            self,
+            Self::NameAsc
+                | Self::ExtensionAsc
+                | Self::SizeAsc
+                | Self::ModTimeAsc
+                | Self::NaturalNameAsc
+                | Self::BtimeAsc
+        )
+    }
+
+    #[must_use]
+    pub fn is_descending(self) -> bool {
+        !self.is_ascending()
+    }
+
+    #[must_use]
+    pub fn toggle_direction(self) -> Self {
+        match self {
+            Self::NameAsc => Self::NameDesc,
+            Self::NameDesc => Self::NameAsc,
+            Self::ExtensionAsc => Self::ExtensionDesc,
+            Self::ExtensionDesc => Self::ExtensionAsc,
+            Self::SizeAsc => Self::SizeDesc,
+            Self::SizeDesc => Self::SizeAsc,
+            Self::ModTimeAsc => Self::ModTimeDesc,
+            Self::ModTimeDesc => Self::ModTimeAsc,
+            Self::NaturalNameAsc => Self::NaturalNameDesc,
+            Self::NaturalNameDesc => Self::NaturalNameAsc,
+            Self::BtimeAsc => Self::BtimeDesc,
+            Self::BtimeDesc => Self::BtimeAsc,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ListingMode {
     #[default]

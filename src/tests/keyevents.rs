@@ -158,9 +158,12 @@ fn key_repeat_text_edit_updates_input_dialog() {
             prompt: "Create directory:".to_string(),
             action: InputAction::CreateDirectory,
         }),
-        dialog_input: TextInput {
-            text: "ab".to_string(),
-            cursor: 2,
+        dialog_input: {
+            let mut ti = TextInput::new();
+            ti.text = "ab".to_string();
+            ti.recompute_grapheme_count();
+            ti.cursor = 2;
+            ti
         },
         ..Default::default()
     };

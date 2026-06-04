@@ -1,7 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::app::types::{ConfirmDetails, InputAction, PendingAction, TextInput};
+use crate::app::types::{
+    ConfirmDetails, DialogKind, InputAction, OverwriteConfirmDetails, PendingAction,
+    PropertiesDetails, TextInput,
+};
 
 fn mp(col: u16, row: u16, width: u16, height: u16) -> MousePosition {
     MousePosition {
@@ -76,9 +79,12 @@ fn mouse_input_dialog_outside_preserves_text() {
             prompt: "Name:".to_string(),
             action: InputAction::CreateDirectory,
         }),
-        dialog_input: TextInput {
-            text: "draft".to_string(),
-            cursor: 5,
+        dialog_input: {
+            let mut ti = TextInput::new();
+            ti.text = "draft".to_string();
+            ti.recompute_grapheme_count();
+            ti.cursor = 5;
+            ti
         },
         ..Default::default()
     };
@@ -100,9 +106,11 @@ fn mouse_input_dialog_inside_consumes_click() {
             prompt: "Name:".to_string(),
             action: InputAction::CreateDirectory,
         }),
-        dialog_input: TextInput {
-            text: "draft".to_string(),
-            cursor: 0,
+        dialog_input: {
+            let mut ti = TextInput::new();
+            ti.text = "draft".to_string();
+            ti.recompute_grapheme_count();
+            ti
         },
         ..Default::default()
     };
@@ -138,7 +146,7 @@ fn mouse_error_dialog_click_does_not_dismiss() {
 #[test]
 fn mouse_properties_dialog_click_does_not_dismiss() {
     let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Properties {
+        mode: AppMode::Dialog(DialogKind::Properties(Box::new(PropertiesDetails {
             name: "file.txt".to_string(),
             size: 0,
             mtime: std::time::SystemTime::UNIX_EPOCH,
@@ -147,7 +155,7 @@ fn mouse_properties_dialog_click_does_not_dismiss() {
             group: String::new(),
             is_dir: false,
             is_symlink: false,
-        }),
+        }))),
         ..Default::default()
     };
     let mut running_job = None;
@@ -155,7 +163,7 @@ fn mouse_properties_dialog_click_does_not_dismiss() {
     assert!(outcomes.is_some());
     assert!(matches!(
         state.mode,
-        AppMode::Dialog(DialogKind::Properties { .. })
+        AppMode::Dialog(DialogKind::Properties(..))
     ));
 }
 
@@ -198,9 +206,11 @@ fn mouse_confirm_dialog_keeps_existing_behavior() {
 #[test]
 fn mouse_overwrite_confirm_dialog_handled() {
     let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::OverwriteConfirm {
-            conflicting: vec![],
-        }),
+        mode: AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+            OverwriteConfirmDetails {
+                conflicting: vec![],
+            },
+        ))),
         dialog_selection: 0,
         ..Default::default()
     };
@@ -209,7 +219,7 @@ fn mouse_overwrite_confirm_dialog_handled() {
     assert!(outcomes.is_some());
     assert!(matches!(
         state.mode,
-        AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        AppMode::Dialog(DialogKind::OverwriteConfirm(..))
     ));
 }
 
@@ -409,7 +419,7 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
 
     assert!(matches!(
         state.mode,
-        AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+        AppMode::Dialog(DialogKind::OverwriteConfirm(..))
     ));
     assert!(state.pending_action.is_some());
 }

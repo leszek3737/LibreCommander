@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -20,7 +20,7 @@ const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
 /// filesystem (network mount, writeback pressure) this will block the calling
 /// thread until the lock is released. Do not call `debug_log!` from paths where
 /// filesystem latency is expected to be high.
-static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+static LOG_FILE: Mutex<Option<BufWriter<std::fs::File>>> = Mutex::new(None);
 
 #[cfg(test)]
 static TEST_CACHE_HOME: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
@@ -39,20 +39,25 @@ fn log_path() -> std::path::PathBuf {
 static CHECK_COUNTER: AtomicU32 = AtomicU32::new(0);
 const CHECK_INTERVAL: u32 = 256;
 
-fn ensure_log_file() -> std::io::Result<std::fs::File> {
+fn ensure_log_file() -> std::io::Result<BufWriter<std::fs::File>> {
     let path = log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    OpenOptions::new().create(true).append(true).open(&path)
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map(BufWriter::new)
 }
 
 /// Fallback stderr write — used only when the debug logger itself fails.
 /// This module is the last-resort logger, so stderr is the only remaining channel.
 fn stderr_fallback(msg: &str) {
-    let _ = std::io::stderr().write_all(msg.as_bytes());
-    let _ = std::io::stderr().write_all(b"\n");
-    let _ = std::io::stderr().flush();
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr.write_all(msg.as_bytes());
+    let _ = stderr.write_all(b"\n");
+    let _ = stderr.flush();
 }
 
 fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -62,8 +67,9 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     })
 }
 
+#[inline(never)]
 pub fn log(args: std::fmt::Arguments<'_>) {
-    let mut guard: MutexGuard<'_, Option<std::fs::File>> = lock_recover(&LOG_FILE);
+    let mut guard: MutexGuard<'_, Option<BufWriter<std::fs::File>>> = lock_recover(&LOG_FILE);
     let freshly_opened = guard.is_none();
     if freshly_opened {
         match ensure_log_file() {
@@ -74,32 +80,33 @@ pub fn log(args: std::fmt::Arguments<'_>) {
             }
         }
     }
-    let need_size_check = freshly_opened
-        || CHECK_COUNTER
-            .fetch_add(1, Ordering::Relaxed)
-            .is_multiple_of(CHECK_INTERVAL);
+    let count = CHECK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let need_size_check = freshly_opened || count.is_multiple_of(CHECK_INTERVAL);
     if need_size_check
         && guard
             .as_ref()
-            .and_then(|f| f.metadata().ok())
+            .and_then(|f| f.get_ref().metadata().ok())
             .is_some_and(|m| m.len() > MAX_LOG_SIZE_BYTES)
     {
+        if let Some(bw) = guard.as_mut() {
+            let _ = bw.flush();
+        }
         *guard = None;
         let path = log_path();
         match OpenOptions::new().write(true).truncate(true).open(&path) {
-            Ok(f) => *guard = Some(f),
+            Ok(f) => *guard = Some(BufWriter::new(f)),
             Err(e) => {
                 stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
                 return;
             }
         }
     }
-    if let Some(file) = guard.as_mut() {
+    if let Some(bw) = guard.as_mut() {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-        if let Err(e) = writeln!(file, "[{timestamp}] {args}") {
+        if let Err(e) = writeln!(bw, "[{timestamp}] {args}") {
             stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
         }
-        let _ = file.flush();
+        let _ = bw.flush();
     }
 }
 

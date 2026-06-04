@@ -109,7 +109,7 @@ fn build_tree_recursive(
         }
     };
 
-    let mut children: Vec<TreeEntry> = Vec::new();
+    let mut children: Vec<TreeEntry> = Vec::with_capacity(16);
     for entry in read_dir {
         let entry = match entry {
             Ok(entry) => entry,
@@ -132,19 +132,20 @@ fn build_tree_recursive(
             continue;
         }
 
-        let is_dir = match path.metadata() {
-            Ok(m) => m.is_dir(),
-            Err(_) => match path.symlink_metadata() {
-                Ok(_) => false,
-                Err(err) => {
-                    diagnostics.push(TreeDiagnostic {
-                        path,
-                        message: format!("Failed to read metadata: {err}"),
-                        kind: TreeDiagnosticKind::ReadMetadata,
-                    });
-                    continue;
-                }
-            },
+        // Prefer entry.file_type() which is already cached from read_dir on
+        // most platforms, avoiding a syscall. Only for symlinks or when
+        // file_type() fails do we fall back to path metadata.
+        let is_dir = match entry.file_type() {
+            Ok(ft) if !ft.is_symlink() => ft.is_dir(),
+            Ok(_) => path.metadata().is_ok_and(|m| m.is_dir()),
+            Err(err) => {
+                diagnostics.push(TreeDiagnostic {
+                    path,
+                    message: format!("Failed to read metadata: {err}"),
+                    kind: TreeDiagnosticKind::ReadMetadata,
+                });
+                continue;
+            }
         };
         let expanded = is_dir && current_depth < max_expand_depth;
 
@@ -162,16 +163,15 @@ fn build_tree_recursive(
 
     for child in children {
         let should_recurse = child.is_dir && child.expanded;
-        out.push(child);
-        let inserted_idx = out.len() - 1;
 
         if should_recurse {
-            let child_path = out[inserted_idx].path.clone();
-            let key = match child_path.metadata().ok() {
+            let key = match child.path.metadata().ok() {
                 Some(m) => file_key(&m),
                 None => continue,
             };
             if visited.insert(key) {
+                let child_path = child.path.clone();
+                out.push(child);
                 build_tree_recursive(
                     &child_path,
                     current_depth + 1,
@@ -181,14 +181,18 @@ fn build_tree_recursive(
                     diagnostics,
                     visited,
                 );
+                // Remove from visited after recursion so the same directory may
+                // appear in other branches — cycle protection is per-descent-path.
                 visited.remove(&key);
             }
+        } else {
+            out.push(child);
         }
     }
 }
 
 fn sort_entries(entries: &mut [TreeEntry]) {
-    entries.sort_by(|a, b| {
+    entries.sort_unstable_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
             .then_with(|| cmp_ignore_case(&a.name, &b.name))

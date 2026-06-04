@@ -205,7 +205,7 @@ fn alt_enter_shows_properties_dialog() {
     handle_alt_keys(&mut state, KeyCode::Enter, VISIBLE_HEIGHT);
     assert!(matches!(
         state.mode,
-        AppMode::Dialog(DialogKind::Properties { .. })
+        AppMode::Dialog(DialogKind::Properties(..))
     ));
 }
 
@@ -260,7 +260,7 @@ fn alt_c_opens_quick_cd() {
 fn alt_x_opens_command_line() {
     let mut state = AppState::default();
     state.command_line.text = "draft".to_string();
-    state.command_line.cursor = state.command_line.text.len();
+    state.command_line.cursor_end();
     state.history_index = Some(0);
     state.prev_mode = Some(AppMode::Search);
 

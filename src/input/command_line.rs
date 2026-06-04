@@ -113,11 +113,12 @@ mod tests {
     use super::*;
 
     fn make_cmd_state(line: &str, cursor: usize) -> AppState {
+        let mut command_line = TextInput::new();
+        command_line.text = line.to_string();
+        command_line.recompute_grapheme_count();
+        command_line.cursor = cursor;
         AppState {
-            command_line: TextInput {
-                text: line.to_string(),
-                cursor,
-            },
+            command_line,
             ..Default::default()
         }
     }

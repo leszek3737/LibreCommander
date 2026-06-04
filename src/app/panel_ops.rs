@@ -82,11 +82,17 @@ pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Err
     if errors.is_empty() {
         panel.set_last_error(None);
     } else {
-        let error_summary = errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
+        let error_summary =
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .fold(String::new(), |mut acc, s| {
+                    if !acc.is_empty() {
+                        acc.push_str("; ");
+                    }
+                    acc.push_str(&s);
+                    acc
+                });
         panel.set_last_error(Some(format!(
             "{} file(s) failed to read: {error_summary}",
             errors.len()

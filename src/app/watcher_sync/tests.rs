@@ -4,6 +4,9 @@ use std::fs;
 use std::sync::Arc;
 use std::sync::mpsc;
 
+const WATCHER_CHANNEL_CAPACITY: usize = 256;
+const OVERFLOW_EVENT_COUNT: usize = 257;
+
 fn test_panel(path: &Path) -> PanelState {
     let mut panel = PanelState::new(path.to_path_buf());
     panel.listing.unfiltered_entries = vec![parent_entry(path)];
@@ -20,6 +23,60 @@ fn parent_entry(path: &Path) -> reader::FileEntry {
         .is_executable(true)
         .permissions(0o755)
         .build()
+}
+
+fn select_entry_by_name(entries: &mut [reader::FileEntry], name: &str) {
+    entries
+        .iter_mut()
+        .find(|e| e.name == name)
+        .unwrap()
+        .selected = true;
+}
+
+struct WatcherHarness {
+    pub watcher: Option<Watcher>,
+    pub state: AppState,
+    pub sync_state: WatcherSyncState,
+}
+
+impl WatcherHarness {
+    fn new() -> Self {
+        let (event_tx, _rx) = mpsc::sync_channel(WATCHER_CHANNEL_CAPACITY);
+        let watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
+        Self {
+            watcher,
+            state: AppState::new(),
+            sync_state: WatcherSyncState::default(),
+        }
+    }
+
+    fn sync(&mut self) {
+        sync_watcher_paths(&mut self.watcher, &self.state, &mut self.sync_state);
+    }
+}
+
+struct EventHarness {
+    pub state: AppState,
+    tx: mpsc::SyncSender<WatchEvent>,
+    rx: mpsc::Receiver<WatchEvent>,
+}
+
+impl EventHarness {
+    fn new(dir: &Path) -> Self {
+        let (tx, rx) = mpsc::sync_channel(WATCHER_CHANNEL_CAPACITY);
+        let mut state = AppState::new();
+        state.left_panel = test_panel(dir);
+        state.right_panel = test_panel(dir);
+        Self { state, tx, rx }
+    }
+
+    fn send(&self, event: WatchEvent) {
+        self.tx.send(event).unwrap();
+    }
+
+    fn poll(&mut self) -> bool {
+        poll_watcher_events(&mut self.state, &self.rx)
+    }
 }
 
 #[test]
@@ -57,7 +114,7 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     panel.set_filter(Some("*.txt".to_string()));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
     rebuild_visible_entries(&mut panel, None);
-    panel.listing.entries[1].selected = true;
+    select_entry_by_name(&mut panel.listing.entries, "keep.txt");
     panel.sync_unfiltered_selection();
 
     fs::write(&keep, b"updated").unwrap();
@@ -66,8 +123,13 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     rebuild_visible_entries(&mut panel, None);
 
     assert_eq!(panel.listing.entries.len(), 2);
-    assert_eq!(panel.listing.entries[1].name, "keep.txt");
-    assert!(panel.listing.entries[1].selected);
+    let keep_entry = panel
+        .listing
+        .entries
+        .iter()
+        .find(|e| e.name == "keep.txt")
+        .unwrap();
+    assert!(keep_entry.selected);
     assert_eq!(panel.selected_count(), 1);
     assert_eq!(panel.selected_size(), 7);
     assert_eq!(panel.total_size(), 11);
@@ -148,19 +210,17 @@ fn canonical_desired_paths_normalizes_paths_without_io() {
 fn sync_watcher_paths_keeps_existing_panel_when_other_panel_missing() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing");
-    let (event_tx, _event_rx) = mpsc::sync_channel(2048);
-    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
-    let mut state = AppState::new();
-    state.left_panel.set_path(dir.path().to_path_buf());
-    state.right_panel.set_path(missing);
-    let mut sync_state = WatcherSyncState::default();
 
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    let mut harness = WatcherHarness::new();
+    harness.state.left_panel.set_path(dir.path().to_path_buf());
+    harness.state.right_panel.set_path(missing);
 
-    let watched = watcher.as_ref().unwrap().watched_dirs();
+    harness.sync();
+
+    let watched = harness.watcher.as_ref().unwrap().watched_dirs();
     assert_eq!(watched, vec![dir.path().canonicalize().unwrap()]);
     assert!(
-        sync_state.last_synced.is_none(),
+        harness.sync_state.last_synced.is_none(),
         "should not set last_synced when a panel path is missing"
     );
 }
@@ -230,6 +290,9 @@ fn watcher_updates_when_metadata_changes() {
     assert_eq!(panel.total_size(), 18);
 }
 
+// Creates OVERFLOW_EVENT_COUNT files on disk, making it slower than typical unit tests.
+// The I/O cost is intentional: real paths are needed to verify that exactly
+// MAX_WATCHER_EVENTS_PER_POLL events are drained and the overflow event remains in the channel.
 #[test]
 fn poll_watcher_events_processes_at_most_256_events() {
     let dir = tempfile::tempdir().unwrap();
@@ -238,7 +301,7 @@ fn poll_watcher_events_processes_at_most_256_events() {
     state.left_panel = test_panel(dir.path());
     state.right_panel = test_panel(dir.path());
 
-    for idx in 0..257 {
+    for idx in 0..OVERFLOW_EVENT_COUNT {
         let file = dir.path().join(format!("file{idx}.txt"));
         fs::write(&file, b"x").unwrap();
         tx.send(WatchEvent::Created(file)).unwrap();
@@ -253,7 +316,10 @@ fn poll_watcher_events_processes_at_most_256_events() {
         .iter()
         .map(|entry| entry.name.as_str())
         .collect();
-    assert_eq!(state.left_panel.listing.unfiltered_entries.len(), 257);
+    assert_eq!(
+        state.left_panel.listing.unfiltered_entries.len(),
+        OVERFLOW_EVENT_COUNT,
+    );
     assert!(left_names.contains(&".."));
     assert!(left_names.contains(&"file0.txt"));
     assert!(!left_names.contains(&"file256.txt"));
@@ -269,7 +335,7 @@ fn full_refresh_preserves_selected_entries() {
     let mut panel = test_panel(dir.path());
     assert!(apply_watcher_upsert_if_matches(&mut panel, &selected));
     rebuild_visible_entries(&mut panel, None);
-    panel.listing.entries[1].selected = true;
+    select_entry_by_name(&mut panel.listing.entries, "selected.txt");
     panel.sync_unfiltered_selection();
 
     full_refresh_panel(&mut panel);
@@ -288,21 +354,17 @@ fn full_refresh_preserves_selected_entries() {
 #[test]
 fn overflow_event_triggers_full_refresh_on_both_panels() {
     let dir = tempfile::tempdir().unwrap();
-    let (tx, rx) = mpsc::sync_channel(256);
-
-    let mut state = AppState::new();
-    state.left_panel = test_panel(dir.path());
-    state.right_panel = test_panel(dir.path());
+    let mut harness = EventHarness::new(dir.path());
 
     let existing = dir.path().join("existing.txt");
     fs::write(&existing, b"old").unwrap();
 
-    tx.send(WatchEvent::Overflow).unwrap();
-
-    poll_watcher_events(&mut state, &rx);
+    harness.send(WatchEvent::Overflow);
+    harness.poll();
 
     assert!(
-        state
+        harness
+            .state
             .left_panel
             .listing
             .unfiltered_entries
@@ -311,7 +373,8 @@ fn overflow_event_triggers_full_refresh_on_both_panels() {
         "left panel should have file after Overflow refresh"
     );
     assert!(
-        state
+        harness
+            .state
             .right_panel
             .listing
             .unfiltered_entries
@@ -327,28 +390,40 @@ fn deleted_panel_dir_navigates_to_parent_and_refreshes() {
     let child = parent.path().join("child_dir");
     fs::create_dir(&child).unwrap();
 
-    let (tx, rx) = mpsc::sync_channel(256);
-    let mut state = AppState::new();
-    state.left_panel = test_panel(&child);
+    let mut harness = EventHarness::new(parent.path());
+    harness.state.left_panel = test_panel(&child);
     let child_canonical = child.canonicalize().unwrap();
     assert_eq!(
-        state.left_panel.canonical_path().map(|p| p.to_path_buf()),
+        harness
+            .state
+            .left_panel
+            .canonical_path()
+            .map(|p| p.to_path_buf()),
         Some(child_canonical.clone())
     );
 
     fs::remove_dir(&child).unwrap();
 
-    tx.send(WatchEvent::Deleted(child_canonical)).unwrap();
+    harness.send(WatchEvent::Deleted(child_canonical));
 
-    let dirty = poll_watcher_events(&mut state, &rx);
+    let dirty = harness.poll();
     assert!(dirty);
-    assert_eq!(state.left_panel.path(), parent.path());
+    assert_eq!(harness.state.left_panel.path(), parent.path());
     assert_eq!(
-        state.left_panel.canonical_path().map(|p| p.to_path_buf()),
+        harness
+            .state
+            .left_panel
+            .canonical_path()
+            .map(|p| p.to_path_buf()),
         parent.path().canonicalize().ok()
     );
     assert!(
-        !state.left_panel.listing.unfiltered_entries.is_empty(),
+        !harness
+            .state
+            .left_panel
+            .listing
+            .unfiltered_entries
+            .is_empty(),
         "panel should have refreshed entries from parent"
     );
 }
@@ -360,9 +435,8 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
     let new_name = dir.path().join("new_name");
     fs::create_dir(&old_name).unwrap();
 
-    let (tx, rx) = mpsc::sync_channel(256);
-    let mut state = AppState::new();
-    state.left_panel = test_panel(&old_name);
+    let mut harness = EventHarness::new(dir.path());
+    harness.state.left_panel = test_panel(&old_name);
 
     let marker = old_name.join("marker.txt");
     fs::write(&marker, b"x").unwrap();
@@ -371,15 +445,14 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
 
     fs::rename(&old_name, &new_name).unwrap();
 
-    tx.send(WatchEvent::Renamed {
+    harness.send(WatchEvent::Renamed {
         from: old_canonical,
         to: new_name.clone(),
-    })
-    .unwrap();
+    });
 
-    let dirty = poll_watcher_events(&mut state, &rx);
+    let dirty = harness.poll();
     assert!(dirty);
-    assert_eq!(state.left_panel.path(), new_name);
+    assert_eq!(harness.state.left_panel.path(), new_name);
 }
 
 #[test]
@@ -443,66 +516,45 @@ fn full_refresh_recovers_after_error() {
 }
 
 #[test]
-fn sync_watcher_paths_retries_on_watch_error() {
+fn sync_watcher_paths_succeeds_with_two_valid_dirs() {
     let dir1 = tempfile::tempdir().unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    let (event_tx, _rx) = mpsc::sync_channel(256);
-    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
 
-    let mut state = AppState::new();
-    state.left_panel = test_panel(dir1.path());
-    state.right_panel = test_panel(dir2.path());
+    let mut harness = WatcherHarness::new();
+    harness.state.left_panel = test_panel(dir1.path());
+    harness.state.right_panel = test_panel(dir2.path());
 
-    let mut sync_state = WatcherSyncState::default();
-
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    harness.sync();
 
     assert!(
-        sync_state.last_synced.is_some(),
+        harness.sync_state.last_synced.is_some(),
         "should set last_synced on successful sync"
     );
-    let synced_paths = sync_state.last_synced.unwrap();
-    assert_eq!(synced_paths.0, state.left_panel.path());
-    assert_eq!(synced_paths.1, state.right_panel.path());
+    let synced_paths = harness.sync_state.last_synced.unwrap();
+    assert_eq!(synced_paths.0, harness.state.left_panel.path());
+    assert_eq!(synced_paths.1, harness.state.right_panel.path());
 
-    let watched = watcher.as_ref().unwrap().watched_dirs();
+    let watched = harness.watcher.as_ref().unwrap().watched_dirs();
     assert_eq!(watched.len(), 2, "should watch both panel dirs");
 }
 
 #[test]
-fn sync_watcher_paths_sets_last_synced_when_all_paths_valid() {
-    let dir1 = tempfile::tempdir().unwrap();
-    let dir2 = tempfile::tempdir().unwrap();
-    let (event_tx, _rx) = mpsc::sync_channel(256);
-    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
-
-    let mut state = AppState::new();
-    state.left_panel = test_panel(dir1.path());
-    state.right_panel = test_panel(dir2.path());
-
-    let mut sync_state = WatcherSyncState::default();
-
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
-
-    assert!(
-        sync_state.last_synced.is_some(),
-        "should set last_synced when both paths exist and watches succeed"
-    );
-    let synced = sync_state.last_synced.unwrap();
-    assert_eq!(synced.0, state.left_panel.path());
-    assert_eq!(synced.1, state.right_panel.path());
-}
-
-#[test]
-fn event_is_panel_dir_uses_cached_canonical_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let panel = test_panel(dir.path());
-    let canonical = panel.canonical_path().unwrap().to_path_buf();
-
-    assert!(event_is_panel_dir(&canonical, &panel));
-
-    let file = dir.path().join("child.txt");
-    assert!(!event_is_panel_dir(&file, &panel));
+fn event_is_panel_dir_cached_uses_injected_canonical_without_io() {
+    let injected = PathBuf::from("/fake/canonical_that_does_not_exist_on_disk");
+    let cache = PanelCache {
+        path: PathBuf::from("/some/panel"),
+        clean: PathBuf::from("/some/panel"),
+        canonical: Some(injected.clone()),
+        canonical_clean: None,
+    };
+    // The cached canonical does not exist on disk; canonicalize() would fail.
+    // Returning true proves the function matched via the cache, not via fresh I/O.
+    assert!(event_is_panel_dir_cached(&injected, &cache));
+    // A child file path should not be treated as the panel directory itself.
+    assert!(!event_is_panel_dir_cached(
+        Path::new("/some/panel/child.txt"),
+        &cache,
+    ));
 }
 
 #[test]
@@ -526,16 +578,15 @@ fn deleted_child_file_removes_from_panel() {
     let file = dir.path().join("to_delete.txt");
     fs::write(&file, b"data").unwrap();
 
-    let (tx, rx) = mpsc::sync_channel(256);
-    let mut state = AppState::new();
-    state.left_panel = test_panel(dir.path());
+    let mut harness = EventHarness::new(dir.path());
     assert!(apply_watcher_upsert_if_matches(
-        &mut state.left_panel,
+        &mut harness.state.left_panel,
         &file
     ));
-    rebuild_visible_entries(&mut state.left_panel, None);
+    rebuild_visible_entries(&mut harness.state.left_panel, None);
     assert!(
-        state
+        harness
+            .state
             .left_panel
             .listing
             .entries
@@ -544,12 +595,13 @@ fn deleted_child_file_removes_from_panel() {
     );
 
     fs::remove_file(&file).unwrap();
-    tx.send(WatchEvent::Deleted(file.clone())).unwrap();
+    harness.send(WatchEvent::Deleted(file.clone()));
 
-    let dirty = poll_watcher_events(&mut state, &rx);
+    let dirty = harness.poll();
     assert!(dirty);
     assert!(
-        !state
+        !harness
+            .state
             .left_panel
             .listing
             .entries
@@ -562,19 +614,18 @@ fn deleted_child_file_removes_from_panel() {
 #[test]
 fn created_child_file_appears_in_panel() {
     let dir = tempfile::tempdir().unwrap();
-    let (tx, rx) = mpsc::sync_channel(256);
-    let mut state = AppState::new();
-    state.left_panel = test_panel(dir.path());
+    let mut harness = EventHarness::new(dir.path());
 
     let new_file = dir.path().join("new_file.txt");
     fs::write(&new_file, b"hello").unwrap();
 
-    tx.send(WatchEvent::Created(new_file)).unwrap();
+    harness.send(WatchEvent::Created(new_file));
 
-    let dirty = poll_watcher_events(&mut state, &rx);
+    let dirty = harness.poll();
     assert!(dirty);
     assert!(
-        state
+        harness
+            .state
             .left_panel
             .listing
             .entries
@@ -586,7 +637,7 @@ fn created_child_file_appears_in_panel() {
 
 #[test]
 fn deleted_root_dir_stays_at_root_and_refreshes() {
-    let (tx, rx) = mpsc::sync_channel(256);
+    let (tx, rx) = mpsc::sync_channel(WATCHER_CHANNEL_CAPACITY);
     let mut state = AppState::new();
     // Hardcoded filesystem root — test-only fixture for the edge case where the panel is at "/";
     // safe because "/" always exists, but this pattern must not appear in production code.
@@ -607,23 +658,19 @@ fn deleted_root_dir_stays_at_root_and_refreshes() {
 fn sync_watcher_paths_does_not_set_last_synced_when_path_missing() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("nonexistent_panel_dir");
-    let (event_tx, _rx) = mpsc::sync_channel(256);
-    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
 
-    let mut state = AppState::new();
-    state.left_panel.set_path(missing);
-    state.right_panel.set_path(dir.path().to_path_buf());
+    let mut harness = WatcherHarness::new();
+    harness.state.left_panel.set_path(missing);
+    harness.state.right_panel.set_path(dir.path().to_path_buf());
 
-    let mut sync_state = WatcherSyncState::default();
-
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    harness.sync();
 
     assert!(
-        sync_state.last_synced.is_none(),
+        harness.sync_state.last_synced.is_none(),
         "should not set last_synced when a panel path does not exist"
     );
     assert!(
-        sync_state.failed_cooldown.is_some(),
+        harness.sync_state.failed_cooldown.is_some(),
         "should set cooldown on failure"
     );
 }
@@ -632,23 +679,19 @@ fn sync_watcher_paths_does_not_set_last_synced_when_path_missing() {
 fn sync_watcher_paths_cooldown_skips_early_retries() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("nonexistent_panel_dir");
-    let (event_tx, _rx) = mpsc::sync_channel(256);
-    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
 
-    let mut state = AppState::new();
-    state.left_panel.set_path(missing);
-    state.right_panel.set_path(dir.path().to_path_buf());
+    let mut harness = WatcherHarness::new();
+    harness.state.left_panel.set_path(missing);
+    harness.state.right_panel.set_path(dir.path().to_path_buf());
 
-    let mut sync_state = WatcherSyncState::default();
+    harness.sync();
+    assert!(harness.sync_state.failed_cooldown.is_some());
 
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
-    assert!(sync_state.failed_cooldown.is_some());
+    let watched_before = harness.watcher.as_ref().unwrap().watched_dirs().len();
 
-    let watched_before = watcher.as_ref().unwrap().watched_dirs().len();
+    harness.sync();
 
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
-
-    let watched_after = watcher.as_ref().unwrap().watched_dirs().len();
+    let watched_after = harness.watcher.as_ref().unwrap().watched_dirs().len();
     assert_eq!(
         watched_before, watched_after,
         "cooldown should prevent redundant watch attempts"
@@ -660,25 +703,23 @@ fn sync_watcher_paths_cooldown_allows_different_paths() {
     let dir1 = tempfile::tempdir().unwrap();
     let dir2 = tempfile::tempdir().unwrap();
     let missing = dir1.path().join("nonexistent");
-    let (event_tx, _rx) = mpsc::sync_channel(256);
-    let mut watcher = Some(Watcher::new(Arc::new(event_tx)).expect("create watcher"));
 
-    let mut state = AppState::new();
-    state.left_panel.set_path(missing);
-    state.right_panel.set_path(dir1.path().to_path_buf());
+    let mut harness = WatcherHarness::new();
+    harness.state.left_panel.set_path(missing);
+    harness
+        .state
+        .right_panel
+        .set_path(dir1.path().to_path_buf());
 
-    let mut sync_state = WatcherSyncState::default();
-
-    // First sync fails (missing path), sets cooldown
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
-    assert!(sync_state.failed_cooldown.is_some());
+    harness.sync();
+    assert!(harness.sync_state.failed_cooldown.is_some());
 
     // Navigate to valid directory — cooldown should NOT block
-    state.left_panel.set_path(dir2.path().to_path_buf());
-    sync_watcher_paths(&mut watcher, &state, &mut sync_state);
+    harness.state.left_panel.set_path(dir2.path().to_path_buf());
+    harness.sync();
 
     assert!(
-        sync_state.last_synced.is_some(),
+        harness.sync_state.last_synced.is_some(),
         "different paths should bypass cooldown"
     );
 }
