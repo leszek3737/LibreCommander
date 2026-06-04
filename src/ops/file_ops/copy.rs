@@ -1,5 +1,5 @@
 use crate::ops::chunk_copy;
-use crate::ops::helpers::{cleanup_dir_all, cleanup_file, lexical_path_starts_with};
+use crate::ops::helpers::{cleanup_file, lexical_path_starts_with};
 
 use std::fs;
 use std::io;
@@ -113,42 +113,27 @@ pub fn copy_dir_recursive_with_progress(
         cancel,
         overwrite,
     };
-    let temp_dest = reserve_temp_dir_for(dest)?;
+    let mut guard = reserve_temp_dir_for(dest)?;
     let src_perms = fs::metadata(src)?.permissions();
     let src_root = canonicalize_existing_path(src)?;
-    let result = copy_dir_recursive_with_progress_inner(src, &temp_dest, &ctx, 0);
+    let result = copy_dir_recursive_with_progress_inner(src, guard.path(), &ctx, 0);
     match result {
         Ok(bytes) => {
-            if let Err(err) = check_canceled(cancel) {
-                cleanup_dir_all(&temp_dest);
-                return Err(err);
-            }
-            let revalidated_dest = match canonicalize_with_nearest_existing_parent(dest) {
-                Ok(p) => p,
-                Err(e) => {
-                    cleanup_dir_all(&temp_dest);
-                    return Err(e);
-                }
-            };
+            check_canceled(cancel)?;
+            let revalidated_dest = canonicalize_with_nearest_existing_parent(dest)?;
             if src_root == revalidated_dest
                 || lexical_path_starts_with(&src_root, &revalidated_dest)
             {
-                cleanup_dir_all(&temp_dest);
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "destination changed during copy — possible symlink race",
                 ));
             }
-            if let Err(err) = publish_temp_dir(&temp_dest, dest, overwrite, &src_perms) {
-                cleanup_dir_all(&temp_dest);
-                return Err(err);
-            }
+            publish_temp_dir(guard.path(), dest, overwrite, src_perms)?;
+            guard.commit();
             Ok(bytes)
         }
-        Err(err) => {
-            cleanup_dir_all(&temp_dest);
-            Err(err)
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -176,7 +161,8 @@ fn copy_dir_recursive_with_progress_inner(
         ensure_destination_absent(dest)?;
         fs::create_dir(dest)?;
     }
-    let src_perms = fs::metadata(src)?.permissions();
+    let src_meta = fs::metadata(src)?;
+    let src_perms = src_meta.permissions();
 
     let mut total_bytes: u64 = 0;
     for entry in fs::read_dir(src)? {
@@ -206,6 +192,18 @@ fn copy_dir_recursive_with_progress_inner(
 
     check_canceled(ctx.cancel)?;
     fs::set_permissions(dest, src_perms)?;
+    let atime = filetime::FileTime::from_last_access_time(&src_meta);
+    let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
+    filetime::set_file_times(dest, atime, mtime).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "failed to preserve timestamps for {}: {}",
+                dest.display(),
+                e
+            ),
+        )
+    })?;
     Ok(total_bytes)
 }
 
@@ -274,8 +272,15 @@ fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     fs::set_permissions(target, mode)?;
     let atime = filetime::FileTime::from_last_access_time(src_meta);
     let mtime = filetime::FileTime::from_last_modification_time(src_meta);
-    if let Err(e) = filetime::set_file_times(target, atime, mtime) {
-        crate::debug_log!("set_file_times failed for {}: {e}", target.display());
-    }
+    filetime::set_file_times(target, atime, mtime).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "failed to preserve timestamps for {}: {}",
+                target.display(),
+                e
+            ),
+        )
+    })?;
     Ok(())
 }

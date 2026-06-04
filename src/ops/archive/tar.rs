@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
@@ -25,7 +26,9 @@ pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>,
         let header = entry.header();
 
         entries.push(ArchiveEntry {
-            name: String::from_utf8_lossy(&entry.path_bytes()).to_string(),
+            name: String::from_utf8_lossy(&entry.path_bytes())
+                .into_owned()
+                .into_boxed_str(),
             size: entry.size(),
             compressed_size: 0,
             modified: header
@@ -33,43 +36,10 @@ pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>,
                 .ok()
                 .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)),
             is_dir: entry.header().entry_type().is_dir(),
-            method: format!("{format:?}"),
+            method: format!("{format:?}").into_boxed_str(),
         });
     }
     Ok(entries)
-}
-
-fn validate_entry_path(entry_path: &Path, dest: &Path) -> Result<std::path::PathBuf, ArchiveError> {
-    if entry_path.is_absolute() {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "absolute path detected: {}",
-            entry_path.display()
-        )));
-    }
-    // Reject any entry containing parent-directory components
-    for component in entry_path.components() {
-        if let std::path::Component::ParentDir = component {
-            return Err(ArchiveError::InvalidArchive(format!(
-                "path traversal detected: {}",
-                entry_path.display()
-            )));
-        }
-    }
-    let outpath = dest.join(entry_path);
-    let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
-    let canonical_out = outpath
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.join(outpath.file_name().unwrap_or_default()))
-        .unwrap_or_else(|| outpath.clone());
-
-    if !canonical_out.starts_with(&canonical_dest) {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "path traversal detected: {}",
-            entry_path.display()
-        )));
-    }
-    Ok(outpath)
 }
 
 pub fn extract_tar(
@@ -91,10 +61,10 @@ pub fn extract_tar(
             .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?
         {
             if cancel.load(Ordering::Relaxed) {
-                return Err(ArchiveError::Io(io::Error::new(
+                return Err(ArchiveError::Io(Arc::new(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "Operation canceled",
-                )));
+                ))));
             }
 
             let mut entry = entry.map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
@@ -113,7 +83,7 @@ pub fn extract_tar(
             let entry_path = entry
                 .path()
                 .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
-            let outpath = validate_entry_path(&entry_path, dest)?;
+            let outpath = super::sanitize_entry_path(&entry_path.to_string_lossy(), dest)?;
 
             if is_dir {
                 fs::create_dir_all(&outpath)?;
@@ -144,7 +114,7 @@ pub fn extract_tar(
     if result.is_err() {
         for p in extracted_paths.iter().rev() {
             if p.is_dir() {
-                let _ = fs::remove_dir(p);
+                let _ = fs::remove_dir_all(p);
             } else {
                 let _ = fs::remove_file(p);
             }
@@ -234,10 +204,10 @@ fn append_sources(
 ) -> Result<(), ArchiveError> {
     for source in sources {
         if cancel.load(Ordering::Relaxed) {
-            return Err(ArchiveError::Io(io::Error::new(
+            return Err(ArchiveError::Io(Arc::new(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Operation canceled",
-            )));
+            ))));
         }
 
         if source.is_dir() {

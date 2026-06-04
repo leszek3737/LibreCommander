@@ -376,7 +376,7 @@ mod tests {
         std::fs::write(&blocked_parent, b"not a directory").unwrap();
 
         let perms = std::fs::metadata(&temp).unwrap().permissions();
-        let err = temp::publish_temp_dir(&temp, &blocked_dest, true, &perms).unwrap_err();
+        let err = temp::publish_temp_dir(&temp, &blocked_dest, true, perms).unwrap_err();
 
         assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
         assert_eq!(
@@ -405,7 +405,7 @@ mod tests {
         std::fs::write(temp.join("file.txt"), b"new").unwrap();
 
         let perms = std::fs::metadata(&temp).unwrap().permissions();
-        let err = temp::publish_temp_dir(&temp, &dest, true, &perms).unwrap_err();
+        let err = temp::publish_temp_dir(&temp, &dest, true, perms).unwrap_err();
 
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
         assert_eq!(
@@ -898,9 +898,11 @@ mod tests {
         std::fs::write(&a, b"alpha").unwrap();
         std::fs::write(&b, b"beta").unwrap();
 
-        rename_entry(&a, "b.txt").unwrap();
-        assert!(!a.exists());
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "alpha");
+        let err = rename_entry(&a, "b.txt").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(a.exists());
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "beta");
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }

@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-use super::common::check_optional_canceled;
+use super::common::{MAX_RECURSION_DEPTH, check_optional_canceled};
 
 #[cfg(not(windows))]
 fn remove_symlink(path: &Path) -> io::Result<()> {
@@ -12,7 +12,7 @@ fn remove_symlink(path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn remove_symlink(path: &Path) -> io::Result<()> {
-    let target_is_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+    let target_is_dir = fs::metadata(path).is_ok_and(|m| m.is_dir());
     if target_is_dir {
         fs::remove_dir(path)
     } else {
@@ -48,8 +48,6 @@ define_critical_lists! {
     linux_prefixes_extra: ["/flatpak", "/gnu", "/snap"],
 }
 
-const DELETE_MAX_DEPTH: usize = 256;
-
 pub fn delete_file(path: &Path) -> io::Result<()> {
     fs::remove_file(path)
 }
@@ -60,6 +58,42 @@ pub fn delete_dir_recursive(path: &Path) -> io::Result<()> {
 
 pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::Result<()> {
     delete_dir_recursive_with_cancel(path, Some(cancel))
+}
+
+fn validate_not_critical(canonical: &Path) -> io::Result<()> {
+    if canonical.parent().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to delete root directory",
+        ));
+    }
+    for critical in CRITICAL_DIRS {
+        if *canonical == *Path::new(*critical) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("refusing to delete critical system directory: {critical}"),
+            ));
+        }
+    }
+    let is_under_temp = {
+        let raw_temp = std::env::temp_dir();
+        if canonical.starts_with(&raw_temp) {
+            true
+        } else if let Ok(ct) = raw_temp.canonicalize() {
+            canonical.starts_with(&ct)
+        } else {
+            false
+        }
+    };
+    for critical in CRITICAL_DIR_PREFIXES {
+        if !is_under_temp && canonical.starts_with(Path::new(*critical)) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("refusing to delete critical system directory: {critical}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Recursive delete operates under a non-adversarial filesystem guarantee.
@@ -75,47 +109,10 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
     let canonical = path
         .canonicalize()
         .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?;
-    if canonical.parent().is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "refusing to delete root directory",
-        ));
-    }
-    for critical in CRITICAL_DIRS {
-        if canonical == Path::new(*critical) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("refusing to delete critical system directory: {critical}"),
-            ));
-        }
-    }
-    let is_under_temp = {
-        let raw_temp = std::env::temp_dir();
-        if canonical.starts_with(&raw_temp) {
-            true
-        } else if let Ok(ct) = raw_temp.canonicalize() {
-            canonical.starts_with(&ct)
-        } else if let Ok(target) = fs::read_link(&raw_temp) {
-            let resolved = match raw_temp.parent() {
-                Some(p) => p.join(&target),
-                None => target,
-            };
-            canonical.starts_with(&resolved)
-        } else {
-            false
-        }
-    };
-    for critical in CRITICAL_DIR_PREFIXES {
-        if !is_under_temp && canonical.starts_with(Path::new(*critical)) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("refusing to delete critical system directory: {critical}"),
-            ));
-        }
-    }
+    validate_not_critical(&canonical)?;
     delete_dir_contents(&canonical, cancel)?;
     check_optional_canceled(cancel)?;
-    fs::remove_dir(path)
+    fs::remove_dir(&canonical)
 }
 
 fn delete_dir_contents(root: &Path, cancel: Option<&AtomicBool>) -> io::Result<()> {
@@ -127,9 +124,9 @@ fn delete_dir_contents_impl(
     cancel: Option<&AtomicBool>,
     depth: usize,
 ) -> io::Result<()> {
-    if depth > DELETE_MAX_DEPTH {
+    if depth > MAX_RECURSION_DEPTH {
         return Err(io::Error::other(format!(
-            "directory nesting depth {depth} exceeds maximum allowed {DELETE_MAX_DEPTH}",
+            "directory nesting depth {depth} exceeds maximum allowed {MAX_RECURSION_DEPTH}",
         )));
     }
 

@@ -1,5 +1,4 @@
 use super::helpers::cleanup_file;
-use crate::debug_log;
 use filetime::FileTime;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -54,9 +53,16 @@ pub fn copy_with_progress(
 
             let accessed = FileTime::from_last_access_time(&metadata);
             let modified = FileTime::from_last_modification_time(&metadata);
-            if let Err(e) = filetime::set_file_times(dest, accessed, modified) {
-                debug_log!("set_file_times failed for {}: {e}", dest.display());
-            }
+            filetime::set_file_times(dest, accessed, modified).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "failed to preserve timestamps for {}: {}",
+                        dest.display(),
+                        e
+                    ),
+                )
+            })?;
 
             Ok(total_written)
         }
@@ -143,33 +149,28 @@ fn publish_temp(
         return Ok(());
     }
 
+    // Use hard_link as an atomic existence test: it returns AlreadyExists
+    // if dest already exists, avoiding the TOCTOU race of try_exists.
     match fs::hard_link(temp_dest, dest) {
-        Ok(()) => return fs::remove_file(temp_dest),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
+        Ok(()) => {
+            cleanup_file(temp_dest);
+            return Ok(());
+        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            cleanup_file(temp_dest);
+            return Err(err);
+        }
         Err(_) => {}
     }
 
-    match dest.try_exists() {
-        Ok(true) => {
+    // Cross-device or unsupported filesystem — fall back to rename.
+    match fs::rename(temp_dest, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => {
             cleanup_file(temp_dest);
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "destination file already exists",
-            ));
+            Err(err)
         }
-        Err(e) => {
-            debug_log!("publish_temp: cannot stat dest {}: {e}", dest.display());
-            cleanup_file(temp_dest);
-            return Err(e);
-        }
-        Ok(false) => {}
     }
-
-    fs::rename(temp_dest, dest).inspect_err(|_| {
-        cleanup_file(temp_dest);
-    })?;
-
-    Ok(())
 }
 
 fn temp_path_for(dest: &Path) -> std::path::PathBuf {

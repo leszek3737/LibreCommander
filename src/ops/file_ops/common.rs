@@ -7,12 +7,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) use crate::ops::helpers::MAX_RECURSION_DEPTH;
 
-pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
-    }
+#[cfg(unix)]
+pub(super) fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
 
-    Ok(())
+#[cfg(windows)]
+pub(super) fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    let a_idx = a.file_index();
+    let b_idx = b.file_index();
+    let a_vol = a.volume_serial_number();
+    let b_vol = b.volume_serial_number();
+    a_vol.is_some() && a_vol == b_vol && a_idx.is_some() && a_idx == b_idx
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn same_inode(_a: &fs::Metadata, _b: &fs::Metadata) -> bool {
+    false
+}
+
+pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
+    check_optional_canceled(Some(cancel))
 }
 
 pub(super) fn check_optional_canceled(cancel: Option<&AtomicBool>) -> io::Result<()> {
@@ -55,8 +72,7 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
-    use std::os::unix::fs::MetadataExt;
-    if src_meta.dev() == dest_meta.dev() && src_meta.ino() == dest_meta.ino() {
+    if same_inode(&src_meta, &dest_meta) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "source and destination are the same file",
@@ -73,12 +89,7 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
-    use std::os::windows::fs::MetadataExt;
-    let same = src_meta.volume_serial_number().is_some()
-        && src_meta.volume_serial_number() == dest_meta.volume_serial_number()
-        && src_meta.file_index().is_some()
-        && src_meta.file_index() == dest_meta.file_index();
-    if same {
+    if same_inode(&src_meta, &dest_meta) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "source and destination are the same file",
@@ -167,11 +178,12 @@ pub(super) fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<P
 }
 
 pub(super) fn remove_any(path: &Path) -> io::Result<()> {
-    if path.is_symlink() {
-        std::fs::remove_file(path)
-    } else if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::IsADirectory => std::fs::remove_dir_all(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound && path.is_dir() => {
+            std::fs::remove_dir_all(path)
+        }
+        Err(e) => Err(e),
     }
 }

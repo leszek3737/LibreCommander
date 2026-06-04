@@ -16,6 +16,12 @@ pub fn create_directory(path: &Path) -> io::Result<()> {
 }
 
 pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
+    if new_name.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "new name must not contain null bytes",
+        ));
+    }
     let mut normal_count = 0;
     for component in Path::new(new_name).components() {
         match component {
@@ -37,10 +43,19 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
     let parent = old.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Cannot determine parent directory",
+            "cannot determine parent directory",
         )
     })?;
     let new_path = parent.join(new_name);
+    if new_path == old {
+        return Ok(());
+    }
+    if new_path.try_exists().unwrap_or(true) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination already exists",
+        ));
+    }
     fs::rename(old, new_path)
 }
 
@@ -52,10 +67,19 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     if meta.file_type().is_symlink() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "chmod refuses to follow symlinks",
+            "cannot chmod a symlink, refuse to follow symlinks",
         ));
     }
 
     let permissions = fs::Permissions::from_mode(mode & 0o7777);
-    fs::set_permissions(path, permissions)
+    fs::set_permissions(path, permissions).map_err(|e| {
+        #[cfg(target_os = "macos")]
+        if e.raw_os_error() == Some(libc::EFTYPE) {
+            return io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot chmod a symlink, refuse to follow symlinks",
+            );
+        }
+        e
+    })
 }
