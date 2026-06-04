@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crossterm::event::KeyCode;
 
 use lc::app::{dir_tree, types::*};
@@ -81,19 +83,17 @@ pub(crate) fn set_tree_diagnostic_status(
         return;
     }
 
-    *status_message = Some(
-        diagnostics
-            .iter()
-            .fold(String::from("Directory tree warnings: ["), |mut acc, d| {
-                if acc.ends_with('[') {
-                    acc.push_str(&format!("{}: {}", d.path.display(), d.message));
-                } else {
-                    acc.push_str(&format!("] [{}: {}", d.path.display(), d.message));
-                }
-                acc
-            })
-            + "]",
-    );
+    let mut msg = String::from("Directory tree warnings: ");
+    for (i, d) in diagnostics.iter().enumerate() {
+        if i > 0 {
+            msg.push_str("] [");
+        } else {
+            msg.push('[');
+        }
+        let _ = write!(msg, "{}: {}", d.path.display(), d.message);
+    }
+    msg.push(']');
+    *status_message = Some(msg);
 }
 
 fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
