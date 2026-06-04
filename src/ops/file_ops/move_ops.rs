@@ -135,7 +135,10 @@ fn copy_then_remove_src(
     entry_kind: &str,
 ) -> io::Result<()> {
     copy_fn()?;
-    check_canceled(cancel)?;
+    if let Err(err) = check_canceled(cancel) {
+        let _ = rollback_fn();
+        return Err(err);
+    }
     if let Err(del_err) = remove_src_fn() {
         if let Err(rollback_err) = rollback_fn() {
             return Err(io::Error::other(format!(

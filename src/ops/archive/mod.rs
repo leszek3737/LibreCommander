@@ -84,10 +84,10 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
             )));
         }
     }
-    let outpath = dest.join(entry_name);
     let canonical_dest = dest
         .canonicalize()
         .map_err(|e| ArchiveError::Io(Arc::new(e)))?;
+    let outpath = canonical_dest.join(entry_name);
     let file_name = outpath
         .file_name()
         .ok_or_else(|| ArchiveError::InvalidArchive(format!("invalid entry path: {entry_name}")))?;
@@ -105,7 +105,13 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
 }
 
 fn has_ext_ignore_case(name: &str, ext: &str) -> bool {
-    name.len() >= ext.len() && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext)
+    name.len() >= ext.len()
+        && name
+            .as_bytes()
+            .iter()
+            .rev()
+            .zip(ext.as_bytes().iter().rev())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {

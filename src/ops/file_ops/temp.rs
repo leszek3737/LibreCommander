@@ -240,7 +240,7 @@ fn replace_file_inner(temp: &Path, dest: &Path, dir_err_msg: &str) -> io::Result
             let mut os = dest.as_os_str().to_os_string();
             os.push(".lc_bak");
             let backup = PathBuf::from(os);
-            if backup.exists() {
+            if fs::symlink_metadata(&backup).is_ok() {
                 fs::remove_file(&backup)?;
             }
             fs::rename(dest, &backup)?;

@@ -50,7 +50,11 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
     if new_path == old {
         return Ok(());
     }
-    if new_path.try_exists().unwrap_or(true) {
+    let same_file = match (fs::symlink_metadata(old), fs::symlink_metadata(&new_path)) {
+        (Ok(old_meta), Ok(new_meta)) => super::common::same_inode(&old_meta, &new_meta),
+        _ => false,
+    };
+    if !same_file && new_path.try_exists().unwrap_or(true) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "destination already exists",

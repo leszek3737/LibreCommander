@@ -114,6 +114,7 @@ fn extract_zip_entries(
         if entry.is_dir() {
             fs::create_dir_all(&outpath)?;
             extracted_paths.push(outpath);
+            let _ = progress.send(entry.size());
         } else {
             if let Some(parent) = outpath.parent() {
                 fs::create_dir_all(parent)?;
@@ -132,8 +133,6 @@ fn extract_zip_entries(
 
             extracted_paths.push(outpath);
         }
-
-        let _ = progress.send(entry.size());
     }
     Ok(())
 }
