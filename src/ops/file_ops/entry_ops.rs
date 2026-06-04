@@ -72,8 +72,8 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     }
 
     let permissions = fs::Permissions::from_mode(mode & 0o7777);
-    fs::set_permissions(path, permissions).map_err(|e| {
-        #[cfg(target_os = "macos")]
+    #[cfg(target_os = "macos")]
+    let result = fs::set_permissions(path, permissions).map_err(|e| {
         if e.raw_os_error() == Some(libc::EFTYPE) {
             return io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -81,5 +81,8 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
             );
         }
         e
-    })
+    });
+    #[cfg(not(target_os = "macos"))]
+    let result = fs::set_permissions(path, permissions);
+    result
 }
