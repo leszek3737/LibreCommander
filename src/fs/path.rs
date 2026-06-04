@@ -63,8 +63,13 @@ pub fn expand_path(input: &str) -> PathBuf {
     }
 
     if trimmed == "~" {
-        return dirs::home_dir()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        return dirs::home_dir().unwrap_or_else(|| {
+            crate::debug_log!("expand_path: home_dir() returned None, falling back to current_dir");
+            std::env::current_dir().unwrap_or_else(|_| {
+                crate::debug_log!("expand_path: current_dir() failed, falling back to \".\"");
+                PathBuf::from(".")
+            })
+        });
     }
 
     if let Some(rest) = stripped_tilde(trimmed)
@@ -93,12 +98,11 @@ fn stripped_tilde(s: &str) -> Option<&str> {
 /// Resolves a user-supplied path against a base directory.
 ///
 /// If `input` is absolute (root or drive-letter), it is used directly;
-/// otherwise it is joined with `base`. Both branches are normalized
-/// via [`clean_path`].
+/// otherwise it is joined with `base` and normalized via [`clean_path`].
 pub fn resolve_user_path(base: &Path, input: &str) -> PathBuf {
     let expanded = expand_path(input);
     if expanded.is_absolute() {
-        clean_path(&expanded)
+        expanded
     } else {
         clean_path(&base.join(expanded))
     }
@@ -111,6 +115,9 @@ pub fn resolve_user_path(base: &Path, input: &str) -> PathBuf {
 /// as literal `$`. Returns the expanded string; the caller is responsible
 /// for converting to a path.
 fn expand_env_vars(input: &str) -> String {
+    if !input.contains('$') {
+        return input.to_string();
+    }
     let mut result = String::with_capacity(input.len().saturating_mul(ENV_VAR_EXPANSION_FACTOR));
     let mut rest = input;
 

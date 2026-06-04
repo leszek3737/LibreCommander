@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crossterm::event::KeyCode;
 
 use lc::app::{dir_tree, types::*};
@@ -81,17 +83,22 @@ pub(crate) fn set_tree_diagnostic_status(
         return;
     }
 
-    let items: Vec<String> = diagnostics
-        .iter()
-        .map(|d| format!("{}: {}", d.path.display(), d.message))
-        .collect();
-    *status_message = Some(format!("Directory tree warnings: [{}]", items.join("] [")));
+    let mut msg = String::from("Directory tree warnings: ");
+    for (i, d) in diagnostics.iter().enumerate() {
+        if i > 0 {
+            msg.push_str("] [");
+        } else {
+            msg.push('[');
+        }
+        let _ = write!(msg, "{}: {}", d.path.display(), d.message);
+    }
+    msg.push(']');
+    *status_message = Some(msg);
 }
 
 fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
     let selected = state.tree_selected;
     let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
-    let is_file = state.tree_entries.get(selected).is_some_and(|e| !e.is_dir);
 
     if is_dir {
         let show_hidden = state.active_panel().show_hidden();
@@ -104,11 +111,10 @@ fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::Vi
         if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty() {
             state.tree_selected = state.tree_entries.len() - 1;
         }
-    } else if is_file {
-        let path = state.tree_entries[selected].path.clone();
+    } else if let Some(entry) = state.tree_entries.get(selected) {
+        let path = entry.path.clone();
         *viewer_loader = Some(viewer::ViewerState::open_background(path));
-        state.prev_mode = Some(state.mode.clone());
-        state.mode = AppMode::Viewing;
+        state.prev_mode = Some(std::mem::replace(&mut state.mode, AppMode::Viewing));
     }
 }
 
@@ -126,9 +132,10 @@ fn handle_tree_cd(state: &mut AppState) {
             .unwrap_or(entry_path)
     };
     if target.is_dir() {
-        state.active_panel_mut().set_path(target);
-        state.active_panel_mut().cursor = 0;
-        state.active_panel_mut().scroll_offset = 0;
+        let panel = state.active_panel_mut();
+        panel.set_path(target);
+        panel.cursor = 0;
+        panel.scroll_offset = 0;
         state.tree_selected = 0;
         state.tree_scroll = 0;
         refresh_active(state);

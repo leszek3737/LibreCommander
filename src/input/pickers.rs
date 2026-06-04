@@ -5,25 +5,46 @@ use crossterm::event::KeyCode;
 use lc::app::{file_type, types::*, user_menu, user_menu::MenuSource};
 use lc::ops;
 
-use crate::app::panel_ops::refresh_active;
+use crate::app::panel_ops::{navigate_to_hotlist, refresh_active};
+
+#[derive(Clone, Copy)]
+enum MoveDirection {
+    Up,
+    Down,
+    Home,
+    End,
+}
+
+fn move_cursor(entries_len: usize, selected: &mut usize, direction: MoveDirection) {
+    if entries_len == 0 {
+        return;
+    }
+    match direction {
+        MoveDirection::Up if *selected > 0 => {
+            *selected -= 1;
+        }
+        MoveDirection::Down if *selected + 1 < entries_len => {
+            *selected += 1;
+        }
+        MoveDirection::Home => {
+            *selected = 0;
+        }
+        MoveDirection::End => {
+            *selected = entries_len - 1;
+        }
+        _ => {}
+    }
+}
 
 fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
     match key {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
-            state.picker_selected -= 1;
-        }
-        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
-            state.picker_selected += 1;
-        }
-        KeyCode::Home if len > 0 => {
-            state.picker_selected = 0;
-        }
-        KeyCode::End if len > 0 => {
-            state.picker_selected = len - 1;
-        }
+        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
             if state.picker_selected >= len {
                 state.mode = AppMode::Normal;
@@ -47,33 +68,14 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
-            state.picker_selected -= 1;
-        }
-        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
-            state.picker_selected += 1;
-        }
-        KeyCode::Home if len > 0 => {
-            state.picker_selected = 0;
-        }
-        KeyCode::End if len > 0 => {
-            state.picker_selected = len - 1;
-        }
+        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            if let Some(path) = state.hotlist().get(state.picker_selected).cloned() {
-                if path.is_dir() {
-                    state.active_panel_mut().set_path(path);
-                    state.active_panel_mut().cursor = 0;
-                    state.active_panel_mut().scroll_offset = 0;
-                    refresh_active(state);
-                } else {
-                    state.status_message =
-                        Some("Hotlist entry is no longer a valid directory".to_string());
-                }
-                state.mode = AppMode::Normal;
-            } else {
-                state.mode = AppMode::Normal;
-            }
+            let idx = state.picker_selected;
+            state.mode = AppMode::Normal;
+            navigate_to_hotlist(state, idx);
         }
         KeyCode::Char('a') => {
             let cur = state.active_panel().path().to_path_buf();
@@ -101,20 +103,12 @@ fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up if state.picker_selected > 0 => {
-            state.picker_selected -= 1;
-        }
-        KeyCode::Down if state.picker_selected + 1 < len => {
-            state.picker_selected += 1;
-        }
-        KeyCode::Home => {
-            state.picker_selected = 0;
-        }
-        KeyCode::End => {
-            state.picker_selected = len - 1;
-        }
+        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            let chosen = modes[state.picker_selected.min(len - 1)];
+            let chosen = modes[state.picker_selected.min(len.saturating_sub(1))];
             state.mode = AppMode::Normal;
             compare_directories(state, chosen);
         }
@@ -128,18 +122,10 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up if len > 0 && state.picker_selected > 0 => {
-            state.picker_selected -= 1;
-        }
-        KeyCode::Down if len > 0 && state.picker_selected + 1 < len => {
-            state.picker_selected += 1;
-        }
-        KeyCode::Home if len > 0 => {
-            state.picker_selected = 0;
-        }
-        KeyCode::End if len > 0 => {
-            state.picker_selected = len - 1;
-        }
+        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
             let idx = state.picker_selected.min(len.saturating_sub(1));
             state.mode = AppMode::Normal;
@@ -196,18 +182,10 @@ fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up if state.picker_selected > 0 => {
-            state.picker_selected -= 1;
-        }
-        KeyCode::Down if state.picker_selected + 1 < len => {
-            state.picker_selected += 1;
-        }
-        KeyCode::Home => {
-            state.picker_selected = 0;
-        }
-        KeyCode::End => {
-            state.picker_selected = len - 1;
-        }
+        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
             let choice = state.picker_selected;
             state.mode = AppMode::Normal;
@@ -274,17 +252,17 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
     }
 }
 
+fn effective_entries(panel: &PanelState) -> &[FileEntry] {
+    if panel.listing.unfiltered_entries.is_empty() {
+        &panel.listing.entries
+    } else {
+        &panel.listing.unfiltered_entries
+    }
+}
+
 pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
-    let left_entries = if state.left_panel.listing.unfiltered_entries.is_empty() {
-        &state.left_panel.listing.entries
-    } else {
-        &state.left_panel.listing.unfiltered_entries
-    };
-    let right_entries = if state.right_panel.listing.unfiltered_entries.is_empty() {
-        &state.right_panel.listing.entries
-    } else {
-        &state.right_panel.listing.unfiltered_entries
-    };
+    let left_entries = effective_entries(&state.left_panel);
+    let right_entries = effective_entries(&state.right_panel);
     let report = ops::compare_entries(left_entries, right_entries, mode);
     ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 
@@ -335,15 +313,12 @@ mod tests {
         state.command_history.push_back("cmd1".to_string());
         state.command_history.push_back("cmd2".to_string());
 
-        // Can't go up from 0
         handle_list_picker(&mut state, KeyCode::Up);
         assert_eq!(state.picker_selected, 0);
 
-        // Can go down
         handle_list_picker(&mut state, KeyCode::Down);
         assert_eq!(state.picker_selected, 1);
 
-        // Can't go past end
         handle_list_picker(&mut state, KeyCode::Down);
         assert_eq!(state.picker_selected, 1);
     }
@@ -371,7 +346,6 @@ mod tests {
         assert_eq!(state.picker_selected, 1);
         handle_list_picker(&mut state, KeyCode::Down);
         assert_eq!(state.picker_selected, 2);
-        // Can't go past 2 (3 modes)
         handle_list_picker(&mut state, KeyCode::Down);
         assert_eq!(state.picker_selected, 2);
 
@@ -379,7 +353,6 @@ mod tests {
         assert_eq!(state.picker_selected, 1);
         handle_list_picker(&mut state, KeyCode::Up);
         assert_eq!(state.picker_selected, 0);
-        // Can't go below 0
         handle_list_picker(&mut state, KeyCode::Up);
         assert_eq!(state.picker_selected, 0);
     }

@@ -26,7 +26,6 @@ enum ValidationResult {
     Valid,
     EmptyInput,
     InvalidPath(String),
-    InvalidOctal(String),
 }
 
 fn validate_non_empty(input: &str) -> ValidationResult {
@@ -58,19 +57,7 @@ fn validate_path_name(input: &str) -> ValidationResult {
     }
 }
 
-fn validate_octal(input: &str) -> ValidationResult {
-    match validate_non_empty(input) {
-        ValidationResult::Valid => {}
-        other => return other,
-    }
-    if parse_octal_mode(input).is_some() {
-        ValidationResult::Valid
-    } else {
-        ValidationResult::InvalidOctal(input.to_string())
-    }
-}
-
-fn dismiss_dialog_and_restore(state: &mut AppState) {
+fn reset_dialog_state(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.pending_action = None;
     state.pending_menu_command = None;
@@ -79,6 +66,10 @@ fn dismiss_dialog_and_restore(state: &mut AppState) {
     if let Some(panel) = state.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
+}
+
+fn dismiss_dialog_and_restore(state: &mut AppState) {
+    reset_dialog_state(state);
 }
 
 pub(crate) fn finish_confirmed_action(state: &mut AppState) {
@@ -94,14 +85,7 @@ pub(crate) fn finish_confirmed_action(state: &mut AppState) {
 }
 
 pub(crate) fn dismiss_dialog(state: &mut AppState) {
-    state.mode = AppMode::Normal;
-    state.pending_action = None;
-    state.pending_menu_command = None;
-    state.status_message = None;
-    state.dialog_selection = 0;
-    if let Some(panel) = state.menu_restore_panel.take() {
-        set_active_panel(state, panel);
-    }
+    reset_dialog_state(state);
 }
 
 #[cfg(unix)]
@@ -317,19 +301,17 @@ fn handle_input_action(
             }
         }
         InputAction::Chmod => {
-            match validate_octal(&input) {
-                ValidationResult::Valid => {}
-                ValidationResult::EmptyInput => {
-                    state.status_message = Some("Octal mode cannot be empty".to_string());
+            let mode = match parse_octal_mode(&input) {
+                Some(m) => m,
+                None => {
+                    if input.trim().is_empty() {
+                        state.status_message = Some("Octal mode cannot be empty".to_string());
+                    } else {
+                        state.status_message = Some(format!("Invalid octal mode '{input}'"));
+                    }
                     return;
                 }
-                ValidationResult::InvalidOctal(o) => {
-                    state.status_message = Some(format!("Invalid octal mode '{o}'"));
-                    return;
-                }
-                ValidationResult::InvalidPath(_) => return,
-            }
-            let mode = parse_octal_mode(&input).unwrap_or(0);
+            };
             if let Some(entry) = state.active_panel().current_entry()
                 && let Err(err) = ops::chmod(&entry.path, mode)
             {
@@ -370,7 +352,6 @@ fn validate_create_or_rename(input: &str, label: &str) -> Result<(), String> {
         ValidationResult::Valid => Ok(()),
         ValidationResult::EmptyInput => Err(format!("{label} cannot be empty")),
         ValidationResult::InvalidPath(p) => Err(p),
-        ValidationResult::InvalidOctal(_) => Err(String::new()),
     }
 }
 
@@ -435,32 +416,26 @@ fn archive_format_from_path(path: &std::path::Path) -> Option<ArchiveFormat> {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("zip") => Some(ArchiveFormat::Zip),
-        Some("tar") => Some(ArchiveFormat::Tar),
-        Some("7z") => Some(ArchiveFormat::SevenZ),
-        Some("tgz") => Some(ArchiveFormat::TarGz),
-        Some("tbz2") => Some(ArchiveFormat::TarBz2),
-        Some("txz") => Some(ArchiveFormat::TarXz),
-        Some("tzst") => Some(ArchiveFormat::TarZst),
-        _ => {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                let lower = name.to_ascii_lowercase();
-                if lower.ends_with(".tar.gz") {
-                    return Some(ArchiveFormat::TarGz);
-                }
-                if lower.ends_with(".tar.bz2") {
-                    return Some(ArchiveFormat::TarBz2);
-                }
-                if lower.ends_with(".tar.xz") {
-                    return Some(ArchiveFormat::TarXz);
-                }
-                if lower.ends_with(".tar.zst") {
-                    return Some(ArchiveFormat::TarZst);
-                }
-            }
-            None
-        }
+        Some("zip") => return Some(ArchiveFormat::Zip),
+        Some("tar") => return Some(ArchiveFormat::Tar),
+        Some("7z") => return Some(ArchiveFormat::SevenZ),
+        Some("tgz") => return Some(ArchiveFormat::TarGz),
+        Some("tbz2") => return Some(ArchiveFormat::TarBz2),
+        Some("txz") => return Some(ArchiveFormat::TarXz),
+        Some("tzst") => return Some(ArchiveFormat::TarZst),
+        _ => {}
     }
+    let name = path.file_name().and_then(|n| n.to_str())?;
+    let lower = name.to_ascii_lowercase();
+    [
+        (".tar.gz", ArchiveFormat::TarGz),
+        (".tar.bz2", ArchiveFormat::TarBz2),
+        (".tar.xz", ArchiveFormat::TarXz),
+        (".tar.zst", ArchiveFormat::TarZst),
+    ]
+    .iter()
+    .find(|(suffix, _)| lower.ends_with(suffix))
+    .map(|(_, fmt)| *fmt)
 }
 
 fn apply_dialog_text_edit(dest_input: &mut TextInput, key: KeyCode) {

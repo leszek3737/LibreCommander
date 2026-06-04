@@ -1,316 +1,45 @@
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
-
 use super::*;
 use crate::app::types::{ConfirmDetails, InputAction, PendingAction, TextInput};
 
-#[test]
-fn mouse_input_dialog_outside_preserves_text() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Input {
-            prompt: "Name:".to_string(),
-            action: InputAction::CreateDirectory,
-        }),
-        dialog_input: TextInput {
-            text: "draft".to_string(),
-            cursor: 5,
-        },
-        ..Default::default()
-    };
-
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 0,
-            row: 0,
-            width: 100,
-            height: 40,
-        },
-    );
-
-    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Input { .. })
-    ));
-    assert_eq!(state.dialog_input.text, "draft");
-    assert_eq!(state.dialog_input.cursor, 5);
+fn mp(col: u16, row: u16, width: u16, height: u16) -> MousePosition {
+    MousePosition {
+        col,
+        row,
+        width,
+        height,
+    }
 }
 
-#[test]
-fn mouse_input_dialog_inside_consumes_click() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Input {
-            prompt: "Name:".to_string(),
-            action: InputAction::CreateDirectory,
-        }),
-        dialog_input: TextInput {
-            text: "draft".to_string(),
-            cursor: 0,
-        },
-        ..Default::default()
-    };
-
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 50,
-            row: 20,
-            width: 100,
-            height: 40,
-        },
-    );
-
-    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Input { .. })
-    ));
-    assert_eq!(state.dialog_input.text, "draft");
+fn confirm_btn_row(height: u16) -> u16 {
+    let dialog_height = height * 40 / 100;
+    let dialog_y = (height.saturating_sub(dialog_height)) / 2;
+    dialog_y + dialog_height.saturating_sub(2)
 }
 
-#[test]
-fn mouse_function_bar_zero_width_does_not_panic() {
-    let mut state = AppState::default();
-
-    let outcomes = handle_mouse_function_bar(
-        &mut state,
-        &MousePosition {
-            col: 0,
-            row: 0,
-            width: 0,
-            height: 1,
-        },
-    );
-
-    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+struct TestDirs {
+    _tmp: tempfile::TempDir,
+    src: std::path::PathBuf,
+    dest: std::path::PathBuf,
 }
 
-#[test]
-fn mouse_error_dialog_click_does_not_dismiss() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Error("error".to_string())),
-        ..Default::default()
-    };
-    let mut running_job = None;
-
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 1,
-            row: 1,
-            width: 80,
-            height: 24,
-        },
-    );
-
-    assert!(outcomes.is_some());
-    assert!(matches!(state.mode, AppMode::Dialog(DialogKind::Error(_))));
+fn setup_copy_dirs() -> TestDirs {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    TestDirs {
+        _tmp: tmp,
+        src,
+        dest,
+    }
 }
 
-#[test]
-fn mouse_properties_dialog_click_does_not_dismiss() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Properties {
-            name: "file.txt".to_string(),
-            size: 0,
-            mtime: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: String::new(),
-            group: String::new(),
-            is_dir: false,
-            is_symlink: false,
-        }),
-        ..Default::default()
-    };
-    let mut running_job = None;
-
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 1,
-            row: 1,
-            width: 80,
-            height: 24,
-        },
-    );
-
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Properties { .. })
-    ));
-}
-
-#[test]
-fn mouse_help_dialog_click_does_not_dismiss() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Help {
-            message: "help".to_string(),
-            scroll_offset: 0,
-        }),
-        ..Default::default()
-    };
-    let mut running_job = None;
-
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 1,
-            row: 1,
-            width: 80,
-            height: 24,
-        },
-    );
-
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Help { .. })
-    ));
-}
-
-#[test]
-fn mouse_confirm_dialog_keeps_existing_behavior() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
-            "Confirm", "Run?",
-        ))),
-        dialog_selection: 1,
-        ..Default::default()
-    };
-    let mut running_job = None;
-
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 79,
-            row: 23,
-            width: 80,
-            height: 24,
-        },
-    );
-
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Confirm(_))
-    ));
-}
-
-#[test]
-fn mouse_overwrite_confirm_dialog_handled() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::OverwriteConfirm {
-            conflicting: vec![],
-        }),
-        dialog_selection: 0,
-        ..Default::default()
-    };
-    let mut running_job = None;
-
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 1,
-            row: 1,
-            width: 80,
-            height: 24,
-        },
-    );
-
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
-    ));
-}
-
-#[test]
-fn mouse_progress_click_is_consumed() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Progress {
-            message: "Copying".to_string(),
-            progress_fraction: 0.5,
-            cancellable: true,
-        }),
-        ..Default::default()
-    };
-    let mut running_job = None;
-
-    let outcomes = handle_mouse_dialog(
-        &mut state,
-        &mut running_job,
-        &MousePosition {
-            col: 40,
-            row: 21,
-            width: 80,
-            height: 24,
-        },
-    );
-
-    assert!(outcomes.is_some());
-    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
-}
-
-#[test]
-fn mouse_scroll_handles_help_dialog() {
-    let long_text = (0..200)
-        .map(|i| format!("line {}", i))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Help {
-            message: long_text,
-            scroll_offset: 0,
-        }),
-        ..Default::default()
-    };
-
-    handle_mouse_scroll(
-        &mut state,
-        &mut None,
-        MouseEventKind::ScrollDown,
-        &MousePosition {
-            col: 0,
-            row: 0,
-            width: 80,
-            height: 40,
-        },
-    );
-
-    assert!(
-        matches!(&state.mode, AppMode::Dialog(DialogKind::Help { scroll_offset, .. }) if *scroll_offset > 0),
-        "expected Help dialog with scroll_offset > 0"
-    );
-}
-
-#[test]
-fn mouse_up_clears_drag_anchor() {
-    let mut state = AppState {
-        drag_anchor_index: Some(5),
-        ..Default::default()
-    };
-
-    handle_mouse_up(&mut state);
-
-    assert!(state.drag_anchor_index.is_none());
-}
-
-#[test]
-fn drag_select_range() {
-    use crate::app::types::FileEntry;
-    let mk = |name: &str| FileEntry {
+fn mk_entry(name: &str) -> crate::app::types::FileEntry {
+    use std::sync::Arc;
+    crate::app::types::FileEntry {
         name: name.to_string(),
         path: std::path::PathBuf::from(format!("/{}", name)),
         cha: crate::fs::cha::Cha {
@@ -336,8 +65,217 @@ fn drag_select_range() {
         size_width: 0,
         time_width: 0,
         category: crate::app::types::FileCategory::Other,
+    }
+}
+
+#[test]
+fn mouse_input_dialog_outside_preserves_text() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Name:".to_string(),
+            action: InputAction::CreateDirectory,
+        }),
+        dialog_input: TextInput {
+            text: "draft".to_string(),
+            cursor: 5,
+        },
+        ..Default::default()
     };
-    let entries = vec![mk("a"), mk("b"), mk("c"), mk("d"), mk("e")];
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(0, 0, 100, 40));
+    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::Input { .. })
+    ));
+    assert_eq!(state.dialog_input.text, "draft");
+    assert_eq!(state.dialog_input.cursor, 5);
+}
+
+#[test]
+fn mouse_input_dialog_inside_consumes_click() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Name:".to_string(),
+            action: InputAction::CreateDirectory,
+        }),
+        dialog_input: TextInput {
+            text: "draft".to_string(),
+            cursor: 0,
+        },
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(50, 20, 100, 40));
+    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::Input { .. })
+    ));
+    assert_eq!(state.dialog_input.text, "draft");
+}
+
+#[test]
+fn mouse_function_bar_zero_width_does_not_panic() {
+    let mut state = AppState::default();
+    let outcomes = handle_mouse_function_bar(&mut state, &mp(0, 0, 0, 1));
+    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+}
+
+#[test]
+fn mouse_error_dialog_click_does_not_dismiss() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Error("error".to_string())),
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
+    assert!(outcomes.is_some());
+    assert!(matches!(state.mode, AppMode::Dialog(DialogKind::Error(_))));
+}
+
+#[test]
+fn mouse_properties_dialog_click_does_not_dismiss() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Properties {
+            name: "file.txt".to_string(),
+            size: 0,
+            mtime: std::time::SystemTime::UNIX_EPOCH,
+            permissions: 0o644,
+            owner: String::new(),
+            group: String::new(),
+            is_dir: false,
+            is_symlink: false,
+        }),
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
+    assert!(outcomes.is_some());
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::Properties { .. })
+    ));
+}
+
+#[test]
+fn mouse_help_dialog_click_does_not_dismiss() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Help {
+            message: "help".to_string(),
+            scroll_offset: 0,
+        }),
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
+    assert!(outcomes.is_some());
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::Help { .. })
+    ));
+}
+
+#[test]
+fn mouse_confirm_dialog_keeps_existing_behavior() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+            "Confirm", "Run?",
+        ))),
+        dialog_selection: 1,
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(79, 23, 80, 24));
+    assert!(outcomes.is_some());
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::Confirm(_))
+    ));
+}
+
+#[test]
+fn mouse_overwrite_confirm_dialog_handled() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::OverwriteConfirm {
+            conflicting: vec![],
+        }),
+        dialog_selection: 0,
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
+    assert!(outcomes.is_some());
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::OverwriteConfirm { .. })
+    ));
+}
+
+#[test]
+fn mouse_progress_click_is_consumed() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Progress {
+            message: "Copying".to_string(),
+            progress_fraction: 0.5,
+            cancellable: true,
+        }),
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(40, 21, 80, 24));
+    assert!(outcomes.is_some());
+    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+}
+
+#[test]
+fn mouse_scroll_handles_help_dialog() {
+    let long_text = (0..200)
+        .map(|i| format!("line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Help {
+            message: long_text,
+            scroll_offset: 0,
+        }),
+        ..Default::default()
+    };
+
+    handle_mouse_scroll(
+        &mut state,
+        &mut None,
+        MouseEventKind::ScrollDown,
+        &mp(0, 0, 80, 40),
+    );
+
+    assert!(
+        matches!(&state.mode, AppMode::Dialog(DialogKind::Help { scroll_offset, .. }) if *scroll_offset > 0),
+        "expected Help dialog with scroll_offset > 0"
+    );
+}
+
+#[test]
+fn mouse_up_clears_drag_anchor() {
+    let mut state = AppState {
+        drag_anchor_index: Some(5),
+        ..Default::default()
+    };
+
+    handle_mouse_up(&mut state);
+
+    assert!(state.drag_anchor_index.is_none());
+}
+
+#[test]
+fn drag_select_range() {
+    let entries = vec![
+        mk_entry("a"),
+        mk_entry("b"),
+        mk_entry("c"),
+        mk_entry("d"),
+        mk_entry("e"),
+    ];
     let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
     left_panel.listing.entries = entries.clone();
     let mut right_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
@@ -349,15 +287,7 @@ fn drag_select_range() {
         ..Default::default()
     };
 
-    handle_mouse_drag(
-        &mut state,
-        &MousePosition {
-            col: 1,
-            row: 5,
-            width: 80,
-            height: 24,
-        },
-    );
+    handle_mouse_drag(&mut state, &mp(1, 5, 80, 24));
 
     let selected: Vec<_> = state
         .left_panel
@@ -376,15 +306,7 @@ fn handle_right_click_in_dialog_emits_esc() {
         ..Default::default()
     };
 
-    let outcome = handle_right_down(
-        &mut state,
-        &MousePosition {
-            col: 40,
-            row: 10,
-            width: 80,
-            height: 24,
-        },
-    );
+    let outcome = handle_right_down(&mut state, &mp(40, 10, 80, 24));
     assert!(matches!(
         outcome,
         Some(MouseOutcome::NormalKey(KeyCode::Esc))
@@ -398,15 +320,7 @@ fn handle_right_click_in_menu_emits_esc() {
         ..Default::default()
     };
 
-    let outcome = handle_right_down(
-        &mut state,
-        &MousePosition {
-            col: 40,
-            row: 10,
-            width: 80,
-            height: 24,
-        },
-    );
+    let outcome = handle_right_down(&mut state, &mp(40, 10, 80, 24));
     assert!(matches!(
         outcome,
         Some(MouseOutcome::NormalKey(KeyCode::Esc))
@@ -421,15 +335,7 @@ fn mouse_menu_dropdown_outside_restores_previous_mode() {
         ..Default::default()
     };
 
-    let outcome = handle_mouse_menu_dropdown(
-        &mut state,
-        &MousePosition {
-            col: 79,
-            row: 23,
-            width: 80,
-            height: 24,
-        },
-    );
+    let outcome = handle_mouse_menu_dropdown(&mut state, &mp(79, 23, 80, 24));
 
     assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
     assert!(matches!(state.mode, AppMode::Search));
@@ -440,15 +346,7 @@ fn mouse_menu_dropdown_outside_restores_previous_mode() {
 fn handle_right_click_in_panel_emits_esc() {
     let mut state = AppState::default();
 
-    let outcome = handle_right_down(
-        &mut state,
-        &MousePosition {
-            col: 10,
-            row: 10,
-            width: 80,
-            height: 24,
-        },
-    );
+    let outcome = handle_right_down(&mut state, &mp(10, 10, 80, 24));
     assert!(matches!(
         outcome,
         Some(MouseOutcome::NormalKey(KeyCode::Esc))
@@ -459,15 +357,7 @@ fn handle_right_click_in_panel_emits_esc() {
 fn handle_middle_click_in_panel_emits_f5() {
     let mut state = AppState::default();
 
-    let outcome = handle_middle_down(
-        &mut state,
-        &MousePosition {
-            col: 10,
-            row: 10,
-            width: 80,
-            height: 24,
-        },
-    );
+    let outcome = handle_middle_down(&mut state, &mp(10, 10, 80, 24));
     assert!(matches!(
         outcome,
         Some(MouseOutcome::NormalKey(KeyCode::F(5)))
@@ -481,27 +371,15 @@ fn handle_middle_click_in_dialog_consumed() {
         ..Default::default()
     };
 
-    let outcome = handle_middle_down(
-        &mut state,
-        &MousePosition {
-            col: 40,
-            row: 10,
-            width: 80,
-            height: 24,
-        },
-    );
+    let outcome = handle_middle_down(&mut state, &mp(40, 10, 80, 24));
     assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 }
 
 #[test]
 fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
-    let tmp = tempfile::tempdir().unwrap();
-    let src_dir = tmp.path().join("src");
-    let dest_dir = tmp.path().join("dest");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::create_dir_all(&dest_dir).unwrap();
-    std::fs::write(src_dir.join("clash.txt"), b"src").unwrap();
-    std::fs::write(dest_dir.join("clash.txt"), b"dest").unwrap();
+    let dirs = setup_copy_dirs();
+    std::fs::write(dirs.src.join("clash.txt"), b"src").unwrap();
+    std::fs::write(dirs.dest.join("clash.txt"), b"dest").unwrap();
 
     let mut state = AppState {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
@@ -509,8 +387,8 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
         ))),
         dialog_selection: 0,
         pending_action: Some(PendingAction::Copy {
-            sources: vec![src_dir.join("clash.txt")],
-            dest: dest_dir,
+            sources: vec![dirs.src.join("clash.txt")],
+            dest: dirs.dest,
             overwrite: false,
         }),
         ..Default::default()
@@ -519,22 +397,14 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
 
     let height: u16 = 24;
     let width: u16 = 80;
-    let dialog_height = height * 40 / 100;
-    let btn_row = {
-        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        dialog_y + dialog_height.saturating_sub(2)
-    };
+    let btn_row = confirm_btn_row(height);
 
-    let _outcome = handle_confirm_click(
+    let outcome = handle_confirm_click(
         &mut state,
         &mut running_job,
-        &MousePosition {
-            col: 30,
-            row: btn_row,
-            width,
-            height,
-        },
+        &mp(30, btn_row, width, height),
     );
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
     assert!(matches!(
         state.mode,
@@ -545,12 +415,8 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
 
 #[test]
 fn mouse_confirm_click_without_conflict_starts_action() {
-    let tmp = tempfile::tempdir().unwrap();
-    let src_dir = tmp.path().join("src");
-    let dest_dir = tmp.path().join("dest");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::create_dir_all(&dest_dir).unwrap();
-    std::fs::write(src_dir.join("unique.txt"), b"data").unwrap();
+    let dirs = setup_copy_dirs();
+    std::fs::write(dirs.src.join("unique.txt"), b"data").unwrap();
 
     let mut state = AppState {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
@@ -558,8 +424,8 @@ fn mouse_confirm_click_without_conflict_starts_action() {
         ))),
         dialog_selection: 0,
         pending_action: Some(PendingAction::Copy {
-            sources: vec![src_dir.join("unique.txt")],
-            dest: dest_dir,
+            sources: vec![dirs.src.join("unique.txt")],
+            dest: dirs.dest,
             overwrite: false,
         }),
         ..Default::default()
@@ -568,22 +434,14 @@ fn mouse_confirm_click_without_conflict_starts_action() {
 
     let height: u16 = 24;
     let width: u16 = 80;
-    let dialog_height = height * 40 / 100;
-    let btn_row = {
-        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        dialog_y + dialog_height.saturating_sub(2)
-    };
+    let btn_row = confirm_btn_row(height);
 
-    let _outcome = handle_confirm_click(
+    let outcome = handle_confirm_click(
         &mut state,
         &mut running_job,
-        &MousePosition {
-            col: 30,
-            row: btn_row,
-            width,
-            height,
-        },
+        &mp(30, btn_row, width, height),
     );
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
     assert!(matches!(
         state.mode,
@@ -593,12 +451,8 @@ fn mouse_confirm_click_without_conflict_starts_action() {
 
 #[test]
 fn mouse_confirm_click_preserves_status_message() {
-    let tmp = tempfile::tempdir().unwrap();
-    let src_dir = tmp.path().join("src");
-    let dest_dir = tmp.path().join("dest");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::create_dir_all(&dest_dir).unwrap();
-    std::fs::write(src_dir.join("unique.txt"), b"data").unwrap();
+    let dirs = setup_copy_dirs();
+    std::fs::write(dirs.src.join("unique.txt"), b"data").unwrap();
 
     let mut state = AppState {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
@@ -607,8 +461,8 @@ fn mouse_confirm_click_preserves_status_message() {
         dialog_selection: 0,
         status_message: Some("Queued".to_string()),
         pending_action: Some(PendingAction::Copy {
-            sources: vec![src_dir.join("unique.txt")],
-            dest: dest_dir,
+            sources: vec![dirs.src.join("unique.txt")],
+            dest: dirs.dest,
             overwrite: false,
         }),
         ..Default::default()
@@ -617,22 +471,14 @@ fn mouse_confirm_click_preserves_status_message() {
 
     let height: u16 = 24;
     let width: u16 = 80;
-    let dialog_height = height * 40 / 100;
-    let btn_row = {
-        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        dialog_y + dialog_height.saturating_sub(2)
-    };
+    let btn_row = confirm_btn_row(height);
 
-    let _outcome = handle_confirm_click(
+    let outcome = handle_confirm_click(
         &mut state,
         &mut running_job,
-        &MousePosition {
-            col: 30,
-            row: btn_row,
-            width,
-            height,
-        },
+        &mp(30, btn_row, width, height),
     );
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
     assert_eq!(state.status_message.as_deref(), Some("Queued"));
     assert!(matches!(
@@ -669,22 +515,14 @@ fn mouse_confirm_click_keeps_new_status_message() {
 
     let height: u16 = 24;
     let width: u16 = 80;
-    let dialog_height = height * 40 / 100;
-    let btn_row = {
-        let dialog_y = (height.saturating_sub(dialog_height)) / 2;
-        dialog_y + dialog_height.saturating_sub(2)
-    };
+    let btn_row = confirm_btn_row(height);
 
-    let _outcome = handle_confirm_click(
+    let outcome = handle_confirm_click(
         &mut state,
         &mut running_job,
-        &MousePosition {
-            col: 30,
-            row: btn_row,
-            width,
-            height,
-        },
+        &mp(30, btn_row, width, height),
     );
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
     state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
         "Copy", "Proceed?",
@@ -696,16 +534,12 @@ fn mouse_confirm_click_keeps_new_status_message() {
         overwrite: false,
     });
 
-    let _outcome = handle_confirm_click(
+    let outcome = handle_confirm_click(
         &mut state,
         &mut running_job,
-        &MousePosition {
-            col: 30,
-            row: btn_row,
-            width,
-            height,
-        },
+        &mp(30, btn_row, width, height),
     );
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
     assert_eq!(
         state.status_message.as_deref(),

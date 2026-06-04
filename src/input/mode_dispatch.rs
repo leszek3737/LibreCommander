@@ -34,6 +34,13 @@ pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
     refresh_or_rebuild(state, visible_height);
 }
 
+fn apply_search_filter(state: &mut AppState, visible: usize) {
+    let filter_query = state.search_query.clone();
+    let panel = state.active_panel_mut();
+    panel.set_filter(Some(filter_query));
+    panel_ops::rebuild_visible_entries(panel, visible);
+}
+
 pub(crate) fn initiate_search(
     state: &mut AppState,
     prev_mode: AppMode,
@@ -138,7 +145,7 @@ pub(crate) fn handle_viewer_mode(
             KeyCode::Char('n') => vs.next_match(page_height),
             KeyCode::Char('N') => vs.prev_match(page_height),
             KeyCode::Char('/') => {
-                state.dialog_input.text = vs.search_query.clone().unwrap_or_default();
+                state.dialog_input.text = vs.search_query.as_deref().unwrap_or("").to_owned();
                 state.dialog_input.cursor_end();
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Find in viewer:".to_string(),
@@ -148,6 +155,7 @@ pub(crate) fn handle_viewer_mode(
             _ => {}
         }
     } else {
+        *image_preview_loader = None;
         state.mode = AppMode::Normal;
     }
 }
@@ -167,19 +175,13 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_he
             if state.search_query.is_empty() {
                 clear_search_state(state, visible);
             } else {
-                let filter_query = Some(state.search_query.clone());
-                let panel = state.active_panel_mut();
-                panel.set_filter(filter_query);
-                panel_ops::rebuild_visible_entries(panel, visible);
+                apply_search_filter(state, visible);
             }
         }
         KeyCode::Char(c) => {
             state.search_query.push(c);
             state.search_cursor = state.search_query.len();
-            let filter_query = state.search_query.clone();
-            let panel = state.active_panel_mut();
-            panel.set_filter(Some(filter_query));
-            panel_ops::rebuild_visible_entries(panel, visible);
+            apply_search_filter(state, visible);
         }
         _ => {}
     }
