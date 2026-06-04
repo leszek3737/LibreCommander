@@ -115,14 +115,13 @@ fn handle_f12_key(state: &mut AppState) {
     }
     let paths = selected_or_current_paths(state);
     if !paths.is_empty() {
-        let dest_input = lc::app::types::TextInput {
-            text: String::new(),
-            cursor: 0,
-        };
-        state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveCreate {
-            sources: paths,
-            dest_input,
-        });
+        let dest_input = lc::app::types::TextInput::new();
+        state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveCreate(Box::new(
+            lc::app::types::ArchiveCreateDetails {
+                sources: paths,
+                dest_input,
+            },
+        )));
         return;
     }
     state.picker_selected = 0;
@@ -390,15 +389,16 @@ pub(crate) fn show_archive_dialog(state: &mut AppState) {
         }
     };
     let path_str = state.active_panel().path().display().to_string();
-    let dest_input = lc::app::types::TextInput {
-        text: path_str.clone(),
-        cursor: path_str.len(),
-    };
-    state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveExtract {
-        source,
-        entries,
-        dest_input,
-    });
+    let mut dest_input = lc::app::types::TextInput::new();
+    dest_input.text = path_str;
+    dest_input.cursor_end();
+    state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveExtract(Box::new(
+        lc::app::types::ArchiveExtractDetails {
+            source,
+            entries,
+            dest_input,
+        },
+    )));
 }
 
 pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_height: u16) {
@@ -442,16 +442,18 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             if let Some(entry) = state.active_panel().current_entry()
                 && entry.name != ".."
             {
-                state.mode = AppMode::Dialog(lc::app::types::DialogKind::Properties {
-                    name: entry.name.clone(),
-                    size: entry.size(),
-                    mtime: entry.mtime(),
-                    permissions: entry.mode_bits(),
-                    owner: entry.owner.to_string(),
-                    group: entry.group.to_string(),
-                    is_dir: entry.is_dir(),
-                    is_symlink: entry.is_symlink(),
-                });
+                state.mode = AppMode::Dialog(lc::app::types::DialogKind::Properties(Box::new(
+                    lc::app::types::PropertiesDetails {
+                        name: entry.name.clone(),
+                        size: entry.size(),
+                        mtime: entry.mtime(),
+                        permissions: entry.mode_bits(),
+                        owner: entry.owner.to_string(),
+                        group: entry.group.to_string(),
+                        is_dir: entry.is_dir(),
+                        is_symlink: entry.is_symlink(),
+                    },
+                )));
             }
         }
         KeyCode::Backspace => {

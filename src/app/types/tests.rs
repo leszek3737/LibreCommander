@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
-use super::dialogs::{ConfirmDetails, DialogKind, InputAction, PickerKind};
+use super::dialogs::{ConfirmDetails, CopyMoveDetails, DialogKind, InputAction, PickerKind};
 use super::file_entry::{FileCategory, FileEntry};
 use super::modes::AppMode;
 use super::panel::{ActivePanel, PanelState};
@@ -9,56 +9,7 @@ use super::sorting::{ListingMode, SortMode, SortOptions};
 use super::text_input::TextInput;
 
 use crate::app::types::app_state::AppState;
-use crate::app::user_menu::MenuEntry;
 use crate::fs::cha::ChaKind;
-
-#[derive(Debug, Clone, PartialEq)]
-struct PanelsState {
-    left_panel: PanelState,
-    right_panel: PanelState,
-    active_panel: ActivePanel,
-}
-
-impl PanelsState {
-    fn new(current_dir: PathBuf) -> Self {
-        Self {
-            left_panel: PanelState::new(current_dir.clone()),
-            right_panel: PanelState::new(current_dir),
-            active_panel: ActivePanel::Left,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-struct MenuState {
-    directory_hotlist: Vec<PathBuf>,
-    menu_selected: usize,
-    menu_item_selected: usize,
-    user_menu_entries: Vec<MenuEntry>,
-    menu_restore_panel: Option<ActivePanel>,
-}
-
-impl MenuState {
-    fn new(initial_hotlist_path: PathBuf) -> Self {
-        Self {
-            directory_hotlist: vec![initial_hotlist_path],
-            ..Self::default()
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-struct PickerState {
-    picker_selected: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-struct DirectoryTreeState {
-    tree_root: PathBuf,
-    tree_entries: Vec<crate::app::dir_tree::TreeEntry>,
-    tree_selected: usize,
-    tree_scroll: usize,
-}
 
 fn create_test_entry(
     name: &str,
@@ -80,6 +31,20 @@ fn create_test_entry(
         .owner("testuser")
         .group("testgroup")
         .build()
+}
+
+fn panel_with_n_entries(n: u32) -> PanelState {
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    for i in 0..n {
+        panel.listing.entries.push(create_test_entry(
+            &format!("file{}.txt", i),
+            false,
+            100,
+            0o644,
+            false,
+        ));
+    }
+    panel
 }
 
 #[test]
@@ -357,16 +322,7 @@ fn test_panel_state_move_cursor_down_at_bottom() {
 
 #[test]
 fn test_panel_state_move_cursor_down_scroll() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 4;
     panel.scroll_offset = 0;
     panel.move_cursor_down(5);
@@ -393,35 +349,38 @@ fn test_app_state_new() {
 
 #[test]
 fn test_app_state_substate_defaults() {
-    let current_dir = PathBuf::from("/tmp");
-    let panels = PanelsState::new(current_dir.clone());
-    let menu = MenuState::new(current_dir.clone());
+    let state = AppState::new();
 
-    assert_eq!(panels.left_panel.path(), current_dir);
-    assert_eq!(panels.right_panel.path(), PathBuf::from("/tmp"));
-    assert_eq!(panels.active_panel, ActivePanel::Left);
-    assert_eq!(menu.directory_hotlist, vec![PathBuf::from("/tmp")]);
-    assert_eq!(TextInput::default().cursor, 0);
-    assert_eq!(PickerState::default().picker_selected, 0);
-    assert!(DirectoryTreeState::default().tree_entries.is_empty());
+    assert_eq!(state.active_panel, ActivePanel::Left);
+    assert_eq!(state.mode, AppMode::Normal);
+    assert!(!state.should_quit);
+    assert!(state.status_message.is_none());
+    assert_eq!(state.dialog_input.cursor, 0);
+    assert_eq!(state.picker_selected, 0);
+    assert_eq!(state.menu_selected, 0);
+    assert_eq!(state.menu_item_selected, 0);
+    assert!(state.tree_entries.is_empty());
+    assert!(state.user_menu_entries.is_empty());
+    assert_eq!(state.directory_hotlist.len(), 1);
 }
 
 #[test]
 fn test_text_input_mutations_clamp_cursor() {
-    let mut input = TextInput {
-        text: "ąb".to_string(),
-        cursor: 99,
-    };
+    let mut input = TextInput::new();
+    input.text = "ąb".to_string();
+    input.recompute_grapheme_count();
+    input.cursor = 99;
 
     assert!(input.backspace());
     assert_eq!(input.text, "ą");
     assert_eq!(input.cursor, 1);
 
-    assert!(input.insert_char('x'));
+    input.insert_char('x');
     assert_eq!(input.text, "ąx");
     assert_eq!(input.cursor, 2);
 
     input.cursor = 99;
+    input.recompute_grapheme_count();
     assert!(input.delete_word_backward());
     assert_eq!(input.text, "");
     assert_eq!(input.cursor, 0);
@@ -478,13 +437,12 @@ fn test_app_state_inactive_panel_right() {
 fn test_dialog_kind_confirm() {
     let details = ConfirmDetails::simple("Confirm", "Are you sure?");
     let dialog = DialogKind::Confirm(details);
-    if let DialogKind::Confirm(cd) = dialog {
-        assert_eq!(cd.title, "Confirm");
-        assert_eq!(cd.message, "Are you sure?");
-        assert!(cd.files.is_none());
-    } else {
+    let DialogKind::Confirm(cd) = dialog else {
         panic!("Expected Confirm variant");
-    }
+    };
+    assert_eq!(cd.title, "Confirm");
+    assert_eq!(cd.message, "Are you sure?");
+    assert!(cd.files.is_none());
 }
 
 #[test]
@@ -516,22 +474,20 @@ fn test_dialog_kind_input() {
         prompt: "Enter name:".to_string(),
         action: InputAction::Rename,
     };
-    if let DialogKind::Input { prompt, action } = dialog {
-        assert_eq!(prompt, "Enter name:");
-        assert_eq!(action, InputAction::Rename);
-    } else {
+    let DialogKind::Input { prompt, action } = dialog else {
         panic!("Expected Input variant");
-    }
+    };
+    assert_eq!(prompt, "Enter name:");
+    assert_eq!(action, InputAction::Rename);
 }
 
 #[test]
 fn test_dialog_kind_error() {
     let dialog = DialogKind::Error("Error occurred".to_string());
-    if let DialogKind::Error(msg) = dialog {
-        assert_eq!(msg, "Error occurred");
-    } else {
+    let DialogKind::Error(msg) = dialog else {
         panic!("Expected Error variant");
-    }
+    };
+    assert_eq!(msg, "Error occurred");
 }
 
 #[test]
@@ -541,46 +497,39 @@ fn test_dialog_kind_progress() {
         progress_fraction: 0.5,
         cancellable: true,
     };
-    if let DialogKind::Progress {
+    let DialogKind::Progress {
         message,
         progress_fraction,
         cancellable,
     } = dialog
-    {
-        assert_eq!(message, "Copying...");
-        assert_eq!(progress_fraction, 0.5);
-        assert!(cancellable);
-    } else {
+    else {
         panic!("Expected Progress variant");
-    }
+    };
+    assert_eq!(message, "Copying...");
+    assert_eq!(progress_fraction, 0.5);
+    assert!(cancellable);
 }
 
 #[test]
 fn test_dialog_kind_copy_move() {
     let sources = vec![PathBuf::from("/source1"), PathBuf::from("/source2")];
     let dest = PathBuf::from("/dest");
-    let dialog = DialogKind::CopyMove {
+    let dialog = DialogKind::CopyMove(Box::new(CopyMoveDetails {
         source: sources.clone(),
         dest: dest.clone(),
         is_move: true,
         source_display: sources.iter().map(|p| p.display().to_string()).collect(),
-    };
-    if let DialogKind::CopyMove {
-        source,
-        dest: d,
-        is_move,
-        source_display: sd,
-    } = dialog
-    {
-        assert_eq!(source, sources);
-        assert_eq!(d, dest);
-        assert!(is_move);
-        assert_eq!(sd.len(), 2);
-    } else {
+    }));
+    let DialogKind::CopyMove(details) = dialog else {
         panic!("Expected CopyMove variant");
-    }
+    };
+    assert_eq!(details.source, sources);
+    assert_eq!(details.dest, dest);
+    assert!(details.is_move);
+    assert_eq!(details.source_display.len(), 2);
 }
 
+// Smoke test: verifies PartialEq derivation
 #[test]
 fn test_app_mode_variants() {
     let normal = AppMode::Normal;
@@ -607,6 +556,7 @@ fn test_app_mode_variants() {
     assert_eq!(picker, AppMode::ListPicker(PickerKind::History));
 }
 
+// Smoke test: verifies PartialEq derivation
 #[test]
 fn test_active_panel_variants() {
     let left = ActivePanel::Left;
@@ -625,16 +575,7 @@ fn test_app_state_default() {
 
 #[test]
 fn test_panel_state_move_cursor_up_scroll_adjust() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 3;
     panel.scroll_offset = 5;
     panel.move_cursor_up(10);
@@ -644,16 +585,7 @@ fn test_panel_state_move_cursor_up_scroll_adjust() {
 
 #[test]
 fn test_panel_state_move_cursor_up_no_scroll_when_visible() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 5;
     panel.scroll_offset = 3;
     panel.move_cursor_up(10);
@@ -663,16 +595,7 @@ fn test_panel_state_move_cursor_up_no_scroll_when_visible() {
 
 #[test]
 fn test_panel_state_move_cursor_down_scroll_new_formula() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 6;
     panel.scroll_offset = 3;
     panel.move_cursor_down(4);
@@ -682,16 +605,7 @@ fn test_panel_state_move_cursor_down_scroll_new_formula() {
 
 #[test]
 fn test_panel_state_move_cursor_down_no_scroll_when_visible() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 3;
     panel.scroll_offset = 0;
     panel.move_cursor_down(5);
@@ -701,16 +615,7 @@ fn test_panel_state_move_cursor_down_no_scroll_when_visible() {
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_below() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 7;
     panel.scroll_offset = 2;
     panel.ensure_cursor_visible(4);
@@ -719,16 +624,7 @@ fn test_panel_state_ensure_cursor_visible_below() {
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_above() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 2;
     panel.scroll_offset = 5;
     panel.ensure_cursor_visible(4);
@@ -737,16 +633,7 @@ fn test_panel_state_ensure_cursor_visible_above() {
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_already_visible() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 4;
     panel.scroll_offset = 2;
     panel.ensure_cursor_visible(4);
@@ -755,16 +642,7 @@ fn test_panel_state_ensure_cursor_visible_already_visible() {
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_edge_case() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..10 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(10);
     panel.cursor = 6;
     panel.scroll_offset = 3;
     panel.ensure_cursor_visible(4);
@@ -929,16 +807,27 @@ fn test_panel_state_scroll_offset_with_many_entries() {
     panel.listing.entries = (0..100)
         .map(|i| create_test_entry(&format!("file{i:03}.txt"), false, 10, 0o644, false))
         .collect();
-    panel.cursor = 99;
 
     let visible_height = 20;
-    panel.move_cursor_down(visible_height);
 
-    assert_eq!(panel.cursor, 0);
-    assert_eq!(panel.scroll_offset, 0);
-    assert!(
-        panel.scroll_offset + visible_height > panel.cursor,
-        "cursor must be visible within scroll window"
+    // Non-wrapping: cursor near bottom of visible window, scroll advances
+    panel.cursor = 19;
+    panel.scroll_offset = 0;
+    panel.move_cursor_down(visible_height);
+    assert_eq!(panel.cursor, 20);
+    assert_eq!(
+        panel.scroll_offset, 1,
+        "scroll_offset must advance when cursor exits visible window"
+    );
+
+    // Advance further into the list
+    panel.cursor = 80;
+    panel.scroll_offset = 61;
+    panel.move_cursor_down(visible_height);
+    assert_eq!(panel.cursor, 81);
+    assert_eq!(
+        panel.scroll_offset, 62,
+        "scroll_offset must track cursor deeper in the list"
     );
 }
 

@@ -94,6 +94,12 @@ pub struct SubstContext<'a> {
 
 const NON_UTF8_ERR: &str = "non-UTF-8 path not supported in menu";
 
+const INDENT_CHARS: &[char] = &['\t', ' ', '+'];
+
+fn non_utf8_err() -> String {
+    NON_UTF8_ERR.to_owned()
+}
+
 pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, String> {
     let mut out = String::with_capacity(cmd.len() * 2);
     let mut chars = cmd.chars().peekable();
@@ -111,21 +117,17 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
                     .current_file
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .ok_or_else(|| NON_UTF8_ERR.to_owned())?;
+                    .ok_or_else(non_utf8_err)?;
                 out.push_str(&safe_file_arg(name));
             }
             Some('d') => {
                 out.push_str(&shell_quote(
-                    ctx.active_dir
-                        .to_str()
-                        .ok_or_else(|| NON_UTF8_ERR.to_owned())?,
+                    ctx.active_dir.to_str().ok_or_else(non_utf8_err)?,
                 ));
             }
             Some('D') => {
                 out.push_str(&shell_quote(
-                    ctx.other_dir
-                        .to_str()
-                        .ok_or_else(|| NON_UTF8_ERR.to_owned())?,
+                    ctx.other_dir.to_str().ok_or_else(non_utf8_err)?,
                 ));
             }
             Some('t' | 's') => {
@@ -134,7 +136,7 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
                         .current_file
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .ok_or_else(|| NON_UTF8_ERR.to_owned())?;
+                        .ok_or_else(non_utf8_err)?;
                     out.push_str(&safe_file_arg(name));
                 } else {
                     let quoted: Result<Vec<String>, String> = ctx
@@ -155,11 +157,13 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
 }
 
 fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
+    // Root path "/" has no parent; use the full path as-is since strip_prefix
+    // cannot produce a relative name and file_name() returns None for "/".
     if path.is_absolute() && path.parent().is_none() {
         return path
             .to_str()
             .map(ToOwned::to_owned)
-            .ok_or_else(|| NON_UTF8_ERR.to_owned());
+            .ok_or_else(non_utf8_err);
     }
     path.strip_prefix(active_dir)
         .ok()
@@ -171,12 +175,57 @@ fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
                 .and_then(|name| name.to_str())
                 .map(ToOwned::to_owned)
         })
-        .ok_or_else(|| NON_UTF8_ERR.to_owned())
+        .ok_or_else(non_utf8_err)
 }
 
 /// Parse the menu file content and return all entries.
 pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
     parse_menu_with_warnings(content).entries
+}
+
+struct BodyCollectResult {
+    body_lines: Vec<String>,
+    condition: Option<ConditionParseResult>,
+    condition_line: usize,
+}
+
+fn collect_body_lines(
+    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
+    initial_condition: Option<ConditionParseResult>,
+    initial_condition_line: usize,
+) -> BodyCollectResult {
+    let mut body_lines: Vec<String> = Vec::new();
+    let mut condition = initial_condition;
+    let mut condition_line = initial_condition_line;
+
+    while let Some((_, next)) = lines.peek() {
+        let trimmed = next.trim();
+        if trimmed.is_empty() {
+            let _ = lines.next();
+            break;
+        }
+        if is_condition_line(next) {
+            let Some((cond_line_idx, cond_line)) = lines.next() else {
+                break;
+            };
+            let new_cond = parse_condition(cond_line.trim());
+            condition = merge_conditions(condition.take(), new_cond);
+            condition_line = cond_line_idx + 1;
+            continue;
+        }
+        if let Some(rest) = next.strip_prefix(INDENT_CHARS) {
+            body_lines.push(rest.to_string());
+            let _ = lines.next();
+        } else {
+            break;
+        }
+    }
+
+    BodyCollectResult {
+        body_lines,
+        condition,
+        condition_line,
+    }
 }
 
 /// Parse the menu file content and return entries plus non-fatal warnings.
@@ -218,35 +267,11 @@ pub fn parse_menu_with_warnings(content: &str) -> ParsedMenu {
             continue;
         }
 
-        // Collect indented body lines until a blank line or non-indented line.
-        let mut body_lines: Vec<String> = Vec::new();
-        // Collect trailing condition lines that follow the body.
-        let mut condition: Option<ConditionParseResult> = pending_condition.take();
-        let mut condition_line = pending_condition_line;
-
-        while let Some((_, next)) = lines.peek() {
-            let trimmed = next.trim();
-            if trimmed.is_empty() {
-                // Blank line ends the entry; consume it.
-                let _ = lines.next();
-                break;
-            }
-            if is_condition_line(next) {
-                let Some((cond_line_idx, cond_line)) = lines.next() else {
-                    break;
-                };
-                let new_cond = parse_condition(cond_line.trim());
-                condition = merge_conditions(condition.take(), new_cond);
-                condition_line = cond_line_idx + 1;
-                continue;
-            }
-            if let Some(rest) = next.strip_prefix(&['\t', ' ', '+'][..]) {
-                body_lines.push(rest.to_string());
-                let _ = lines.next();
-            } else {
-                break;
-            }
-        }
+        let result =
+            collect_body_lines(&mut lines, pending_condition.take(), pending_condition_line);
+        let body_lines = result.body_lines;
+        let condition = result.condition;
+        let condition_line = result.condition_line;
 
         if body_lines.is_empty() {
             continue;
@@ -314,6 +339,8 @@ fn merge_conditions(
 /// `None` if the line is empty or has no condition type.
 fn parse_condition(line: &str) -> Option<ConditionParseResult> {
     // Strip leading `+` and whitespace.
+    // Defensive fallback: callers already verify the leading '+' via
+    // is_condition_line, but parse_condition may also be invoked directly.
     let rest = line.strip_prefix('+').unwrap_or(line).trim();
     let mut parts = rest.splitn(2, char::is_whitespace);
     match parts.next() {

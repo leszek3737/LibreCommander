@@ -4,7 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::shell;
-use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind};
+use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind, OverwriteConfirmDetails};
 use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::dialogs;
 use crate::ui::viewer;
@@ -241,7 +241,7 @@ fn handle_mouse_dialog(
         return handle_confirm_click(state, running_job, pos);
     }
 
-    if let AppMode::Dialog(DialogKind::OverwriteConfirm { .. }) = state.mode {
+    if let AppMode::Dialog(DialogKind::OverwriteConfirm(..)) = state.mode {
         return handle_overwrite_click(state, running_job, pos);
     }
 
@@ -292,7 +292,9 @@ fn handle_confirm_click(
                 if state.pending_action.is_some() {
                     if let Some(conflicting) = check_overwrite_conflict(state) {
                         state.dialog_selection = 0;
-                        state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
+                        state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+                            OverwriteConfirmDetails { conflicting },
+                        )));
                         return Some(MouseOutcome::Consumed);
                     }
                     let status_message = state.status_message.take();

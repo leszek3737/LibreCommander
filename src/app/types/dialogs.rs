@@ -41,6 +41,44 @@ pub enum InputAction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CopyMoveDetails {
+    pub source: Vec<PathBuf>,
+    pub dest: PathBuf,
+    pub is_move: bool,
+    pub source_display: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PropertiesDetails {
+    pub name: String,
+    pub size: u64,
+    pub mtime: SystemTime,
+    pub permissions: u32,
+    pub owner: String,
+    pub group: String,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverwriteConfirmDetails {
+    pub conflicting: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveExtractDetails {
+    pub source: PathBuf,
+    pub entries: Vec<ArchiveEntry>,
+    pub dest_input: TextInput,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArchiveCreateDetails {
+    pub sources: Vec<PathBuf>,
+    pub dest_input: TextInput,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DialogKind {
     Confirm(ConfirmDetails),
     Input {
@@ -57,34 +95,11 @@ pub enum DialogKind {
         progress_fraction: f32,
         cancellable: bool,
     },
-    CopyMove {
-        source: Vec<PathBuf>,
-        dest: PathBuf,
-        is_move: bool,
-        source_display: Vec<String>,
-    },
-    Properties {
-        name: String,
-        size: u64,
-        mtime: SystemTime,
-        permissions: u32,
-        owner: String,
-        group: String,
-        is_dir: bool,
-        is_symlink: bool,
-    },
-    OverwriteConfirm {
-        conflicting: Vec<String>,
-    },
-    ArchiveExtract {
-        source: PathBuf,
-        entries: Vec<ArchiveEntry>,
-        dest_input: TextInput,
-    },
-    ArchiveCreate {
-        sources: Vec<PathBuf>,
-        dest_input: TextInput,
-    },
+    CopyMove(Box<CopyMoveDetails>),
+    Properties(Box<PropertiesDetails>),
+    OverwriteConfirm(Box<OverwriteConfirmDetails>),
+    ArchiveExtract(Box<ArchiveExtractDetails>),
+    ArchiveCreate(Box<ArchiveCreateDetails>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

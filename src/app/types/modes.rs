@@ -23,13 +23,17 @@ pub enum AppMode {
     DirectoryTree,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
+    #[default]
     Text,
     Hex,
     Image,
 }
 
+// TODO: Copy and Move share identical fields (sources, dest, overwrite).
+//       Extract into a shared struct (e.g. TransferAction) to reduce duplication.
+//       Not refactoring now — ~38 call sites would need updating.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingAction {
     Copy {
@@ -66,21 +70,16 @@ impl CompareMode {
             Self::Thorough => "Thorough",
         }
     }
-
-    const _ASSERT_COMPLETE: () = {
-        let _ = |m: Self| match m {
-            Self::Quick | Self::Size | Self::Thorough => {}
-        };
-    };
 }
 
 impl PendingAction {
-    pub fn set_overwrite(&mut self) {
+    pub fn set_overwrite(&mut self) -> bool {
         match self {
             Self::Copy { overwrite, .. } | Self::Move { overwrite, .. } => {
                 *overwrite = true;
+                true
             }
-            Self::Delete { .. } | Self::ExtractArchive { .. } | Self::CreateArchive { .. } => {}
+            Self::Delete { .. } | Self::ExtractArchive { .. } | Self::CreateArchive { .. } => false,
         }
     }
 }

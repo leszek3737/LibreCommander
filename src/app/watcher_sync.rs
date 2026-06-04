@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -78,83 +79,166 @@ fn canonical_desired_paths(left: &Path, right: &Path) -> HashSet<PathBuf> {
     desired
 }
 
-pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
+struct PanelCache {
+    path: PathBuf,
+    clean: PathBuf,
+    canonical: Option<PathBuf>,
+    canonical_clean: Option<PathBuf>,
+}
+
+impl PanelCache {
+    fn from_panel(panel: &PanelState) -> Self {
+        let clean = crate::fs::path::clean_path(panel.path());
+        let canonical = panel.canonical_path().map(Path::to_path_buf);
+        let canonical_clean = canonical.as_ref().map(|c| crate::fs::path::clean_path(c));
+        Self {
+            path: panel.path().to_path_buf(),
+            clean,
+            canonical,
+            canonical_clean,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DedupKind {
+    Upsert,
+    Remove,
+}
+
+struct AccumulatedChanges {
+    file_events: HashMap<PathBuf, DedupKind>,
+    left_dir_event: Option<DirEvent>,
+    right_dir_event: Option<DirEvent>,
+    overflow: bool,
+}
+
+enum DirEvent {
+    Delete,
+    Rename { to: PathBuf },
+    Touch,
+}
+
+fn drain_events(receiver: &Receiver<WatchEvent>) -> Vec<WatchEvent> {
     const MAX_WATCHER_EVENTS_PER_POLL: usize = 256;
-
-    let mut dirty = false;
-    let mut left_needs_full_refresh = false;
-    let mut right_needs_full_refresh = false;
-
+    let mut events = Vec::with_capacity(MAX_WATCHER_EVENTS_PER_POLL);
     for _ in 0..MAX_WATCHER_EVENTS_PER_POLL {
         let Ok(event) = receiver.try_recv() else {
             break;
         };
+        events.push(event);
+    }
+    events
+}
+
+fn accumulate_changes(
+    events: Vec<WatchEvent>,
+    left_cache: &PanelCache,
+    right_cache: &PanelCache,
+) -> AccumulatedChanges {
+    let mut changes = AccumulatedChanges {
+        file_events: HashMap::new(),
+        left_dir_event: None,
+        right_dir_event: None,
+        overflow: false,
+    };
+
+    for event in events {
         match event {
             WatchEvent::Created(path) | WatchEvent::Modified(path) => {
-                if event_is_panel_dir(&path, &state.left_panel) {
-                    left_needs_full_refresh = true;
-                    dirty = true;
+                if event_is_panel_dir_cached(&path, left_cache) {
+                    changes.left_dir_event = Some(DirEvent::Touch);
                 }
-                if event_is_panel_dir(&path, &state.right_panel) {
-                    right_needs_full_refresh = true;
-                    dirty = true;
+                if event_is_panel_dir_cached(&path, right_cache) {
+                    changes.right_dir_event = Some(DirEvent::Touch);
                 }
-                dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &path);
-                dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &path);
+                if path.file_name().is_some() {
+                    changes.file_events.insert(path, DedupKind::Upsert);
+                }
             }
             WatchEvent::Deleted(path) => {
-                if event_is_panel_dir(&path, &state.left_panel) {
-                    if let Some(parent) = state.left_panel.path().parent().map(Path::to_path_buf) {
-                        state.left_panel.set_path(parent);
-                    }
-                    left_needs_full_refresh = true;
-                    dirty = true;
+                if event_is_panel_dir_cached(&path, left_cache) {
+                    changes.left_dir_event = Some(DirEvent::Delete);
                 }
-                if event_is_panel_dir(&path, &state.right_panel) {
-                    if let Some(parent) = state.right_panel.path().parent().map(Path::to_path_buf) {
-                        state.right_panel.set_path(parent);
-                    }
-                    right_needs_full_refresh = true;
-                    dirty = true;
+                if event_is_panel_dir_cached(&path, right_cache) {
+                    changes.right_dir_event = Some(DirEvent::Delete);
                 }
-                dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &path);
-                dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &path);
+                if path.file_name().is_some() {
+                    changes.file_events.insert(path, DedupKind::Remove);
+                }
             }
             WatchEvent::Renamed { from, to } => {
-                if event_is_panel_dir(&from, &state.left_panel) {
-                    state.left_panel.set_path(to.clone());
-                    left_needs_full_refresh = true;
-                    dirty = true;
+                if event_is_panel_dir_cached(&from, left_cache) {
+                    changes.left_dir_event = Some(DirEvent::Rename { to: to.clone() });
                 }
-                if event_is_panel_dir(&from, &state.right_panel) {
-                    state.right_panel.set_path(to.clone());
-                    right_needs_full_refresh = true;
-                    dirty = true;
+                if event_is_panel_dir_cached(&from, right_cache) {
+                    changes.right_dir_event = Some(DirEvent::Rename { to: to.clone() });
                 }
-                if event_is_panel_dir(&to, &state.left_panel)
-                    || event_is_panel_dir(&to, &state.right_panel)
+                if event_is_panel_dir_cached(&to, left_cache)
+                    || event_is_panel_dir_cached(&to, right_cache)
                 {
-                    dirty = true;
+                    if changes.left_dir_event.is_none() {
+                        changes.left_dir_event = Some(DirEvent::Touch);
+                    }
+                    if changes.right_dir_event.is_none() {
+                        changes.right_dir_event = Some(DirEvent::Touch);
+                    }
                 }
-                dirty |= apply_watcher_remove_if_matches(&mut state.left_panel, &from);
-                dirty |= apply_watcher_remove_if_matches(&mut state.right_panel, &from);
-                dirty |= apply_watcher_upsert_if_matches(&mut state.left_panel, &to);
-                dirty |= apply_watcher_upsert_if_matches(&mut state.right_panel, &to);
+                if from.file_name().is_some() {
+                    changes.file_events.insert(from, DedupKind::Remove);
+                }
+                if to.file_name().is_some() {
+                    changes.file_events.insert(to, DedupKind::Upsert);
+                }
             }
             WatchEvent::Overflow => {
-                left_needs_full_refresh = true;
-                right_needs_full_refresh = true;
-                dirty = true;
+                changes.overflow = true;
             }
         }
     }
 
-    if left_needs_full_refresh {
-        full_refresh_panel(&mut state.left_panel);
+    changes
+}
+
+fn apply_panel_changes(
+    state: &mut AppState,
+    changes: &AccumulatedChanges,
+    left_cache: &PanelCache,
+    right_cache: &PanelCache,
+) -> bool {
+    let mut dirty = !changes.file_events.is_empty()
+        || changes.left_dir_event.is_some()
+        || changes.right_dir_event.is_some()
+        || changes.overflow;
+
+    apply_dir_event(
+        &mut state.left_panel,
+        &changes.left_dir_event,
+        changes.overflow,
+    );
+    apply_dir_event(
+        &mut state.right_panel,
+        &changes.right_dir_event,
+        changes.overflow,
+    );
+
+    let left_needs_full_refresh = changes.left_dir_event.is_some() || changes.overflow;
+    let right_needs_full_refresh = changes.right_dir_event.is_some() || changes.overflow;
+
+    let left_refreshed = apply_file_events(&mut state.left_panel, &changes.file_events, left_cache);
+    let right_refreshed =
+        apply_file_events(&mut state.right_panel, &changes.file_events, right_cache);
+
+    if left_needs_full_refresh || right_needs_full_refresh {
+        full_refresh_panels(
+            &mut state.left_panel,
+            &mut state.right_panel,
+            left_needs_full_refresh,
+            right_needs_full_refresh,
+        );
     }
-    if right_needs_full_refresh {
-        full_refresh_panel(&mut state.right_panel);
-    }
+
+    dirty |= left_refreshed || right_refreshed;
 
     if state.left_panel.listing.needs_rebuild {
         state.left_panel.listing.needs_rebuild = false;
@@ -168,6 +252,135 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
     }
 
     dirty
+}
+
+fn apply_dir_event(panel: &mut PanelState, dir_event: &Option<DirEvent>, overflow: bool) {
+    if overflow {
+        return;
+    }
+    let Some(dir_event) = dir_event else {
+        return;
+    };
+    match dir_event {
+        DirEvent::Delete => {
+            if let Some(parent) = panel.path().parent().map(Path::to_path_buf) {
+                panel.set_path(parent);
+            }
+        }
+        DirEvent::Rename { to } => {
+            panel.set_path(to.clone());
+        }
+        DirEvent::Touch => {}
+    }
+}
+
+fn apply_file_events(
+    panel: &mut PanelState,
+    file_events: &HashMap<PathBuf, DedupKind>,
+    cache: &PanelCache,
+) -> bool {
+    let mut dirty = false;
+    for (path, kind) in file_events {
+        dirty |= match kind {
+            DedupKind::Upsert => apply_upsert_cached(panel, path, cache),
+            DedupKind::Remove => apply_remove_cached(panel, path, cache),
+        };
+    }
+    dirty
+}
+
+fn apply_upsert_cached(panel: &mut PanelState, path: &Path, cache: &PanelCache) -> bool {
+    if !path_parent_matches_cached(path, cache) {
+        return false;
+    }
+    let Some(path) = panel_event_path(panel, path) else {
+        return false;
+    };
+    apply_watcher_upsert(panel, &path)
+}
+
+fn apply_remove_cached(panel: &mut PanelState, path: &Path, cache: &PanelCache) -> bool {
+    if !path_parent_matches_cached(path, cache) {
+        return false;
+    }
+    let Some(path) = panel_event_path(panel, path) else {
+        return false;
+    };
+    apply_watcher_remove(panel, &path)
+}
+
+fn full_refresh_panels(
+    left: &mut PanelState,
+    right: &mut PanelState,
+    left_needs: bool,
+    right_needs: bool,
+) {
+    let same_dir = left.path() == right.path();
+    if same_dir && left_needs && right_needs {
+        match reader::read_directory(left.path()) {
+            Ok((entries, errors)) => {
+                apply_shared_read_result(left, &entries, &errors);
+                apply_shared_read_result(right, &entries, &errors);
+            }
+            Err(err) => {
+                apply_read_error(left, &err);
+                apply_read_error(right, &err);
+            }
+        }
+    } else {
+        if left_needs {
+            full_refresh_panel(left);
+        }
+        if right_needs {
+            full_refresh_panel(right);
+        }
+    }
+}
+
+fn apply_shared_read_result(
+    panel: &mut PanelState,
+    entries: &[crate::app::types::FileEntry],
+    errors: &[std::io::Error],
+) {
+    let current_name = panel
+        .listing
+        .entries
+        .get(panel.cursor)
+        .filter(|entry| entry.name != "..")
+        .map(|entry| entry.name.clone());
+    let saved: HashSet<PathBuf> = panel
+        .selected_entries()
+        .into_iter()
+        .map(|e| e.path.clone())
+        .collect();
+
+    update_panel_read_errors(panel, errors);
+    panel.listing.set_unfiltered(entries.to_vec());
+    panel.set_canonical_path(panel.path().canonicalize().ok());
+    for entry in &mut panel.listing.unfiltered_entries {
+        entry.selected = saved.contains(&entry.path);
+    }
+    rebuild_visible_entries(panel, current_name.as_deref());
+}
+
+fn apply_read_error(panel: &mut PanelState, err: &std::io::Error) {
+    panel.listing.clear();
+    panel.cursor = 0;
+    panel.scroll_offset = 0;
+    panel.set_last_error(Some(err.to_string()));
+    panel.recalculate_selection_stats();
+}
+
+pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>) -> bool {
+    let events = drain_events(receiver);
+    if events.is_empty() {
+        return false;
+    }
+
+    let left_cache = PanelCache::from_panel(&state.left_panel);
+    let right_cache = PanelCache::from_panel(&state.right_panel);
+    let changes = accumulate_changes(events, &left_cache, &right_cache);
+    apply_panel_changes(state, &changes, &left_cache, &right_cache)
 }
 
 pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
@@ -196,40 +409,38 @@ fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
     path.file_name().map(|name| panel.path().join(name))
 }
 
-fn event_is_panel_dir(path: &Path, panel: &PanelState) -> bool {
-    if path == panel.path() {
+fn event_is_panel_dir_cached(path: &Path, cache: &PanelCache) -> bool {
+    if path == cache.path {
         return true;
     }
 
-    if path.parent() == Some(panel.path()) {
+    if path.parent() == Some(cache.path.as_path()) {
         return false;
     }
 
-    let panel_clean = crate::fs::path::clean_path(panel.path());
-    if path == panel_clean {
+    if path == cache.clean {
         return true;
     }
 
-    if let Some(c) = panel.canonical_path() {
+    if let Some(ref c) = cache.canonical {
         if path == c {
             return true;
         }
-        return path.canonicalize().is_ok_and(|p| p == c);
+        return path.canonicalize().is_ok_and(|p| p == *c);
     }
 
     let path_canonical = path.canonicalize().ok();
-    if path_canonical.as_ref().is_some_and(|p| *p == *panel_clean) {
+    if path_canonical.as_ref().is_some_and(|p| *p == cache.clean) {
         return true;
     }
 
-    let panel_resolved = panel.path().canonicalize().ok();
     path_canonical
         .as_ref()
-        .is_some_and(|pc| Some(pc) == panel_resolved.as_ref())
-        || panel_resolved.is_some_and(|pr| path == pr)
+        .is_some_and(|pc| Some(pc) == cache.canonical.as_ref())
+        || cache.canonical.as_ref().is_some_and(|pr| path == pr)
 }
 
-fn path_parent_matches(path: &Path, panel_path: &Path, panel_canonical: Option<&Path>) -> bool {
+fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {
     if path.file_name().is_none() {
         return false;
     }
@@ -238,29 +449,40 @@ fn path_parent_matches(path: &Path, panel_path: &Path, panel_canonical: Option<&
         return false;
     };
 
-    if parent == panel_path {
+    if parent == cache.path {
         return true;
     }
 
-    if panel_canonical == Some(parent) {
+    if cache.canonical.as_deref() == Some(parent) {
         return true;
     }
 
     let parent_clean = crate::fs::path::clean_path(parent);
-    let panel_clean = crate::fs::path::clean_path(panel_path);
 
-    if parent_clean == panel_clean {
+    if parent_clean == cache.clean {
         return true;
     }
 
-    if let Some(canonical) = panel_canonical {
-        let canonical_clean = crate::fs::path::clean_path(canonical);
-        if parent_clean == canonical_clean {
-            return true;
-        }
+    if let Some(ref canonical_clean) = cache.canonical_clean
+        && parent_clean == *canonical_clean
+    {
+        return true;
     }
 
     false
+}
+
+fn path_parent_matches(path: &Path, panel_path: &Path, panel_canonical: Option<&Path>) -> bool {
+    let clean = crate::fs::path::clean_path(panel_path);
+    let canonical = panel_canonical.map(|p| p.to_path_buf());
+    let canonical_clean = canonical.as_ref().map(|c| crate::fs::path::clean_path(c));
+    let cache = PanelCache {
+        path: panel_path.to_path_buf(),
+        clean,
+        canonical,
+        canonical_clean,
+    };
+    path_parent_matches_cached(path, &cache)
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
@@ -286,7 +508,7 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
     }
 
     reader::upsert_entry(panel, entry);
-    panel.listing.mark_dirty();
+    panel.mark_dirty();
     true
 }
 
@@ -295,7 +517,7 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     let existed = panel.listing.path_index.contains_key(path);
     if existed {
         reader::remove_entry(panel, path);
-        panel.listing.mark_dirty();
+        panel.mark_dirty();
     }
 
     existed

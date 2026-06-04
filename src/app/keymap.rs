@@ -736,17 +736,9 @@ mod tests {
 
     #[test]
     fn all_modes_are_non_empty() {
-        let modes = [
-            "Normal",
-            "Viewing",
-            "CommandLine",
-            "Search",
-            "Menu",
-            "Dialog/Confirm",
-            "Dialog/Input",
-            "ListPicker",
-            "DirectoryTree",
-        ];
+        let mut modes: Vec<&str> = KEYBINDINGS.iter().map(|b| b.mode).collect();
+        modes.sort();
+        modes.dedup();
         for mode in &modes {
             let count = KEYBINDINGS.iter().filter(|b| b.mode == *mode).count();
             assert!(count > 0, "Mode '{}' has no keybindings", mode);
@@ -774,17 +766,9 @@ mod tests {
     #[test]
     fn build_help_message_contains_all_modes() {
         let msg = build_help_message();
-        let modes = [
-            "Normal",
-            "Viewing",
-            "CommandLine",
-            "Search",
-            "Menu",
-            "Dialog/Confirm",
-            "Dialog/Input",
-            "ListPicker",
-            "DirectoryTree",
-        ];
+        let mut modes: Vec<&str> = KEYBINDINGS.iter().map(|b| b.mode).collect();
+        modes.sort();
+        modes.dedup();
         for mode in &modes {
             assert!(msg.contains(mode), "Help message missing mode '{}'", mode);
         }

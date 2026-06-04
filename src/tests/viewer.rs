@@ -46,9 +46,12 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
             prompt: "Viewer search:".to_string(),
             action: InputAction::ViewerSearch,
         }),
-        dialog_input: TextInput {
-            text: "needle".to_string(),
-            cursor: 6,
+        dialog_input: {
+            let mut ti = TextInput::new();
+            ti.text = "needle".to_string();
+            ti.recompute_grapheme_count();
+            ti.cursor = 6;
+            ti
         },
         prev_mode: Some(AppMode::Normal),
         ..Default::default()

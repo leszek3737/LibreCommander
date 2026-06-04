@@ -1,5 +1,6 @@
 use std::io;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crossterm::cursor::{Hide, Show};
@@ -37,19 +38,11 @@ fn leave_tui_stdout() -> io::Result<()> {
     match (raw_result, screen_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
-        (Err(raw_err), Err(screen_err)) => Err(io::Error::new(
-            raw_err.kind(),
-            format!("{raw_err}; {screen_err}"),
-        )),
+        (Err(raw_err), Err(screen_err)) => {
+            debug_log!("disable_raw_mode error suppressed: {raw_err}");
+            Err(screen_err)
+        }
     }
-}
-
-fn suspend_terminal_stdout() -> io::Result<()> {
-    leave_tui_stdout()
-}
-
-fn resume_terminal_stdout() -> io::Result<()> {
-    enter_tui_stdout()
 }
 
 struct TerminalRestoreGuard {
@@ -59,7 +52,7 @@ struct TerminalRestoreGuard {
 impl Drop for TerminalRestoreGuard {
     fn drop(&mut self) {
         if !self.already_restored
-            && let Err(err) = resume_terminal_stdout()
+            && let Err(err) = enter_tui_stdout()
         {
             debug_log!("Terminal restore failed: {err}");
         }
@@ -68,29 +61,46 @@ impl Drop for TerminalRestoreGuard {
 
 /// Returns `(shell_path, flag)` for spawning a shell command.
 ///
-/// On non-Windows, `for_menu` selects between `sh -c` (user menu) and
-/// `$SHELL -c` (interactive commands). On Windows the parameter is ignored —
-/// `COMSPEC` (falling back to `cmd.exe`) is always used with `/C`, because
-/// menu commands are also executed through `cmd`.
+/// On Windows the `for_menu` parameter is ignored — `COMSPEC` (falling back
+/// to `cmd.exe`) is always used with `/C`, because menu commands are also
+/// executed through `cmd`.
+///
+/// The result is cached in a `OnceLock` so the environment variable lookup
+/// happens at most once.
 #[cfg(windows)]
-fn get_shell(_for_menu: bool) -> (String, &'static str) {
-    let shell = std::env::var("COMSPEC")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("cmd.exe".to_string());
-    (shell, "/C")
+fn get_shell(_for_menu: bool) -> &'static (String, &'static str) {
+    static SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
+    SHELL.get_or_init(|| {
+        let shell = std::env::var("COMSPEC")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("cmd.exe".to_string());
+        (shell, "/C")
+    })
 }
 
+/// Returns `(shell_path, flag)` for spawning a shell command.
+///
+/// `for_menu` selects between `sh -c` (user menu) and `$SHELL -c`
+/// (interactive commands).
+///
+/// The result is cached in a `OnceLock` so the environment variable lookup
+/// happens at most once.
 #[cfg(not(windows))]
-fn get_shell(for_menu: bool) -> (String, &'static str) {
+fn get_shell(for_menu: bool) -> &'static (String, &'static str) {
+    static MENU_SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
+    static INTERACTIVE_SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
     if for_menu {
-        return ("sh".to_string(), "-c");
+        MENU_SHELL.get_or_init(|| ("sh".to_string(), "-c"))
+    } else {
+        INTERACTIVE_SHELL.get_or_init(|| {
+            let shell = std::env::var("SHELL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("sh".to_string());
+            (shell, "-c")
+        })
     }
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("sh".to_string());
-    (shell, "-c")
 }
 
 pub fn push_history(state: &mut AppState, cmd: &str) {
@@ -114,7 +124,7 @@ pub fn run_shell_command(
         return;
     }
 
-    if suspend_terminal_stdout().is_err() {
+    if leave_tui_stdout().is_err() {
         state.status_message = Some("Terminal suspend failed".into());
         return;
     }
@@ -124,8 +134,8 @@ pub fn run_shell_command(
         already_restored: false,
     };
     let (shell, flag) = get_shell(for_menu);
-    let status = Command::new(&shell)
-        .arg(flag)
+    let status = Command::new(shell)
+        .arg(*flag)
         .arg(cmd)
         .current_dir(state.active_panel().path())
         .stdin(Stdio::inherit())
@@ -142,7 +152,7 @@ pub fn run_shell_command(
     let mut buf = String::new();
     // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for.
     let _ = io::stdin().read_line(&mut buf);
-    match resume_terminal_stdout() {
+    match enter_tui_stdout() {
         Ok(()) => restore_guard.already_restored = true,
         Err(e) => {
             state.status_message = Some(format!("Terminal restore failed: {e}"));
@@ -151,20 +161,20 @@ pub fn run_shell_command(
     refresh_active(state);
 }
 
-/// Toggle external panel view (Ctrl+O) - hide panels to see terminal output.
+/// Toggle external panel view (Ctrl+O / Ctrl+C) - hide panels to see terminal output.
 #[allow(clippy::print_stdout)]
 pub fn toggle_external_view(
     state: &mut AppState,
     mut refresh_both: impl FnMut(&mut AppState),
 ) -> io::Result<()> {
-    suspend_terminal_stdout()?;
+    leave_tui_stdout()?;
 
     let mut restore_guard = TerminalRestoreGuard {
         already_restored: false,
     };
 
     // Show message to user.
-    println!("External view active. Press Enter/Esc/Ctrl+O to return to Libre Commander.");
+    println!("External view active. Press Enter/Esc/Ctrl+O/Ctrl+C to return to Libre Commander.");
 
     // Wait for Ctrl+O or any key.
     enable_raw_mode()?;
@@ -185,19 +195,18 @@ pub fn toggle_external_view(
         Ok(())
     })();
     let raw_result = disable_raw_mode();
-    if let Err(wait_err) = wait_result {
-        let reported = match raw_result {
-            Err(raw_err) => io::Error::new(raw_err.kind(), format!("{raw_err}; {wait_err}")),
-            Ok(()) => wait_err,
-        };
-        return Err(reported);
-    }
-    raw_result?;
 
-    resume_terminal_stdout()?;
+    let resume_result = enter_tui_stdout();
     restore_guard.already_restored = true;
 
-    // Refresh display.
+    let err = resume_result
+        .err()
+        .or(raw_result.err())
+        .or(wait_result.err());
+    if let Some(e) = err {
+        return Err(e);
+    }
+
     refresh_both(state);
 
     Ok(())

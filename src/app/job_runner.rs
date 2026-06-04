@@ -30,7 +30,7 @@ pub struct RunningJob {
 
 impl RunningJob {
     pub fn shutdown(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take()
             && let Err(e) = handle.join()
         {
@@ -41,28 +41,23 @@ impl RunningJob {
 
 impl Drop for RunningJob {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
             let _ = std::thread::Builder::new()
                 .name("job-reaper".into())
                 .spawn(move || {
-                    let (tx, rx) = mpsc::channel();
-                    let _ = std::thread::Builder::new()
-                        .name("join-waiter".into())
-                        .spawn(move || {
-                            let result = handle.join();
-                            let _ = tx.send(result);
-                        });
-                    match rx.recv_timeout(Duration::from_secs(5)) {
-                        Ok(Err(e)) => {
+                    let deadline = Duration::from_secs(5);
+                    let poll_interval = Duration::from_millis(50);
+                    let start = std::time::Instant::now();
+                    while !handle.is_finished() && start.elapsed() < deadline {
+                        std::thread::sleep(poll_interval);
+                    }
+                    if handle.is_finished() {
+                        if let Err(e) = handle.join() {
                             debug_log!("worker thread panicked during tear-down: {:?}", e);
                         }
-                        Err(_) => {
-                            debug_log!(
-                                "worker thread did not finish within 5 s — abandoning reaper"
-                            );
-                        }
-                        Ok(Ok(())) => {}
+                    } else {
+                        debug_log!("worker thread did not finish within 5 s — detaching reaper");
                     }
                 });
         }
@@ -80,7 +75,7 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     };
 
     let action_label = action_label(&action);
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(128);
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_worker = Arc::clone(&cancel);
     let handle = thread::spawn(move || {
@@ -172,8 +167,7 @@ pub fn poll_running_job(
             }
             JobMessage::Finished { report } => {
                 if let Some(progress) = latest_progress.take() {
-                    let msg =
-                        format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
+                    let msg = format_progress_message(&progress, job.cancel.load(Ordering::SeqCst));
                     state.mode = AppMode::Dialog(DialogKind::Progress {
                         message: msg,
                         progress_fraction: progress.byte_percent() / 100.0,
@@ -190,7 +184,7 @@ pub fn poll_running_job(
     }
 
     if let Some(progress) = latest_progress {
-        let msg = format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
+        let msg = format_progress_message(&progress, job.cancel.load(Ordering::SeqCst));
         state.mode = AppMode::Dialog(DialogKind::Progress {
             message: msg,
             progress_fraction: progress.byte_percent() / 100.0,
@@ -276,7 +270,7 @@ fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool
             "{} / {} | {}/s",
             ops::batch::BatchProgress::format_bytes(progress.bytes_done),
             ops::batch::BatchProgress::format_bytes(progress.bytes_total),
-            ops::batch::BatchProgress::format_bytes(progress.speed() as u64),
+            ops::batch::BatchProgress::format_bytes(progress.speed().round() as u64),
         );
         if let Some(eta) = progress.eta() {
             buf.push_str(" | ETA ");

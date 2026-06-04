@@ -118,7 +118,7 @@ impl std::fmt::Display for FileSize {
         }
         if unit_idx > 0 {
             size_f = (size_f * 10.0).round() / 10.0;
-            if size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
+            while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
                 size_f /= BYTES_PER_UNIT;
                 unit_idx += 1;
             }
@@ -280,6 +280,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn build(self) -> FileEntry {
+        assert!(!self.name.is_empty(), "FileEntry name must not be empty");
         let (time_str, size_str, name_width, size_width, time_width) =
             FileEntry::cached_fields(&self.cha, &self.name);
         let category = compute_category(&self.cha, &self.name);
@@ -407,7 +408,6 @@ impl FileEntry {
     }
 
     pub fn display_modified(&self) -> String {
-        let mtime = self.cha.mtime.unwrap_or(std::time::UNIX_EPOCH);
-        format_time(mtime)
+        self.time_str.clone()
     }
 }

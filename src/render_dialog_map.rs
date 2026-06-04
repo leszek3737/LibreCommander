@@ -44,61 +44,54 @@ pub(super) fn to_ui_dialog<'a>(
             percent: *progress_fraction * 100.0,
             cancellable: *cancellable,
         },
-        app::types::DialogKind::CopyMove {
-            source,
-            dest,
-            is_move,
-            source_display,
-        } => {
-            let action = if *is_move { "Move" } else { "Copy" };
+        app::types::DialogKind::CopyMove(details) => {
+            let action = if details.is_move { "Move" } else { "Copy" };
             let msg = format!(
                 "{} {} item(s)\nfrom: {}\n  to: {}",
                 action,
-                source.len(),
-                source
+                details.source.len(),
+                details
+                    .source
                     .first()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
-                dest.display(),
+                details.dest.display(),
             );
             dialogs::DialogKind::Confirm {
-                title: Cow::Borrowed(if *is_move {
+                title: Cow::Borrowed(if details.is_move {
                     "Move Confirm"
                 } else {
                     "Copy Confirm"
                 }),
                 message: Cow::Owned(msg),
                 selection: state.dialog_selection,
-                files: Cow::Borrowed(source_display),
+                files: Cow::Borrowed(&details.source_display),
             }
         }
-        app::types::DialogKind::Properties { .. } => properties_to_ui_dialog(dialog_kind),
-        app::types::DialogKind::OverwriteConfirm { conflicting } => {
+        app::types::DialogKind::Properties(..) => properties_to_ui_dialog(dialog_kind),
+        app::types::DialogKind::OverwriteConfirm(details) => {
             dialogs::DialogKind::OverwriteConfirm {
                 selection: state.dialog_selection,
-                files: Cow::Borrowed(conflicting),
+                files: Cow::Borrowed(&details.conflicting),
             }
         }
-        app::types::DialogKind::ArchiveExtract {
-            source,
-            entries,
-            dest_input,
-        } => {
-            let info = format!("{}\n{} entries", source.display(), entries.len());
+        app::types::DialogKind::ArchiveExtract(details) => {
+            let info = format!(
+                "{}\n{} entries",
+                details.source.display(),
+                details.entries.len()
+            );
             dialogs::DialogKind::ArchiveExtract {
                 info: Cow::Owned(info),
-                dest_value: Cow::Borrowed(&dest_input.text),
-                dest_cursor: dest_input.cursor,
+                dest_value: Cow::Borrowed(&details.dest_input.text),
+                dest_cursor: details.dest_input.cursor,
                 selection: state.dialog_selection,
             }
         }
-        app::types::DialogKind::ArchiveCreate {
-            sources,
-            dest_input,
-        } => dialogs::DialogKind::ArchiveCreate {
-            source_count: sources.len(),
-            dest_value: Cow::Borrowed(&dest_input.text),
-            dest_cursor: dest_input.cursor,
+        app::types::DialogKind::ArchiveCreate(details) => dialogs::DialogKind::ArchiveCreate {
+            source_count: details.sources.len(),
+            dest_value: Cow::Borrowed(&details.dest_input.text),
+            dest_cursor: details.dest_input.cursor,
             selection: state.dialog_selection,
         },
     }
@@ -106,24 +99,15 @@ pub(super) fn to_ui_dialog<'a>(
 
 fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind<'_> {
     let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) = match dialog_kind {
-        app::types::DialogKind::Properties {
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            is_dir,
-            is_symlink,
-        } => (
-            name,
-            size,
-            mtime,
-            permissions,
-            owner,
-            group,
-            is_dir,
-            is_symlink,
+        app::types::DialogKind::Properties(details) => (
+            &details.name,
+            &details.size,
+            &details.mtime,
+            &details.permissions,
+            &details.owner,
+            &details.group,
+            &details.is_dir,
+            &details.is_symlink,
         ),
         _ => {
             return dialogs::DialogKind::Error {

@@ -124,7 +124,7 @@ fn menu_rename_confirms_and_renames_file() {
         })
     ));
     state.dialog_input.text = "new.txt".to_string();
-    state.dialog_input.cursor = state.dialog_input.text.len();
+    state.dialog_input.cursor_end();
 
     crate::input::dialogs::handle_dialog(
         &mut state,

@@ -112,21 +112,40 @@ pub fn category_from_ext(name: &str) -> FileCategory {
     crate::app::file_type::category(name, false, false, false)
 }
 
+fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
+    s.len() >= suffix.len() && s[s.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+}
+
 #[must_use]
 fn dotless_config_mime(name: &str) -> Option<&'static str> {
-    let lower = name.to_ascii_lowercase();
-    match lower.as_str() {
-        "makefile" => Some("text/x-makefile"),
-        "dockerfile" => Some("text/x-dockerfile"),
-        "vagrantfile" => Some("text/x-ruby"),
-        "rakefile" => Some("text/x-ruby"),
-        "gemfile" => Some("text/x-ruby"),
-        "justfile" => Some("text/x-justfile"),
-        "brewfile" => Some("text/x-ruby"),
-        "containerfile" => Some("text/x-dockerfile"),
-        "jenkinsfile" => Some("text/x-groovy"),
-        _ => None,
+    if name.eq_ignore_ascii_case("makefile") {
+        return Some("text/x-makefile");
     }
+    if name.eq_ignore_ascii_case("dockerfile") {
+        return Some("text/x-dockerfile");
+    }
+    if name.eq_ignore_ascii_case("vagrantfile") {
+        return Some("text/x-ruby");
+    }
+    if name.eq_ignore_ascii_case("rakefile") {
+        return Some("text/x-ruby");
+    }
+    if name.eq_ignore_ascii_case("gemfile") {
+        return Some("text/x-ruby");
+    }
+    if name.eq_ignore_ascii_case("justfile") {
+        return Some("text/x-justfile");
+    }
+    if name.eq_ignore_ascii_case("brewfile") {
+        return Some("text/x-ruby");
+    }
+    if name.eq_ignore_ascii_case("containerfile") {
+        return Some("text/x-dockerfile");
+    }
+    if name.eq_ignore_ascii_case("jenkinsfile") {
+        return Some("text/x-groovy");
+    }
+    None
 }
 
 #[must_use]
@@ -139,27 +158,29 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
         return Some(mime);
     }
 
-    let name = name.to_ascii_lowercase();
-
-    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+    if ends_with_ignore_ascii_case(name, ".tar.gz") || ends_with_ignore_ascii_case(name, ".tgz") {
         return Some("application/gzip");
     }
-    if name.ends_with(".tar.bz2") || name.ends_with(".tbz") || name.ends_with(".tbz2") {
+    if ends_with_ignore_ascii_case(name, ".tar.bz2")
+        || ends_with_ignore_ascii_case(name, ".tbz")
+        || ends_with_ignore_ascii_case(name, ".tbz2")
+    {
         return Some("application/x-bzip2");
     }
-    if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+    if ends_with_ignore_ascii_case(name, ".tar.xz") || ends_with_ignore_ascii_case(name, ".txz") {
         return Some("application/x-xz");
     }
 
-    let ext = name.rsplit_once('.')?.1;
-    image_mime(ext)
-        .or_else(|| video_mime(ext))
-        .or_else(|| audio_mime(ext))
-        .or_else(|| archive_mime(ext))
-        .or_else(|| document_mime(ext))
-        .or_else(|| config_mime(ext))
-        .or_else(|| code_mime(ext))
-        .or_else(|| font_mime(ext))
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+
+    image_mime(&ext)
+        .or_else(|| video_mime(&ext))
+        .or_else(|| audio_mime(&ext))
+        .or_else(|| archive_mime(&ext))
+        .or_else(|| document_mime(&ext))
+        .or_else(|| config_mime(&ext))
+        .or_else(|| code_mime(&ext))
+        .or_else(|| font_mime(&ext))
 }
 
 #[must_use]
@@ -338,7 +359,8 @@ fn code_mime(ext: &str) -> Option<&'static str> {
         "cs" => Some("text/x-csharp"),
         "lua" => Some("text/x-lua"),
         "pl" | "pm" => Some("text/x-perl"),
-        "r" | "jl" => Some("text/x-r"),
+        "r" => Some("text/x-r"),
+        "jl" => Some("text/x-julia"),
         "scala" | "sc" => Some("text/x-scala"),
         "clj" | "cljs" => Some("text/x-clojure"),
         "ex" | "exs" => Some("text/x-elixir"),
@@ -348,11 +370,13 @@ fn code_mime(ext: &str) -> Option<&'static str> {
         "nim" => Some("text/x-nim"),
         "zig" => Some("text/x-zig"),
         "dart" => Some("text/x-dart"),
-        "ps1" | "bat" | "cmd" => Some("text/x-shellscript"),
+        "ps1" => Some("text/x-shellscript"),
+        "bat" | "cmd" => Some("text/x-msdos-batch"),
         "scss" | "sass" | "less" => Some("text/x-scss"),
         "vue" => Some("text/x-vue"),
         "svelte" => Some("text/x-svelte"),
-        "m" | "mm" => Some("text/x-objective-c"),
+        "m" => Some("text/x-objective-c"),
+        "mm" => Some("text/x-objective-c++"),
         "fs" | "fsx" => Some("text/x-fsharp"),
         "vb" => Some("text/x-vb"),
         "v" | "sv" => Some("text/x-verilog"),

@@ -175,7 +175,9 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
         if state.pending_action.is_some() {
             if let Some(conflicting) = check_overwrite_conflict(state) {
                 state.dialog_selection = 0;
-                state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
+                state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+                    OverwriteConfirmDetails { conflicting },
+                )));
                 return;
             }
             start_confirmed_action(state, running_job);
@@ -479,16 +481,12 @@ fn handle_archive_extract_dialog(
             return;
         }
         KeyCode::Enter => {
-            let (source, dest_text) = if let AppMode::Dialog(DialogKind::ArchiveExtract {
-                ref source,
-                ref dest_input,
-                ..
-            }) = state.mode
-            {
-                (source.clone(), dest_input.text.clone())
-            } else {
-                return;
-            };
+            let (source, dest_text) =
+                if let AppMode::Dialog(DialogKind::ArchiveExtract(ref details)) = state.mode {
+                    (details.source.clone(), details.dest_input.text.clone())
+                } else {
+                    return;
+                };
             if dest_text.trim().is_empty() {
                 state.status_message = Some("Destination path cannot be empty".to_string());
                 return;
@@ -501,11 +499,8 @@ fn handle_archive_extract_dialog(
         }
         _ => {}
     }
-    if let AppMode::Dialog(DialogKind::ArchiveExtract {
-        ref mut dest_input, ..
-    }) = state.mode
-    {
-        apply_dialog_text_edit(dest_input, key);
+    if let AppMode::Dialog(DialogKind::ArchiveExtract(ref mut details)) = state.mode {
+        apply_dialog_text_edit(&mut details.dest_input, key);
     }
 }
 
@@ -528,15 +523,12 @@ fn handle_archive_create_dialog(
             return;
         }
         KeyCode::Enter => {
-            let (sources, dest_text) = if let AppMode::Dialog(DialogKind::ArchiveCreate {
-                ref sources,
-                ref dest_input,
-            }) = state.mode
-            {
-                (sources.clone(), dest_input.text.clone())
-            } else {
-                return;
-            };
+            let (sources, dest_text) =
+                if let AppMode::Dialog(DialogKind::ArchiveCreate(ref details)) = state.mode {
+                    (details.sources.clone(), details.dest_input.text.clone())
+                } else {
+                    return;
+                };
             if dest_text.trim().is_empty() {
                 state.status_message = Some("Archive path cannot be empty".to_string());
                 return;
@@ -557,11 +549,8 @@ fn handle_archive_create_dialog(
         }
         _ => {}
     }
-    if let AppMode::Dialog(DialogKind::ArchiveCreate {
-        ref mut dest_input, ..
-    }) = state.mode
-    {
-        apply_dialog_text_edit(dest_input, key);
+    if let AppMode::Dialog(DialogKind::ArchiveCreate(ref mut details)) = state.mode {
+        apply_dialog_text_edit(&mut details.dest_input, key);
     }
 }
 
@@ -575,23 +564,17 @@ fn handle_copymove_dialog(
     };
 
     if confirmed {
-        let action = if let AppMode::Dialog(DialogKind::CopyMove {
-            source,
-            dest,
-            is_move,
-            ..
-        }) = &state.mode
-        {
-            if *is_move {
+        let action = if let AppMode::Dialog(DialogKind::CopyMove(details)) = &state.mode {
+            if details.is_move {
                 PendingAction::Move {
-                    sources: source.clone(),
-                    dest: dest.clone(),
+                    sources: details.source.clone(),
+                    dest: details.dest.clone(),
                     overwrite: false,
                 }
             } else {
                 PendingAction::Copy {
-                    sources: source.clone(),
-                    dest: dest.clone(),
+                    sources: details.source.clone(),
+                    dest: details.dest.clone(),
                     overwrite: false,
                 }
             }
@@ -601,7 +584,9 @@ fn handle_copymove_dialog(
         state.pending_action = Some(action);
         if let Some(conflicting) = check_overwrite_conflict(state) {
             state.dialog_selection = 0;
-            state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm { conflicting });
+            state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+                OverwriteConfirmDetails { conflicting },
+            )));
             return;
         }
         start_confirmed_action(state, running_job);
@@ -690,19 +675,19 @@ pub(crate) fn handle_dialog(
         DialogKind::Progress { .. } => {
             handle_progress_dialog(state, running_job, key);
         }
-        DialogKind::Properties { .. } => {
+        DialogKind::Properties(..) => {
             handle_properties_dialog(state, key);
         }
-        DialogKind::CopyMove { .. } => {
+        DialogKind::CopyMove(..) => {
             handle_copymove_dialog(state, running_job, key);
         }
-        DialogKind::OverwriteConfirm { .. } => {
+        DialogKind::OverwriteConfirm(..) => {
             handle_overwrite_dialog(state, running_job, key);
         }
-        DialogKind::ArchiveExtract { .. } => {
+        DialogKind::ArchiveExtract(..) => {
             handle_archive_extract_dialog(state, running_job, key);
         }
-        DialogKind::ArchiveCreate { .. } => {
+        DialogKind::ArchiveCreate(..) => {
             handle_archive_create_dialog(state, running_job, key);
         }
         // unreachable: Help handled above; arm kept for match exhaustiveness
@@ -715,11 +700,12 @@ mod tests {
     use super::*;
 
     fn make_input_state(text: &str, cursor: usize) -> AppState {
+        let mut dialog_input = TextInput::new();
+        dialog_input.text = text.to_string();
+        dialog_input.recompute_grapheme_count();
+        dialog_input.cursor = cursor;
         AppState {
-            dialog_input: TextInput {
-                text: text.to_string(),
-                cursor,
-            },
+            dialog_input,
             ..Default::default()
         }
     }

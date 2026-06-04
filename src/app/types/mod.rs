@@ -11,7 +11,10 @@ mod text_input;
 mod tests;
 
 pub use app_state::AppState;
-pub use dialogs::{ConfirmDetails, DialogKind, InputAction, PickerKind};
+pub use dialogs::{
+    ArchiveCreateDetails, ArchiveExtractDetails, ConfirmDetails, CopyMoveDetails, DialogKind,
+    InputAction, OverwriteConfirmDetails, PickerKind, PropertiesDetails,
+};
 #[cfg(test)]
 pub(crate) use file_entry::sanitize_for_display;
 pub(crate) use file_entry::sanitize_name;

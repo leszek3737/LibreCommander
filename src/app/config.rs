@@ -23,13 +23,13 @@ pub struct PersistedPanel {
     pub show_permissions: bool,
 }
 
-// Falls back to default on invalid config values, logging via debug_log.
-// This runs during deserialization — in a TUI app eprintln! would corrupt
-// the alternate screen buffer. debug_log writes to a file instead.
 fn default_true() -> bool {
     true
 }
 
+// Falls back to default on invalid config values, logging via debug_log.
+// This runs during deserialization — in a TUI app eprintln! would corrupt
+// the alternate screen buffer. debug_log writes to a file instead.
 fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -146,6 +146,7 @@ impl From<PersistedSetup> for Settings {
                 .hotlist
                 .unwrap_or_default()
                 .iter()
+                .filter(|s| !s.trim().is_empty())
                 .map(|s| crate::fs::path::clean_path(&crate::fs::path::expand_path(s)))
                 .collect(),
         }
@@ -157,7 +158,7 @@ fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
         path: path_to_utf8_string(panel.path()),
         listing_mode: panel.listing_mode(),
         sort_mode: panel.sort_mode(),
-        filter: panel.filter().unwrap_or_default().to_string(),
+        filter: panel.filter().unwrap_or("").to_string(),
         show_hidden: panel.show_hidden(),
         show_permissions: panel.show_permissions(),
     }
@@ -209,7 +210,7 @@ pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
     let Some(raw) = read_config_raw()? else {
         return Ok(None);
     };
-    // TODO: clone is required because toml::Value only implements IntoDeserializer
+    // clone() is required because toml::Value only implements IntoDeserializer
     // for owned values, so we cannot deserialize from a reference.
     let setup: PersistedSetup = raw
         .clone()
@@ -254,7 +255,10 @@ fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml
 fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
     if let Some(ref path_str) = persisted.path {
         let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
-        let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let resolved = fs::canonicalize(&path).unwrap_or_else(|e| {
+            crate::debug_log!("config: canonicalize failed for {}: {e}", path.display());
+            path.clone()
+        });
         if resolved.is_dir() {
             panel.set_path(resolved.clone());
             panel.set_canonical_path(Some(resolved));
