@@ -16,6 +16,38 @@ use super::open::ViewerState;
 use super::scroll::{line_number_column_width, line_number_digits, paragraph_horizontal_scroll};
 use crate::ui::theme::{ColorPalette, Theme};
 
+const VIEWER_MARGIN: Margin = Margin {
+    horizontal: 0,
+    vertical: 1,
+};
+
+fn viewer_block<'a>(title: impl Into<Line<'a>>, colors: &ColorPalette) -> Block<'a> {
+    Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .style(Theme::panel_with_colors(colors))
+        .title(title)
+        .title_style(Theme::title_with_colors(colors))
+}
+
+fn viewer_content_areas(area: Rect) -> (Rect, Rect) {
+    let inner = area.inner(VIEWER_MARGIN);
+    let content = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(1),
+    };
+    (inner, content)
+}
+
+fn format_line_number(line_idx: usize, total_lines: usize) -> String {
+    format!(
+        "{:>width$}  ",
+        line_idx + 1,
+        width = line_number_digits(total_lines)
+    )
+}
+
 pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
     render_viewer_with_colors(f, area, state, &ColorPalette::default());
 }
@@ -97,40 +129,26 @@ pub fn render_viewer_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let block = Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel_with_colors(colors))
-        .title(state.file_path.display().to_string())
-        .title_style(Theme::title_with_colors(colors));
-    f.render_widget(block, area);
+    let title = state.file_path.display().to_string();
+    f.render_widget(viewer_block(title, colors), area);
 
-    let inner_area = area.inner(Margin {
-        horizontal: 0,
-        vertical: 1,
-    });
+    let (inner_area, content_area) = viewer_content_areas(area);
 
     if inner_area.height == 0 {
         return;
     }
 
-    let content_area = Rect {
-        x: inner_area.x,
-        y: inner_area.y,
-        width: inner_area.width,
-        height: inner_area.height.saturating_sub(1),
-    };
-
     if content_area.width == 0 {
         return;
     }
 
-    let mut lines: Vec<Line<'_>> = Vec::new();
-    let mut line_num_lines: Vec<Line<'_>> = Vec::new();
     let visible_height = content_area.height as usize;
-
     let use_visual = state.is_visual_scroll();
-
     let (start_idx, sub_row, end_idx) = compute_visible_range(state, visible_height);
+    let capacity = end_idx - start_idx;
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(capacity);
+    let mut line_num_lines: Vec<Line<'_>> = Vec::with_capacity(capacity);
 
     let separate_line_nums = !state.wrap_lines && state.show_line_numbers;
     let visible_matches = &state.search_matches_by_line;
@@ -154,19 +172,11 @@ pub fn render_viewer_with_colors(
         };
 
         if separate_line_nums {
-            let line_num = format!(
-                "{:>width$}  ",
-                i + 1,
-                width = line_number_digits(state.line_count)
-            );
+            let line_num = format_line_number(i, state.line_count);
             line_num_lines.push(Line::from(Span::raw(line_num)));
             lines.push(Line::from(text_spans));
         } else if state.show_line_numbers {
-            let line_num = format!(
-                "{:>width$}  ",
-                i + 1,
-                width = line_number_digits(state.line_count)
-            );
+            let line_num = format_line_number(i, state.line_count);
             let mut combined: Vec<Span<'_>> = Vec::with_capacity(text_spans.len() + 1);
             combined.push(Span::raw(line_num));
             combined.extend(text_spans);
@@ -207,27 +217,13 @@ pub fn render_hex_view_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let block = Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel_with_colors(colors))
-        .title(format!("{} [Hex]", state.file_path.display()))
-        .title_style(Theme::title_with_colors(colors));
-    f.render_widget(block, area);
+    let title = format!("{} [Hex]", state.file_path.display());
+    f.render_widget(viewer_block(title, colors), area);
 
-    let inner_area = area.inner(Margin {
-        horizontal: 0,
-        vertical: 1,
-    });
+    let (inner_area, content_area) = viewer_content_areas(area);
     if inner_area.height == 0 {
         return;
     }
-
-    let content_area = Rect {
-        x: inner_area.x,
-        y: inner_area.y,
-        width: inner_area.width,
-        height: inner_area.height.saturating_sub(1),
-    };
 
     let bytes = &state.raw_bytes;
     let bytes_per_line = HEX_BYTES_PER_LINE;
@@ -244,11 +240,12 @@ pub fn render_hex_view_with_colors(
     let mut match_start =
         visible_matches.partition_point(|line_match| line_match.line < start_line);
 
+    let mut hex_line = String::with_capacity(128);
     for line_idx in start_line..end_line {
+        hex_line.clear();
         let offset = line_idx * bytes_per_line;
         let slice_len = (bytes.len() - offset).min(bytes_per_line);
         let slice = &bytes[offset..offset + slice_len];
-        let mut hex_line = String::with_capacity(128);
         format_hex_line_to_buffer(offset, slice, &mut hex_line);
 
         let line_match_start = match_start;
@@ -258,7 +255,7 @@ pub fn render_hex_view_with_colors(
         let line_matches = &visible_matches[line_match_start..match_start];
 
         let spans: Vec<Span<'_>> = if line_matches.is_empty() {
-            vec![Span::raw(hex_line)]
+            vec![Span::raw(hex_line.clone())]
         } else {
             let highlighted =
                 format_line_with_highlight(&hex_line, line_matches, state.current_match, colors);
@@ -289,27 +286,13 @@ pub fn render_image_view_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let block = Block::default()
-        .borders(Borders::TOP | Borders::BOTTOM)
-        .style(Theme::panel_with_colors(colors))
-        .title(format!("{} [Image]", state.file_path.display()))
-        .title_style(Theme::title_with_colors(colors));
-    f.render_widget(block, area);
+    let title = format!("{} [Image]", state.file_path.display());
+    f.render_widget(viewer_block(title, colors), area);
 
-    let inner_area = area.inner(Margin {
-        horizontal: 0,
-        vertical: 1,
-    });
+    let (inner_area, content_area) = viewer_content_areas(area);
     if inner_area.height == 0 {
         return;
     }
-
-    let content_area = Rect {
-        x: inner_area.x,
-        y: inner_area.y,
-        width: inner_area.width,
-        height: inner_area.height.saturating_sub(1),
-    };
 
     if content_area.width > 0 && content_area.height > 0 {
         if let Some(text) = &state.cached_image_text {
@@ -417,11 +400,11 @@ pub(crate) fn format_line_with_highlight<'a>(
     current_match_idx: Option<usize>,
     colors: &ColorPalette,
 ) -> Vec<Span<'a>> {
-    let mut spans = Vec::new();
-
     if line_matches.is_empty() {
         return vec![Span::raw(line)];
     }
+
+    let mut spans = Vec::with_capacity(line_matches.len() * 2 + 1);
 
     let regular_style = Style::default()
         .fg(Theme::search_match_fg_with_colors(colors))

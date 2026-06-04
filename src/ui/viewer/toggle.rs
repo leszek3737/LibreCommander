@@ -5,14 +5,30 @@ use super::open::ViewerState;
 use super::scroll::line_number_column_width;
 
 impl ViewerState {
+    fn invalidate_visual_cache(&self) {
+        self.visual_heights.borrow_mut().clear();
+        self.visual_offsets.borrow_mut().clear();
+        *self.cached_content_width.borrow_mut() = 0;
+    }
+
+    fn next_view_mode(&self) -> ViewMode {
+        if self.is_hex_mode() {
+            if is_image_mime(self.detected_mime.as_deref()) {
+                ViewMode::Image
+            } else {
+                ViewMode::Text
+            }
+        } else {
+            ViewMode::Hex
+        }
+    }
+
     pub fn toggle_line_numbers(&mut self) {
         if matches!(self.view_mode, ViewMode::Image) {
             return;
         }
         self.show_line_numbers = !self.show_line_numbers;
-        self.visual_heights.borrow_mut().clear();
-        self.visual_offsets.borrow_mut().clear();
-        *self.cached_content_width.borrow_mut() = 0;
+        self.invalidate_visual_cache();
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
@@ -26,29 +42,19 @@ impl ViewerState {
         if self.wrap_lines {
             self.horizontal_offset = 0;
         }
-        self.visual_heights.borrow_mut().clear();
-        self.visual_offsets.borrow_mut().clear();
-        *self.cached_content_width.borrow_mut() = 0;
+        self.invalidate_visual_cache();
         if !self.is_hex_mode() {
             self.view_mode = ViewMode::Text;
         }
     }
 
     pub fn toggle_hex_mode(&mut self) {
-        let is_image = is_image_mime(self.detected_mime.as_deref());
-        self.view_mode = if self.is_hex_mode() {
-            if is_image {
-                ViewMode::Image
-            } else {
-                ViewMode::Text
-            }
-        } else {
-            ViewMode::Hex
-        };
+        self.view_mode = self.next_view_mode();
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
 
         if !self.is_hex_mode() && self.originally_binary {
+            // TODO: compute_line_offsets is O(n) over bytes; consider caching for >10MB files
             self.line_offsets = Self::compute_line_offsets(&self.raw_bytes);
             self.line_count = if self.raw_bytes.is_empty() {
                 1
@@ -66,12 +72,12 @@ impl ViewerState {
         }
     }
 
+    /// Interior mutability is used here so that `render` (which borrows `&self`)
+    /// can update the wrap layout cache when the content width changes.
     pub fn update_wrap_layout(&self, content_width: usize) {
         if !self.wrap_lines || self.is_hex_mode() || self.line_count == 0 {
             if !self.visual_heights.borrow().is_empty() {
-                self.visual_heights.borrow_mut().clear();
-                self.visual_offsets.borrow_mut().clear();
-                *self.cached_content_width.borrow_mut() = 0;
+                self.invalidate_visual_cache();
             }
             return;
         }
@@ -86,20 +92,20 @@ impl ViewerState {
             0
         };
         let width = content_width.max(1);
+        /// Upper bound to prevent OOM on pathological input (e.g. a 4 GB
+        /// file with millions of short lines).  Lines beyond this limit are
+        /// truncated visually rather than fully laid out.
         const MAX_VISUAL_LINES: usize = 1_000_000;
-        let new_heights: Vec<usize> = (0..self.line_count)
-            .map(|i| {
-                let line = self.get_line(i);
-                let text_width = unicode_width::UnicodeWidthStr::width(line.as_ref());
-                let total_width = line_num_width.saturating_add(text_width);
-                total_width.div_ceil(width).max(1)
-            })
-            .take(MAX_VISUAL_LINES)
-            .collect();
+        let cap = self.line_count.min(MAX_VISUAL_LINES);
+        let mut new_heights = Vec::with_capacity(cap);
+        for i in (0..self.line_count).take(MAX_VISUAL_LINES) {
+            let line = self.get_line(i);
+            let text_width = unicode_width::UnicodeWidthStr::width(line.as_ref());
+            let total_width = line_num_width.saturating_add(text_width);
+            new_heights.push(total_width.div_ceil(width).max(1));
+        }
         if new_heights.len() < self.line_count {
-            self.visual_heights.borrow_mut().clear();
-            self.visual_offsets.borrow_mut().clear();
-            *self.cached_content_width.borrow_mut() = 0;
+            self.invalidate_visual_cache();
             return;
         }
         let mut new_offsets = Vec::with_capacity(new_heights.len());

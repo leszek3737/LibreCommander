@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -6,6 +7,92 @@ use chrono::{DateTime, Local};
 use unicode_width::UnicodeWidthStr;
 
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
+
+pub(crate) fn sanitize_for_display(s: &str) -> Cow<'_, str> {
+    if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) {
+        return Cow::Borrowed(s);
+    }
+
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            0x1B => {
+                if i + 1 < bytes.len() {
+                    match bytes[i + 1] {
+                        b'[' => {
+                            let mut j = i + 2;
+                            while j < bytes.len() {
+                                let b = bytes[j];
+                                if (b'@'..=b'~').contains(&b) {
+                                    j += 1;
+                                    break;
+                                }
+                                if b <= 0x1F {
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            i = j;
+                            continue;
+                        }
+                        b']' | b'P' | b'_' | b'^' => {
+                            let mut j = i + 2;
+                            while j < bytes.len() {
+                                if bytes[j] == 0x07 {
+                                    j += 1;
+                                    break;
+                                }
+                                if bytes[j] == 0x1B && j + 1 < bytes.len() && bytes[j + 1] == b'\\'
+                                {
+                                    j += 2;
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            i = j;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                result.push('\u{00b7}');
+                i += 1;
+            }
+            b'\n' => {
+                result.push('\u{23ce}');
+                i += 1;
+            }
+            b'\r' => {
+                i += 1;
+            }
+            b'\t' => {
+                result.push_str("  ");
+                i += 1;
+            }
+            0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => {
+                result.push('\u{00b7}');
+                i += 1;
+            }
+            _ => {
+                let ch = s[i..].chars().next().unwrap_or('\u{fffd}');
+                result.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+
+    Cow::Owned(result)
+}
+
+pub(crate) fn sanitize_name(name: &str) -> Option<String> {
+    match sanitize_for_display(name) {
+        Cow::Borrowed(_) => None,
+        Cow::Owned(s) => Some(s),
+    }
+}
 
 const MODE_FILE: u32 = 0o100000;
 const MODE_DIR: u32 = 0o040000;
@@ -102,6 +189,7 @@ pub struct FileEntry {
     pub size_width: usize,
     pub time_width: usize,
     pub category: FileCategory,
+    pub sanitized_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -195,6 +283,7 @@ impl FileEntryBuilder {
         let (time_str, size_str, name_width, size_width, time_width) =
             FileEntry::cached_fields(&self.cha, &self.name);
         let category = compute_category(&self.cha, &self.name);
+        let sanitized_name = sanitize_name(&self.name);
         FileEntry {
             name: self.name,
             path: self.path,
@@ -209,6 +298,7 @@ impl FileEntryBuilder {
             size_width,
             time_width,
             category,
+            sanitized_name,
         }
     }
 }
@@ -293,6 +383,10 @@ impl FileEntry {
 
     pub fn category(&self) -> FileCategory {
         self.category
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.sanitized_name.as_deref().unwrap_or(&self.name)
     }
 
     pub fn display_size(&self) -> String {

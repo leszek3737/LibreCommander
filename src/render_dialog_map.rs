@@ -152,13 +152,13 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
     };
     dialogs::DialogKind::Properties {
         info: dialogs::PropertiesInfo {
-            name: name.clone(),
-            size: app::types::FileEntry::format_size(*size),
-            mtime: mtime_str,
-            permissions: app::types::FileEntry::display_permissions_raw(*permissions),
-            owner: owner.clone(),
-            group: group.clone(),
-            file_type: file_type.to_string(),
+            name: Cow::Borrowed(name.as_str()),
+            size: Cow::Owned(app::types::FileEntry::format_size(*size)),
+            mtime: Cow::Owned(mtime_str),
+            permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(*permissions)),
+            owner: Cow::Borrowed(owner.as_str()),
+            group: Cow::Borrowed(group.as_str()),
+            file_type: Cow::Borrowed(file_type),
         },
     }
 }

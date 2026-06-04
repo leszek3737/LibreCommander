@@ -12,7 +12,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 #[cfg(test)]
 use std::time::SystemTime;
 
-use crate::app::types::{PanelListing, PanelState, compute_category};
+use crate::app::types::{PanelListing, PanelState, compute_category, sanitize_name};
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
@@ -132,6 +132,7 @@ fn build_file_entry_from_metadata(
         FileEntry::cached_fields(&cha, &file_name);
     let category = compute_category(&cha, &file_name);
 
+    let sanitized = sanitize_name(&file_name);
     FileEntry {
         name: file_name,
         path,
@@ -146,6 +147,7 @@ fn build_file_entry_from_metadata(
         size_width,
         time_width,
         category,
+        sanitized_name: sanitized,
     }
 }
 
@@ -203,6 +205,7 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             size_width,
             time_width,
             category,
+            sanitized_name: None,
         });
     }
 

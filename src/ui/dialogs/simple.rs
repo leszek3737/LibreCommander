@@ -33,13 +33,16 @@ pub fn render_error_dialog(
         .style(Theme::error_with_colors(colors));
     f.render_widget(message_paragraph, chunks[0]);
 
-    let ok_btn = Paragraph::new("[ OK ]")
+    let ok_btn = Paragraph::new(OK_BUTTON_LABEL)
         .style(Theme::selected_error_with_colors(colors))
         .alignment(Alignment::Center);
     f.render_widget(ok_btn, chunks[1]);
 }
 
 const CANCELING_PREFIX: &str = "Canceling:";
+const PROPERTIES_NAME_MAX_WIDTH: usize = 30;
+const OK_BUTTON_LABEL: &str = "[ OK ]";
+const CLOSE_HINT_LABEL: &str = "[ Press Enter or Esc to close ]";
 
 pub fn render_progress_dialog(
     f: &mut Frame,
@@ -94,10 +97,10 @@ pub fn render_progress_dialog(
 pub fn render_properties_dialog(
     f: &mut Frame,
     area: Rect,
-    info: &PropertiesInfo,
+    info: &PropertiesInfo<'_>,
     colors: &ColorPalette,
 ) {
-    let display_name = truncate_path(&info.name, 30);
+    let display_name = truncate_path(&info.name, PROPERTIES_NAME_MAX_WIDTH);
     let title = format!("Properties — {display_name}");
     let block = dialog_block(&title, Theme::warning_dialog_with_colors(colors));
     let inner = block.inner(area);
@@ -111,7 +114,7 @@ pub fn render_properties_dialog(
         Line::from(format!("Permissions: {}", info.permissions)),
         Line::from(format!("Owner: {}:{}", info.owner, info.group)),
         Line::from(""),
-        Line::from("[ Press Enter or Esc to close ]").style(Theme::info_with_colors(colors)),
+        Line::from(CLOSE_HINT_LABEL).style(Theme::info_with_colors(colors)),
     ];
 
     let paragraph = Paragraph::new(lines)

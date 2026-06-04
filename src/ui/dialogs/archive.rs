@@ -154,7 +154,27 @@ fn render_input_field(
         .sum();
     let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
 
-    let mut visible = String::new();
+    let (visible, vis_width, start_cum) =
+        collect_visible_graphemes(value, scroll_display, visible_width);
+
+    let display_cursor_col = cursor_display.saturating_sub(start_cum);
+    let cursor_x = input_inner.x + display_cursor_col.min(vis_width) as u16;
+    let cursor_y = input_inner.y;
+
+    let input_paragraph = Paragraph::new(visible).block(input_block);
+    f.render_widget(input_paragraph, area);
+    f.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn collect_visible_graphemes(
+    value: &str,
+    scroll_display: usize,
+    visible_width: usize,
+) -> (String, usize, usize) {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    let mut visible = String::with_capacity(visible_width);
     let mut vis_width = 0;
     let mut start_cum = 0usize;
 
@@ -198,17 +218,11 @@ fn render_input_field(
         }
     }
 
-    let display_cursor_col = cursor_display.saturating_sub(start_cum);
-    let cursor_x = input_inner.x + display_cursor_col.min(vis_width) as u16;
-    let cursor_y = input_inner.y;
-
-    let input_paragraph = Paragraph::new(visible).block(input_block);
-    f.render_widget(input_paragraph, area);
-    f.set_cursor_position((cursor_x, cursor_y));
+    (visible, vis_width, start_cum)
 }
 
 fn render_button_row(f: &mut Frame, area: Rect, buttons: &[(ratatui::style::Style, &str)]) {
-    let mut spans: Vec<Span> = Vec::new();
+    let mut spans: Vec<Span> = Vec::with_capacity(buttons.len());
     for (i, (style, label)) in buttons.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
