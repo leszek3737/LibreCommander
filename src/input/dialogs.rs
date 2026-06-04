@@ -57,7 +57,6 @@ fn validate_path_name(input: &str) -> ValidationResult {
     }
 }
 
-
 fn reset_dialog_state(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.pending_action = None;
@@ -353,7 +352,6 @@ fn validate_create_or_rename(input: &str, label: &str) -> Result<(), String> {
         ValidationResult::Valid => Ok(()),
         ValidationResult::EmptyInput => Err(format!("{label} cannot be empty")),
         ValidationResult::InvalidPath(p) => Err(p),
-
     }
 }
 
