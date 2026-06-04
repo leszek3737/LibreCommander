@@ -157,11 +157,8 @@ fn handle_mouse_scroll(
             scroll_offset: off,
         }) => {
             let term_rect = Rect::new(0, 0, pos.width, pos.height);
-            let visible = crate::ui::dialogs::help_visible_height(term_rect);
-            let total_lines = crate::ui::dialogs::wrapped_line_count(
-                message,
-                crate::ui::dialogs::help_message_width(term_rect),
-            );
+            let (visible, msg_width) = crate::ui::dialogs::help_dialog_geometry(term_rect);
+            let total_lines = crate::ui::dialogs::wrapped_line_count(message, msg_width);
             *off = apply_scroll_delta(*off, delta, visible, total_lines);
             return;
         }

@@ -16,7 +16,9 @@ mod text;
 pub use confirm::{render_confirm_dialog, render_overwrite_dialog};
 pub use help::render_help_dialog;
 pub use input::render_input_dialog;
-pub use layout::{centered_rect, help_message_width, help_visible_height, input_dialog_rect};
+pub use layout::{
+    centered_rect, help_dialog_geometry, help_message_width, help_visible_height, input_dialog_rect,
+};
 pub use list_picker::{render_list_picker, render_list_picker_with_colors};
 pub use simple::{render_error_dialog, render_progress_dialog, render_properties_dialog};
 pub use text::wrapped_line_count;
@@ -24,14 +26,14 @@ pub use text::wrapped_line_count;
 use layout::{DIALOG_HEIGHT_PERCENT, DIALOG_WIDTH_PERCENT};
 
 #[derive(Debug, Clone)]
-pub struct PropertiesInfo {
-    pub name: String,
-    pub size: String,
-    pub mtime: String,
-    pub permissions: String,
-    pub owner: String,
-    pub group: String,
-    pub file_type: String,
+pub struct PropertiesInfo<'a> {
+    pub name: Cow<'a, str>,
+    pub size: Cow<'a, str>,
+    pub mtime: Cow<'a, str>,
+    pub permissions: Cow<'a, str>,
+    pub owner: Cow<'a, str>,
+    pub group: Cow<'a, str>,
+    pub file_type: Cow<'a, str>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +66,7 @@ pub enum DialogKind<'a> {
         cancellable: bool,
     },
     Properties {
-        info: PropertiesInfo,
+        info: PropertiesInfo<'a>,
     },
     OverwriteConfirm {
         selection: usize,
@@ -115,33 +117,29 @@ fn dispatch_dialog_render(
             message,
             selection,
             files,
-        } => {
-            render_confirm_dialog(
-                f,
-                area,
-                title.as_ref(),
-                message.as_ref(),
-                *selection,
-                files,
-                colors,
-            );
-        }
+        } => render_confirm_dialog(
+            f,
+            area,
+            title.as_ref(),
+            message.as_ref(),
+            *selection,
+            files,
+            colors,
+        ),
         DialogKind::Input {
             title,
             prompt,
             value,
             cursor_pos,
-        } => {
-            render_input_dialog(
-                f,
-                area,
-                title.as_ref(),
-                prompt.as_ref(),
-                value.as_ref(),
-                *cursor_pos,
-                colors,
-            );
-        }
+        } => render_input_dialog(
+            f,
+            area,
+            title.as_ref(),
+            prompt.as_ref(),
+            value.as_ref(),
+            *cursor_pos,
+            colors,
+        ),
         DialogKind::Error { title, message } => {
             render_error_dialog(f, area, title.as_ref(), message.as_ref(), colors);
         }
@@ -149,43 +147,28 @@ fn dispatch_dialog_render(
             title,
             message,
             scroll_offset,
-        } => {
-            render_help_dialog(
-                f,
-                area,
-                title.as_ref(),
-                message.as_ref(),
-                *scroll_offset,
-                colors,
-            );
-        }
+        } => render_help_dialog(
+            f,
+            area,
+            title.as_ref(),
+            message.as_ref(),
+            *scroll_offset,
+            colors,
+        ),
         DialogKind::Progress {
             title,
             message,
             percent,
             cancellable,
-        } => {
-            render_progress_dialog(
-                f,
-                area,
-                title.as_ref(),
-                message.as_ref(),
-                *percent,
-                *cancellable,
-                colors,
-            );
-        }
-        other => dispatch_special_dialog_render(f, other, area, colors),
-    }
-}
-
-fn dispatch_special_dialog_render(
-    f: &mut Frame,
-    dialog: &DialogKind<'_>,
-    area: Rect,
-    colors: &ColorPalette,
-) {
-    match dialog {
+        } => render_progress_dialog(
+            f,
+            area,
+            title.as_ref(),
+            message.as_ref(),
+            *percent,
+            *cancellable,
+            colors,
+        ),
         DialogKind::Properties { info } => {
             render_properties_dialog(f, area, info, colors);
         }
@@ -197,37 +180,34 @@ fn dispatch_special_dialog_render(
             dest_value,
             dest_cursor,
             selection,
-        } => {
-            archive::render_archive_extract_dialog(
-                f,
-                area,
-                info.as_ref(),
-                dest_value.as_ref(),
-                *dest_cursor,
-                *selection,
-                colors,
-            );
-        }
+        } => archive::render_archive_extract_dialog(
+            f,
+            area,
+            info.as_ref(),
+            dest_value.as_ref(),
+            *dest_cursor,
+            *selection,
+            colors,
+        ),
         DialogKind::ArchiveCreate {
             source_count,
             dest_value,
             dest_cursor,
             selection,
-        } => {
-            archive::render_archive_create_dialog(
-                f,
-                area,
-                *source_count,
-                dest_value.as_ref(),
-                *dest_cursor,
-                *selection,
-                colors,
-            );
-        }
-        _ => unreachable!("all dialog kinds handled"),
+        } => archive::render_archive_create_dialog(
+            f,
+            area,
+            *source_count,
+            dest_value.as_ref(),
+            *dest_cursor,
+            *selection,
+            colors,
+        ),
     }
 }
 
+// TODO: extract the tests module below to a separate tests.rs file.
+// Currently 390 of 618 lines (63%) are test code.
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -588,13 +568,13 @@ mod tests {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let info = PropertiesInfo {
-            name: "/very/long/path/to/some/file.txt".into(),
-            size: "1.2 MB".into(),
-            mtime: "2024-01-15 10:30".into(),
-            permissions: "rw-r--r--".into(),
-            owner: "user".into(),
-            group: "staff".into(),
-            file_type: "Regular File".into(),
+            name: Cow::Borrowed("/very/long/path/to/some/file.txt"),
+            size: Cow::Borrowed("1.2 MB"),
+            mtime: Cow::Borrowed("2024-01-15 10:30"),
+            permissions: Cow::Borrowed("rw-r--r--"),
+            owner: Cow::Borrowed("user"),
+            group: Cow::Borrowed("staff"),
+            file_type: Cow::Borrowed("Regular File"),
         };
 
         terminal

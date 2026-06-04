@@ -29,49 +29,11 @@ struct Suffix {
     width: usize,
 }
 
-const ASCII_ICONS: &[(FileCategory, &str)] = &[
-    (FileCategory::Dir, "D"),
-    (FileCategory::Symlink, "@"),
-    (FileCategory::Executable, "*"),
-    (FileCategory::Code, "{"),
-    (FileCategory::Config, "#"),
-    (FileCategory::Archive, "A"),
-    (FileCategory::Image, "I"),
-    (FileCategory::Video, "V"),
-    (FileCategory::Audio, "~"),
-    (FileCategory::Document, "="),
-    (FileCategory::Font, "F"),
-    (FileCategory::Other, "."),
-];
-
-const NERD_FONT_ICONS: &[(FileCategory, &str)] = &[
-    (FileCategory::Dir, ""),
-    (FileCategory::Symlink, ""),
-    (FileCategory::Executable, ""),
-    (FileCategory::Code, ""),
-    (FileCategory::Config, ""),
-    (FileCategory::Archive, ""),
-    (FileCategory::Image, ""),
-    (FileCategory::Video, ""),
-    (FileCategory::Audio, ""),
-    (FileCategory::Document, ""),
-    (FileCategory::Font, ""),
-    (FileCategory::Other, ""),
-];
-
-fn find_icon(
-    category: &FileCategory,
-    table: &'static [(FileCategory, &'static str)],
-) -> &'static str {
-    table
-        .iter()
-        .find(|(cat, _)| cat == category)
-        .map(|(_, icon)| *icon)
-        .unwrap_or("?")
-}
-
-fn icon_display_width(category: &FileCategory, theme: IconTheme) -> usize {
-    UnicodeWidthStr::width(get_file_icon_with_theme(category, theme))
+const fn icon_display_width(theme: IconTheme) -> usize {
+    match theme {
+        IconTheme::Ascii | IconTheme::NerdFont => 1,
+        IconTheme::Emoji => 2,
+    }
 }
 
 pub fn get_file_color(category: &FileCategory, bold: bool) -> Style {
@@ -91,10 +53,51 @@ pub fn get_file_icon(category: &FileCategory) -> &'static str {
     get_file_icon_with_theme(category, IconTheme::default())
 }
 
+macro_rules! impl_default_colors {
+    ($vis:vis fn $name:ident(f: &mut Frame, area: Rect $(, $arg:ident : $ty:ty)+ $(,)?) =>
+     $with:ident, $($default:expr),* $(,)?) => {
+        $vis fn $name(f: &mut Frame, area: Rect, $($arg: $ty),+) {
+            $with(f, area, $($arg),+, $($default),*);
+        }
+    };
+    ($vis:vis fn $name:ident(f: &mut Frame, area: Rect) =>
+     $with:ident, $($default:expr),* $(,)?) => {
+        $vis fn $name(f: &mut Frame, area: Rect) {
+            $with(f, area, $($default),*);
+        }
+    };
+}
+
 pub fn get_file_icon_with_theme(category: &FileCategory, theme: IconTheme) -> &'static str {
     match theme {
-        IconTheme::Ascii => find_icon(category, ASCII_ICONS),
-        IconTheme::NerdFont => find_icon(category, NERD_FONT_ICONS),
+        IconTheme::Ascii => match category {
+            FileCategory::Dir => "D",
+            FileCategory::Symlink => "@",
+            FileCategory::Executable => "*",
+            FileCategory::Code => "{",
+            FileCategory::Config => "#",
+            FileCategory::Archive => "A",
+            FileCategory::Image => "I",
+            FileCategory::Video => "V",
+            FileCategory::Audio => "~",
+            FileCategory::Document => "=",
+            FileCategory::Font => "F",
+            FileCategory::Other => ".",
+        },
+        IconTheme::NerdFont => match category {
+            FileCategory::Dir => "",
+            FileCategory::Symlink => "",
+            FileCategory::Executable => "",
+            FileCategory::Code => "",
+            FileCategory::Config => "",
+            FileCategory::Archive => "",
+            FileCategory::Image => "",
+            FileCategory::Video => "",
+            FileCategory::Audio => "",
+            FileCategory::Document => "",
+            FileCategory::Font => "",
+            FileCategory::Other => "",
+        },
         IconTheme::Emoji => match category {
             FileCategory::Dir => "📁",
             FileCategory::Symlink => "🔗",
@@ -145,96 +148,9 @@ fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     truncate_to_width(name, max_width)
 }
 
-fn sanitize_for_display(s: &str) -> Cow<'_, str> {
-    if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) {
-        return Cow::Borrowed(s);
-    }
-
-    let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            0x1B => {
-                if i + 1 < bytes.len() {
-                    match bytes[i + 1] {
-                        b'[' => {
-                            // CSI sequence: ESC [ ... final_byte(@-~)
-                            let mut j = i + 2;
-                            while j < bytes.len() {
-                                let b = bytes[j];
-                                if (b'@'..=b'~').contains(&b) {
-                                    j += 1;
-                                    break;
-                                }
-                                if b <= 0x1F {
-                                    break;
-                                }
-                                j += 1;
-                            }
-                            i = j;
-                            continue;
-                        }
-                        b']' | b'P' | b'_' | b'^' => {
-                            // OSC/DCS/APC/PM — consume until ST (ESC \) or BEL
-                            let mut j = i + 2;
-                            while j < bytes.len() {
-                                if bytes[j] == 0x07 {
-                                    j += 1;
-                                    break;
-                                }
-                                if bytes[j] == 0x1B && j + 1 < bytes.len() && bytes[j + 1] == b'\\'
-                                {
-                                    j += 2;
-                                    break;
-                                }
-                                j += 1;
-                            }
-                            i = j;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-                result.push('\u{00b7}');
-                i += 1;
-            }
-            b'\n' => {
-                result.push('\u{23ce}');
-                i += 1;
-            }
-            b'\r' => {
-                i += 1;
-            }
-            b'\t' => {
-                result.push_str("  ");
-                i += 1;
-            }
-            0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => {
-                result.push('\u{00b7}');
-                i += 1;
-            }
-            _ => {
-                let ch = s[i..].chars().next().unwrap_or('\u{fffd}');
-                result.push(ch);
-                i += ch.len_utf8();
-            }
-        }
-    }
-
-    Cow::Owned(result)
-}
-
-pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
-    render_panel_with_colors(
-        f,
-        area,
-        panel,
-        is_active,
-        &ColorPalette::default(),
-        IconTheme::default(),
-    );
+impl_default_colors! {
+    pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) =>
+    render_panel_with_colors, &ColorPalette::default(), IconTheme::default()
 }
 
 pub fn render_panel_with_colors(
@@ -251,7 +167,11 @@ pub fn render_panel_with_colors(
         Theme::border_inactive_with_colors(colors)
     };
 
-    let title = format!(" {} ", panel.path().display());
+    let path_lossy = panel.path().to_string_lossy();
+    let mut title = String::with_capacity(path_lossy.len() + 2);
+    title.push(' ');
+    title.push_str(&path_lossy);
+    title.push(' ');
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -391,11 +311,11 @@ fn format_entry_line(
         return format!("{marker}");
     }
 
-    let display_name = sanitize_for_display(&entry.name);
-    let display_name_width = UnicodeWidthStr::width(&*display_name);
+    let display_name = entry.display_name();
+    let display_name_width = UnicodeWidthStr::width(display_name);
 
     let icon = get_file_icon_with_theme(category, icon_theme);
-    let icon_width = icon_display_width(category, icon_theme);
+    let icon_width = icon_display_width(icon_theme);
     let suffix = build_suffix(entry, width, show_permissions);
 
     let available_name_width = width.saturating_sub(1 + suffix.width);
@@ -403,28 +323,41 @@ fn format_entry_line(
         return format!("{marker}");
     }
 
-    let name_with_icon = format!("{icon} {display_name}");
-    let name_width = icon_width + 1 + display_name_width;
-    let (name, name_actual_width) = if name_width <= available_name_width {
-        (name_with_icon, name_width)
-    } else if available_name_width <= icon_width + 1 {
-        let truncated = truncate_to_width(icon, available_name_width);
-        let w = UnicodeWidthStr::width(&*truncated);
-        (truncated.into_owned(), w)
+    let mut s = String::with_capacity(width + 32);
+
+    let name_actual_width = if display_name_width < usize::MAX - icon_width {
+        let name_with_icon_total = icon_width + 1 + display_name_width;
+        if name_with_icon_total <= available_name_width {
+            s.push_str(icon);
+            s.push(' ');
+            s.push_str(display_name);
+            name_with_icon_total
+        } else {
+            let name_budget = available_name_width.saturating_sub(icon_width + 1);
+            if name_budget > 0 {
+                let truncated = truncate_to_width(display_name, name_budget);
+                s.push_str(icon);
+                s.push(' ');
+                s.push_str(&truncated);
+                icon_width + 1 + UnicodeWidthStr::width(&*truncated)
+            } else {
+                let truncated = truncate_to_width(icon, available_name_width);
+                let w = UnicodeWidthStr::width(&*truncated);
+                s.push_str(&truncated);
+                w
+            }
+        }
     } else {
-        let name_budget = available_name_width.saturating_sub(icon_width + 1);
-        let truncated = truncate_to_width(&display_name, name_budget);
-        let w = icon_width + 1 + UnicodeWidthStr::width(&*truncated);
-        (format!("{icon} {truncated}"), w)
+        0
     };
 
     let padding = available_name_width.saturating_sub(name_actual_width);
-    let mut s = String::with_capacity(1 + name.len() + padding + suffix.text.len());
-    s.push(marker);
-    s.push_str(&name);
-    s.extend(std::iter::repeat_n(' ', padding));
-    s.push_str(&suffix.text);
-    s
+    let mut result = String::with_capacity(1 + s.len() + padding + suffix.text.len());
+    result.push(marker);
+    result.push_str(&s);
+    result.extend(std::iter::repeat_n(' ', padding));
+    result.push_str(&suffix.text);
+    result
 }
 
 fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> String {
@@ -443,11 +376,11 @@ fn format_brief_entry_line(
     icon_theme: IconTheme,
 ) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
-    let display_name = sanitize_for_display(&entry.name);
-    let display_name_width = UnicodeWidthStr::width(&*display_name);
+    let display_name = entry.display_name();
+    let display_name_width = UnicodeWidthStr::width(display_name);
 
     let icon = get_file_icon_with_theme(category, icon_theme);
-    let icon_width = icon_display_width(category, icon_theme) + 1;
+    let icon_width = icon_display_width(icon_theme) + 1;
     let available = width.saturating_sub(1);
     if available == 0 {
         return format!("{marker}");
@@ -462,12 +395,13 @@ fn format_brief_entry_line(
     if name_available == 0 {
         return format!("{marker}{icon}");
     }
-    let truncated = truncate_name(&display_name, name_available);
+    let truncated = truncate_name(display_name, name_available);
     format!("{marker}{icon} {truncated}")
 }
 
-pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
-    render_scrollbar_with_colors(f, area, panel, is_active, &ColorPalette::default());
+impl_default_colors! {
+    pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) =>
+    render_scrollbar_with_colors, &ColorPalette::default()
 }
 
 pub fn render_scrollbar_with_colors(
@@ -499,26 +433,20 @@ pub fn render_scrollbar_with_colors(
         0
     };
 
-    let mut scrollbar = String::with_capacity(height * 4);
-    for i in 0..height {
-        let is_last = i == height - 1;
-        let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
-        if in_thumb {
-            scrollbar.push_str(if is_last { "█" } else { "█\n" });
-        } else {
-            scrollbar.push_str(if is_last { "│" } else { "│\n" });
-        }
-    }
-
     let style = if is_active {
         Style::default().fg(Theme::scrollbar_active_with_colors(colors))
     } else {
         Style::default().fg(Theme::scrollbar_inactive_with_colors(colors))
     };
 
-    let paragraph = Paragraph::new(scrollbar)
-        .style(style)
-        .block(Block::default().padding(Padding::new(0, 0, 0, 0)));
+    let lines: Vec<Line<'_>> = (0..height)
+        .map(|i| {
+            let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
+            Line::from(Span::styled(if in_thumb { "█" } else { "│" }, style))
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines).block(Block::default().padding(Padding::new(0, 0, 0, 0)));
 
     f.render_widget(paragraph, area);
 }
@@ -550,8 +478,9 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
     (summary, width)
 }
 
-pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
-    render_status_bar_with_colors(f, area, panel, &ColorPalette::default());
+impl_default_colors! {
+    pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) =>
+    render_status_bar_with_colors, &ColorPalette::default()
 }
 
 pub fn render_status_bar_with_colors(
@@ -569,7 +498,7 @@ pub fn render_status_bar_with_colors(
         && panel.cursor < panel.listing.entries.len()
     {
         let entry = &panel.listing.entries[panel.cursor];
-        let display_name = sanitize_for_display(&entry.name);
+        let display_name = entry.display_name();
         let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions());
         let full_info = format!("{display_name} | {metadata}");
         let full_width = UnicodeWidthStr::width(full_info.as_str());
@@ -582,7 +511,7 @@ pub fn render_status_bar_with_colors(
             let name_budget = remaining.saturating_sub(meta_width);
 
             if name_budget >= 3 {
-                let truncated = truncate_to_width(&display_name, name_budget);
+                let truncated = truncate_to_width(display_name, name_budget);
                 format!("{truncated}{meta}")
             } else if remaining > 0 {
                 truncate_to_width(&full_info, remaining).into_owned()
@@ -608,8 +537,9 @@ pub fn render_status_bar_with_colors(
     f.render_widget(paragraph, area);
 }
 
-pub fn render_function_bar(f: &mut Frame, area: Rect) {
-    render_function_bar_with_colors(f, area, &ColorPalette::default());
+impl_default_colors! {
+    pub fn render_function_bar(f: &mut Frame, area: Rect) =>
+    render_function_bar_with_colors, &ColorPalette::default()
 }
 
 pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {
@@ -640,8 +570,9 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
     }
 }
 
-pub fn render_menu_bar(f: &mut Frame, area: Rect) {
-    render_menu_bar_with_colors(f, area, &ColorPalette::default());
+impl_default_colors! {
+    pub fn render_menu_bar(f: &mut Frame, area: Rect) =>
+    render_menu_bar_with_colors, &ColorPalette::default()
 }
 
 pub fn render_menu_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {

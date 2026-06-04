@@ -17,10 +17,31 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use tempfile::NamedTempFile;
 
+const DEFAULT_PAGE_HEIGHT: usize = 20;
+const TEST_CHANNEL_TIMEOUT_SECS: u64 = 1;
+
 fn create_test_file(content: &str) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
     write!(file, "{}", content).unwrap();
     file
+}
+
+fn init_state(content: &str) -> ViewerState {
+    let file = create_test_file(content);
+    ViewerState::open(file.path()).unwrap()
+}
+
+fn join_lines(lines: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    let mut iter = lines.into_iter();
+    let mut s = String::new();
+    if let Some(first) = iter.next() {
+        s.push_str(first.as_ref());
+        for line in iter {
+            s.push('\n');
+            s.push_str(line.as_ref());
+        }
+    }
+    s
 }
 
 fn render_viewer_buffer(state: &ViewerState, width: u16, height: u16) -> Buffer {
@@ -45,6 +66,7 @@ fn test_viewer_loader_drop_cancels_worker() {
     let cancel_for_worker = Arc::clone(&cancel);
     let (done_tx, done_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
+        // Busy-wait; acceptable for a short-lived test helper.
         while !cancel_for_worker.load(Ordering::Relaxed) {
             thread::yield_now();
         }
@@ -55,28 +77,25 @@ fn test_viewer_loader_drop_cancels_worker() {
         receiver: rx,
         cancel: Arc::clone(&cancel),
         path: PathBuf::new(),
-        _handle: Some(handle),
+        handle: Some(handle),
     };
 
     drop(loader);
 
     assert!(cancel.load(Ordering::Relaxed));
     done_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(std::time::Duration::from_secs(TEST_CHANNEL_TIMEOUT_SECS))
         .unwrap();
 }
 
 #[test]
 fn test_open_file() {
-    let content = "Line 1\nLine 2\nLine 3";
-    let file = create_test_file(content);
-    let state = ViewerState::open(file.path()).unwrap();
+    let state = init_state("Line 1\nLine 2\nLine 3");
 
     assert_eq!(state.line_count, 3);
     assert_eq!(state.get_line(0), "Line 1");
     assert_eq!(state.get_line(1), "Line 2");
     assert_eq!(state.get_line(2), "Line 3");
-    assert_eq!(state.line_count, 3);
 }
 
 #[test]
@@ -91,9 +110,7 @@ fn test_open_file_with_trailing_newline_omits_empty_tail() {
 
 #[test]
 fn test_scroll_up() {
-    let content = "Line 1\nLine 2\nLine 3";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("Line 1\nLine 2\nLine 3");
 
     state.scroll_offset = 5;
     state.scroll_up(2);
@@ -105,9 +122,7 @@ fn test_scroll_up() {
 
 #[test]
 fn test_scroll_down() {
-    let content = "Line 1\nLine 2\nLine 3";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("Line 1\nLine 2\nLine 3");
 
     state.scroll_down(1);
     assert_eq!(state.scroll_offset, 1);
@@ -118,9 +133,7 @@ fn test_scroll_down() {
 
 #[test]
 fn test_page_up_down() {
-    let content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
     state.wrap_lines = false;
 
     state.scroll_offset = 10;
@@ -134,9 +147,7 @@ fn test_page_up_down() {
 
 #[test]
 fn test_go_to_top_bottom() {
-    let content = "Line 1\nLine 2\nLine 3";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("Line 1\nLine 2\nLine 3");
 
     state.go_to_bottom(1);
     assert_eq!(state.scroll_offset, 2);
@@ -147,11 +158,9 @@ fn test_go_to_top_bottom() {
 
 #[test]
 fn test_search() {
-    let content = "apple\nbanana\ncherry\napple pie";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("apple\nbanana\ncherry\napple pie");
 
-    state.search("apple", 20);
+    state.search("apple", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(state.search_matches.len(), 2);
     assert_eq!(state.search_matches[0], (0, 0, 5));
@@ -161,31 +170,27 @@ fn test_search() {
 
 #[test]
 fn test_next_prev_match() {
-    let content = "apple\nbanana\napple pie";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("apple\nbanana\napple pie");
 
-    state.search("apple", 20);
+    state.search("apple", DEFAULT_PAGE_HEIGHT);
     assert_eq!(state.current_match, Some(0));
 
-    state.next_match(20);
+    state.next_match(DEFAULT_PAGE_HEIGHT);
     assert_eq!(state.current_match, Some(1));
     assert_eq!(state.scroll_offset, 0);
 
-    state.next_match(20);
+    state.next_match(DEFAULT_PAGE_HEIGHT);
     assert_eq!(state.current_match, Some(0));
 
-    state.prev_match(20);
+    state.prev_match(DEFAULT_PAGE_HEIGHT);
     assert_eq!(state.current_match, Some(1));
 }
 
 #[test]
 fn test_search_case_insensitive() {
-    let content = "Hello World\nfoo BAR\nhello world";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("Hello World\nfoo BAR\nhello world");
 
-    state.search("hello", 20);
+    state.search("hello", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(state.search_matches.len(), 2);
     assert_eq!(state.search_matches[0], (0, 0, 5));
@@ -194,12 +199,10 @@ fn test_search_case_insensitive() {
 
 #[test]
 fn test_open_empty_file_has_placeholder() {
-    let file = create_test_file("");
-    let state = ViewerState::open(file.path()).unwrap();
+    let state = init_state("");
 
     assert_eq!(state.line_count, 1);
     assert_eq!(state.get_line(0), "[Empty file]");
-    assert_eq!(state.line_count, 1);
     assert_eq!(state.file_size, 0);
     assert_eq!(state.scroll_offset, 0);
 }
@@ -271,23 +274,25 @@ fn test_source_code_ext_opens_as_text_even_with_nul_bytes() {
 
 #[test]
 fn test_search_unicode_match_uses_char_columns() {
-    let file = create_test_file("zażółć gęślą jaźń");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("zażółć gęślą jaźń");
 
-    state.search("gęśl", 20);
+    state.search("gęśl", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(state.search_matches, vec![(0, 7, 4)]);
 }
 
 #[test]
 fn test_search_unicode_repeated_matches_keep_char_columns() {
-    let file = create_test_file("żółw żółw");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("żółw żółw");
 
-    state.search("żółw", 20);
+    state.search("żółw", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(state.search_matches, vec![(0, 0, 4), (0, 5, 4)]);
 }
+
+// NOTE: search_matches stores (line_idx, char_start, char_len) — column positions.
+// search_matches_by_line stores SearchLineMatch with (start_byte, end_byte) — byte offsets.
+// In ASCII these coincide; for multi-byte Unicode they diverge (see tests below).
 
 #[test]
 fn test_format_line_with_highlight_handles_unicode() {
@@ -335,7 +340,10 @@ fn test_format_line_with_highlight_overlapping_matches_no_duplicates() {
         &DEFAULT_COLORS,
     );
 
-    let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut rendered = String::with_capacity(line.len());
+    for s in &spans {
+        rendered.push_str(s.content.as_ref());
+    }
     assert_eq!(
         rendered, line,
         "overlapping matches must not duplicate text"
@@ -370,16 +378,18 @@ fn test_format_line_with_highlight_fully_overlapping_skipped() {
         &DEFAULT_COLORS,
     );
 
-    let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut rendered = String::with_capacity(line.len());
+    for s in &spans {
+        rendered.push_str(s.content.as_ref());
+    }
     assert_eq!(rendered, line, "fully overlapped match must be skipped");
 }
 
 #[test]
 fn test_search_line_match_cache_stores_unicode_byte_ranges() {
-    let file = create_test_file("zażółć gęślą jaźń");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("zażółć gęślą jaźń");
 
-    state.search("gęśl", 20);
+    state.search("gęśl", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(
         state.search_matches_by_line,
@@ -394,11 +404,10 @@ fn test_search_line_match_cache_stores_unicode_byte_ranges() {
 
 #[test]
 fn test_search_replace_clears_line_match_cache() {
-    let file = create_test_file("alpha\nbeta");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("alpha\nbeta");
 
-    state.search("alpha", 20);
-    state.search("missing", 20);
+    state.search("alpha", DEFAULT_PAGE_HEIGHT);
+    state.search("missing", DEFAULT_PAGE_HEIGHT);
 
     assert!(state.search_matches.is_empty());
     assert!(state.search_matches_by_line.is_empty());
@@ -406,8 +415,7 @@ fn test_search_replace_clears_line_match_cache() {
 
 #[test]
 fn test_horizontal_scroll_uses_cached_max_line_width() {
-    let file = create_test_file("short\nabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("short\nabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ");
 
     assert_eq!(state.max_line_width, 46);
     state.scroll_right(100, 10);
@@ -422,16 +430,14 @@ fn test_format_hex_line() {
     ];
     let line = format_hex_line(0x1000, bytes);
 
-    assert!(line.starts_with("00001000:"));
+    assert!(line.starts_with("0000000000001000:"));
     assert!(line.contains("48 65 6c 6c 6f 20 57 6f  72 6c 64 00"));
     assert!(line.contains("|Hello World.|"));
 }
 
 #[test]
 fn test_open_valid_replacement_character_is_not_invalid_utf8() {
-    let file = create_test_file("valid replacement: \u{FFFD}");
-
-    let state = ViewerState::open(file.path()).unwrap();
+    let state = init_state("valid replacement: \u{FFFD}");
 
     assert!(!state.has_invalid_utf8);
     assert!(state.get_line(0).contains('\u{FFFD}'));
@@ -454,14 +460,13 @@ fn test_format_hex_line_accepts_more_than_sixteen_bytes() {
 
     let line = format_hex_line(0, &bytes);
 
-    assert!(line.starts_with("00000000:"));
+    assert!(line.starts_with("0000000000000000:"));
     assert!(line.ends_with("|AAAAAAAAAAAAAAAAA|"));
 }
 
 #[test]
 fn test_toggle_states() {
-    let file = create_test_file("test");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("test");
 
     assert!(!state.show_line_numbers);
     state.toggle_line_numbers();
@@ -481,8 +486,7 @@ fn test_toggle_states() {
 
 #[test]
 fn test_horizontal_scroll() {
-    let file = create_test_file("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ");
 
     state.scroll_right(5, 10);
     assert_eq!(state.horizontal_offset, 5);
@@ -502,10 +506,7 @@ fn test_line_number_width_expands_for_large_files() {
     assert_eq!(line_number_column_width(9_999), 6);
     assert_eq!(line_number_column_width(10_000), 7);
 
-    let content = (1..=10_000)
-        .map(|i| format!("line {i}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let content = join_lines((1..=10_000).map(|i| format!("line {i}")));
     let file = create_test_file(&content);
     let mut state = ViewerState::open(file.path()).unwrap();
     state.show_line_numbers = true;
@@ -519,10 +520,7 @@ fn test_line_number_width_expands_for_large_files() {
 
 #[test]
 fn test_horizontal_scroll_uses_dynamic_line_number_width() {
-    let content = (1..=10_000)
-        .map(|_| "abcdefghijkl")
-        .collect::<Vec<_>>()
-        .join("\n");
+    let content = join_lines((1..=10_000).map(|_| "abcdefghijkl"));
     let file = create_test_file(&content);
     let mut state = ViewerState::open(file.path()).unwrap();
     state.show_line_numbers = true;
@@ -549,8 +547,7 @@ fn test_paragraph_horizontal_scroll_clamps_to_u16() {
 
 #[test]
 fn test_render_viewer_reserves_last_row_for_status_bar() {
-    let file = create_test_file("line 1\nline 2\nline 3");
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("line 1\nline 2\nline 3");
     state.wrap_lines = false;
 
     let buffer = render_viewer_buffer(&state, 60, 5);
@@ -572,17 +569,19 @@ fn test_wrap_scroll_advances_by_visual_row() {
     assert!(state.wrap_lines);
 
     state.update_wrap_layout(80);
-    assert!(!state.visual_heights.borrow().is_empty());
-
-    let short_height = state.visual_heights.borrow()[0];
-    let long_height = state.visual_heights.borrow()[1];
-    assert_eq!(short_height, 1);
+    let total_visual: usize;
+    let long_height;
+    {
+        let heights = state.visual_heights.borrow();
+        assert!(!heights.is_empty());
+        assert_eq!(heights[0], 1);
+        long_height = heights[1];
+        total_visual = heights.iter().sum();
+    }
     assert!(
         long_height > 1,
         "long line should wrap to multiple visual rows"
     );
-
-    let total_visual: usize = state.visual_heights.borrow().iter().sum();
     assert!(total_visual > state.line_count);
 
     state.scroll_down(1);
@@ -601,9 +600,7 @@ fn test_wrap_scroll_advances_by_visual_row() {
 
 #[test]
 fn test_wrap_scroll_with_narrow_width() {
-    let content = "abcdefghij";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("abcdefghij");
     state.update_wrap_layout(5);
 
     assert_eq!(state.visual_heights.borrow().len(), 1);
@@ -634,9 +631,7 @@ fn test_wrap_go_to_bottom_uses_visual_rows() {
 
 #[test]
 fn test_toggle_wrap_clears_visual_heights() {
-    let content = "some text";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("some text");
     state.update_wrap_layout(80);
     assert!(!state.visual_heights.borrow().is_empty());
 
@@ -647,9 +642,7 @@ fn test_toggle_wrap_clears_visual_heights() {
 
 #[test]
 fn test_no_wrap_uses_logical_lines() {
-    let content = "Line 1\nLine 2\nLine 3";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("Line 1\nLine 2\nLine 3");
     state.wrap_lines = false;
 
     assert!(!state.is_visual_scroll());
@@ -661,9 +654,7 @@ fn test_no_wrap_uses_logical_lines() {
 
 #[test]
 fn test_visual_row_to_logical_roundtrip() {
-    let content = "short\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nend";
-    let file = create_test_file(content);
-    let state = ViewerState::open(file.path()).unwrap();
+    let state = init_state("short\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nend");
     state.update_wrap_layout(10);
 
     let total_visual: usize = state.visual_heights.borrow().iter().sum();
@@ -675,12 +666,10 @@ fn test_visual_row_to_logical_roundtrip() {
 }
 
 #[test]
-fn search_deduplicates_matches_after_multi_char_lowercase() {
-    let content = "Straße\nmessage\n";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+fn test_search_deduplicates_matches_after_multi_char_lowercase() {
+    let mut state = init_state("Straße\nmessage\n");
 
-    state.search("ss", 20);
+    state.search("ss", DEFAULT_PAGE_HEIGHT);
 
     assert!(
         !state.search_matches.is_empty(),
@@ -690,6 +679,8 @@ fn search_deduplicates_matches_after_multi_char_lowercase() {
     for m in &state.search_matches {
         assert!(seen.insert(*m), "duplicate match tuple: {:?}", m);
     }
+    // ß lowercases to "ss" (multi-char), producing overlapping matches on "straße".
+    // Dedup ensures at most 4 distinct matches remain (2 per line).
     assert!(
         state.search_matches.len() <= 4,
         "expected at most 4 matches, got {}",
@@ -705,7 +696,7 @@ fn test_hex_mode_search() {
     let mut state = ViewerState::open(file.path()).unwrap();
     assert!(state.is_hex_mode());
 
-    state.search("01 02", 20);
+    state.search("01 02", DEFAULT_PAGE_HEIGHT);
 
     assert!(
         !state.search_matches.is_empty(),
@@ -717,10 +708,7 @@ fn test_hex_mode_search() {
 
 #[test]
 fn test_search_scroll_clamp() {
-    let content = (0..100)
-        .map(|i| format!("Line {i:03}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let content = join_lines((0..100).map(|i| format!("Line {i:03}")));
     let file = create_test_file(&content);
     let mut state = ViewerState::open(file.path()).unwrap();
     state.wrap_lines = false;
@@ -744,10 +732,7 @@ fn test_search_scroll_clamp() {
 
 #[test]
 fn test_visual_row_to_logical_binary_search() {
-    let content = (0..30)
-        .map(|i| format!("L{i:03}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let content = join_lines((0..30).map(|i| format!("L{i:03}")));
     let file = create_test_file(&content);
     let state = ViewerState::open(file.path()).unwrap();
     state.update_wrap_layout(10);
@@ -789,15 +774,13 @@ fn test_visual_row_to_logical_binary_search() {
 
 #[test]
 fn test_search_empty_query_noop() {
-    let content = "alpha\nbeta\ngamma";
-    let file = create_test_file(content);
-    let mut state = ViewerState::open(file.path()).unwrap();
+    let mut state = init_state("alpha\nbeta\ngamma");
 
-    state.search("alpha", 20);
+    state.search("alpha", DEFAULT_PAGE_HEIGHT);
     assert_eq!(state.search_matches.len(), 1);
     assert_eq!(state.current_match, Some(0));
 
-    state.search("", 20);
+    state.search("", DEFAULT_PAGE_HEIGHT);
 
     assert!(state.search_matches.is_empty());
     assert!(state.current_match.is_none());
@@ -806,9 +789,8 @@ fn test_search_empty_query_noop() {
 
 #[test]
 fn test_search_no_match_returns_none() {
-    let file = create_test_file("apple\nbanana\ncherry");
-    let mut state = ViewerState::open(file.path()).unwrap();
-    state.search("durian", 20);
+    let mut state = init_state("apple\nbanana\ncherry");
+    state.search("durian", DEFAULT_PAGE_HEIGHT);
     assert!(state.search_matches.is_empty());
     assert_eq!(state.current_match, None);
 }
@@ -821,7 +803,7 @@ fn test_hex_search_skips_offset_prefix() {
     let mut state = ViewerState::open(file.path()).unwrap();
     assert!(state.is_hex_mode());
 
-    state.search("0000000", 20);
+    state.search("0000000", DEFAULT_PAGE_HEIGHT);
     assert!(
         state.search_matches.is_empty(),
         "hex search should not match offset prefix"
@@ -928,6 +910,8 @@ fn test_render_image_view_does_not_panic() {
 }
 
 #[test]
+// Smoke test: verifies the struct has the expected shape. Real image loading
+// logic lives in the loader worker thread; there is no mockable I/O here.
 fn test_image_preview_loader_stores_file_path() {
     let path_a = PathBuf::from("/tmp/image_a.png");
     let path_b = PathBuf::from("/tmp/image_b.png");
@@ -936,13 +920,13 @@ fn test_image_preview_loader_stores_file_path() {
         file_path: path_a.clone(),
         receiver: mpsc::channel().1,
         cancel: Arc::new(AtomicBool::new(false)),
-        _handle: None,
+        handle: None,
     };
     let loader_b = super::loader::ImagePreviewLoader {
         file_path: path_b.clone(),
         receiver: mpsc::channel().1,
         cancel: Arc::new(AtomicBool::new(false)),
-        _handle: None,
+        handle: None,
     };
 
     assert_eq!(loader_a.file_path, path_a);
@@ -951,6 +935,9 @@ fn test_image_preview_loader_stores_file_path() {
 }
 
 #[test]
+// Verifies the path comparison guard (used in the real race-condition
+// handler) behaves correctly for PathBuf. The actual race condition
+// scenario requires concurrent threads; this isolates the comparison.
 fn test_image_preview_race_condition_guard_discards_mismatched_path() {
     let loader_path = PathBuf::from("/tmp/old_image.png");
     let viewer_path = PathBuf::from("/tmp/new_image.png");
@@ -959,7 +946,7 @@ fn test_image_preview_race_condition_guard_discards_mismatched_path() {
         file_path: loader_path,
         receiver: mpsc::channel().1,
         cancel: Arc::new(AtomicBool::new(false)),
-        _handle: None,
+        handle: None,
     };
 
     let matched = viewer_path == loader.file_path;

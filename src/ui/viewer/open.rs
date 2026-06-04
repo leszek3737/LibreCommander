@@ -10,6 +10,11 @@ use crate::app::types::ViewMode;
 use super::hex::HEX_BYTES_PER_LINE;
 use super::mime::{is_image_mime, should_open_as_text};
 
+// TODO: ViewerState has 23 fields including 3× RefCell. The hack documented
+// below for cached_image_text applies more broadly — visual_heights,
+// visual_offsets, and cached_content_width are also render caches smuggled
+// into the viewer state. Consider extracting a ViewerRenderCache struct
+// (with RefCells) and holding it as a single field.
 pub struct ViewerState {
     pub file_path: PathBuf,
     pub(crate) line_offsets: Vec<usize>,
@@ -60,18 +65,26 @@ impl ViewerState {
         offsets
     }
 
+    fn line_end_excluding_newline(bytes: &[u8], end: usize) -> usize {
+        if end > 0 && bytes[end - 1] == b'\n' {
+            end - 1
+        } else {
+            end
+        }
+    }
+
     pub(crate) fn compute_max_line_width(line_offsets: &[usize], raw_bytes: &[u8]) -> usize {
         let mut max_w = 0;
         for (i, &start) in line_offsets.iter().enumerate() {
             let end = line_offsets.get(i + 1).copied().unwrap_or(raw_bytes.len());
-            let line_end = if end > 0 && raw_bytes.get(end - 1) == Some(&b'\n') {
-                end - 1
-            } else {
-                end
-            };
+            let line_end = Self::line_end_excluding_newline(raw_bytes, end);
             let w = match std::str::from_utf8(&raw_bytes[start..line_end]) {
                 Ok(s) => unicode_width::UnicodeWidthStr::width(s),
                 Err(_) => {
+                    // String::from_utf8_lossy allocates a new String with
+                    // replacement characters for invalid UTF-8 sequences.
+                    // This is unavoidable for computing the display width
+                    // of the lossy replacement.
                     let cow = String::from_utf8_lossy(&raw_bytes[start..line_end]);
                     unicode_width::UnicodeWidthStr::width(cow.as_ref())
                 }
@@ -95,11 +108,7 @@ impl ViewerState {
             .get(idx + 1)
             .copied()
             .unwrap_or(self.raw_bytes.len());
-        let line_end = if end > start && self.raw_bytes.get(end - 1) == Some(&b'\n') {
-            end - 1
-        } else {
-            end
-        };
+        let line_end = Self::line_end_excluding_newline(&self.raw_bytes, end);
         if line_end <= start {
             return Cow::Borrowed("");
         }
@@ -115,8 +124,17 @@ impl ViewerState {
         const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
         const READ_CHUNK: usize = 64 * 1024;
 
+        let meta = fs::metadata(path)?;
+        if meta.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                format!("cannot open directory as viewer file: {}", path.display()),
+            ));
+        }
+        let file_size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+
         let file = fs::File::open(path)?;
-        let mut raw_bytes = Vec::new();
+        let mut raw_bytes = Vec::with_capacity(file_size.min(MAX_VIEW_SIZE));
         let mut reader = file.take((MAX_VIEW_SIZE + 1) as u64);
         let mut buf = [0u8; READ_CHUNK];
         loop {
@@ -135,10 +153,6 @@ impl ViewerState {
         if file_truncated {
             raw_bytes.truncate(MAX_VIEW_SIZE);
         }
-
-        let file_size = fs::metadata(path)
-            .map(|m| m.len() as usize)
-            .unwrap_or(raw_bytes.len());
         let mime =
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
 
@@ -211,6 +225,10 @@ impl ViewerState {
         super::loader::ViewerLoader::start(path)
     }
 
+    // TODO: open_with_cancel (lines ~190-220) and open_as_archive_listing
+    // (below) duplicate ViewerState initialization for text-mode fields.
+    // Extract a shared init_text_state(raw_bytes, line_offsets, ...) helper
+    // that both call sites can use.
     fn open_as_archive_listing(path: &Path, file_size: usize) -> Option<Self> {
         let text = Self::format_archive_listing(path).ok()?;
         let raw_bytes = text.into_bytes();
@@ -269,11 +287,11 @@ impl ViewerState {
         let entries = list_archive(path).map_err(|_| ())?;
         let mut out = String::new();
 
-        writeln!(out, "Archive: {}", path.display()).ok();
-        writeln!(out, "Entries: {}", entries.len()).ok();
-        writeln!(out).ok();
-        writeln!(out, "  {:<8} {:<20} Name", "Size", "Modified").ok();
-        writeln!(out, "  {:<8} {:<20} ----", "----", "--------").ok();
+        writeln!(out, "Archive: {}", path.display()).map_err(|_| ())?;
+        writeln!(out, "Entries: {}", entries.len()).map_err(|_| ())?;
+        writeln!(out).map_err(|_| ())?;
+        writeln!(out, "  {:<8} {:<20} Name", "Size", "Modified").map_err(|_| ())?;
+        writeln!(out, "  {:<8} {:<20} ----", "----", "--------").map_err(|_| ())?;
 
         for entry in &entries {
             let size = if entry.is_dir {
@@ -290,7 +308,7 @@ impl ViewerState {
             } else {
                 entry.name.clone()
             };
-            writeln!(out, "  {size:<8} {mtime:<20} {name}").ok();
+            writeln!(out, "  {size:<8} {mtime:<20} {name}").map_err(|_| ())?;
         }
 
         Ok(out)

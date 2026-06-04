@@ -7,10 +7,14 @@ use ratatui::{
 pub(super) const DIALOG_WIDTH_PERCENT: u16 = 50;
 pub(super) const DIALOG_HEIGHT_PERCENT: u16 = 40;
 
-pub(super) fn help_dialog_content_rect(dialog_area: Rect) -> Rect {
-    let block = Block::default()
+fn thick_bordered_block() -> Block<'static> {
+    Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Thick);
+        .border_type(BorderType::Thick)
+}
+
+pub(super) fn help_dialog_content_rect(dialog_area: Rect) -> Rect {
+    let block = thick_bordered_block();
     let inner = block.inner(dialog_area);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -19,27 +23,28 @@ pub(super) fn help_dialog_content_rect(dialog_area: Rect) -> Rect {
     chunks[0]
 }
 
-pub fn help_visible_height(area: Rect) -> usize {
-    let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, area);
-    help_dialog_content_rect(dialog_area).height as usize
-}
-
-pub fn help_message_width(area: Rect) -> u16 {
+pub fn help_dialog_geometry(area: Rect) -> (usize, u16) {
     let dialog_area = centered_rect(DIALOG_WIDTH_PERCENT, DIALOG_HEIGHT_PERCENT, area);
     let content = help_dialog_content_rect(dialog_area);
-    if content.width > 1 {
+    let height = content.height as usize;
+    let width = if content.width > 1 {
         content.width.saturating_sub(1)
     } else {
         content.width
-    }
+    };
+    (height, width)
+}
+
+pub fn help_visible_height(area: Rect) -> usize {
+    help_dialog_geometry(area).0
+}
+
+pub fn help_message_width(area: Rect) -> u16 {
+    help_dialog_geometry(area).1
 }
 
 pub(super) fn dialog_block(title: &str, style: Style) -> Block<'_> {
-    Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_type(BorderType::Thick)
-        .style(style)
+    thick_bordered_block().title(title).style(style)
 }
 
 pub fn input_dialog_rect(area: Rect) -> Rect {

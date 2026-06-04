@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::file_type::*;
 use crate::app::types::format_time;
+use crate::app::types::sanitize_for_display;
 use ratatui::style::Color;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -24,6 +25,7 @@ fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) 
         .build()
 }
 
+// TODO: replace with #[rstest] once it's added as a dev-dependency.
 macro_rules! test_file_color {
     ($name:ident, $filename:expr, $is_dir:expr, $is_exec:expr, $is_symlink:expr, $expected:expr, bold) => {
         #[test]
@@ -43,6 +45,8 @@ macro_rules! test_file_color {
         }
     };
 }
+// TODO: add negative test — verify get_file_color returns default Color::White
+// for files that match no known extension category.
 
 test_file_color!(
     test_get_file_color_directory,
@@ -78,6 +82,9 @@ test_file_color!(
     true,
     Color::Cyan
 );
+// TODO: currently get_file_color only adds BOLD for directories and executables.
+// If symlinks should also be bold, update the `bold` condition from
+// `entry.is_dir() || entry.is_executable()` to include `entry.is_symlink()`.
 test_file_color!(
     test_get_file_color_archive,
     "archive.tar.gz",
@@ -260,14 +267,14 @@ fn test_is_source_code_negative() {
 }
 
 #[test]
-fn test_format_time_deterministic() {
+fn test_format_time_contains_date_separators() {
     let result = format_time(test_timestamp());
     assert!(result.contains("-"));
     assert!(result.contains(":"));
 }
 
 #[test]
-fn test_format_time_returns_string() {
+fn test_format_time_unix_epoch_is_non_empty() {
     let time = SystemTime::UNIX_EPOCH;
     let result = format_time(time);
     assert!(!result.is_empty());
@@ -466,6 +473,9 @@ fn test_get_file_icon_font() {
     );
 }
 
+// TODO: add tests for IconTheme::None — verify that NerdFont and Plain icons
+// are returned as expected for each FileCategory when theme is None.
+
 #[test]
 fn test_format_entry_line_truncation() {
     let entry = create_test_entry(
@@ -541,8 +551,8 @@ fn test_panel_status_summary_with_selection() {
     panel.set_selected_count(1);
     panel.set_selected_size(1024);
     let (summary, _) = panel_status_summary(&panel);
-    assert!(summary.contains("1"));
-    assert!(summary.contains("1.0 KB"));
+    assert!(summary.contains("1/2"));
+    assert!(summary.contains("1 1.0 KB"));
 }
 
 #[test]
@@ -639,67 +649,51 @@ fn test_format_size_just_under_1kb() {
     assert_eq!(format_size(1023), "1023 B");
 }
 
+fn render_to_string(width: u16, height: u16, f: impl FnOnce(&mut ratatui::Frame<'_>)) -> String {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(f).unwrap();
+    let buffer = terminal.backend().buffer();
+    buffer.content().iter().map(|c| c.symbol()).collect()
+}
+
 #[test]
 fn test_render_panel_no_panic() {
-    let backend = ratatui::backend::TestBackend::new(80, 24);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![
         create_test_entry("file.txt", false, false, false),
         create_test_entry("mydir", true, false, false),
     ];
-    terminal
-        .draw(|f| {
-            render_panel(f, f.area(), &panel, true);
-        })
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let content = render_to_string(80, 24, |f| {
+        render_panel(f, f.area(), &panel, true);
+    });
     assert!(content.contains("file.txt"));
 }
 
 #[test]
 fn test_render_panel_empty_no_panic() {
-    let backend = ratatui::backend::TestBackend::new(80, 24);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
     let panel = PanelState::new(PathBuf::from("/test"));
-    terminal
-        .draw(|f| {
-            render_panel(f, f.area(), &panel, false);
-        })
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let content = render_to_string(80, 24, |f| {
+        render_panel(f, f.area(), &panel, false);
+    });
     assert!(content.contains("/test"));
 }
 
 #[test]
 fn test_render_status_bar_no_panic() {
-    let backend = ratatui::backend::TestBackend::new(80, 2);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![create_test_entry("file.txt", false, false, false)];
-    terminal
-        .draw(|f| {
-            render_status_bar(f, f.area(), &panel);
-        })
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let content = render_to_string(80, 2, |f| {
+        render_status_bar(f, f.area(), &panel);
+    });
     assert!(content.contains("file.txt"));
 }
 
 #[test]
 fn test_render_function_bar_no_panic() {
-    let backend = ratatui::backend::TestBackend::new(80, 1);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| {
-            render_function_bar(f, f.area());
-        })
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    let content = render_to_string(80, 1, |f| {
+        render_function_bar(f, f.area());
+    });
     assert!(content.contains("F1"));
 }
 

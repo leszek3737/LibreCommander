@@ -63,15 +63,13 @@ macro_rules! define_theme_colors {
 
         impl ColorPalette {
             pub fn from_config(cfg: &ThemeConfig) -> Self {
-                let mut palette = Self {
+                Self {
                     $($field: cfg.$field
                         .as_ref()
                         .and_then(|s| parse_color(s))
                         .unwrap_or(DEFAULT_COLORS.$field),)*
-                    icon_theme: DEFAULT_COLORS.icon_theme,
-                };
-                palette.icon_theme = cfg.icon_theme;
-                palette
+                    icon_theme: cfg.icon_theme,
+                }
             }
 
             pub fn icon_theme(&self) -> IconTheme {
@@ -147,31 +145,40 @@ fn parse_color(s: &str) -> Option<Color> {
         return None;
     }
     if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some(Color::Rgb(r, g, b));
-        }
-        if hex.len() == 3 {
-            let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
-            return Some(Color::Rgb(r, g, b));
-        }
-        return None;
+        return parse_hex_color(hex);
     }
     if let Ok(idx) = s.parse::<u8>() {
         return Some(Color::Indexed(idx));
     }
-    match s.to_ascii_lowercase().as_str() {
+    parse_named_color(s)
+}
+
+fn parse_hex_color(hex: &str) -> Option<Color> {
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        return Some(Color::Rgb(r, g, b));
+    }
+    if hex.len() == 3 {
+        let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+        let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+        let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+        return Some(Color::Rgb(r, g, b));
+    }
+    None
+}
+
+fn parse_named_color(s: &str) -> Option<Color> {
+    let lower = s.to_ascii_lowercase();
+    match lower.as_str() {
         "black" => Some(Color::Black),
         "red" => Some(Color::Red),
         "green" => Some(Color::Green),
         "yellow" => Some(Color::Yellow),
         "blue" => Some(Color::Blue),
-        "magenta" => Some(Color::Magenta),
-        "cyan" => Some(Color::Cyan),
+        "magenta" | "fuchsia" => Some(Color::Magenta),
+        "cyan" | "aqua" => Some(Color::Cyan),
         "gray" | "grey" => Some(Color::Gray),
         "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Some(Color::DarkGray),
         "lightred" | "light_red" => Some(Color::LightRed),
@@ -189,8 +196,6 @@ fn parse_color(s: &str) -> Option<Color> {
         "teal" => Some(Color::Rgb(0, 128, 128)),
         "olive" => Some(Color::Rgb(128, 128, 0)),
         "maroon" => Some(Color::Rgb(128, 0, 0)),
-        "aqua" => Some(Color::Cyan),
-        "fuchsia" => Some(Color::Magenta),
         "lime" => Some(Color::Rgb(0, 255, 0)),
         "silver" => Some(Color::Rgb(192, 192, 192)),
         _ => None,
@@ -615,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn icon_theme_deserialize_ascii() {
+    fn icon_theme_config_field_ascii() {
         let cfg = ThemeConfig {
             icon_theme: IconTheme::Ascii,
             ..Default::default()
@@ -624,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn icon_theme_deserialize_emoji() {
+    fn icon_theme_config_field_emoji() {
         let cfg = ThemeConfig {
             icon_theme: IconTheme::Emoji,
             ..Default::default()
@@ -633,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn icon_theme_deserialize_nerdfont() {
+    fn icon_theme_config_field_nerdfont() {
         let cfg = ThemeConfig {
             icon_theme: IconTheme::NerdFont,
             ..Default::default()

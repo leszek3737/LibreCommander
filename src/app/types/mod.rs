@@ -12,6 +12,9 @@ mod tests;
 
 pub use app_state::AppState;
 pub use dialogs::{ConfirmDetails, DialogKind, InputAction, PickerKind};
+#[cfg(test)]
+pub(crate) use file_entry::sanitize_for_display;
+pub(crate) use file_entry::sanitize_name;
 pub use file_entry::{
     FileCategory, FileEntry, FileEntryBuilder, FileSize, compute_category, format_permissions,
     format_size, format_time,

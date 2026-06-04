@@ -1,21 +1,38 @@
+use std::borrow::Cow;
 use std::path::{MAIN_SEPARATOR, Path};
 
-fn truncate_suffix(s: &str, max_width: usize) -> String {
+fn truncate_suffix<'a>(s: &'a str, max_width: usize) -> Cow<'a, str> {
     if max_width > 3 {
         let suffix_budget = max_width - 3;
-        let mut width = 0;
+        let total_width: usize = s
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum();
+        if total_width <= suffix_budget {
+            return Cow::Borrowed(s);
+        }
+        let mut remaining = total_width;
         let mut split_idx = s.len();
-        for (idx, ch) in s.char_indices().rev() {
-            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width + cw > suffix_budget {
-                split_idx = idx + ch.len_utf8();
+        for (idx, ch) in s.char_indices() {
+            if remaining <= suffix_budget {
+                split_idx = idx;
                 break;
             }
-            width += cw;
-            split_idx = idx;
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            remaining -= cw;
         }
-        format!("...{}", &s[split_idx..])
+        Cow::Owned(format!("...{}", &s[split_idx..]))
     } else {
+        if max_width == 0 {
+            return Cow::Owned(String::new());
+        }
+        let total_width: usize = s
+            .chars()
+            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+            .sum();
+        if total_width <= max_width {
+            return Cow::Borrowed(s);
+        }
         let mut out = String::new();
         let mut width = 0;
         for ch in s.chars() {
@@ -26,34 +43,29 @@ fn truncate_suffix(s: &str, max_width: usize) -> String {
             width += cw;
             out.push(ch);
         }
-        out
+        Cow::Owned(out)
     }
 }
 
-pub(super) fn truncate_path(path: &str, max_width: usize) -> String {
+pub(super) fn truncate_path<'a>(path: &'a str, max_width: usize) -> Cow<'a, str> {
     let total_width = unicode_width::UnicodeWidthStr::width(path);
     if total_width <= max_width {
-        return path.to_string();
+        return Cow::Borrowed(path);
     }
     let p = Path::new(path);
-    let file = p
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let dir = p
-        .parent()
-        .map(|d| d.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let file_width = unicode_width::UnicodeWidthStr::width(file.as_str());
+    let file_ref: &str = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
+    let file_width = unicode_width::UnicodeWidthStr::width(file_ref);
     if file_width >= max_width {
-        return truncate_suffix(file.as_str(), max_width);
+        return truncate_suffix(file_ref, max_width);
     }
-    if dir.is_empty() {
+    let dir_ref: &str = p.parent().and_then(|d| d.to_str()).unwrap_or("");
+    if dir_ref.is_empty() {
         return truncate_suffix(path, max_width);
     }
     let budget = max_width - file_width - 1;
-    let dir_part = truncate_suffix(dir.as_str(), budget);
-    format!("{dir_part}{MAIN_SEPARATOR}{file}")
+    let dir_part = truncate_suffix(dir_ref, budget);
+    let result = format!("{dir_part}{MAIN_SEPARATOR}{file_ref}");
+    Cow::Owned(result)
 }
 
 pub fn wrapped_line_count(text: &str, available_width: u16) -> usize {
@@ -69,9 +81,7 @@ pub fn wrapped_line_count(text: &str, available_width: u16) -> usize {
             col = 0;
             continue;
         }
-        let cw = unicode_width::UnicodeWidthChar::width(ch)
-            .unwrap_or(1)
-            .max(1);
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
         if col + cw > w {
             lines += 1;
             col = cw;

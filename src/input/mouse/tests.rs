@@ -65,6 +65,7 @@ fn mk_entry(name: &str) -> crate::app::types::FileEntry {
         size_width: 0,
         time_width: 0,
         category: crate::app::types::FileCategory::Other,
+        sanitized_name: None,
     }
 }
 

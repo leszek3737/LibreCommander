@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    text::Span,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
@@ -26,11 +26,12 @@ fn render_menu_title_bar(
         } else {
             Theme::menu_bar_with_colors(colors)
         };
-        let mut padded = String::with_capacity(title.len() + 2);
-        padded.push(' ');
-        padded.push_str(title);
-        padded.push(' ');
-        let p = Paragraph::new(Span::styled(padded, style));
+        let line = Line::from(vec![
+            Span::styled(" ", style),
+            Span::styled(*title, style),
+            Span::styled(" ", style),
+        ]);
+        let p = Paragraph::new(line);
         let area = Rect::new(
             menu_bar_area.x + menu_title_x(menu_bar_area.width, i),
             menu_bar_area.y,
@@ -49,12 +50,15 @@ fn render_menu_dropdown(
     colors: &ColorPalette,
 ) {
     let items = MENU_ITEMS[active_menu];
-    let dropdown_width = items
-        .iter()
-        .map(|s| UnicodeWidthStr::width(*s))
-        .max()
-        .unwrap_or(MIN_DROPDOWN_ITEM_WIDTH) as u16
-        + MENU_PADDING_WIDTH;
+    let dropdown_width = u16::try_from(
+        items
+            .iter()
+            .map(|s| UnicodeWidthStr::width(*s))
+            .max()
+            .unwrap_or(MIN_DROPDOWN_ITEM_WIDTH),
+    )
+    .unwrap_or(u16::MAX)
+    .saturating_add(MENU_PADDING_WIDTH);
     let dropdown_y = menu_bar_area.y + 1;
     let max_visible = f.area().height.saturating_sub(dropdown_y);
     if max_visible < 2 {
@@ -95,11 +99,12 @@ fn render_menu_dropdown(
             Theme::panel_with_colors(colors)
         };
         let item_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
-        let mut padded = String::with_capacity(item.len() + 2);
-        padded.push(' ');
-        padded.push_str(item);
-        padded.push(' ');
-        let p = Paragraph::new(Span::styled(padded, style));
+        let line = Line::from(vec![
+            Span::styled(" ", style),
+            Span::styled(*item, style),
+            Span::styled(" ", style),
+        ]);
+        let p = Paragraph::new(line);
         f.render_widget(p, item_area);
     }
 }

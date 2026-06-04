@@ -36,7 +36,7 @@ fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
         return Cow::Borrowed(name);
     }
     let truncate_to = max_width.saturating_sub(1);
-    let mut result = String::new();
+    let mut result = String::with_capacity(max_width + 1);
     let mut taken = 0;
     for ch in name.chars() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
@@ -122,10 +122,11 @@ fn render_tree_entries(
     colors: &ColorPalette,
 ) {
     let row_start = row_range.start;
+    let max_y = inner.y + inner.height.saturating_sub(1);
     for (offset, entry) in entries[row_range].iter().enumerate() {
         let row = row_start + offset;
         let y = inner.y + offset as u16;
-        if y >= inner.y + inner.height.saturating_sub(1) {
+        if y >= max_y {
             break;
         }
 

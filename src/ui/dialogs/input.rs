@@ -53,66 +53,90 @@ pub fn render_input_dialog(
         return;
     }
 
-    let grapheme_count = value.graphemes(true).count();
-    let clamped_cursor = cursor_pos.min(grapheme_count);
+    let (visible, display_cursor_col, vis_width) =
+        compute_visible_window(value, cursor_pos, visible_width);
 
-    let cursor_display: usize = value
-        .graphemes(true)
-        .take(clamped_cursor)
-        .map(UnicodeWidthStr::width)
-        .sum();
-
-    let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
-
-    let mut start_cum = 0usize;
-    let mut visible = String::new();
-    let mut vis_width = 0;
-
-    if scroll_display == 0 {
-        for g in value.graphemes(true) {
-            let gw = UnicodeWidthStr::width(g);
-            if vis_width + gw > visible_width {
-                break;
-            }
-            visible.push_str(g);
-            vis_width += gw;
-        }
-    } else {
-        let mut cum = 0usize;
-        let mut found_start = false;
-        for g in value.graphemes(true) {
-            let gw = UnicodeWidthStr::width(g);
-            if !found_start && cum + gw > scroll_display {
-                found_start = true;
-                start_cum = cum;
-            }
-            cum += gw;
-            if found_start {
-                if vis_width + gw > visible_width {
-                    break;
-                }
-                visible.push_str(g);
-                vis_width += gw;
-            }
-        }
-        if !found_start {
-            start_cum = 0;
-            for g in value.graphemes(true) {
-                let gw = UnicodeWidthStr::width(g);
-                if vis_width + gw > visible_width {
-                    break;
-                }
-                visible.push_str(g);
-                vis_width += gw;
-            }
-        }
-    }
-
-    let display_cursor_col = cursor_display.saturating_sub(start_cum);
     let cursor_x = input_inner.x + display_cursor_col.min(vis_width) as u16;
     let cursor_y = input_inner.y;
 
     let input_paragraph = Paragraph::new(visible).block(input_block);
     f.render_widget(input_paragraph, chunks[1]);
     f.set_cursor_position((cursor_x, cursor_y));
+}
+
+fn compute_visible_window(
+    value: &str,
+    cursor_pos: usize,
+    visible_width: usize,
+) -> (String, usize, usize) {
+    let graphemes: Vec<&str> = value.graphemes(true).collect();
+    let grapheme_count = graphemes.len();
+    let clamped_cursor = cursor_pos.min(grapheme_count);
+
+    let cursor_display: usize = graphemes
+        .iter()
+        .take(clamped_cursor)
+        .map(|g| UnicodeWidthStr::width(*g))
+        .sum();
+
+    let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
+
+    if scroll_display == 0 {
+        let (visible, vis_width) = take_graphemes_up_to_width(&graphemes, visible_width);
+        (visible, cursor_display, vis_width)
+    } else {
+        let (visible, start_cum, vis_width) =
+            compute_scrolled_window(&graphemes, scroll_display, visible_width);
+        let display_cursor_col = cursor_display.saturating_sub(start_cum);
+        (visible, display_cursor_col, vis_width)
+    }
+}
+
+fn take_graphemes_up_to_width(graphemes: &[&str], max_width: usize) -> (String, usize) {
+    let mut visible = String::with_capacity(max_width);
+    let mut vis_width = 0;
+    for g in graphemes {
+        let gw = UnicodeWidthStr::width(*g);
+        if vis_width + gw > max_width {
+            break;
+        }
+        visible.push_str(g);
+        vis_width += gw;
+    }
+    (visible, vis_width)
+}
+
+fn compute_scrolled_window(
+    graphemes: &[&str],
+    scroll_display: usize,
+    max_width: usize,
+) -> (String, usize, usize) {
+    let mut visible = String::with_capacity(max_width);
+    let mut vis_width = 0;
+    let mut cum = 0usize;
+    let mut found_start = false;
+    let mut start_cum = 0usize;
+
+    for g in graphemes {
+        let gw = UnicodeWidthStr::width(*g);
+        if !found_start && cum + gw > scroll_display {
+            found_start = true;
+            start_cum = cum;
+        }
+        cum += gw;
+        if found_start {
+            if vis_width + gw > max_width {
+                break;
+            }
+            visible.push_str(g);
+            vis_width += gw;
+        }
+    }
+
+    if !found_start {
+        let (visible, vis_width) = take_graphemes_up_to_width(graphemes, max_width);
+        (visible, 0, vis_width)
+    } else {
+        (visible, start_cum, vis_width)
+    }
 }

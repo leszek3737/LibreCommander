@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -24,14 +26,18 @@ fn render_file_list(
     if files.len() <= show_count {
         for name in files {
             let display = truncate_path(name.as_ref(), max_name_width);
-            lines
-                .push(Line::from(format!("  {display}")).style(Theme::warning_with_colors(colors)));
+            lines.push(
+                Line::from(vec![Span::raw("  "), Span::raw(display)])
+                    .style(Theme::warning_with_colors(colors)),
+            );
         }
     } else {
         for name in files.iter().take(show_count.saturating_sub(1)) {
             let display = truncate_path(name.as_ref(), max_name_width);
-            lines
-                .push(Line::from(format!("  {display}")).style(Theme::warning_with_colors(colors)));
+            lines.push(
+                Line::from(vec![Span::raw("  "), Span::raw(display)])
+                    .style(Theme::warning_with_colors(colors)),
+            );
         }
         let remaining = files.len() - show_count + 1;
         lines.push(Line::from(format!("  ... +{remaining} more")));
@@ -80,7 +86,7 @@ pub(super) fn render_confirmation_dialog_inner(
         render_file_list(f, chunks[1], files, max_name_width, colors);
     }
 
-    let mut spans: Vec<Span> = Vec::new();
+    let mut spans: Vec<Span> = Vec::with_capacity(buttons.len() * 2);
     for (i, (style, label)) in buttons.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
@@ -133,10 +139,13 @@ pub fn render_overwrite_dialog(
         return;
     }
 
-    let msg = if files.len() == 1 {
-        "File already exists at destination:".to_string()
+    let msg: Cow<'_, str> = if files.len() == 1 {
+        Cow::Borrowed("File already exists at destination:")
     } else {
-        format!("{} files already exist at destination:", files.len())
+        Cow::Owned(format!(
+            "{} files already exist at destination:",
+            files.len()
+        ))
     };
 
     let btn_style = |idx: usize| -> Style {

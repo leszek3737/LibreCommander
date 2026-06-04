@@ -30,16 +30,21 @@ impl ViewerState {
             return;
         }
 
-        let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
+        let lower_query: String = if query.is_ascii() {
+            query.to_ascii_lowercase()
+        } else {
+            query.chars().flat_map(|c| c.to_lowercase()).collect()
+        };
 
         let mut lower_buf = String::new();
         let mut byte_map_buf = Vec::new();
-        let mut local_matches: Vec<(usize, usize, usize)> = Vec::new();
-        let mut local_by_line: Vec<SearchLineMatch> = Vec::new();
+        let mut local_matches: Vec<(usize, usize, usize)> = Vec::with_capacity(64);
+        let mut local_by_line: Vec<SearchLineMatch> = Vec::with_capacity(64);
 
         for line_idx in 0..self.line_count {
             let line = self.get_line(line_idx);
             build_lowercase_mapping(&line, &mut lower_buf, &mut byte_map_buf);
+            let line_is_ascii = line.is_ascii();
             let mut search_start = 0;
             while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
                 let match_byte_start = search_start + pos;
@@ -59,7 +64,6 @@ impl ViewerState {
                 } else {
                     mapped_end
                 };
-                let line_is_ascii = line.is_ascii();
                 let char_pos = if line_is_ascii {
                     orig_byte_start
                 } else {
@@ -103,7 +107,7 @@ impl ViewerState {
         }
     }
 
-    pub(crate) fn push_match_segments(
+    fn push_match_segments(
         search_matches: &mut Vec<(usize, usize, usize)>,
         search_matches_by_line: &mut Vec<SearchLineMatch>,
         start_byte: usize,
@@ -140,7 +144,11 @@ impl ViewerState {
     }
 
     pub(crate) fn search_hex(&mut self, query: &str) {
-        let lower_query: String = query.chars().flat_map(|c| c.to_lowercase()).collect();
+        let lower_query: String = if query.is_ascii() {
+            query.to_ascii_lowercase()
+        } else {
+            query.chars().flat_map(|c| c.to_lowercase()).collect()
+        };
         let query_bytes = Self::parse_hex_query(&lower_query);
 
         if let Some(ref needle) = query_bytes {
@@ -163,6 +171,8 @@ impl ViewerState {
             let overlap_bytes = query_lower_len * 3 + 16;
             let total_len = self.raw_bytes.len();
             let mut chunk_start: usize = 0;
+            let mut lower_buf = String::with_capacity(CHUNK_SIZE);
+            let mut byte_map: Vec<usize> = Vec::with_capacity(CHUNK_SIZE);
 
             while chunk_start < total_len {
                 let primary_end = (chunk_start + CHUNK_SIZE).min(total_len);
@@ -170,25 +180,12 @@ impl ViewerState {
                 let slice = &self.raw_bytes[chunk_start..buf_end];
 
                 let lossy = String::from_utf8_lossy(slice);
-                let mut lower_buf = String::with_capacity(lossy.len());
-                let mut byte_map: Vec<usize> = Vec::with_capacity(lossy.len());
-                for (byte_pos, ch) in lossy.char_indices() {
-                    for lc in ch.to_lowercase() {
-                        for _ in 0..lc.len_utf8() {
-                            byte_map.push(byte_pos);
-                        }
-                        lower_buf.push(lc);
-                    }
-                }
+                build_lowercase_mapping(&lossy, &mut lower_buf, &mut byte_map);
 
                 let mut search_start = 0;
                 while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
                     let abs_pos = search_start + pos;
-                    let advance = lower_buf[abs_pos..]
-                        .chars()
-                        .next()
-                        .map_or(1, |c| c.len_utf8());
-                    search_start = abs_pos + advance;
+                    search_start = abs_pos + query_lower_len;
 
                     let orig_byte_in_slice = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
                     let orig_byte = chunk_start + orig_byte_in_slice;
@@ -256,10 +253,9 @@ impl ViewerState {
         if cleaned.len() < 2 || !cleaned.len().is_multiple_of(2) {
             return None;
         }
-        let lower: String = cleaned.chars().flat_map(|c| c.to_lowercase()).collect();
-        (0..lower.len())
+        (0..cleaned.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&lower[i..i + 2], 16).ok())
+            .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
             .collect()
     }
 
