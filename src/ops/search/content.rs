@@ -290,7 +290,7 @@ fn scan_lines(
         ctx.bufs.line_buf.clear();
         match reader
             .by_ref()
-            .take(MAX_CONTENT_LINE_BYTES as u64)
+            .take(MAX_CONTENT_LINE_BYTES as u64 + 1)
             .read_until(b'\n', &mut ctx.bufs.line_buf)
         {
             Ok(0) => break,
@@ -300,12 +300,23 @@ fn scan_lines(
                 }
                 line_no += 1;
                 let found_newline = ctx.bufs.line_buf.last() == Some(&b'\n');
-                if !found_newline && bytes_read == MAX_CONTENT_LINE_BYTES {
+                if !found_newline && bytes_read > MAX_CONTENT_LINE_BYTES {
                     if outcome.truncated.is_none() {
                         outcome.truncated = Some(TruncationReason::LineTooLong);
                     }
                     ctx.bufs.line_buf.clear();
-                    let _ = reader.read_until(b'\n', &mut ctx.bufs.line_buf);
+                    while reader
+                        .by_ref()
+                        .take(MAX_CONTENT_LINE_BYTES as u64)
+                        .read_until(b'\n', &mut ctx.bufs.line_buf)
+                        .is_ok()
+                    {
+                        if ctx.bufs.line_buf.last() == Some(&b'\n') || ctx.bufs.line_buf.is_empty()
+                        {
+                            break;
+                        }
+                        ctx.bufs.line_buf.clear();
+                    }
                     continue;
                 }
                 let line = if found_newline {

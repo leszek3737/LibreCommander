@@ -123,9 +123,7 @@ fn reverse_natural_sort_key(
     dir_first: bool,
     sensitive: bool,
 ) -> ReverseNaturalSortKey {
-    let group = entry_group(entry, dir_first);
-    let key = natsort::natsort_key(entry.name.as_bytes(), !sensitive);
-    let bytes = entry.name.as_bytes().to_vec();
+    let (group, key, bytes) = natural_sort_key(entry, dir_first, sensitive);
     (group, Reverse(key), Reverse(bytes))
 }
 
@@ -150,8 +148,8 @@ fn cmp_name(a: &str, b: &str, sensitive: bool) -> Ordering {
         return a.cmp(b);
     }
     cmp_ignore_case(a, b).then_with(|| {
-        let a_has_upper = a.as_bytes().iter().any(|&b| b.is_ascii_uppercase());
-        let b_has_upper = b.as_bytes().iter().any(|&b| b.is_ascii_uppercase());
+        let a_has_upper = a.chars().any(|c| c.is_uppercase());
+        let b_has_upper = b.chars().any(|c| c.is_uppercase());
         match (a_has_upper, b_has_upper) {
             (false, true) => Ordering::Less,
             (true, false) => Ordering::Greater,

@@ -192,8 +192,7 @@ pub fn menu_bar_text_width() -> u16 {
         if i > 0 {
             total = total.saturating_add(MENU_TITLE_SEPARATOR as u16);
         }
-        let w = UnicodeWidthStr::width(entry.title).saturating_add(MENU_TITLE_PADDING) as u16;
-        total = total.saturating_add(w);
+        total = total.saturating_add(menu_title_width(entry.title));
     }
     total
 }
