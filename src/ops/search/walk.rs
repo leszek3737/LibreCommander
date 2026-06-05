@@ -6,15 +6,23 @@ use crate::app::types::FileEntry;
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::{SearchOutcome, TruncationReason};
 
+pub(super) trait SearchContext {
+    fn is_cancelled(&self) -> bool {
+        self.cancel().is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    fn cancel(&self) -> Option<&AtomicBool>;
+}
+
 pub(super) struct FileSearchContext<'a> {
     pub(super) outcome: &'a mut SearchOutcome<FileEntry>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
     pub(super) cancel: Option<&'a AtomicBool>,
 }
 
-impl FileSearchContext<'_> {
-    pub(super) fn is_cancelled(&self) -> bool {
-        self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+impl SearchContext for FileSearchContext<'_> {
+    fn cancel(&self) -> Option<&AtomicBool> {
+        self.cancel
     }
 }
 
@@ -28,14 +36,14 @@ pub(super) struct ContentSearchContext<'a> {
     pub(super) cancel: Option<&'a AtomicBool>,
 }
 
-impl ContentSearchContext<'_> {
-    pub(super) fn is_cancelled(&self) -> bool {
-        self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+impl SearchContext for ContentSearchContext<'_> {
+    fn cancel(&self) -> Option<&AtomicBool> {
+        self.cancel
     }
 }
 
 pub(super) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
-    if let Ok(meta) = std::fs::metadata(path)
+    if let Ok(meta) = std::fs::symlink_metadata(path)
         && meta.is_dir()
         && let Some(key) = get_inode_key(&meta)
     {

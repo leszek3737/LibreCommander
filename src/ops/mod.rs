@@ -1,3 +1,6 @@
+//! Facade for file operations: copy, move, delete, search, sort, compare, and
+//! archive.
+
 pub mod archive;
 pub(crate) mod batch;
 pub(crate) mod chunk_copy;
@@ -10,5 +13,5 @@ pub(crate) mod sorting;
 
 pub use compare::{apply_compare_to_panels, compare_entries};
 pub use file_ops::{chmod, create_directory, rename_entry};
-pub use search::{FileSearch, TruncationReason};
+pub use search::{FileSearch, SearchOutcome, TruncationReason};
 pub use sorting::{cycle_sort_mode, sort_entries};

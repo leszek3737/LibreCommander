@@ -186,18 +186,15 @@ pub fn menu_item_count(menu: usize) -> usize {
     MENUS.get(menu).map_or(0, |entry| entry.items.len())
 }
 
-pub fn menu_total_count() -> usize {
-    MENUS.len()
-}
-
 pub fn menu_bar_text_width() -> u16 {
-    let titles_width: u16 = MENUS
-        .iter()
-        .map(|entry| menu_title_width(entry.title))
-        .try_fold(0u16, |acc, w| acc.checked_add(w))
-        .unwrap_or(u16::MAX);
-    let separator_width: u16 = MENUS.len().saturating_sub(1).try_into().unwrap_or(u16::MAX);
-    titles_width.saturating_add(separator_width)
+    let mut total: u16 = 0;
+    for (i, entry) in MENUS.iter().enumerate() {
+        if i > 0 {
+            total = total.saturating_add(MENU_TITLE_SEPARATOR as u16);
+        }
+        total = total.saturating_add(menu_title_width(entry.title));
+    }
+    total
 }
 
 pub fn menu_bar_start_x(width: u16) -> u16 {
@@ -205,7 +202,8 @@ pub fn menu_bar_start_x(width: u16) -> u16 {
 }
 
 pub fn menu_title_width(title: &str) -> u16 {
-    UnicodeWidthStr::width(title) as u16 + MENU_TITLE_PADDING as u16
+    let title_w: u16 = UnicodeWidthStr::width(title).try_into().unwrap_or(0);
+    title_w.saturating_add(MENU_TITLE_PADDING as u16)
 }
 
 pub fn menu_title_x(width: u16, index: usize) -> u16 {

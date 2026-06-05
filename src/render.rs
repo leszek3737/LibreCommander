@@ -159,6 +159,10 @@ fn render_overlays(f: &mut Frame, state: &AppState, menu_bar_area: Rect, colors:
     }
 }
 
+fn clamp_selected(selected: usize, len: usize) -> usize {
+    selected.min(len.saturating_sub(1))
+}
+
 fn render_list_picker_overlay(
     f: &mut Frame,
     state: &AppState,
@@ -173,7 +177,7 @@ fn render_list_picker_overlay(
                 .rev()
                 .map(|s| s.as_str())
                 .collect();
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = clamp_selected(state.picker_selected, items.len());
             dialogs::render_list_picker_with_colors(
                 f,
                 "Command History",
@@ -184,9 +188,8 @@ fn render_list_picker_overlay(
             );
         }
         PickerKind::Hotlist => {
-            let selected = state
-                .picker_selected
-                .min(state.cached_hotlist_strings.len().saturating_sub(1));
+            let selected =
+                clamp_selected(state.picker_selected, state.cached_hotlist_strings.len());
             dialogs::render_list_picker_with_colors(
                 f,
                 "Directory Hotlist",
@@ -199,7 +202,7 @@ fn render_list_picker_overlay(
         PickerKind::CompareMode => {
             const COMPARE_MODES: [&str; 3] = ["Quick", "Size", "Thorough"];
             let items = &COMPARE_MODES[..];
-            let selected = state.picker_selected.min(items.len().saturating_sub(1));
+            let selected = clamp_selected(state.picker_selected, items.len());
             dialogs::render_list_picker_with_colors(
                 f,
                 "Compare Mode",
@@ -210,9 +213,8 @@ fn render_list_picker_overlay(
             );
         }
         PickerKind::UserMenu => {
-            let selected = state
-                .picker_selected
-                .min(state.cached_user_menu_strings.len().saturating_sub(1));
+            let selected =
+                clamp_selected(state.picker_selected, state.cached_user_menu_strings.len());
             dialogs::render_list_picker_with_colors(
                 f,
                 "User Menu",
@@ -224,7 +226,7 @@ fn render_list_picker_overlay(
         }
         PickerKind::ArchiveMenu => {
             const ITEMS: [&str; 2] = ["Extract Archive", "Create Archive"];
-            let selected = state.picker_selected.min(ITEMS.len().saturating_sub(1));
+            let selected = clamp_selected(state.picker_selected, ITEMS.len());
             dialogs::render_list_picker_with_colors(
                 f,
                 "Archive Operations",

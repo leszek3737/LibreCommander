@@ -3,7 +3,7 @@ use ratatui::prelude::*;
 
 use lc::app::panel_ops;
 use lc::app::types::{AppMode, AppState, DialogKind, InputAction};
-use lc::menu::{menu_item_count, menu_total_count};
+use lc::menu::{MENUS, menu_item_count};
 use lc::ui::viewer;
 
 use crate::{
@@ -234,7 +234,7 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
     terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
-    let total = menu_total_count();
+    let total = MENUS.len();
     let max_items = menu_item_count(state.menu_selected);
     if max_items == 0 {
         state.mode = AppMode::Normal;

@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 
 const INLINE_CAP: usize = 24;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq)]
 pub enum SegData {
     Inline([u8; INLINE_CAP], u8),
     Heap(Box<[u8]>),
@@ -32,6 +32,12 @@ impl SegData {
             SegData::Inline(buf, len) => &buf[..*len as usize],
             SegData::Heap(bx) => bx,
         }
+    }
+}
+
+impl PartialEq for SegData {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
     }
 }
 
@@ -90,7 +96,7 @@ impl PartialOrd for NatKeySegment {
 }
 
 pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
-    let mut segments = Vec::new();
+    let mut segments = Vec::with_capacity(4);
     let mut i = 0;
 
     while i < name.len() {
@@ -106,18 +112,21 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
                 i += 1;
             }
             let slice = &name[start..i];
-            if insensitive && slice.len() <= INLINE_CAP {
+            let seg = if slice.len() <= INLINE_CAP {
                 let mut buf = [0u8; INLINE_CAP];
                 buf[..slice.len()].copy_from_slice(slice);
-                buf[..slice.len()].make_ascii_lowercase();
-                segments.push(NatKeySegment::Text(SegData::Inline(buf, slice.len() as u8)));
-            } else {
-                let mut text = slice.to_vec();
                 if insensitive {
-                    text.make_ascii_lowercase();
+                    buf[..slice.len()].make_ascii_lowercase();
                 }
-                segments.push(NatKeySegment::Text(SegData::from_slice(&text)));
-            }
+                SegData::Inline(buf, slice.len() as u8)
+            } else if insensitive {
+                let mut buf = slice.to_vec();
+                buf.make_ascii_lowercase();
+                SegData::Heap(buf.into_boxed_slice())
+            } else {
+                SegData::Heap(slice.to_vec().into_boxed_slice())
+            };
+            segments.push(NatKeySegment::Text(seg));
         }
     }
 

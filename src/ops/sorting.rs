@@ -108,6 +108,7 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
     }
 }
 
+#[inline]
 fn natural_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> NaturalSortKey {
     (
         entry_group(entry, dir_first),
@@ -116,15 +117,17 @@ fn natural_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> Natu
     )
 }
 
+#[inline]
 fn reverse_natural_sort_key(
     entry: &FileEntry,
     dir_first: bool,
     sensitive: bool,
 ) -> ReverseNaturalSortKey {
-    let (_, key, bytes) = natural_sort_key(entry, dir_first, sensitive);
-    (entry_group(entry, dir_first), Reverse(key), Reverse(bytes))
+    let (group, key, bytes) = natural_sort_key(entry, dir_first, sensitive);
+    (group, Reverse(key), Reverse(bytes))
 }
 
+#[inline]
 fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
     match (entry.name.as_str(), dir_first, entry.is_dir()) {
         ("..", _, _) => GROUP_UP,
@@ -139,21 +142,23 @@ fn cmp_group(a: &FileEntry, b: &FileEntry, dir_first: bool) -> Ordering {
     entry_group(a, dir_first).cmp(&entry_group(b, dir_first))
 }
 
+#[inline]
 fn cmp_name(a: &str, b: &str, sensitive: bool) -> Ordering {
     if sensitive {
         return a.cmp(b);
     }
     cmp_ignore_case(a, b).then_with(|| {
-        let a_lower = a.chars().all(|c| !c.is_uppercase());
-        let b_lower = b.chars().all(|c| !c.is_uppercase());
-        match (a_lower, b_lower) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
+        let a_has_upper = a.chars().any(|c| c.is_uppercase());
+        let b_has_upper = b.chars().any(|c| c.is_uppercase());
+        match (a_has_upper, b_has_upper) {
+            (false, true) => Ordering::Less,
+            (true, false) => Ordering::Greater,
             _ => a.cmp(b),
         }
     })
 }
 
+#[inline]
 fn cmp_ext(a: &FileEntry, b: &FileEntry, sensitive: bool) -> Ordering {
     let ext_a = get_extension(&a.name);
     let ext_b = get_extension(&b.name);

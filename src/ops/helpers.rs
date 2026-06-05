@@ -85,12 +85,13 @@ fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) ->
                 continue;
             }
         };
-        let meta = match entry.path().symlink_metadata() {
+        let entry_path = entry.path();
+        let meta = match entry_path.symlink_metadata() {
             Ok(m) => m,
             Err(e) => {
                 debug_log!(
                     "dir_size: symlink_metadata failed for {}: {e}",
-                    entry.path().display()
+                    entry_path.display()
                 );
                 continue;
             }
@@ -105,12 +106,12 @@ fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) ->
             {
                 debug_log!(
                     "dir_size: cycle detected, skipping {}",
-                    entry.path().display()
+                    entry_path.display()
                 );
                 continue;
             }
-            let child = dir_size_rec(&entry.path(), depth + 1, visited).unwrap_or_else(|e| {
-                debug_log!("dir_size: subdir failed {}: {e}", entry.path().display());
+            let child = dir_size_rec(&entry_path, depth + 1, visited).unwrap_or_else(|e| {
+                debug_log!("dir_size: subdir failed {}: {e}", entry_path.display());
                 0
             });
             total = total.saturating_add(child);
@@ -166,37 +167,43 @@ pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
         .collect()
 }
 
-/// Saturating sum of a slice of file sizes.
 pub(crate) fn sum_sizes(sizes: &[u64]) -> u64 {
-    sizes
-        .iter()
-        .fold(0, |total, size| total.saturating_add(*size))
+    sizes.iter().copied().fold(0, u64::saturating_add)
 }
 
-/// Borrow the path at `idx` from a slice, returning `None` when out of bounds.
-pub(crate) fn next_path(paths: &[PathBuf], idx: usize) -> Option<&Path> {
-    paths.get(idx).map(PathBuf::as_path)
+#[derive(Clone, Copy)]
+enum CleanupOp {
+    File,
+    Dir,
+    DirAll,
 }
 
-/// Remove a file, logging failures via `debug_log!` instead of silently discarding.
+fn cleanup_path(path: &Path, op: CleanupOp) {
+    let result = match op {
+        CleanupOp::File => fs::remove_file(path),
+        CleanupOp::Dir => fs::remove_dir(path),
+        CleanupOp::DirAll => fs::remove_dir_all(path),
+    };
+    if let Err(e) = result {
+        let label = match op {
+            CleanupOp::File => "file",
+            CleanupOp::Dir => "directory",
+            CleanupOp::DirAll => "directory tree",
+        };
+        debug_log!("failed to clean up {label} {}: {e}", path.display());
+    }
+}
+
 pub(crate) fn cleanup_file(path: &Path) {
-    if let Err(e) = fs::remove_file(path) {
-        debug_log!("failed to clean up file {}: {e}", path.display());
-    }
+    cleanup_path(path, CleanupOp::File);
 }
 
-/// Remove an empty directory, logging failures via `debug_log!`.
 pub(crate) fn cleanup_dir(path: &Path) {
-    if let Err(e) = fs::remove_dir(path) {
-        debug_log!("failed to clean up directory {}: {e}", path.display());
-    }
+    cleanup_path(path, CleanupOp::Dir);
 }
 
-/// Remove a directory tree, logging failures via `debug_log!`.
 pub(crate) fn cleanup_dir_all(path: &Path) {
-    if let Err(e) = fs::remove_dir_all(path) {
-        debug_log!("failed to clean up directory tree {}: {e}", path.display());
-    }
+    cleanup_path(path, CleanupOp::DirAll);
 }
 
 #[cfg(test)]
@@ -247,7 +254,7 @@ mod tests {
 
         let meta = fs::metadata(&dir).unwrap();
         let key = get_inode_key(&meta).unwrap();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::with_capacity(256);
 
         seed_visited_dir(&dir, &mut visited);
         assert!(visited.contains(&key));
@@ -323,14 +330,5 @@ mod tests {
         assert_eq!(sum_sizes(&[]), 0);
         assert_eq!(sum_sizes(&[1, 2, 3]), 6);
         assert_eq!(sum_sizes(&[u64::MAX, 1]), u64::MAX);
-    }
-
-    #[test]
-    fn test_next_path() {
-        let paths: Vec<PathBuf> = vec![PathBuf::from("/a"), PathBuf::from("/b")];
-        assert_eq!(next_path(&paths, 0), Some(Path::new("/a")));
-        assert_eq!(next_path(&paths, 1), Some(Path::new("/b")));
-        assert_eq!(next_path(&paths, 2), None);
-        assert_eq!(next_path(&[], 0), None);
     }
 }

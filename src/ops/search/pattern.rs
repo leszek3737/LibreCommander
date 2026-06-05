@@ -1,21 +1,25 @@
 use crate::ops::search::FileSearch;
 use memchr::memmem;
 
-pub(super) fn contains_case_insensitive(haystack: &str, needle_bytes: &[u8]) -> bool {
-    if needle_bytes.is_empty() {
+pub(super) fn contains_case_insensitive(
+    haystack: &str,
+    finder: &memmem::Finder<'_>,
+    buf: &mut Vec<u8>,
+) -> bool {
+    let needle = finder.needle();
+    if needle.is_empty() {
         return true;
     }
-    let mut haystack_bytes: Vec<u8> = Vec::with_capacity(haystack.len() * 4);
+    buf.clear();
     for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
-        haystack_bytes.extend_from_slice(&(c as u32).to_ne_bytes());
+        buf.extend_from_slice(&(c as u32).to_ne_bytes());
     }
-    if haystack_bytes.len() < needle_bytes.len() {
+    if buf.len() < needle.len() {
         return false;
     }
-    let finder = memmem::Finder::new(&needle_bytes);
     let mut offset = 0;
-    while offset + needle_bytes.len() <= haystack_bytes.len() {
-        let Some(pos) = finder.find(&haystack_bytes[offset..]) else {
+    while offset + needle.len() <= buf.len() {
+        let Some(pos) = finder.find(&buf[offset..]) else {
             return false;
         };
         let aligned = offset + pos;
@@ -27,37 +31,27 @@ pub(super) fn contains_case_insensitive(haystack: &str, needle_bytes: &[u8]) -> 
     false
 }
 
-pub enum CompiledPattern {
+enum PatternKind {
     Plain {
-        needle: Vec<char>,
         needle_str: String,
         needle_bytes: Vec<u8>,
         needle_ascii: Option<String>,
-        insensitive: bool,
     },
-    /// Single-star wildcard or `*inner*` substring match.
-    ///
-    /// - One `*`: `prefix` holds text before `*`, `suffix` holds text after.
-    ///   E.g. `*.txt` → `prefix = None, suffix = Some(".txt")`.
-    /// - Two `*`s with only inner text (`*foo*`): `suffix` holds the inner
-    ///   substring and `contains = true` signals substring semantics.
     WildcardSimple {
         prefix: Option<Vec<char>>,
-        /// After a single `*`: the trailing text. When `contains` is true,
-        /// this holds the inner substring between two `*`s instead.
         suffix: Option<Vec<char>>,
-        /// Pre-computed string versions for case-sensitive fast path.
         prefix_str: Option<String>,
         suffix_str: Option<String>,
-        /// When true, `suffix` is a substring needle (`*inner*`), not a
-        /// trailing suffix.
         contains: bool,
-        insensitive: bool,
     },
     WildcardDp {
         chars: Vec<char>,
-        insensitive: bool,
     },
+}
+
+pub struct CompiledPattern {
+    kind: PatternKind,
+    insensitive: bool,
 }
 
 impl CompiledPattern {
@@ -65,7 +59,7 @@ impl CompiledPattern {
         let insensitive = !case_sensitive;
 
         if !pattern.contains(['*', '?']) {
-            let needle: Vec<char> = if insensitive {
+            let needle_chars: Vec<char> = if insensitive {
                 pattern.chars().flat_map(|c| c.to_lowercase()).collect()
             } else {
                 pattern.chars().collect()
@@ -75,22 +69,23 @@ impl CompiledPattern {
             } else {
                 None
             };
-            let needle_str: String = needle.iter().collect();
-            let needle_bytes: Vec<u8> = needle
+            let needle_str: String = needle_chars.iter().collect();
+            let needle_bytes: Vec<u8> = needle_chars
                 .iter()
                 .flat_map(|&c| (c as u32).to_ne_bytes())
                 .collect();
-            return Self::Plain {
-                needle,
-                needle_str,
-                needle_bytes,
-                needle_ascii,
+            return Self {
+                kind: PatternKind::Plain {
+                    needle_str,
+                    needle_bytes,
+                    needle_ascii,
+                },
                 insensitive,
             };
         }
 
-        if let Some(simple) = Self::try_simple_wildcard(pattern, insensitive) {
-            return simple;
+        if let Some(compiled) = Self::try_simple_wildcard(pattern, insensitive) {
+            return compiled;
         }
 
         let chars = if insensitive {
@@ -98,7 +93,10 @@ impl CompiledPattern {
         } else {
             pattern.chars().collect()
         };
-        Self::WildcardDp { chars, insensitive }
+        Self {
+            kind: PatternKind::WildcardDp { chars },
+            insensitive,
+        }
     }
 
     fn try_simple_wildcard(pattern: &str, insensitive: bool) -> Option<Self> {
@@ -114,12 +112,14 @@ impl CompiledPattern {
             let suffix = Self::maybe_lower(suf, insensitive);
             let prefix_str = (!pre.is_empty()).then(|| pre.to_owned());
             let suffix_str = (!suf.is_empty()).then(|| suf.to_owned());
-            return Some(Self::WildcardSimple {
-                prefix,
-                suffix,
-                prefix_str,
-                suffix_str,
-                contains: false,
+            return Some(Self {
+                kind: PatternKind::WildcardSimple {
+                    prefix,
+                    suffix,
+                    prefix_str,
+                    suffix_str,
+                    contains: false,
+                },
                 insensitive,
             });
         }
@@ -140,12 +140,14 @@ impl CompiledPattern {
             if prefix_empty && suffix_empty {
                 let inner = Self::maybe_lower(inner_str, insensitive)?;
                 let inner_str_owned = inner_str.to_owned();
-                return Some(Self::WildcardSimple {
-                    prefix: None,
-                    suffix: Some(inner),
-                    prefix_str: None,
-                    suffix_str: Some(inner_str_owned),
-                    contains: true,
+                return Some(Self {
+                    kind: PatternKind::WildcardSimple {
+                        prefix: None,
+                        suffix: Some(inner),
+                        prefix_str: None,
+                        suffix_str: Some(inner_str_owned),
+                        contains: true,
+                    },
                     insensitive,
                 });
             }
@@ -165,14 +167,12 @@ impl CompiledPattern {
     }
 
     pub fn matches(&self, name: &str) -> bool {
-        match self {
-            Self::Plain {
-                needle: _,
-                needle_str: _,
+        match &self.kind {
+            PatternKind::Plain {
                 needle_bytes,
                 needle_ascii,
-                insensitive: true,
-            } => {
+                ..
+            } if self.insensitive => {
                 if needle_bytes.is_empty() {
                     return true;
                 }
@@ -184,27 +184,22 @@ impl CompiledPattern {
                         .windows(ascii_needle.len())
                         .any(|w| w.eq_ignore_ascii_case(ascii_needle.as_bytes()));
                 }
-                contains_case_insensitive(name, needle_bytes)
+                let finder = memmem::Finder::new(needle_bytes);
+                let mut buf = Vec::with_capacity(name.len() * 4);
+                contains_case_insensitive(name, &finder, &mut buf)
             }
-            Self::Plain {
-                needle: _,
-                needle_str,
-                needle_bytes: _,
-                needle_ascii: _,
-                insensitive: false,
-            } => {
+            PatternKind::Plain { needle_str, .. } => {
                 if needle_str.is_empty() {
                     return true;
                 }
                 name.contains(needle_str.as_str())
             }
-            Self::WildcardSimple {
+            PatternKind::WildcardSimple {
                 prefix,
                 suffix,
                 prefix_str,
                 suffix_str,
                 contains,
-                insensitive,
             } => Self::match_wildcard_simple(
                 name,
                 prefix,
@@ -212,15 +207,10 @@ impl CompiledPattern {
                 prefix_str,
                 suffix_str,
                 contains,
-                insensitive,
+                self.insensitive,
             ),
-            // NOTE: to_lowercase() can expand one char to multiple (e.g. İ -> i + \u{307}).
-            // The matcher treats each folded char independently, so `?` may partially
-            // match a multi-char lowercase expansion. Known limitation for Turkish İ,
-            // German ß, and similar. Full fix requires index-map from original positions
-            // to folded ranges.
-            Self::WildcardDp { chars, insensitive } => {
-                let name_chars: Vec<char> = if *insensitive {
+            PatternKind::WildcardDp { chars } => {
+                let name_chars: Vec<char> = if self.insensitive {
                     name.chars().flat_map(|c| c.to_lowercase()).collect()
                 } else {
                     name.chars().collect()
@@ -237,7 +227,7 @@ impl CompiledPattern {
         prefix_str: &Option<String>,
         suffix_str: &Option<String>,
         contains: &bool,
-        insensitive: &bool,
+        insensitive: bool,
     ) -> bool {
         if !insensitive {
             if *contains {

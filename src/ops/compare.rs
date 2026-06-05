@@ -14,7 +14,7 @@ struct EntryMeta {
     mtime: Option<std::time::SystemTime>,
 }
 
-fn meta_matches(left: &EntryMeta, right: &EntryMeta, mode: CompareMode) -> bool {
+fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
     if left.is_dir != right.is_dir {
         return false;
     }
@@ -47,6 +47,7 @@ fn mtime_matches(left: std::time::SystemTime, right: std::time::SystemTime) -> b
     diff <= MTIME_TOLERANCE
 }
 
+#[derive(Debug)]
 pub struct CompareReport {
     pub left_marks: HashSet<String>,
     pub right_marks: HashSet<String>,
@@ -81,19 +82,19 @@ pub fn compare_entries(
 
     for entry in left.iter().filter(|e| e.name != "..") {
         let name = entry.name.as_str();
-        let left_m = EntryMeta {
-            is_dir: entry.is_dir(),
-            size: entry.size(),
-            mtime: entry.cha.mtime(),
-        };
         match right_meta.get(name) {
             None => {
                 unique_left += 1;
                 left_to_mark.insert(name.to_string());
             }
             Some(right_m) => {
+                let left_m = EntryMeta {
+                    is_dir: entry.is_dir(),
+                    size: entry.size(),
+                    mtime: entry.cha.mtime(),
+                };
                 seen_right.insert(name);
-                if !meta_matches(&left_m, right_m, mode) {
+                if !meta_matches(left_m, *right_m, mode) {
                     differing += 1;
                     left_to_mark.insert(name.to_string());
                     right_to_mark.insert(name.to_string());
@@ -131,20 +132,13 @@ pub fn apply_compare_to_panels(
 }
 
 fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
-    for entry in &mut panel.listing.entries {
-        entry.selected = if entry.name != ".." {
-            marks.contains(&entry.name)
-        } else {
-            false
-        };
-    }
-    for entry in &mut panel.listing.unfiltered_entries {
-        entry.selected = if entry.name != ".." {
-            marks.contains(&entry.name)
-        } else {
-            false
-        };
-    }
+    let apply = |entries: &mut [FileEntry]| {
+        for entry in entries {
+            entry.selected = entry.name != ".." && marks.contains(&entry.name);
+        }
+    };
+    apply(&mut panel.listing.entries);
+    apply(&mut panel.listing.unfiltered_entries);
 }
 
 #[cfg(test)]
