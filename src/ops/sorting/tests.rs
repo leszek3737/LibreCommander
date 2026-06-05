@@ -2,17 +2,29 @@ use super::*;
 use std::time::SystemTime;
 
 fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
+    create_test_entry_with_btime(name, is_dir, size, modified_secs, Some(modified_secs))
+}
+
+fn create_test_entry_with_btime(
+    name: &str,
+    is_dir: bool,
+    size: u64,
+    modified_secs: u64,
+    btime_secs: Option<u64>,
+) -> FileEntry {
     let ts = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs);
-    FileEntry::builder()
+    let mut builder = FileEntry::builder()
         .name(name)
         .path(name)
         .is_dir(is_dir)
         .size(size)
         .modified(ts)
-        .created(ts)
         .owner("testuser")
-        .group("testgroup")
-        .build()
+        .group("testgroup");
+    if let Some(btime) = btime_secs {
+        builder = builder.created(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(btime));
+    }
+    builder.build()
 }
 
 #[test]
@@ -229,7 +241,8 @@ fn test_sort_with_same_values() {
     ];
 
     sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
-    assert!(matches!(entries[0].name.as_str(), "a.txt" | "b.txt"));
+    assert_eq!(entries[0].name, "a.txt");
+    assert_eq!(entries[1].name, "b.txt");
 }
 
 #[test]
@@ -307,24 +320,6 @@ fn test_sort_natural_ellipsis_first() {
     );
 
     assert_eq!(entries[0].name, "..");
-}
-
-fn create_entry_without_btime(
-    name: &str,
-    is_dir: bool,
-    size: u64,
-    modified_secs: u64,
-) -> FileEntry {
-    let ts = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs);
-    FileEntry::builder()
-        .name(name)
-        .path(name)
-        .is_dir(is_dir)
-        .size(size)
-        .modified(ts)
-        .owner("testuser")
-        .group("testgroup")
-        .build()
 }
 
 #[test]
@@ -440,9 +435,9 @@ fn test_sort_btime_same_btime_stable() {
 #[test]
 fn test_sort_btime_all_none() {
     let mut entries = vec![
-        create_entry_without_btime("c.txt", false, 10, 100),
-        create_entry_without_btime("a.txt", false, 10, 100),
-        create_entry_without_btime("b.txt", false, 10, 100),
+        create_test_entry_with_btime("c.txt", false, 10, 100, None),
+        create_test_entry_with_btime("a.txt", false, 10, 100, None),
+        create_test_entry_with_btime("b.txt", false, 10, 100, None),
     ];
 
     sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());

@@ -8,9 +8,7 @@ use lc::app::{panel_ops, shell};
 use lc::ops::archive;
 use lc::ui::viewer;
 
-use crate::{
-    file_name_str, resume_terminal_stdout, suspend_terminal_stdout, terminal_state_file_path,
-};
+use crate::{enter_tui_stdout, file_name_str, leave_tui_stdout, terminal_state_file_path};
 
 pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
     state: &mut AppState,
@@ -140,7 +138,7 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
         && !is_dir
     {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        if let Err(e) = suspend_terminal_stdout() {
+        if let Err(e) = leave_tui_stdout() {
             state.status_message = Some(format!("Terminal suspend failed: {e}"));
             return;
         }
@@ -170,7 +168,7 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .status();
-        let resume_result = resume_terminal_stdout();
+        let resume_result = enter_tui_stdout();
         if let Some(terminal_state_file) = terminal_state_file_path()
             && let Err(e) = std::fs::remove_file(&terminal_state_file)
         {

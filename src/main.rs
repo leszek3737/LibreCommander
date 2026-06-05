@@ -63,7 +63,7 @@ fn install_panic_hook() {
     }));
 }
 
-fn enter_tui_stdout() -> io::Result<()> {
+pub(crate) fn enter_tui_stdout() -> io::Result<()> {
     enable_raw_mode()?;
     if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide) {
         let _ = disable_raw_mode();
@@ -72,7 +72,7 @@ fn enter_tui_stdout() -> io::Result<()> {
     Ok(())
 }
 
-fn leave_tui_stdout() -> io::Result<()> {
+pub(crate) fn leave_tui_stdout() -> io::Result<()> {
     let raw_result = disable_raw_mode();
     let screen_result = execute!(
         io::stdout(),
@@ -83,25 +83,20 @@ fn leave_tui_stdout() -> io::Result<()> {
     raw_result.and(screen_result)
 }
 
-fn suspend_terminal_stdout() -> io::Result<()> {
-    leave_tui_stdout()
-}
-
-fn resume_terminal_stdout() -> io::Result<()> {
-    enter_tui_stdout()
-}
-
 fn terminal_state_file_path() -> Option<PathBuf> {
     paths::terminal_state_file_path()
+}
+
+fn fatal(msg: &str, err: &dyn std::fmt::Display) -> ! {
+    lc::debug_log!("{msg}: {err}");
+    let _ = writeln!(io::stderr(), "Error: {err}");
+    std::process::exit(1);
 }
 
 fn main() {
     install_panic_hook();
     if let Err(err) = enter_tui_stdout() {
-        lc::debug_log!("Error: {err}");
-        let msg = format!("Error: {err}\n");
-        let _ = io::stderr().write_all(msg.as_bytes());
-        std::process::exit(1);
+        fatal("enter_tui_stdout", &err);
     }
 
     let result = {
@@ -114,10 +109,7 @@ fn main() {
     };
 
     if let Err(err) = &result {
-        lc::debug_log!("Error: {err}");
-        let msg = format!("Error: {err}\n");
-        let _ = io::stderr().write_all(msg.as_bytes());
-        std::process::exit(1);
+        fatal("run_app", err);
     }
 }
 
@@ -349,12 +341,12 @@ fn recover_terminal_state() -> io::Result<()> {
         return Ok(());
     };
     if std::fs::metadata(&terminal_state_file).is_ok() {
-        let leave_result = leave_tui_stdout();
-        let resume_result = resume_terminal_stdout();
+        let leave = leave_tui_stdout();
+        let enter = enter_tui_stdout();
         if let Err(e) = std::fs::remove_file(&terminal_state_file) {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
-        resume_result.and(leave_result)?;
+        leave.and(enter)?;
     }
     Ok(())
 }
@@ -513,10 +505,6 @@ fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
 
     if is_text_edit && matches!(mode, AppMode::Dialog(DialogKind::Input { .. })) {
         return true;
-    }
-
-    if key == KeyCode::Enter {
-        return false;
     }
 
     false

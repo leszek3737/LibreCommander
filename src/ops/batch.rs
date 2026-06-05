@@ -9,6 +9,12 @@ use std::time::{Duration, Instant};
 use crate::app::types::PendingAction;
 use crate::ops::{archive, file_ops, helpers};
 
+fn effective_cancel(cancel: &Option<Arc<AtomicBool>>) -> Arc<AtomicBool> {
+    cancel
+        .clone()
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+}
+
 pub struct BatchReport {
     pub errors: Vec<String>,
     pub success_count: usize,
@@ -151,29 +157,43 @@ pub fn execute_batch_with_byte_progress(
     cancel: &Option<Arc<AtomicBool>>,
     action_label: &'static str,
 ) -> BatchReport {
-    let mut report = match action {
+    match action {
         PendingAction::Copy {
             sources,
             dest,
             overwrite,
-        } => batch_copy(&sources, &dest, &mut progress, cancel, overwrite),
+        } => batch_copy(
+            &sources,
+            &dest,
+            &mut progress,
+            cancel,
+            overwrite,
+            action_label,
+        ),
         PendingAction::Move {
             sources,
             dest,
             overwrite,
-        } => batch_move(&sources, &dest, &mut progress, cancel, overwrite),
-        PendingAction::Delete { paths } => batch_delete(&paths, &mut progress, cancel),
+        } => batch_move(
+            &sources,
+            &dest,
+            &mut progress,
+            cancel,
+            overwrite,
+            action_label,
+        ),
+        PendingAction::Delete { paths } => {
+            batch_delete(&paths, &mut progress, cancel, action_label)
+        }
         PendingAction::ExtractArchive { source, dest } => {
-            batch_extract_archive(&source, &dest, &mut progress, cancel)
+            batch_extract_archive(&source, &dest, &mut progress, cancel, action_label)
         }
         PendingAction::CreateArchive {
             sources,
             dest,
             format,
-        } => batch_create_archive(&sources, &dest, format, &mut progress, cancel),
-    };
-    report.action_label = action_label;
-    report
+        } => batch_create_archive(&sources, &dest, format, &mut progress, cancel, action_label),
+    }
 }
 
 fn is_canceled(cancel: &Option<Arc<AtomicBool>>) -> bool {
@@ -247,7 +267,7 @@ fn report_transition(
         &ProgressSnapshot {
             completed,
             total: ctx.total,
-            current: helpers::next_path(ctx.sources, completed),
+            current: ctx.sources.get(completed).map(PathBuf::as_path),
             bytes_done,
             bytes_total,
             current_file_bytes: 0,
@@ -379,16 +399,16 @@ fn batch_copy(
     progress: &mut impl FnMut(BatchProgress),
     cancel: &Option<Arc<AtomicBool>>,
     overwrite: bool,
+    action_label: &'static str,
 ) -> BatchReport {
-    let cancel_token = cancel
-        .clone()
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel_token = effective_cancel(cancel);
     execute_batch_generic(
         paths,
         dest_dir,
         |src, dest, on_progress| copy_entry(src, dest, &cancel_token, on_progress, overwrite),
         progress,
         cancel,
+        action_label,
     )
 }
 
@@ -398,16 +418,16 @@ fn batch_move(
     progress: &mut impl FnMut(BatchProgress),
     cancel: &Option<Arc<AtomicBool>>,
     overwrite: bool,
+    action_label: &'static str,
 ) -> BatchReport {
-    let cancel_token = cancel
-        .clone()
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel_token = effective_cancel(cancel);
     execute_batch_generic(
         paths,
         dest_dir,
         |src, dest, on_progress| move_entry(src, dest, &cancel_token, on_progress, overwrite),
         progress,
         cancel,
+        action_label,
     )
 }
 
@@ -417,6 +437,7 @@ fn execute_batch_generic<F>(
     mut action: F,
     progress: &mut impl FnMut(BatchProgress),
     cancel: &Option<Arc<AtomicBool>>,
+    action_label: &'static str,
 ) -> BatchReport
 where
     F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
@@ -463,7 +484,7 @@ where
         errors: state.errors,
         success_count: state.success_count,
         canceled: state.canceled,
-        action_label: "Unknown",
+        action_label,
     }
 }
 
@@ -617,6 +638,7 @@ fn batch_delete(
     paths: &[PathBuf],
     progress: &mut impl FnMut(BatchProgress),
     cancel: &Option<Arc<AtomicBool>>,
+    action_label: &'static str,
 ) -> BatchReport {
     let mut errors: Vec<String> = Vec::new();
     let mut success_count: usize = 0;
@@ -635,7 +657,7 @@ fn batch_delete(
         &ProgressSnapshot {
             completed: 0,
             total,
-            current: helpers::next_path(&filtered, 0),
+            current: filtered.first().map(PathBuf::as_path),
             bytes_done,
             bytes_total,
             current_file_bytes: 0,
@@ -685,7 +707,7 @@ fn batch_delete(
             &ProgressSnapshot {
                 completed: idx + 1,
                 total,
-                current: helpers::next_path(&filtered, idx + 1),
+                current: filtered.get(idx + 1).map(PathBuf::as_path),
                 bytes_done,
                 bytes_total,
                 current_file_bytes: 0,
@@ -702,7 +724,7 @@ fn batch_delete(
         errors,
         success_count,
         canceled,
-        action_label: "Unknown",
+        action_label,
     }
 }
 
@@ -711,12 +733,11 @@ fn batch_extract_archive(
     dest: &Path,
     progress: &mut impl FnMut(BatchProgress),
     cancel: &Option<Arc<AtomicBool>>,
+    action_label: &'static str,
 ) -> BatchReport {
     let start_time = Instant::now();
     let source_size = helpers::path_size(source).unwrap_or(0);
-    let cancel_token = cancel
-        .clone()
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel_token = effective_cancel(cancel);
 
     report_progress(
         progress,
@@ -766,7 +787,7 @@ fn batch_extract_archive(
                         errors,
                         success_count: if result.is_ok() { 1 } else { 0 },
                         canceled: is_interrupt && is_canceled(cancel),
-                        action_label: "Unknown",
+                        action_label,
                     };
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -795,7 +816,7 @@ fn batch_extract_archive(
                         errors: vec![format!("{}: operation worker failed", source.display())],
                         success_count: 0,
                         canceled: is_canceled(cancel),
-                        action_label: "Unknown",
+                        action_label,
                     };
                 }
             }
@@ -809,12 +830,11 @@ fn batch_create_archive(
     format: archive::ArchiveFormat,
     progress: &mut impl FnMut(BatchProgress),
     cancel: &Option<Arc<AtomicBool>>,
+    action_label: &'static str,
 ) -> BatchReport {
     let start_time = Instant::now();
     let total_size = helpers::sum_sizes(&helpers::path_sizes(sources));
-    let cancel_token = cancel
-        .clone()
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let cancel_token = effective_cancel(cancel);
 
     report_progress(
         progress,
@@ -865,7 +885,7 @@ fn batch_create_archive(
                         errors,
                         success_count: if result.is_ok() { 1 } else { 0 },
                         canceled: is_interrupt && is_canceled(cancel),
-                        action_label: "Unknown",
+                        action_label,
                     };
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -894,7 +914,7 @@ fn batch_create_archive(
                         errors: vec![format!("{}: operation worker failed", dest.display())],
                         success_count: 0,
                         canceled: is_canceled(cancel),
-                        action_label: "Unknown",
+                        action_label,
                     };
                 }
             }

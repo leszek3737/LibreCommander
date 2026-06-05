@@ -6,7 +6,9 @@ use crate::app::types::FileEntry;
 use crate::fs::reader::get_file_info;
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::pattern::CompiledPattern;
-use crate::ops::search::walk::{FileSearchContext, prepare_dir_scan, seed_visited_dir};
+use crate::ops::search::walk::{
+    FileSearchContext, SearchContext, prepare_dir_scan, seed_visited_dir,
+};
 use crate::ops::search::{
     FileSearch, MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchOutcome, TruncationReason,
 };
@@ -46,7 +48,7 @@ impl FileSearch {
     ) -> SearchOutcome<FileEntry> {
         let mut outcome = SearchOutcome::default();
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::with_capacity(256);
         seed_visited_dir(path, &mut visited);
         let mut ctx = FileSearchContext {
             outcome: &mut outcome,
@@ -66,12 +68,6 @@ fn search_files_recursive(
     ctx: &mut FileSearchContext<'_>,
 ) {
     if ctx.is_cancelled() {
-        return;
-    }
-    if !path.is_dir() {
-        ctx.outcome
-            .errors
-            .push(format!("Not a directory: {}", path.display()));
         return;
     }
     let Some(entries) = prepare_dir_scan(

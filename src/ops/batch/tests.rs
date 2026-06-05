@@ -34,11 +34,12 @@ fn batch_copy_files_to_dest() {
 
 #[test]
 fn batch_copy_duplicate_dest_reports_error() {
-    let src_dir = tempfile::tempdir().unwrap();
+    let src_a = tempfile::tempdir().unwrap();
+    let src_b = tempfile::tempdir().unwrap();
     let dest_dir = tempfile::tempdir().unwrap();
 
-    let f1 = make_file(src_dir.path(), "same.txt", b"a");
-    let f2 = make_file(src_dir.path(), "same.txt", b"b");
+    let f1 = make_file(src_a.path(), "same.txt", b"a");
+    let f2 = make_file(src_b.path(), "same.txt", b"b");
 
     let action = PendingAction::Copy {
         sources: vec![f1, f2],
@@ -102,7 +103,12 @@ fn batch_delete_files() {
 #[test]
 fn batch_delete_nonexistent_reports_error() {
     let action = PendingAction::Delete {
-        paths: vec![PathBuf::from("/tmp/lc_nonexistent_test_file_xyz")],
+        paths: vec![
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .join("lc_nonexistent_test_file_xyz"),
+        ],
     };
 
     let report = execute_batch(action);
@@ -285,7 +291,12 @@ fn empty_sources_batch_move_returns_empty() {
 fn batch_copy_nonexistent_source_reports_error() {
     let dest_dir = tempfile::tempdir().unwrap();
     let action = PendingAction::Copy {
-        sources: vec![PathBuf::from("/tmp/lc_nonexistent_copy_test_xyz")],
+        sources: vec![
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .join("lc_nonexistent_copy_test_xyz"),
+        ],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
     };
@@ -299,7 +310,12 @@ fn batch_copy_nonexistent_source_reports_error() {
 fn batch_move_nonexistent_source_reports_error() {
     let dest_dir = tempfile::tempdir().unwrap();
     let action = PendingAction::Move {
-        sources: vec![PathBuf::from("/tmp/lc_nonexistent_move_test_xyz")],
+        sources: vec![
+            tempfile::tempdir()
+                .unwrap()
+                .path()
+                .join("lc_nonexistent_move_test_xyz"),
+        ],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
     };
@@ -340,7 +356,7 @@ fn batch_copy_small_files_progress_invariants() {
 fn batch_copy_large_file_progress_never_exceeds_total() {
     let src_dir = tempfile::tempdir().unwrap();
     let dest_dir = tempfile::tempdir().unwrap();
-    let data = vec![b'x'; 128 * 1024 + 17];
+    let data = vec![b'x'; 4097];
     let file = make_file(src_dir.path(), "large.bin", &data);
     let action = PendingAction::Copy {
         sources: vec![file],

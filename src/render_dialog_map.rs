@@ -1,3 +1,4 @@
+use chrono::TimeZone;
 use std::borrow::Cow;
 
 use lc::{app, ui};
@@ -123,7 +124,6 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
     } else {
         "File"
     };
-    use chrono::TimeZone;
     let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
         chrono::Local
             .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)

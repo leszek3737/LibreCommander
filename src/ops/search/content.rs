@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -8,7 +8,9 @@ use memchr::{memchr, memmem};
 
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::pattern::contains_case_insensitive;
-use crate::ops::search::walk::{ContentSearchContext, prepare_dir_scan, seed_visited_dir};
+use crate::ops::search::walk::{
+    ContentSearchContext, SearchContext, prepare_dir_scan, seed_visited_dir,
+};
 use crate::ops::search::{
     FileSearch, MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS,
     MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchOutcome, TruncationReason,
@@ -80,7 +82,7 @@ fn search_content_recursive(
     } else {
         Vec::new()
     };
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::with_capacity(256);
     seed_visited_dir(path, &mut visited);
 
     let mut ctx = ContentSearchContext {
@@ -243,22 +245,73 @@ fn search_in_file(
     };
 
     let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES, file);
-    let mut line_buf = Vec::new();
+    let mut ctx = ScanContext {
+        path,
+        pattern,
+        case_sensitive,
+        finder: memmem::Finder::new(pattern_bytes),
+        bufs: ScanBuffers::new(),
+        cancel,
+    };
+    scan_lines(&mut ctx, &mut reader, outcome);
+}
+
+struct ScanContext<'a> {
+    path: &'a Path,
+    pattern: &'a str,
+    case_sensitive: bool,
+    finder: memmem::Finder<'a>,
+    bufs: ScanBuffers,
+    cancel: Option<&'a AtomicBool>,
+}
+
+struct ScanBuffers {
+    line_buf: Vec<u8>,
+    ci_buf: Vec<u8>,
+}
+
+impl ScanBuffers {
+    fn new() -> Self {
+        Self {
+            line_buf: Vec::new(),
+            ci_buf: Vec::new(),
+        }
+    }
+}
+
+fn scan_lines(
+    ctx: &mut ScanContext<'_>,
+    reader: &mut BufReader<File>,
+    outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+) {
     let mut line_no = 0_usize;
     let mut non_utf8_lines = 0usize;
     loop {
-        line_buf.clear();
-        match reader.read_until(b'\n', &mut line_buf) {
+        ctx.bufs.line_buf.clear();
+        match reader
+            .by_ref()
+            .take(MAX_CONTENT_LINE_BYTES as u64)
+            .read_until(b'\n', &mut ctx.bufs.line_buf)
+        {
             Ok(0) => break,
             Ok(bytes_read) => {
-                if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                if ctx.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
                     return;
                 }
                 line_no += 1;
-                let line = if line_buf.last() == Some(&b'\n') {
-                    &line_buf[..bytes_read - 1]
+                let found_newline = ctx.bufs.line_buf.last() == Some(&b'\n');
+                if !found_newline && bytes_read == MAX_CONTENT_LINE_BYTES {
+                    if outcome.truncated.is_none() {
+                        outcome.truncated = Some(TruncationReason::LineTooLong);
+                    }
+                    ctx.bufs.line_buf.clear();
+                    let _ = reader.read_until(b'\n', &mut ctx.bufs.line_buf);
+                    continue;
+                }
+                let line = if found_newline {
+                    &ctx.bufs.line_buf[..bytes_read - 1]
                 } else {
-                    &line_buf[..bytes_read]
+                    &ctx.bufs.line_buf[..bytes_read]
                 };
                 if outcome.matches.len() >= MAX_CONTENT_RESULTS {
                     if outcome.truncated.is_none() {
@@ -272,13 +325,7 @@ fn search_in_file(
                     }
                     return;
                 }
-                if line.len() > MAX_CONTENT_LINE_BYTES {
-                    if outcome.truncated.is_none() {
-                        outcome.truncated = Some(TruncationReason::LineTooLong);
-                    }
-                    continue;
-                }
-                if case_sensitive && memmem::find(line, pattern.as_bytes()).is_none() {
+                if ctx.case_sensitive && memmem::find(line, ctx.pattern.as_bytes()).is_none() {
                     continue;
                 }
 
@@ -290,25 +337,27 @@ fn search_in_file(
                             outcome.errors.push(format!(
                                 "non-UTF-8 line {} in {}",
                                 line_no,
-                                path.display()
+                                ctx.path.display()
                             ));
                         }
                         continue;
                     }
                 };
 
-                if !case_sensitive && !contains_case_insensitive(line_text, pattern_bytes) {
+                if !ctx.case_sensitive
+                    && !contains_case_insensitive(line_text, &ctx.finder, &mut ctx.bufs.ci_buf)
+                {
                     continue;
                 }
 
                 outcome
                     .matches
-                    .push((path.to_path_buf(), line_no, line_text.to_owned()));
+                    .push((ctx.path.to_path_buf(), line_no, line_text.to_owned()));
             }
             Err(err) => {
                 outcome
                     .errors
-                    .push(format!("Failed to read {}: {err}", path.display()));
+                    .push(format!("Failed to read {}: {err}", ctx.path.display()));
                 return;
             }
         }
@@ -317,7 +366,7 @@ fn search_in_file(
         outcome.errors.push(format!(
             "... and {} more non-UTF-8 lines in {} (suppressed)",
             non_utf8_lines - 3,
-            path.display()
+            ctx.path.display()
         ));
     }
 }

@@ -92,8 +92,16 @@ fn copy_to_temp(
     let mut pending_delta = 0_u64;
     let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
     let mut bytes_since_progress_check = 0_usize;
+    let mut receiver_alive = true;
 
     loop {
+        if !receiver_alive {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "receiver disconnected",
+            ));
+        }
+
         let bytes_read = reader.read(&mut buf)?;
         if bytes_read == 0 {
             break;
@@ -109,7 +117,9 @@ fn copy_to_temp(
             bytes_since_progress_check = 0;
             let now = Instant::now();
             if now.duration_since(last_progress) >= PROGRESS_THROTTLE {
-                let _ = progress_tx.send(pending_delta);
+                if progress_tx.send(pending_delta).is_err() {
+                    receiver_alive = false;
+                }
                 pending_delta = 0;
                 last_progress = now;
             }
@@ -128,6 +138,7 @@ fn copy_to_temp(
     }
 
     writer.flush()?;
+    writer.sync_all()?;
 
     preserve_permissions(temp_dest, metadata)?;
 
@@ -160,10 +171,17 @@ fn publish_temp(
             cleanup_file(temp_dest);
             return Err(err);
         }
-        Err(_) => {}
+        Err(_) => {
+            if fs::symlink_metadata(dest).is_ok() {
+                cleanup_file(temp_dest);
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("destination appeared during copy: {}", dest.display()),
+                ));
+            }
+        }
     }
 
-    // Cross-device or unsupported filesystem — fall back to rename.
     match fs::rename(temp_dest, dest) {
         Ok(()) => Ok(()),
         Err(err) => {
