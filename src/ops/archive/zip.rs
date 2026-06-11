@@ -13,10 +13,15 @@ use super::{
     copy_with_progress,
 };
 
+use crate::debug_log;
+
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
 
-fn map_zip_err(e: impl std::fmt::Display) -> ArchiveError {
-    ArchiveError::InvalidArchive(e.to_string())
+fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {
+    match e {
+        zip::result::ZipError::Io(io_err) => ArchiveError::Io(io_err),
+        other => ArchiveError::InvalidArchive(other.to_string()),
+    }
 }
 
 fn compression_method_name(method: CompressionMethod) -> &'static str {
@@ -40,10 +45,7 @@ pub fn list_zip(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 
     let capacity = archive.len().min(MAX_LIST_ENTRIES);
     let mut entries = Vec::with_capacity(capacity);
-    for i in 0..archive.len() {
-        if entries.len() >= MAX_LIST_ENTRIES {
-            break;
-        }
+    for i in (0..archive.len()).take(MAX_LIST_ENTRIES) {
         let entry = archive.by_index(i).map_err(map_zip_err)?;
 
         entries.push(ArchiveEntry {
@@ -70,7 +72,7 @@ fn extract_zip_entries(
 
     fs::create_dir_all(dest)?;
     let mut last_parent: Option<PathBuf> = None;
-    for i in 0..entry_count {
+    for i in 0..entry_count.min(MAX_LIST_ENTRIES) {
         check_cancel(cancel)?;
 
         let mut entry = archive.by_index(i).map_err(map_zip_err)?;
@@ -96,6 +98,13 @@ fn extract_zip_entries(
             extracted_paths.push(outpath);
             let _ = progress.send(entry.size());
         } else {
+            if entry.compressed_size() > MAX_FILE_SIZE {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "entry '{}' compressed size {} exceeds maximum {MAX_FILE_SIZE}",
+                    entry.name(),
+                    entry.compressed_size()
+                )));
+            }
             if let Some(parent) = outpath.parent()
                 && last_parent.as_deref() != Some(parent)
             {
@@ -150,12 +159,17 @@ fn add_sources_to_zip(
     for source in sources {
         check_cancel(cancel)?;
 
+        if fs::symlink_metadata(source)?.is_symlink() {
+            debug_log!("add_sources_to_zip: skipping symlink {}", source.display());
+            continue;
+        }
+
         if source.is_dir() {
             add_dir_to_zip(zip, source, source, options, progress, cancel)?;
         } else {
             let name = source
                 .file_name()
-                .ok_or_else(|| map_zip_err("Invalid file name"))?
+                .ok_or_else(|| ArchiveError::InvalidArchive("Invalid file name".into()))?
                 .to_string_lossy();
             zip.start_file(&*name, *options).map_err(map_zip_err)?;
             let mut file = File::open(source)?;
@@ -213,7 +227,7 @@ fn add_dir_to_zip(
         let path = entry.path();
         let name = path
             .strip_prefix(base)
-            .map_err(|_| map_zip_err("strip_prefix failed"))?
+            .map_err(|_| ArchiveError::InvalidArchive("strip_prefix failed".into()))?
             .to_string_lossy()
             .replace('\\', "/");
 

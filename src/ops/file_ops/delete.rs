@@ -61,14 +61,8 @@ pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::
 }
 
 fn validate_not_critical(canonical: &Path) -> io::Result<()> {
-    if canonical.parent().is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "refusing to delete root directory",
-        ));
-    }
     for critical in CRITICAL_DIRS {
-        if *canonical == *Path::new(*critical) {
+        if canonical == Path::new(*critical) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
@@ -133,7 +127,7 @@ fn delete_dir_contents_impl(
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::InvalidInput,
             "refusing to recursively delete symlinked directory",
         ));
     }
@@ -149,8 +143,16 @@ fn delete_dir_contents_impl(
             delete_dir_contents_impl(&entry_path, cancel, depth + 1)?;
             check_optional_canceled(cancel)?;
             fs::remove_dir(&entry_path)?;
-        } else {
+        } else if file_type.is_file() {
             fs::remove_file(&entry_path)?;
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "unsupported file type in directory: {}",
+                    entry_path.display()
+                ),
+            ));
         }
     }
     Ok(())

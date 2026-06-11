@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
+use crate::debug_log;
+
 use super::common::{
     check_canceled, ensure_destination_absent, path_contains, remove_any, same_inode,
 };
@@ -11,6 +13,10 @@ use super::copy::{copy_dir_recursive_with_progress, copy_file_with_progress, cop
 use super::delete::delete_dir_recursive_cancelable;
 
 /// Move or rename a filesystem entry.
+///
+/// The caller is responsible for obtaining user confirmation before
+/// invoking this function when overwrite or path-conflict resolution is
+/// required. This function performs the operation; it does not prompt.
 ///
 /// Case-only rename semantics:
 /// - On case-insensitive filesystems, device+inode comparison detects when
@@ -63,7 +69,7 @@ fn move_entry_impl(
         if src_meta.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "cannot move symlink onto its own target",
+                "source and destination are the same inode (e.g. case-only rename on a case-insensitive filesystem)",
             ));
         }
         return fs::rename(src, dest);
@@ -78,6 +84,10 @@ fn move_entry_impl(
         ensure_destination_absent(dest)?;
     }
 
+    // TODO: deduplicate the three copy_then_remove_src call arms
+    // (symlink/dir/file). Could use an enum or a trait object, but the
+    // closure signatures differ (some take progress_tx, cancel, overwrite;
+    // others are simpler). Evaluate after progress-tx plumbing stabilizes.
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
@@ -134,9 +144,19 @@ fn copy_then_remove_src(
     rollback_fn: impl FnOnce() -> io::Result<()>,
     entry_kind: &str,
 ) -> io::Result<()> {
+    // Edge case: if the copy succeeds but the cancel check fires and
+    // rollback also fails, `dest` is left on disk (dangling partial copy).
+    // We log the rollback failure and propagate the cancel error; the
+    // caller must notice the leftover `dest`.
     copy_fn()?;
     if let Err(err) = check_canceled(cancel) {
-        let _ = rollback_fn();
+        if let Err(rollback_err) = rollback_fn() {
+            debug_log!(
+                "cross-device move canceled after copy: failed to rollback (remove dest) '{}': {}",
+                dest.display(),
+                rollback_err
+            );
+        }
         return Err(err);
     }
     if let Err(del_err) = remove_src_fn() {

@@ -17,7 +17,7 @@ flate2 = "1"
 libc = "0.2"
 lzma-rs = "0.3"
 memchr = "2"
-rayon = "1"
+rayon = { version = "1", optional = true }
 crossterm = "0.29.0"
 filetime = "0.2"
 infer = "0.19"
@@ -43,6 +43,10 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 notify = "8"
+
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
 
 [lints.clippy]
 too_many_lines = "warn"
