@@ -1,7 +1,7 @@
-pub const HEX_OFFSET_PREFIX_WIDTH: usize = 18;
-pub const HEX_BYTES_PER_LINE: usize = 16;
-pub const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
-pub const HEX_LINE_WIDTH: usize =
+pub(crate) const HEX_OFFSET_PREFIX_WIDTH: usize = 18;
+pub(crate) const HEX_BYTES_PER_LINE: usize = 16;
+pub(crate) const HEX_PART_WIDTH: usize = HEX_BYTES_PER_LINE * 3 + 1;
+pub(crate) const HEX_LINE_WIDTH: usize =
     HEX_OFFSET_PREFIX_WIDTH + HEX_PART_WIDTH + 2 + HEX_BYTES_PER_LINE + 1;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
@@ -26,16 +26,21 @@ pub(crate) fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut S
     format_offset_hex(offset, buf);
     buf.push_str(": ");
 
-    for (i, b) in bytes.iter().enumerate() {
-        if i == 8 {
-            buf.push(' ');
-        }
+    for b in &bytes[..bytes.len().min(8)] {
         buf.push(HEX_CHARS[(b >> 4) as usize] as char);
         buf.push(HEX_CHARS[(b & 0x0f) as usize] as char);
         buf.push(' ');
     }
+    if bytes.len() > 8 {
+        buf.push(' ');
+        for b in &bytes[8..] {
+            buf.push(HEX_CHARS[(b >> 4) as usize] as char);
+            buf.push(HEX_CHARS[(b & 0x0f) as usize] as char);
+            buf.push(' ');
+        }
+    }
 
-    let hex_expected = bytes.len() * 3 + if bytes.len() > 8 { 1 } else { 0 };
+    let hex_expected = bytes.len() * 3 + usize::from(bytes.len() > 8);
     let padding_needed = HEX_PART_WIDTH.saturating_sub(hex_expected);
     for _ in 0..padding_needed {
         buf.push(' ');

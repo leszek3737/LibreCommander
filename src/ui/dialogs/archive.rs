@@ -179,14 +179,7 @@ fn collect_visible_graphemes(
     let mut start_cum = 0usize;
 
     if scroll_display == 0 {
-        for g in value.graphemes(true) {
-            let gw = UnicodeWidthStr::width(g);
-            if vis_width + gw > visible_width {
-                break;
-            }
-            visible.push_str(g);
-            vis_width += gw;
-        }
+        vis_width = collect_graphemes_up_to_width(value, visible_width, &mut visible);
     } else {
         let mut cum = 0usize;
         let mut found_start = false;
@@ -207,18 +200,27 @@ fn collect_visible_graphemes(
         }
         if !found_start {
             start_cum = 0;
-            for g in value.graphemes(true) {
-                let gw = UnicodeWidthStr::width(g);
-                if vis_width + gw > visible_width {
-                    break;
-                }
-                visible.push_str(g);
-                vis_width += gw;
-            }
+            vis_width = collect_graphemes_up_to_width(value, visible_width, &mut visible);
         }
     }
 
     (visible, vis_width, start_cum)
+}
+
+fn collect_graphemes_up_to_width(value: &str, max_width: usize, buf: &mut String) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    let mut width = 0;
+    for g in value.graphemes(true) {
+        let gw = UnicodeWidthStr::width(g);
+        if width + gw > max_width {
+            break;
+        }
+        buf.push_str(g);
+        width += gw;
+    }
+    width
 }
 
 fn render_button_row(f: &mut Frame, area: Rect, buttons: &[(ratatui::style::Style, &str)]) {

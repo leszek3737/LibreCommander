@@ -45,7 +45,7 @@ pub fn render_list_picker_with_colors<T: AsRef<str>>(
 
     if items.is_empty() {
         let empty = Paragraph::new("(empty)")
-            .style(Style::default().fg(Theme::regular_file_with_colors(colors)))
+            .style(Style::default().fg(colors.regular_file))
             .alignment(Alignment::Center);
         f.render_widget(empty, chunks[0]);
     } else {

@@ -33,15 +33,16 @@ impl<'de> Deserialize<'de> for IconTheme {
             crate::debug_log!("config: non-string value for icon_theme, using emoji");
             return Ok(Self::Emoji);
         };
-        Ok(Self::from_config_str(value).unwrap_or_else(|| {
+        let result = Self::from_config_str(value);
+        if result.is_none() {
             crate::debug_log!("config: invalid value for icon_theme, using emoji");
-            Self::Emoji
-        }))
+        }
+        Ok(result.unwrap_or(Self::Emoji))
     }
 }
 
 macro_rules! define_theme_colors {
-    ($(($method:ident, $with_method:ident, $field:ident => $color:expr)),* $(,)?) => {
+    ($(($field:ident => $color:expr)),* $(,)?) => {
         #[derive(Debug, Clone, Deserialize, Default)]
         #[serde(default)]
         pub struct ThemeConfig {
@@ -52,7 +53,7 @@ macro_rules! define_theme_colors {
 
         #[derive(Copy, Clone, Debug, PartialEq)]
         pub struct ColorPalette {
-            $($field: Color,)*
+            $(pub $field: Color,)*
             icon_theme: IconTheme,
         }
 
@@ -82,62 +83,50 @@ macro_rules! define_theme_colors {
                 DEFAULT_COLORS
             }
         }
-
-        pub struct Theme;
-
-        impl Theme {
-            $(
-            pub fn $method() -> Color {
-                DEFAULT_COLORS.$field
-            }
-
-            pub fn $with_method(colors: &ColorPalette) -> Color {
-                colors.$field
-            }
-            )*
-        }
     };
 }
 
 define_theme_colors! {
-    (panel_bg_color, panel_bg_color_with_colors, panel_bg => Color::Rgb(0, 0, 128)),
-    (status_bar_bg, status_bar_bg_with_colors, status_bar_bg => Color::Rgb(0, 0, 128)),
-    (menu_bar_bg, menu_bar_bg_with_colors, menu_bar_bg => Color::Rgb(0, 0, 128)),
-    (dialog_bg, dialog_bg_with_colors, dialog_bg => Color::Black),
-    (highlight_bg, highlight_bg_with_colors, highlight_bg => Color::Cyan),
-    (panel_fg_color, panel_fg_color_with_colors, panel_fg => Color::White),
-    (status_bar_fg, status_bar_fg_with_colors, status_bar_fg => Color::White),
-    (menu_bar_fg, menu_bar_fg_with_colors, menu_bar_fg => Color::White),
-    (dialog_fg, dialog_fg_with_colors, dialog_fg => Color::White),
-    (highlight_fg, highlight_fg_with_colors, highlight_fg => Color::Black),
-    (border_active_color, border_active_color_with_colors, border_active => Color::Yellow),
-    (border_inactive_color, border_inactive_color_with_colors, border_inactive => Color::DarkGray),
-    (title_color, title_color_with_colors, title => Color::LightCyan),
-    (error_color, error_color_with_colors, error => Color::Red),
-    (warning_color, warning_color_with_colors, warning => Color::Yellow),
-    (info_color, info_color_with_colors, info => Color::Cyan),
-    (selected_file_fg, selected_file_fg_with_colors, selected_file_fg => Color::LightYellow),
-    (scrollbar_active, scrollbar_active_with_colors, scrollbar_active => Color::Yellow),
-    (scrollbar_inactive, scrollbar_inactive_with_colors, scrollbar_inactive => Color::DarkGray),
-    (function_bar_fg, function_bar_fg_with_colors, function_bar_fg => Color::LightBlue),
-    (function_bar_bg, function_bar_bg_with_colors, function_bar_bg => Color::DarkGray),
-    (search_match_fg, search_match_fg_with_colors, search_match_fg => Color::Black),
-    (search_match_bg, search_match_bg_with_colors, search_match_bg => Color::LightGreen),
-    (search_match_current_fg, search_match_current_fg_with_colors, search_match_current_fg => Color::Black),
-    (search_match_current_bg, search_match_current_bg_with_colors, search_match_current_bg => Color::Yellow),
-    (directory, directory_with_colors, directory => Color::White),
-    (executable, executable_with_colors, executable => Color::Green),
-    (symlink, symlink_with_colors, symlink => Color::Cyan),
-    (archive, archive_with_colors, archive => Color::Red),
-    (image, image_with_colors, image => Color::Magenta),
-    (video, video_with_colors, video => Color::LightMagenta),
-    (audio, audio_with_colors, audio => Color::LightGreen),
-    (document, document_with_colors, document => Color::LightYellow),
-    (source_code, source_code_with_colors, source_code => Color::Yellow),
-    (config, config_with_colors, config => Color::LightBlue),
-    (font, font_with_colors, font => Color::LightCyan),
-    (regular_file, regular_file_with_colors, regular_file => Color::White),
+    (panel_bg => Color::Rgb(0, 0, 128)),
+    (status_bar_bg => Color::Rgb(0, 0, 128)),
+    (menu_bar_bg => Color::Rgb(0, 0, 128)),
+    (dialog_bg => Color::Black),
+    (highlight_bg => Color::Cyan),
+    (panel_fg => Color::White),
+    (status_bar_fg => Color::White),
+    (menu_bar_fg => Color::White),
+    (dialog_fg => Color::White),
+    (highlight_fg => Color::Black),
+    (border_active => Color::Yellow),
+    (border_inactive => Color::DarkGray),
+    (title => Color::LightCyan),
+    (error => Color::Red),
+    (warning => Color::Yellow),
+    (info => Color::Cyan),
+    (selected_file_fg => Color::LightYellow),
+    (scrollbar_active => Color::Yellow),
+    (scrollbar_inactive => Color::DarkGray),
+    (function_bar_fg => Color::LightBlue),
+    (function_bar_bg => Color::DarkGray),
+    (search_match_fg => Color::Black),
+    (search_match_bg => Color::LightGreen),
+    (search_match_current_fg => Color::Black),
+    (search_match_current_bg => Color::Yellow),
+    (directory => Color::White),
+    (executable => Color::Green),
+    (symlink => Color::Cyan),
+    (archive => Color::Red),
+    (image => Color::Magenta),
+    (video => Color::LightMagenta),
+    (audio => Color::LightGreen),
+    (document => Color::LightYellow),
+    (source_code => Color::Yellow),
+    (config => Color::LightBlue),
+    (font => Color::LightCyan),
+    (regular_file => Color::White),
 }
+
+pub struct Theme;
 
 fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
@@ -220,11 +209,6 @@ impl Theme {
             .map_err(|e| format!("Failed to parse [theme] section: {e}"))?;
         *colors = ColorPalette::from_config(&cfg);
         Ok(())
-    }
-
-    #[deprecated(note = "Use ColorPalette::icon_theme() for active theme state")]
-    pub fn icon_theme() -> IconTheme {
-        DEFAULT_COLORS.icon_theme
     }
 
     pub fn panel_bg() -> Style {
@@ -437,18 +421,18 @@ mod tests {
     #[test]
     fn category_color_maps_file_categories_to_theme_colors() {
         let cases = [
-            (FileCategory::Dir, Theme::directory()),
-            (FileCategory::Archive, Theme::archive()),
-            (FileCategory::Image, Theme::image()),
-            (FileCategory::Video, Theme::video()),
-            (FileCategory::Audio, Theme::audio()),
-            (FileCategory::Document, Theme::document()),
-            (FileCategory::Code, Theme::source_code()),
-            (FileCategory::Config, Theme::config()),
-            (FileCategory::Font, Theme::font()),
-            (FileCategory::Executable, Theme::executable()),
-            (FileCategory::Symlink, Theme::symlink()),
-            (FileCategory::Other, Theme::regular_file()),
+            (FileCategory::Dir, DEFAULT_COLORS.directory),
+            (FileCategory::Archive, DEFAULT_COLORS.archive),
+            (FileCategory::Image, DEFAULT_COLORS.image),
+            (FileCategory::Video, DEFAULT_COLORS.video),
+            (FileCategory::Audio, DEFAULT_COLORS.audio),
+            (FileCategory::Document, DEFAULT_COLORS.document),
+            (FileCategory::Code, DEFAULT_COLORS.source_code),
+            (FileCategory::Config, DEFAULT_COLORS.config),
+            (FileCategory::Font, DEFAULT_COLORS.font),
+            (FileCategory::Executable, DEFAULT_COLORS.executable),
+            (FileCategory::Symlink, DEFAULT_COLORS.symlink),
+            (FileCategory::Other, DEFAULT_COLORS.regular_file),
         ];
 
         for (category, color) in cases {

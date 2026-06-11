@@ -1,6 +1,7 @@
 use crate::debug_log;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthStr;
 
 #[cfg(unix)]
 fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
@@ -52,6 +53,7 @@ pub struct TreeEntry {
     pub is_dir: bool,
     pub expanded: bool,
     pub name: String,
+    pub name_width: usize,
     pub read_error: bool,
 }
 
@@ -148,6 +150,7 @@ fn build_tree_recursive(
             }
         };
         let expanded = is_dir && current_depth < max_expand_depth;
+        let name_width = UnicodeWidthStr::width(name.as_str());
 
         children.push(TreeEntry {
             path,
@@ -155,6 +158,7 @@ fn build_tree_recursive(
             is_dir,
             expanded,
             name,
+            name_width,
             read_error: false,
         });
     }
@@ -466,6 +470,7 @@ mod tests {
             is_dir: true,
             expanded: false,
             name: "missing".to_string(),
+            name_width: 7,
             read_error: false,
         }];
 

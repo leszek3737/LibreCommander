@@ -24,11 +24,6 @@ const FN_LABEL_TEXTS: [&str; 10] = [
     "Help ", "Menu ", "View ", "Edit ", "Copy ", "Move ", "Mkdir ", "Delete ", "Menu ", "Quit ",
 ];
 
-struct Suffix {
-    text: String,
-    width: usize,
-}
-
 const fn icon_display_width(theme: IconTheme) -> usize {
     match theme {
         IconTheme::Ascii | IconTheme::NerdFont => 1,
@@ -54,16 +49,10 @@ pub fn get_file_icon(category: &FileCategory) -> &'static str {
 }
 
 macro_rules! impl_default_colors {
-    ($vis:vis fn $name:ident(f: &mut Frame, area: Rect $(, $arg:ident : $ty:ty)+ $(,)?) =>
+    ($vis:vis fn $name:ident(f: &mut Frame, area: Rect $(, $($arg:ident : $ty:ty),+ $(,)?)?) =>
      $with:ident, $($default:expr),* $(,)?) => {
-        $vis fn $name(f: &mut Frame, area: Rect, $($arg: $ty),+) {
-            $with(f, area, $($arg),+, $($default),*);
-        }
-    };
-    ($vis:vis fn $name:ident(f: &mut Frame, area: Rect) =>
-     $with:ident, $($default:expr),* $(,)?) => {
-        $vis fn $name(f: &mut Frame, area: Rect) {
-            $with(f, area, $($default),*);
+        $vis fn $name(f: &mut Frame, area: Rect $(, $($arg: $ty),+)?) {
+            $with(f, area $(, $($arg),+)?, $($default),*);
         }
     };
 }
@@ -194,6 +183,7 @@ pub fn render_panel_with_colors(
     );
 
     let mut list_items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
+    let mut scratch = String::with_capacity(256);
 
     for entry in panel
         .listing
@@ -205,20 +195,27 @@ pub fn render_panel_with_colors(
         let cat = entry.category();
         let bold = entry.is_dir() || entry.is_executable();
 
+        scratch.clear();
         let string_line = match panel.listing_mode() {
             ListingMode::Long => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
-                format_entry_line(entry, width, panel.show_permissions(), &cat, icon_theme)
+                format_entry_line(
+                    entry,
+                    width,
+                    panel.show_permissions(),
+                    &cat,
+                    icon_theme,
+                    &mut scratch,
+                )
             }
             ListingMode::Brief => {
                 let width = chunks[0].width.saturating_sub(2) as usize;
-                format_brief_entry_line(entry, width, &cat, icon_theme)
+                format_brief_entry_line(entry, width, &cat, icon_theme, &mut scratch)
             }
         };
 
         let line_style = if entry.selected {
-            get_file_color_with_palette(&cat, bold, colors)
-                .fg(Theme::selected_file_fg_with_colors(colors))
+            get_file_color_with_palette(&cat, bold, colors).fg(colors.selected_file_fg)
         } else {
             get_file_color_with_palette(&cat, bold, colors)
         };
@@ -252,11 +249,17 @@ pub fn render_panel_with_colors(
     }
 
     if !panel.listing.entries.is_empty() {
-        render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors);
+        scratch.clear();
+        render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors, &mut scratch);
     }
 }
 
-fn build_suffix(entry: &FileEntry, width: usize, show_permissions: bool) -> Suffix {
+fn build_suffix_into(
+    entry: &FileEntry,
+    width: usize,
+    show_permissions: bool,
+    buf: &mut String,
+) -> usize {
     let size_width = entry.size_width;
     let date_width = entry.time_width;
     let size_str = &entry.size_str;
@@ -268,34 +271,19 @@ fn build_suffix(entry: &FileEntry, width: usize, show_permissions: bool) -> Suff
         let perms_width = UnicodeWidthStr::width(perms_str.as_str());
         let full_width = size_date_width + perms_width + 1;
         if 2 + full_width <= width {
-            let mut text = String::with_capacity(full_width);
-            write!(text, " {size_str} {date_str} {perms_str}").ok();
-            return Suffix {
-                text,
-                width: full_width,
-            };
+            write!(buf, " {size_str} {date_str} {perms_str}").ok();
+            return full_width;
         }
     }
 
     if 2 + size_date_width <= width {
-        let mut text = String::with_capacity(size_date_width);
-        write!(text, " {size_str} {date_str}").ok();
-        Suffix {
-            text,
-            width: size_date_width,
-        }
+        write!(buf, " {size_str} {date_str}").ok();
+        size_date_width
     } else if 2 + size_width <= width {
-        let mut text = String::with_capacity(size_width + 1);
-        write!(text, " {size_str}").ok();
-        Suffix {
-            text,
-            width: size_width + 1,
-        }
+        write!(buf, " {size_str}").ok();
+        size_width + 1
     } else {
-        Suffix {
-            text: String::new(),
-            width: 0,
-        }
+        0
     }
 }
 
@@ -305,6 +293,7 @@ fn format_entry_line(
     show_permissions: bool,
     category: &FileCategory,
     icon_theme: IconTheme,
+    scratch: &mut String,
 ) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     if width <= 1 {
@@ -316,34 +305,37 @@ fn format_entry_line(
 
     let icon = get_file_icon_with_theme(category, icon_theme);
     let icon_width = icon_display_width(icon_theme);
-    let suffix = build_suffix(entry, width, show_permissions);
 
-    let available_name_width = width.saturating_sub(1 + suffix.width);
+    scratch.clear();
+    let suffix_width = build_suffix_into(entry, width, show_permissions, scratch);
+
+    let available_name_width = width.saturating_sub(1 + suffix_width);
     if available_name_width == 0 {
         return format!("{marker}");
     }
 
-    let mut s = String::with_capacity(width + 32);
+    let mut out = String::with_capacity(width + 32);
+    out.push(marker);
 
     let name_actual_width = if display_name_width < usize::MAX - icon_width {
         let name_with_icon_total = icon_width + 1 + display_name_width;
         if name_with_icon_total <= available_name_width {
-            s.push_str(icon);
-            s.push(' ');
-            s.push_str(display_name);
+            out.push_str(icon);
+            out.push(' ');
+            out.push_str(display_name);
             name_with_icon_total
         } else {
             let name_budget = available_name_width.saturating_sub(icon_width + 1);
             if name_budget > 0 {
                 let truncated = truncate_to_width(display_name, name_budget);
-                s.push_str(icon);
-                s.push(' ');
-                s.push_str(&truncated);
+                out.push_str(icon);
+                out.push(' ');
+                out.push_str(&truncated);
                 icon_width + 1 + UnicodeWidthStr::width(&*truncated)
             } else {
                 let truncated = truncate_to_width(icon, available_name_width);
                 let w = UnicodeWidthStr::width(&*truncated);
-                s.push_str(&truncated);
+                out.push_str(&truncated);
                 w
             }
         }
@@ -352,20 +344,17 @@ fn format_entry_line(
     };
 
     let padding = available_name_width.saturating_sub(name_actual_width);
-    let mut result = String::with_capacity(1 + s.len() + padding + suffix.text.len());
-    result.push(marker);
-    result.push_str(&s);
-    result.extend(std::iter::repeat_n(' ', padding));
-    result.push_str(&suffix.text);
-    result
+    out.extend(std::iter::repeat_n(' ', padding));
+    out.push_str(scratch.as_str());
+    out
 }
 
-fn status_metadata(size: &str, entry: &FileEntry, show_permissions: bool) -> String {
+fn write_status_metadata(buf: &mut String, size: &str, entry: &FileEntry, show_permissions: bool) {
     if show_permissions {
         let perms = format_permissions(entry.mode_bits());
-        format!("{size} | {perms} | {} | {}", entry.owner, entry.group)
+        write!(buf, "{size} | {perms} | {} | {}", entry.owner, entry.group).ok();
     } else {
-        format!("{size} | {} | {}", entry.owner, entry.group)
+        write!(buf, "{size} | {} | {}", entry.owner, entry.group).ok();
     }
 }
 
@@ -374,6 +363,7 @@ fn format_brief_entry_line(
     width: usize,
     category: &FileCategory,
     icon_theme: IconTheme,
+    scratch: &mut String,
 ) -> String {
     let marker = if entry.selected { '*' } else { ' ' };
     let display_name = entry.display_name();
@@ -388,20 +378,32 @@ fn format_brief_entry_line(
     if available < icon_width {
         return format!("{marker}");
     }
+
+    scratch.clear();
+    write!(scratch, "{marker}{icon} ").ok();
+
     let name_available = available - icon_width;
     if name_available >= display_name_width {
-        return format!("{marker}{icon} {display_name}");
+        scratch.push_str(display_name);
+    } else if name_available == 0 {
+        scratch.pop();
+    } else {
+        let truncated = truncate_name(display_name, name_available);
+        scratch.push_str(&truncated);
     }
-    if name_available == 0 {
-        return format!("{marker}{icon}");
-    }
-    let truncated = truncate_name(display_name, name_available);
-    format!("{marker}{icon} {truncated}")
+    scratch.clone()
 }
 
-impl_default_colors! {
-    pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) =>
-    render_scrollbar_with_colors, &ColorPalette::default()
+pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
+    let mut buf = String::new();
+    render_scrollbar_with_colors(
+        f,
+        area,
+        panel,
+        is_active,
+        &ColorPalette::default(),
+        &mut buf,
+    );
 }
 
 pub fn render_scrollbar_with_colors(
@@ -410,6 +412,7 @@ pub fn render_scrollbar_with_colors(
     panel: &PanelState,
     is_active: bool,
     colors: &ColorPalette,
+    buf: &mut String,
 ) {
     if panel.listing.entries.is_empty() {
         return;
@@ -434,42 +437,43 @@ pub fn render_scrollbar_with_colors(
     };
 
     let style = if is_active {
-        Style::default().fg(Theme::scrollbar_active_with_colors(colors))
+        Style::default().fg(colors.scrollbar_active)
     } else {
-        Style::default().fg(Theme::scrollbar_inactive_with_colors(colors))
+        Style::default().fg(colors.scrollbar_inactive)
     };
 
-    let mut scrollbar = String::with_capacity(height * 4);
+    buf.clear();
+    buf.reserve(height * 4);
     for i in 0..height {
         let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
-        scrollbar.push_str(if in_thumb { "█" } else { "│" });
+        buf.push_str(if in_thumb { "█" } else { "│" });
         if i < height - 1 {
-            scrollbar.push('\n');
+            buf.push('\n');
         }
     }
 
-    let paragraph = Paragraph::new(scrollbar)
+    let paragraph = Paragraph::new(buf.as_str())
         .style(style)
         .block(Block::default().padding(Padding::new(0, 0, 0, 0)));
 
     f.render_widget(paragraph, area);
 }
 
-pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
+pub fn panel_status_summary(panel: &PanelState, buf: &mut String) -> usize {
+    buf.clear();
     let total = panel.listing.entries.len();
     if total == 0 {
-        return (String::new(), 0);
+        return 0;
     }
 
     let pos = (panel.cursor + 1).min(total);
     let pct = pos * 100 / total;
 
-    let mut summary = String::new();
-    write!(summary, " {}/{} {}%", pos, total, pct).ok();
+    write!(buf, " {}/{} {}%", pos, total, pct).ok();
 
     if panel.selected_count() > 0 {
         write!(
-            summary,
+            buf,
             " ({} {})",
             panel.selected_count(),
             format_size(panel.selected_size())
@@ -477,9 +481,8 @@ pub fn panel_status_summary(panel: &PanelState) -> (String, usize) {
         .ok();
     }
 
-    summary.push(' ');
-    let width = UnicodeWidthStr::width(summary.as_str());
-    (summary, width)
+    buf.push(' ');
+    UnicodeWidthStr::width(buf.as_str())
 }
 
 impl_default_colors! {
@@ -495,46 +498,52 @@ pub fn render_status_bar_with_colors(
 ) {
     let available = area.width as usize;
 
-    let (right_info, right_width) = panel_status_summary(panel);
+    let mut scratch = String::with_capacity(128);
+    let right_width = panel_status_summary(panel, &mut scratch);
     let remaining = available.saturating_sub(right_width);
 
-    let info_line = if !panel.listing.entries.is_empty()
-        && panel.cursor < panel.listing.entries.len()
-    {
+    let mut out = String::with_capacity(remaining + scratch.len() + 8);
+
+    if !panel.listing.entries.is_empty() && panel.cursor < panel.listing.entries.len() {
         let entry = &panel.listing.entries[panel.cursor];
         let display_name = entry.display_name();
-        let metadata = status_metadata(&format_size(entry.size()), entry, panel.show_permissions());
-        let full_info = format!("{display_name} | {metadata}");
-        let full_width = UnicodeWidthStr::width(full_info.as_str());
+        let size_str = format_size(entry.size());
+
+        scratch.clear();
+        write_status_metadata(&mut scratch, &size_str, entry, panel.show_permissions());
+        let meta_width = UnicodeWidthStr::width(scratch.as_str());
+
+        let full_width = UnicodeWidthStr::width(display_name) + 3 + meta_width;
 
         if full_width <= remaining {
-            full_info
+            out.push_str(display_name);
+            out.push_str(" | ");
+            out.push_str(&scratch);
         } else {
-            let meta = format!(" | {metadata}");
-            let meta_width = UnicodeWidthStr::width(meta.as_str());
-            let name_budget = remaining.saturating_sub(meta_width);
+            let meta_with_sep_width = meta_width + 3;
+            let name_budget = remaining.saturating_sub(meta_with_sep_width);
 
             if name_budget >= 3 {
                 let truncated = truncate_to_width(display_name, name_budget);
-                format!("{truncated}{meta}")
-            } else if remaining > 0 {
-                truncate_to_width(&full_info, remaining).into_owned()
+                out.push_str(&truncated);
+                out.push_str(" | ");
+                out.push_str(&scratch);
             } else {
-                String::new()
+                scratch.clear();
+                write!(scratch, "{display_name} | ").ok();
+                write_status_metadata(&mut scratch, &size_str, entry, panel.show_permissions());
+                let truncated = truncate_to_width(&scratch, remaining);
+                out.push_str(&truncated);
             }
         }
-    } else {
-        String::new()
-    };
+    }
 
-    let info_line_width = UnicodeWidthStr::width(info_line.as_str());
+    let info_line_width = UnicodeWidthStr::width(out.as_str());
     let padding = remaining.saturating_sub(info_line_width);
-    let mut full_text = String::with_capacity(info_line.len() + padding + right_info.len());
-    full_text.push_str(&info_line);
-    full_text.extend(std::iter::repeat_n(' ', padding));
-    full_text.push_str(&right_info);
+    out.extend(std::iter::repeat_n(' ', padding));
+    out.push_str(&scratch);
 
-    let paragraph = Paragraph::new(full_text)
+    let paragraph = Paragraph::new(out)
         .style(Theme::status_bar_with_colors(colors))
         .block(Block::default());
 
@@ -555,12 +564,12 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
         .split(area);
 
     let key_style = Style::default()
-        .fg(Theme::function_bar_fg_with_colors(colors))
-        .bg(Theme::function_bar_bg_with_colors(colors))
+        .fg(colors.function_bar_fg)
+        .bg(colors.function_bar_bg)
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default()
-        .fg(Theme::function_bar_fg_with_colors(colors))
-        .bg(Theme::function_bar_bg_with_colors(colors));
+        .fg(colors.function_bar_fg)
+        .bg(colors.function_bar_bg);
 
     for i in 0..10 {
         let line = Line::from(vec![

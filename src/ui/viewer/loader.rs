@@ -13,6 +13,31 @@ use super::open::ViewerState;
 use crate::debug_log;
 
 const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
+const PIPE_READ_LIMIT: u64 = 50 * 1024 * 1024;
+const PIPE_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+struct CancellableLoader<T> {
+    receiver: mpsc::Receiver<T>,
+    cancel: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl<T: Send + 'static> CancellableLoader<T> {
+    fn spawn<F>(work: F) -> Self
+    where
+        F: FnOnce(&AtomicBool, mpsc::Sender<T>) + Send + 'static,
+    {
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        let handle = thread::spawn(move || work(&cancel_flag, tx));
+        Self {
+            receiver: rx,
+            cancel,
+            handle: Some(handle),
+        }
+    }
+}
 
 pub struct ViewerLoader {
     pub receiver: mpsc::Receiver<std::io::Result<ViewerState>>,
@@ -23,24 +48,21 @@ pub struct ViewerLoader {
 
 impl ViewerLoader {
     pub fn start(path: PathBuf) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_flag = Arc::clone(&cancel);
         let owned_path = path.clone();
-        let handle = thread::spawn(move || {
+        let inner = CancellableLoader::spawn(move |cancel_flag, tx| {
             if cancel_flag.load(Ordering::Acquire) {
                 return;
             }
-            let result = ViewerState::open_with_cancel(&owned_path, Some(&cancel_flag));
+            let result = ViewerState::open_with_cancel(&owned_path, Some(cancel_flag));
             if !cancel_flag.load(Ordering::Acquire) {
                 let _ = tx.send(result);
             }
         });
         Self {
-            receiver: rx,
-            cancel,
+            receiver: inner.receiver,
+            cancel: inner.cancel,
             path,
-            handle: Some(handle),
+            handle: inner.handle,
         }
     }
 }
@@ -48,22 +70,60 @@ impl ViewerLoader {
 impl Drop for ViewerLoader {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Release);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        let _ = self.handle.take();
     }
 }
 
-pub fn run_chafa(
+pub struct ImagePreviewLoader {
+    pub file_path: PathBuf,
+    pub(crate) receiver: mpsc::Receiver<(u16, u16, Text<'static>)>,
+    pub(crate) cancel: Arc<AtomicBool>,
+    pub(crate) handle: Option<JoinHandle<()>>,
+}
+
+impl ImagePreviewLoader {
+    pub fn start(path: PathBuf, width: u16, height: u16) -> Self {
+        let file_path = path.clone();
+        let inner = CancellableLoader::spawn(move |cancel_flag, tx| {
+            if cancel_flag.load(Ordering::Acquire) {
+                return;
+            }
+            let text = run_chafa(&path, width, height, Some(cancel_flag));
+            if !cancel_flag.load(Ordering::Acquire) {
+                let _ = tx.send((width, height, text));
+            }
+        });
+        Self {
+            file_path,
+            receiver: inner.receiver,
+            cancel: inner.cancel,
+            handle: inner.handle,
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    pub fn try_recv(&self) -> Result<(u16, u16, Text<'static>), mpsc::TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+
+impl Drop for ImagePreviewLoader {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        let _ = self.handle.take();
+    }
+}
+
+pub(crate) fn run_chafa(
     path: &Path,
     width: u16,
     height: u16,
     cancel: Option<&AtomicBool>,
 ) -> Text<'static> {
     let size_str = format!("{}x{}", width, height);
-    // Keep terminal probing and passthrough disabled. If chafa talks directly
-    // to the terminal, crossterm can read those responses as viewer input and
-    // open the search dialog instead of showing the image preview.
     let child = Command::new("chafa")
         .arg("-f")
         .arg("symbols")
@@ -104,8 +164,8 @@ fn wait_for_chafa_output(mut child: Child, cancel: Option<&AtomicBool>) -> std::
 
     loop {
         if let Some(status) = child.try_wait()? {
-            let stdout = join_pipe_reader(stdout_reader);
-            let stderr = join_pipe_reader(stderr_reader);
+            let stdout = join_pipe_reader_with_timeout(stdout_reader);
+            let stderr = join_pipe_reader_with_timeout(stderr_reader);
             return Ok(Output {
                 status,
                 stdout,
@@ -117,8 +177,8 @@ fn wait_for_chafa_output(mut child: Child, cancel: Option<&AtomicBool>) -> std::
         {
             let _ = child.kill();
             let status = child.wait()?;
-            let stdout = join_pipe_reader(stdout_reader);
-            let stderr = join_pipe_reader(stderr_reader);
+            let stdout = join_pipe_reader_with_timeout(stdout_reader);
+            let stderr = join_pipe_reader_with_timeout(stderr_reader);
             return Ok(Output {
                 status,
                 stdout,
@@ -128,8 +188,8 @@ fn wait_for_chafa_output(mut child: Child, cancel: Option<&AtomicBool>) -> std::
         if Instant::now() >= deadline {
             let _ = child.kill();
             let status = child.wait()?;
-            let stdout = join_pipe_reader(stdout_reader);
-            let stderr = join_pipe_reader(stderr_reader);
+            let stdout = join_pipe_reader_with_timeout(stdout_reader);
+            let stderr = join_pipe_reader_with_timeout(stderr_reader);
             return Ok(Output {
                 status,
                 stdout,
@@ -148,77 +208,34 @@ fn read_pipe_in_background<R>(pipe: Option<R>) -> JoinHandle<Vec<u8>>
 where
     R: Read + Send + 'static,
 {
-    // NOTE: read_to_end blocks the thread until the pipe closes. This means
-    // the pipe reader thread is not individually cancelable — it will only
-    // exit when the child process terminates and closes its stdout/stderr.
-    // The cancel flag in wait_for_chafa_output kills the child process,
-    // which indirectly unblocks these readers.
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+        if let Some(pipe) = pipe {
+            let mut limited = pipe.take(PIPE_READ_LIMIT);
+            if let Err(e) = limited.read_to_end(&mut bytes) {
+                debug_log!("pipe read error: {}", e);
+            }
         }
         bytes
     })
 }
 
-fn join_pipe_reader(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
-    match handle.join() {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            debug_log!("pipe reader thread panicked: {:?}", e);
-            Vec::new()
+fn join_pipe_reader_with_timeout(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
+    let deadline = Instant::now() + PIPE_JOIN_TIMEOUT;
+    loop {
+        if handle.is_finished() {
+            return match handle.join() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    debug_log!("pipe reader thread panicked: {:?}", e);
+                    Vec::new()
+                }
+            };
         }
-    }
-}
-
-// TODO: ViewerLoader and ImagePreviewLoader share an identical structure
-// (cancel flag, background thread, channel). Extract a common abstraction
-// (e.g. a generic CancellableLoader<T>) to eliminate the duplication.
-pub struct ImagePreviewLoader {
-    pub file_path: PathBuf,
-    pub(crate) receiver: mpsc::Receiver<(u16, u16, Text<'static>)>,
-    pub(crate) cancel: Arc<AtomicBool>,
-    pub(crate) handle: Option<JoinHandle<()>>,
-}
-
-impl ImagePreviewLoader {
-    pub fn start(path: PathBuf, width: u16, height: u16) -> Self {
-        let file_path = path.clone();
-        let (tx, rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_flag = Arc::clone(&cancel);
-        let handle = thread::spawn(move || {
-            if cancel_flag.load(Ordering::Acquire) {
-                return;
-            }
-            let text = run_chafa(&path, width, height, Some(&cancel_flag));
-            if !cancel_flag.load(Ordering::Acquire) {
-                let _ = tx.send((width, height, text));
-            }
-        });
-        Self {
-            file_path,
-            receiver: rx,
-            cancel,
-            handle: Some(handle),
+        if Instant::now() >= deadline {
+            debug_log!("pipe reader join timed out, detaching");
+            return Vec::new();
         }
-    }
-
-    pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Release);
-    }
-
-    pub fn try_recv(&self) -> Result<(u16, u16, Text<'static>), mpsc::TryRecvError> {
-        self.receiver.try_recv()
-    }
-}
-
-impl Drop for ImagePreviewLoader {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Release);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        thread::sleep(Duration::from_millis(10));
     }
 }

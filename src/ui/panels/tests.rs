@@ -25,7 +25,6 @@ fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) 
         .build()
 }
 
-// TODO: replace with #[rstest] once it's added as a dev-dependency.
 macro_rules! test_file_color {
     ($name:ident, $filename:expr, $is_dir:expr, $is_exec:expr, $is_symlink:expr, $expected:expr, bold) => {
         #[test]
@@ -45,8 +44,21 @@ macro_rules! test_file_color {
         }
     };
 }
-// TODO: add negative test — verify get_file_color returns default Color::White
-// for files that match no known extension category.
+#[test]
+fn test_get_file_color_unknown_no_bold() {
+    let entry = create_test_entry("random.qzx", false, false, false);
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+    assert_eq!(style.fg, Some(Color::White));
+    assert!(!style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn test_get_file_color_symlink_not_bold() {
+    let entry = create_test_entry("link", false, false, true);
+    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
+    assert_eq!(style.fg, Some(Color::Cyan));
+    assert!(!style.add_modifier.contains(Modifier::BOLD));
+}
 
 test_file_color!(
     test_get_file_color_directory,
@@ -82,9 +94,6 @@ test_file_color!(
     true,
     Color::Cyan
 );
-// TODO: currently get_file_color only adds BOLD for directories and executables.
-// If symlinks should also be bold, update the `bold` condition from
-// `entry.is_dir() || entry.is_executable()` to include `entry.is_symlink()`.
 test_file_color!(
     test_get_file_color_archive,
     "archive.tar.gz",
@@ -187,6 +196,37 @@ fn test_format_size_megabytes() {
 }
 
 #[test]
+fn test_format_size_one_byte() {
+    assert_eq!(format_size(1), "1 B");
+}
+
+#[test]
+fn test_format_size_just_under_1kb() {
+    assert_eq!(format_size(1023), "1023 B");
+}
+
+#[test]
+fn test_format_size_exact_1kb() {
+    assert_eq!(format_size(1024), "1.0 KB");
+}
+
+#[test]
+fn test_format_size_exact_1mb() {
+    assert_eq!(format_size(1024 * 1024), "1.0 MB");
+}
+
+#[test]
+fn test_format_size_exact_1gb() {
+    assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
+}
+
+#[test]
+fn test_format_size_u64_max() {
+    let result = format_size(u64::MAX);
+    assert!(result.contains("EB"));
+}
+
+#[test]
 fn test_format_permissions_full() {
     let result = format_permissions(0o755);
     assert_eq!(result, "rwxr-xr-x");
@@ -283,7 +323,15 @@ fn test_format_time_unix_epoch_is_non_empty() {
 #[test]
 fn test_format_entry_line_basic() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 60, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        60,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.contains("file.txt"));
 }
 
@@ -291,14 +339,30 @@ fn test_format_entry_line_basic() {
 fn test_format_entry_line_selected() {
     let mut entry = create_test_entry("file.txt", false, false, false);
     entry.selected = true;
-    let result = format_entry_line(&entry, 60, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        60,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.starts_with('*'));
 }
 
 #[test]
 fn test_format_entry_line_with_permissions() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 60, true, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        60,
+        true,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.contains("file.txt"));
     assert!(result.contains("r"));
 }
@@ -306,28 +370,59 @@ fn test_format_entry_line_with_permissions() {
 #[test]
 fn test_format_entry_line_width_zero() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 0, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        0,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_format_entry_line_width_one() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 1, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        1,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_format_entry_line_width_two() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_entry_line(&entry, 2, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        2,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert_eq!(result, " …");
 }
 
 #[test]
 fn test_format_brief_entry_line_basic() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_brief_entry_line(&entry, 60, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_brief_entry_line(
+        &entry,
+        60,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.contains("file.txt"));
 }
 
@@ -335,7 +430,14 @@ fn test_format_brief_entry_line_basic() {
 fn test_format_brief_entry_line_selected() {
     let mut entry = create_test_entry("file.txt", false, false, false);
     entry.selected = true;
-    let result = format_brief_entry_line(&entry, 60, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_brief_entry_line(
+        &entry,
+        60,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.starts_with('*'));
 }
 
@@ -347,21 +449,33 @@ fn test_format_brief_entry_line_truncation() {
         false,
         false,
     );
-    let result = format_brief_entry_line(&entry, 30, &entry.category(), IconTheme::Emoji);
-    assert!(result.contains('…') || UnicodeWidthStr::width(result.as_str()) <= 30);
+    let mut scratch = String::new();
+    let result = format_brief_entry_line(
+        &entry,
+        30,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
+    assert!(result.contains('…'));
+    assert!(UnicodeWidthStr::width(result.as_str()) <= 30);
 }
 
 #[test]
 fn test_format_brief_entry_line_width_zero() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_brief_entry_line(&entry, 0, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result =
+        format_brief_entry_line(&entry, 0, &entry.category(), IconTheme::Emoji, &mut scratch);
     assert_eq!(result, " ");
 }
 
 #[test]
 fn test_format_brief_entry_line_width_one() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let result = format_brief_entry_line(&entry, 1, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result =
+        format_brief_entry_line(&entry, 1, &entry.category(), IconTheme::Emoji, &mut scratch);
     assert_eq!(result, " ");
 }
 
@@ -473,8 +587,55 @@ fn test_get_file_icon_font() {
     );
 }
 
-// TODO: add tests for IconTheme::None — verify that NerdFont and Plain icons
-// are returned as expected for each FileCategory when theme is None.
+#[test]
+fn test_get_file_icon_ascii_theme() {
+    let cases: &[(FileCategory, &str)] = &[
+        (FileCategory::Dir, "D"),
+        (FileCategory::Symlink, "@"),
+        (FileCategory::Executable, "*"),
+        (FileCategory::Code, "{"),
+        (FileCategory::Config, "#"),
+        (FileCategory::Archive, "A"),
+        (FileCategory::Image, "I"),
+        (FileCategory::Video, "V"),
+        (FileCategory::Audio, "~"),
+        (FileCategory::Document, "="),
+        (FileCategory::Font, "F"),
+        (FileCategory::Other, "."),
+    ];
+    for &(cat, expected) in cases {
+        assert_eq!(
+            get_file_icon_with_theme(&cat, IconTheme::Ascii),
+            expected,
+            "Ascii icon mismatch for {cat:?}"
+        );
+    }
+}
+
+#[test]
+fn test_get_file_icon_nerdfont_theme() {
+    let cases: &[(FileCategory, &str)] = &[
+        (FileCategory::Dir, "\u{F07B}"),
+        (FileCategory::Symlink, "\u{F481}"),
+        (FileCategory::Executable, "\u{F489}"),
+        (FileCategory::Code, "\u{EAC4}"),
+        (FileCategory::Config, "\u{E615}"),
+        (FileCategory::Archive, "\u{F410}"),
+        (FileCategory::Image, "\u{F03E}"),
+        (FileCategory::Video, "\u{F03D}"),
+        (FileCategory::Audio, "\u{F001}"),
+        (FileCategory::Document, "\u{F15C}"),
+        (FileCategory::Font, "\u{F031}"),
+        (FileCategory::Other, "\u{F0F6}"),
+    ];
+    for &(cat, expected) in cases {
+        assert_eq!(
+            get_file_icon_with_theme(&cat, IconTheme::NerdFont),
+            expected,
+            "NerdFont icon mismatch for {cat:?}"
+        );
+    }
+}
 
 #[test]
 fn test_format_entry_line_truncation() {
@@ -484,14 +645,30 @@ fn test_format_entry_line_truncation() {
         false,
         false,
     );
-    let result = format_entry_line(&entry, 47, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        47,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.contains('…'));
 }
 
 #[test]
 fn test_format_entry_line_truncation_handles_unicode() {
     let entry = create_test_entry("日本語テストファイル.txt", false, false, false);
-    let result = format_entry_line(&entry, 47, false, &entry.category(), IconTheme::Emoji);
+    let mut scratch = String::new();
+    let result = format_entry_line(
+        &entry,
+        47,
+        false,
+        &entry.category(),
+        IconTheme::Emoji,
+        &mut scratch,
+    );
     assert!(result.contains('…'));
     assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
 }
@@ -507,8 +684,9 @@ fn test_new_panel_state() {
 #[test]
 fn test_panel_status_summary_empty_panel() {
     let panel = PanelState::new(PathBuf::from("/test"));
-    let (summary, width) = panel_status_summary(&panel);
-    assert_eq!(summary, "");
+    let mut buf = String::new();
+    let width = panel_status_summary(&panel, &mut buf);
+    assert_eq!(buf, "");
     assert_eq!(width, 0);
 }
 
@@ -521,9 +699,9 @@ fn test_panel_status_summary_first_item() {
         create_test_entry("c.txt", false, false, false),
     ];
     panel.cursor = 0;
-    let (summary, _) = panel_status_summary(&panel);
-    assert!(summary.contains("1/3"));
-    assert!(summary.contains("33%"));
+    let mut buf = String::new();
+    let _ = panel_status_summary(&panel, &mut buf);
+    assert_eq!(buf, " 1/3 33% ");
 }
 
 #[test]
@@ -535,9 +713,9 @@ fn test_panel_status_summary_last_item() {
         create_test_entry("c.txt", false, false, false),
     ];
     panel.cursor = 2;
-    let (summary, _) = panel_status_summary(&panel);
-    assert!(summary.contains("3/3"));
-    assert!(summary.contains("100%"));
+    let mut buf = String::new();
+    let _ = panel_status_summary(&panel, &mut buf);
+    assert_eq!(buf, " 3/3 100% ");
 }
 
 #[test]
@@ -550,9 +728,9 @@ fn test_panel_status_summary_with_selection() {
     panel.cursor = 0;
     panel.set_selected_count(1);
     panel.set_selected_size(1024);
-    let (summary, _) = panel_status_summary(&panel);
-    assert!(summary.contains("1/2"));
-    assert!(summary.contains("1 1.0 KB"));
+    let mut buf = String::new();
+    let _ = panel_status_summary(&panel, &mut buf);
+    assert_eq!(buf, " 1/2 50% (1 1.0 KB) ");
 }
 
 #[test]
@@ -561,8 +739,9 @@ fn test_panel_status_summary_no_selection_when_zero() {
     panel.listing.entries = vec![create_test_entry("a.txt", false, false, false)];
     panel.cursor = 0;
     panel.set_selected_count(0);
-    let (summary, _) = panel_status_summary(&panel);
-    assert!(!summary.contains("Sel:"));
+    let mut buf = String::new();
+    let _ = panel_status_summary(&panel, &mut buf);
+    assert_eq!(buf, " 1/1 100% ");
 }
 
 #[test]
@@ -616,37 +795,6 @@ fn test_truncate_name_unicode() {
 fn test_truncate_name_empty() {
     let result = truncate_name("", 5);
     assert_eq!(&*result, "");
-}
-
-#[test]
-fn test_format_size_exact_1kb() {
-    assert_eq!(format_size(1024), "1.0 KB");
-}
-
-#[test]
-fn test_format_size_exact_1mb() {
-    assert_eq!(format_size(1024 * 1024), "1.0 MB");
-}
-
-#[test]
-fn test_format_size_exact_1gb() {
-    assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
-}
-
-#[test]
-fn test_format_size_u64_max() {
-    let result = format_size(u64::MAX);
-    assert!(result.contains("EB"));
-}
-
-#[test]
-fn test_format_size_one_byte() {
-    assert_eq!(format_size(1), "1 B");
-}
-
-#[test]
-fn test_format_size_just_under_1kb() {
-    assert_eq!(format_size(1023), "1023 B");
 }
 
 fn render_to_string(width: u16, height: u16, f: impl FnOnce(&mut ratatui::Frame<'_>)) -> String {

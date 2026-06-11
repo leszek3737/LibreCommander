@@ -1,54 +1,8 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-const TEXT_APPLICATION_MIMES: &[&str] = &[
-    "application/json",
-    "application/toml",
-    "application/yaml",
-    "application/x-yaml",
-    "application/xml",
-    "application/javascript",
-    "application/typescript",
-    "application/ecmascript",
-    "application/sql",
-    "application/x-httpd-php",
-    "application/x-sh",
-    "application/rtf",
-];
+use crate::app::mime::{KNOWN_BINARY_MIMES, KNOWN_BINARY_PREFIXES, TEXT_APPLICATION_MIMES};
 
-const KNOWN_BINARY_MIMES: &[&str] = &[
-    "application/octet-stream",
-    "application/zip",
-    "application/x-tar",
-    "application/gzip",
-    "application/x-gzip",
-    "application/x-bzip2",
-    "application/x-xz",
-    "application/x-7z-compressed",
-    "application/vnd.rar",
-    "application/x-rar-compressed",
-    "application/zstd",
-    "application/pdf",
-    "application/msword",
-    "application/epub+zip",
-    "application/wasm",
-    "application/x-mach-binary",
-    "application/x-dosexec",
-    "application/x-executable",
-    "application/x-sharedlib",
-    "application/x-object",
-];
-
-const KNOWN_BINARY_PREFIXES: &[&str] = &[
-    "image/",
-    "audio/",
-    "video/",
-    "application/vnd.oasis.opendocument.",
-    "application/vnd.openxmlformats-officedocument.",
-    "application/vnd.ms-",
-];
-
-/// Limit binary detection to the first 8 KB of the buffer.
 const NUL_BYTE_SCAN_LIMIT: usize = 8192;
 
 /// Returns `true` when `mime` starts with `"image/"`.

@@ -90,7 +90,7 @@ fn render_tree_scrollbar(
         }
     }
 
-    let style = Style::default().fg(Theme::scrollbar_active_with_colors(colors));
+    let style = Style::default().fg(colors.scrollbar_active);
     let paragraph = Paragraph::new(scrollbar).style(style);
     f.render_widget(paragraph, area);
 }
@@ -122,13 +122,9 @@ fn render_tree_entries(
     colors: &ColorPalette,
 ) {
     let row_start = row_range.start;
-    let max_y = inner.y + inner.height.saturating_sub(1);
     for (offset, entry) in entries[row_range].iter().enumerate() {
         let row = row_start + offset;
         let y = inner.y + offset as u16;
-        if y >= max_y {
-            break;
-        }
 
         let indent = indent_for_depth(entry.depth);
         let indent_width = UnicodeWidthStr::width(indent);
@@ -144,14 +140,20 @@ fn render_tree_entries(
         let available = (content_width as usize)
             .saturating_sub(indent_width)
             .saturating_sub(prefix_width);
-        let display_name = truncate_name(entry.name.as_str(), available);
+        let display_name = if available == 0 {
+            Cow::Borrowed("")
+        } else if entry.name_width <= available {
+            Cow::Borrowed(entry.name.as_str())
+        } else {
+            truncate_name(entry.name.as_str(), available)
+        };
 
         let line_style = if row == selected {
             Theme::highlight_with_colors(colors)
         } else if entry.is_dir {
-            Theme::panel_file_with_colors(Theme::directory_with_colors(colors), colors)
+            Theme::panel_file_with_colors(colors.directory, colors)
         } else {
-            Theme::panel_file_with_colors(Theme::regular_file_with_colors(colors), colors)
+            Theme::panel_file_with_colors(colors.regular_file, colors)
         };
 
         let line = Line::from(vec![
@@ -199,6 +201,7 @@ pub fn render_directory_tree_with_colors(
 
     let selected = selected.min(entries.len().saturating_sub(1));
 
+    // Last row of inner area is reserved for the help bar (see below).
     let visible_height = inner.height.saturating_sub(1) as usize;
 
     if visible_height == 0 {
@@ -279,6 +282,7 @@ mod tests {
             is_dir,
             expanded,
             name: name.to_string(),
+            name_width: UnicodeWidthStr::width(name),
             read_error: false,
         }
     }

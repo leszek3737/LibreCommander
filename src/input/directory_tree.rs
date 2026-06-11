@@ -150,13 +150,18 @@ mod tests {
 
     fn make_tree_entries(count: usize) -> Vec<lc::app::dir_tree::TreeEntry> {
         (0..count)
-            .map(|i| lc::app::dir_tree::TreeEntry {
-                path: PathBuf::from(format!("/tmp/{i}")),
-                depth: 0,
-                is_dir: false,
-                expanded: false,
-                name: format!("entry-{i}"),
-                read_error: false,
+            .map(|i| {
+                let name = format!("entry-{i}");
+                let name_width = unicode_width::UnicodeWidthStr::width(name.as_str());
+                lc::app::dir_tree::TreeEntry {
+                    path: PathBuf::from(format!("/tmp/{i}")),
+                    depth: 0,
+                    is_dir: false,
+                    expanded: false,
+                    name,
+                    name_width,
+                    read_error: false,
+                }
             })
             .collect()
     }

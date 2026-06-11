@@ -21,10 +21,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layout_overhead_rows_matches_fixed_constraints() {
+    fn layout_overhead_rows_sums_components() {
+        let menu_bar = 1;
+        let status_bar = 1;
+        let command_line = 1;
+        let function_bar = 1;
+        let borders = 2;
         assert_eq!(
-            LAYOUT_OVERHEAD_ROWS, 6,
-            "LAYOUT_OVERHEAD_ROWS = menu bar (1) + status bar (1) + command line (1) + function bar (1) + borders (2) = 6"
+            LAYOUT_OVERHEAD_ROWS,
+            menu_bar + status_bar + command_line + function_bar + borders,
+        );
+    }
+
+    #[test]
+    fn dir_tree_overhead_rows_sums_components() {
+        let top_border = 1;
+        let bottom_border = 1;
+        let help_bar = 1;
+        assert_eq!(
+            DIR_TREE_OVERHEAD_ROWS,
+            top_border + bottom_border + help_bar,
         );
     }
 }
