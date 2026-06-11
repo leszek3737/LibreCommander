@@ -146,13 +146,10 @@ fn delete_dir_contents_impl(
         } else if file_type.is_file() {
             fs::remove_file(&entry_path)?;
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "unsupported file type in directory: {}",
-                    entry_path.display()
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "unsupported file type in directory: {}",
+                entry_path.display()
+            )));
         }
     }
     Ok(())

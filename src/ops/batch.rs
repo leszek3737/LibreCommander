@@ -375,19 +375,19 @@ fn drain_progress(rx: &mpsc::Receiver<u64>, mut consume: impl FnMut(u64)) {
 fn wait_for_result_with_progress<T>(
     result_rx: &mpsc::Receiver<io::Result<T>>,
     progress_rx: &mpsc::Receiver<u64>,
-    on_progress: &mut dyn FnMut(u64),
+    mut on_progress: &mut dyn FnMut(u64),
 ) -> io::Result<T> {
     loop {
         match result_rx.recv_timeout(Duration::from_millis(25)) {
             Ok(result) => {
-                drain_progress(progress_rx, |b| on_progress(b));
+                drain_progress(progress_rx, &mut on_progress);
                 return result;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                drain_progress(progress_rx, |b| on_progress(b));
+                drain_progress(progress_rx, &mut on_progress);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                drain_progress(progress_rx, |b| on_progress(b));
+                drain_progress(progress_rx, &mut on_progress);
                 return Err(io::Error::other(
                     "worker thread disconnected unexpectedly — \
                      the spawned thread may have panicked or dropped the result sender",

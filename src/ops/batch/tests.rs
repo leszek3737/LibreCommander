@@ -565,7 +565,7 @@ fn batch_copy_symlink_preserves_link_not_target() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
 
     let action = PendingAction::Copy {
-        sources: vec![link.clone()],
+        sources: vec![link],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
     };

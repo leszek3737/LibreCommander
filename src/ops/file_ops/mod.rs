@@ -2,7 +2,7 @@ mod common;
 mod copy;
 mod delete;
 mod entry_ops;
-mod move_ops;
+pub(crate) mod move_ops;
 mod temp;
 
 pub use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
@@ -20,8 +20,33 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
+
+    const TAG_COPY: &str = "copy";
+    const TAG_BACKUP: &str = "backup";
+
+    fn assert_no_temp_leftovers(tmp_dir: &Path, tags: &[&str]) {
+        let dir_name = tmp_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        for tag in tags {
+            let pattern = format!(".lc-dir-{tag}-");
+            let mut found = vec![];
+            if let Ok(entries) = std::fs::read_dir(tmp_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.contains(&pattern) {
+                        found.push(name_str.into_owned());
+                    }
+                }
+            }
+            assert!(
+                found.is_empty(),
+                "temp leftovers found for tag '{tag}' in {dir_name}: {found:?}"
+            );
+        }
+    }
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 

@@ -249,7 +249,11 @@ fn search_in_file(
         path,
         pattern,
         case_sensitive,
-        finder: if case_sensitive { None } else { Some(memmem::Finder::new(pattern_bytes)) },
+        finder: if case_sensitive {
+            None
+        } else {
+            Some(memmem::Finder::new(pattern_bytes))
+        },
         bufs: ScanBuffers::new(),
         cancel,
     };
@@ -356,10 +360,10 @@ fn scan_lines(
                     if memmem::find(line, ctx.pattern.as_bytes()).is_none() {
                         continue;
                     }
-                } else if let Some(ref finder) = ctx.finder {
-                    if !contains_case_insensitive(line_text, finder, &mut ctx.bufs.ci_buf) {
-                        continue;
-                    }
+                } else if let Some(ref finder) = ctx.finder
+                    && !contains_case_insensitive(line_text, finder, &mut ctx.bufs.ci_buf)
+                {
+                    continue;
                 }
 
                 outcome

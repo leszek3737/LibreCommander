@@ -66,10 +66,10 @@ fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
             return;
         }
     };
-    if meta.is_dir() {
-        if let Some(key) = get_inode_key(&meta) {
-            visited.insert(key);
-        }
+    if meta.is_dir()
+        && let Some(key) = get_inode_key(&meta)
+    {
+        visited.insert(key);
     }
 }
 
