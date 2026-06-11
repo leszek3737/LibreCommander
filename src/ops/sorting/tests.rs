@@ -1,11 +1,7 @@
 use super::*;
 use std::time::SystemTime;
 
-fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
-    create_test_entry_with_btime(name, is_dir, size, modified_secs, Some(modified_secs))
-}
-
-fn create_test_entry_with_btime(
+fn make_entry(
     name: &str,
     is_dir: bool,
     size: u64,
@@ -25,6 +21,30 @@ fn create_test_entry_with_btime(
         builder = builder.created(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(btime));
     }
     builder.build()
+}
+
+fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
+    make_entry(name, is_dir, size, modified_secs, None)
+}
+
+macro_rules! sort_options_test {
+    ($fn_name:ident, $mode:expr, $dir_first:literal, $sensitive:literal,
+     $entries:expr, $expected_names:expr) => {
+        #[test]
+        fn $fn_name() {
+            let mut entries = $entries;
+            sort_entries(
+                &mut entries,
+                $mode,
+                SortOptions {
+                    dir_first: $dir_first,
+                    sensitive: $sensitive,
+                },
+            );
+            let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(names, $expected_names);
+        }
+    };
 }
 
 #[test]
@@ -47,6 +67,13 @@ fn test_get_extension_no_extension() {
 fn test_get_extension_hidden_files() {
     assert_eq!(get_extension(".gitignore"), "");
     assert_eq!(get_extension(".env.example"), ".example");
+}
+
+#[test]
+fn test_get_extension_edge_cases() {
+    assert_eq!(get_extension("file."), "");
+    assert_eq!(get_extension("a.b.c.d"), ".d");
+    assert_eq!(get_extension(""), "");
 }
 
 #[test]
@@ -222,22 +249,9 @@ fn test_empty_entries_list() {
 
 #[test]
 fn test_sort_with_same_values() {
-    let now = SystemTime::now();
     let mut entries = vec![
-        FileEntry::builder()
-            .name("a.txt")
-            .path("a.txt")
-            .size(100)
-            .modified(now)
-            .created(now)
-            .build(),
-        FileEntry::builder()
-            .name("b.txt")
-            .path("b.txt")
-            .size(100)
-            .modified(now)
-            .created(now)
-            .build(),
+        make_entry("a.txt", false, 100, 1000, Some(1000)),
+        make_entry("b.txt", false, 100, 1000, Some(1000)),
     ];
 
     sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
@@ -324,35 +338,10 @@ fn test_sort_natural_ellipsis_first() {
 
 #[test]
 fn test_sort_btime_asc_none_after_some() {
-    let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
-    let t2 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
     let mut entries = vec![
-        FileEntry::builder()
-            .name("no_btime.txt")
-            .path("no_btime.txt")
-            .size(10)
-            .modified(t1)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("old.txt")
-            .path("old.txt")
-            .size(10)
-            .modified(t1)
-            .created(t1)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("new.txt")
-            .path("new.txt")
-            .size(10)
-            .modified(t2)
-            .created(t2)
-            .owner("u")
-            .group("g")
-            .build(),
+        make_entry("no_btime.txt", false, 10, 100, None),
+        make_entry("old.txt", false, 10, 100, Some(100)),
+        make_entry("new.txt", false, 10, 200, Some(200)),
     ];
 
     sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
@@ -364,35 +353,10 @@ fn test_sort_btime_asc_none_after_some() {
 
 #[test]
 fn test_sort_btime_desc_none_after_some() {
-    let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
-    let t2 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
     let mut entries = vec![
-        FileEntry::builder()
-            .name("no_btime.txt")
-            .path("no_btime.txt")
-            .size(10)
-            .modified(t1)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("old.txt")
-            .path("old.txt")
-            .size(10)
-            .modified(t1)
-            .created(t1)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("new.txt")
-            .path("new.txt")
-            .size(10)
-            .modified(t2)
-            .created(t2)
-            .owner("u")
-            .group("g")
-            .build(),
+        make_entry("no_btime.txt", false, 10, 100, None),
+        make_entry("old.txt", false, 10, 100, Some(100)),
+        make_entry("new.txt", false, 10, 200, Some(200)),
     ];
 
     sort_entries(&mut entries, SortMode::BtimeDesc, SortOptions::default());
@@ -404,26 +368,9 @@ fn test_sort_btime_desc_none_after_some() {
 
 #[test]
 fn test_sort_btime_same_btime_stable() {
-    let t = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(300);
     let mut entries = vec![
-        FileEntry::builder()
-            .name("beta.txt")
-            .path("beta.txt")
-            .size(10)
-            .modified(t)
-            .created(t)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("alpha.txt")
-            .path("alpha.txt")
-            .size(10)
-            .modified(t)
-            .created(t)
-            .owner("u")
-            .group("g")
-            .build(),
+        make_entry("beta.txt", false, 10, 300, Some(300)),
+        make_entry("alpha.txt", false, 10, 300, Some(300)),
     ];
 
     sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
@@ -435,9 +382,9 @@ fn test_sort_btime_same_btime_stable() {
 #[test]
 fn test_sort_btime_all_none() {
     let mut entries = vec![
-        create_test_entry_with_btime("c.txt", false, 10, 100, None),
-        create_test_entry_with_btime("a.txt", false, 10, 100, None),
-        create_test_entry_with_btime("b.txt", false, 10, 100, None),
+        make_entry("c.txt", false, 10, 100, None),
+        make_entry("a.txt", false, 10, 100, None),
+        make_entry("b.txt", false, 10, 100, None),
     ];
 
     sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
@@ -449,37 +396,10 @@ fn test_sort_btime_all_none() {
 
 #[test]
 fn test_sort_btime_mixed_with_dirs() {
-    let t1 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
-    let t2 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200);
     let mut entries = vec![
-        FileEntry::builder()
-            .name("file_no_btime")
-            .path("file_no_btime")
-            .size(10)
-            .modified(t1)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("dir_old")
-            .path("dir_old")
-            .is_dir(true)
-            .size(0)
-            .modified(t1)
-            .created(t1)
-            .owner("u")
-            .group("g")
-            .build(),
-        FileEntry::builder()
-            .name("dir_new")
-            .path("dir_new")
-            .is_dir(true)
-            .size(0)
-            .modified(t2)
-            .created(t2)
-            .owner("u")
-            .group("g")
-            .build(),
+        make_entry("file_no_btime", false, 10, 100, None),
+        make_entry("dir_old", true, 0, 100, Some(100)),
+        make_entry("dir_new", true, 0, 200, Some(200)),
     ];
 
     sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
@@ -519,51 +439,11 @@ fn test_cmp_ignore_case_prefix() {
     assert_eq!(cmp_ignore_case("abcd", "abc"), Ordering::Greater);
 }
 
-#[test]
-fn test_sort_dir_first_false() {
-    let mut entries = vec![
-        create_test_entry("file.txt", false, 100, 1000),
-        create_test_entry("subdir", true, 0, 2000),
-    ];
-    sort_entries(
-        &mut entries,
-        SortMode::NameAsc,
-        SortOptions {
-            dir_first: false,
-            ..SortOptions::default()
-        },
-    );
-    assert_eq!(entries[0].name, "file.txt");
-    assert_eq!(entries[1].name, "subdir");
-}
-
-#[test]
-fn test_sort_sensitive_true() {
-    let mut entries = vec![
-        create_test_entry("banana", false, 100, 1000),
-        create_test_entry("Apple", false, 200, 1000),
-        create_test_entry("cherry", false, 150, 1000),
-    ];
-    sort_entries(
-        &mut entries,
-        SortMode::NameAsc,
-        SortOptions {
-            sensitive: true,
-            ..SortOptions::default()
-        },
-    );
-    assert_eq!(entries[0].name, "Apple");
-    assert_eq!(entries[1].name, "banana");
-    assert_eq!(entries[2].name, "cherry");
-}
-
-#[test]
-fn test_get_extension_edge_cases() {
-    assert_eq!(get_extension("file."), "");
-    assert_eq!(get_extension("a.b.c.d"), ".d");
-    assert_eq!(get_extension(""), "");
-}
-
+/// Turkish dotted I (İ, U+0130) is a known limitation of `str::to_lowercase()`.
+/// The Rust stdlib lowercases 'İ' to 'i\u{307}' (two chars), not 'i', so
+/// case-insensitive comparison produces `Greater` where 'I' vs 'İ' would give
+/// `Equal` under Turkish locale rules. This is acceptable — we don't depend on
+/// system locale for the TUI.
 #[test]
 fn test_cmp_ignore_case_turkish_dotted_i() {
     let left = cmp_ignore_case("B\u{0130}L", "BIL");
@@ -572,47 +452,103 @@ fn test_cmp_ignore_case_turkish_dotted_i() {
     assert_eq!(right, Ordering::Less);
 }
 
-#[test]
-fn test_sort_extension_asc_sensitive_true() {
-    let mut entries = vec![
+// ── SortOptions parameterized tests ──
+
+sort_options_test!(
+    test_sort_dir_first_false,
+    SortMode::NameAsc,
+    false,
+    false,
+    vec![
+        create_test_entry("file.txt", false, 100, 1000),
+        create_test_entry("subdir", true, 0, 2000),
+    ],
+    ["file.txt", "subdir"]
+);
+
+sort_options_test!(
+    test_sort_sensitive_true,
+    SortMode::NameAsc,
+    true,
+    true,
+    vec![
+        create_test_entry("banana", false, 100, 1000),
+        create_test_entry("Apple", false, 200, 1000),
+        create_test_entry("cherry", false, 150, 1000),
+    ],
+    ["Apple", "banana", "cherry"]
+);
+
+sort_options_test!(
+    test_sort_extension_asc_sensitive_true,
+    SortMode::ExtensionAsc,
+    true,
+    true,
+    vec![
         create_test_entry("b.TXT", false, 100, 1000),
         create_test_entry("a.txt", false, 200, 1500),
         create_test_entry("c.txt", false, 150, 1200),
-    ];
-    sort_entries(
-        &mut entries,
-        SortMode::ExtensionAsc,
-        SortOptions {
-            sensitive: true,
-            ..SortOptions::default()
-        },
-    );
-    assert_eq!(entries[0].name, "b.TXT");
-    assert_eq!(entries[1].name, "a.txt");
-    assert_eq!(entries[2].name, "c.txt");
-}
+    ],
+    ["b.TXT", "a.txt", "c.txt"]
+);
 
-#[test]
-fn test_sort_size_asc_dir_first_false() {
-    let mut entries = vec![
+sort_options_test!(
+    test_sort_size_asc_dir_first_false,
+    SortMode::SizeAsc,
+    false,
+    false,
+    vec![
         create_test_entry("medium.txt", false, 500, 1000),
         create_test_entry("subdir", true, 0, 2000),
         create_test_entry("large.bin", false, 1000, 1500),
         create_test_entry("tiny", false, 10, 1200),
-    ];
-    sort_entries(
-        &mut entries,
-        SortMode::SizeAsc,
-        SortOptions {
-            dir_first: false,
-            ..SortOptions::default()
-        },
-    );
-    assert_eq!(entries[0].name, "subdir");
-    assert_eq!(entries[1].name, "tiny");
-    assert_eq!(entries[2].name, "medium.txt");
-    assert_eq!(entries[3].name, "large.bin");
-}
+    ],
+    ["subdir", "tiny", "medium.txt", "large.bin"]
+);
+
+sort_options_test!(
+    test_sort_natural_name_desc_dir_first_false,
+    SortMode::NaturalNameDesc,
+    false,
+    false,
+    vec![
+        create_test_entry("a10.txt", false, 100, 100),
+        create_test_entry("a2.txt", false, 100, 100),
+        create_test_entry("a1.txt", false, 100, 100),
+    ],
+    ["a10.txt", "a2.txt", "a1.txt"]
+);
+
+sort_options_test!(
+    test_sort_ellipsis_first_even_with_dir_first_false,
+    SortMode::NameAsc,
+    false,
+    false,
+    vec![
+        create_test_entry("file.txt", false, 100, 1000),
+        create_test_entry("subdir", true, 0, 2000),
+        create_test_entry("..", true, 0, 0),
+    ],
+    ["..", "file.txt", "subdir"]
+);
+
+// ── Previously missing combinations ──
+
+sort_options_test!(
+    test_sort_dir_first_false_sensitive_true,
+    SortMode::NameAsc,
+    false,
+    true,
+    vec![
+        create_test_entry("zebra.txt", false, 100, 1000),
+        create_test_entry("subdir", true, 0, 2000),
+        create_test_entry("Apple.txt", false, 200, 1500),
+        create_test_entry("banana.txt", false, 150, 1200),
+    ],
+    ["Apple.txt", "banana.txt", "subdir", "zebra.txt"]
+);
+
+// ── Stability (tiebreaker) tests for untested sort modes ──
 
 #[test]
 fn test_sort_mod_time_asc_same_mtime_stable() {
@@ -628,39 +564,67 @@ fn test_sort_mod_time_asc_same_mtime_stable() {
 }
 
 #[test]
-fn test_sort_natural_name_desc_dir_first_false() {
+fn test_sort_size_stable() {
     let mut entries = vec![
-        create_test_entry("a10.txt", false, 100, 100),
-        create_test_entry("a2.txt", false, 100, 100),
-        create_test_entry("a1.txt", false, 100, 100),
+        create_test_entry("b_medium.txt", false, 200, 1000),
+        create_test_entry("a_medium.txt", false, 200, 1000),
+        create_test_entry("c_small.txt", false, 100, 1000),
     ];
-    sort_entries(
-        &mut entries,
-        SortMode::NaturalNameDesc,
-        SortOptions {
-            dir_first: false,
-            ..SortOptions::default()
-        },
-    );
-    assert_eq!(entries[0].name, "a10.txt");
-    assert_eq!(entries[1].name, "a2.txt");
-    assert_eq!(entries[2].name, "a1.txt");
+    sort_entries(&mut entries, SortMode::SizeAsc, SortOptions::default());
+    assert_eq!(entries[0].name, "c_small.txt");
+    assert_eq!(entries[1].name, "a_medium.txt");
+    assert_eq!(entries[2].name, "b_medium.txt");
 }
 
 #[test]
-fn test_sort_ellipsis_first_even_with_dir_first_false() {
+fn test_sort_extension_stable() {
     let mut entries = vec![
-        create_test_entry("file.txt", false, 100, 1000),
-        create_test_entry("subdir", true, 0, 2000),
-        create_test_entry("..", true, 0, 0),
+        create_test_entry("b_data.txt", false, 100, 1000),
+        create_test_entry("a_config.txt", false, 100, 1000),
+        create_test_entry("c_image.png", false, 100, 1000),
+    ];
+    sort_entries(&mut entries, SortMode::ExtensionAsc, SortOptions::default());
+    assert_eq!(entries[0].name, "c_image.png");
+    assert_eq!(entries[1].name, "a_config.txt");
+    assert_eq!(entries[2].name, "b_data.txt");
+}
+
+#[test]
+fn test_sort_natural_name_stable() {
+    let mut entries = vec![
+        create_test_entry("b_file1.txt", false, 100, 1000),
+        create_test_entry("a_file1.txt", false, 100, 1000),
+        create_test_entry("z_file2.txt", false, 100, 1000),
     ];
     sort_entries(
         &mut entries,
-        SortMode::NameAsc,
-        SortOptions {
-            dir_first: false,
-            ..SortOptions::default()
-        },
+        SortMode::NaturalNameAsc,
+        SortOptions::default(),
     );
-    assert_eq!(entries[0].name, "..");
+    assert_eq!(entries[0].name, "a_file1.txt");
+    assert_eq!(entries[1].name, "b_file1.txt");
+    assert_eq!(entries[2].name, "z_file2.txt");
+}
+
+// ── Unicode filename sort ──
+
+#[test]
+fn test_sort_entries_unicode() {
+    let mut entries = vec![
+        create_test_entry("\u{6587}\u{4ef6}\u{540d}.txt", false, 100, 1000),
+        create_test_entry("\u{6d4b}\u{8bd5}", false, 100, 1000),
+        create_test_entry("\u{1f680}.rs", false, 100, 1000),
+        create_test_entry("caf\u{e9}.txt", false, 100, 1000),
+        create_test_entry("\u{f1}o\u{f1}o", false, 100, 1000),
+        create_test_entry("alpha.txt", false, 100, 1000),
+    ];
+
+    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+
+    assert_eq!(entries[0].name, "alpha.txt");
+    assert_eq!(entries[1].name, "caf\u{e9}.txt");
+    assert_eq!(entries[2].name, "\u{f1}o\u{f1}o");
+    assert_eq!(entries[3].name, "\u{6587}\u{4ef6}\u{540d}.txt");
+    assert_eq!(entries[4].name, "\u{6d4b}\u{8bd5}");
+    assert_eq!(entries[5].name, "\u{1f680}.rs");
 }

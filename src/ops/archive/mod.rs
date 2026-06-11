@@ -1,6 +1,8 @@
-use std::io;
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
 pub mod create;
@@ -9,6 +11,11 @@ pub mod list;
 pub mod sevenz;
 pub mod tar;
 pub mod zip;
+
+pub(crate) const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
+#[allow(dead_code)]
+pub(crate) const MAX_TOTAL_ARCHIVE_SIZE: u64 = 256 * 1024 * 1024 * 1024; // 256 GiB
+pub(crate) const MAX_LIST_ENTRIES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -33,14 +40,14 @@ pub struct ArchiveEntry {
 
 #[derive(Debug)]
 pub enum ArchiveError {
-    Io(Arc<io::Error>),
+    Io(io::Error),
     UnsupportedFormat,
     InvalidArchive(String),
 }
 
 impl From<io::Error> for ArchiveError {
     fn from(e: io::Error) -> Self {
-        ArchiveError::Io(Arc::new(e))
+        ArchiveError::Io(e)
     }
 }
 
@@ -57,7 +64,7 @@ impl std::fmt::Display for ArchiveError {
 impl std::error::Error for ArchiveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ArchiveError::Io(e) => Some(e.as_ref()),
+            ArchiveError::Io(e) => Some(e),
             ArchiveError::UnsupportedFormat | ArchiveError::InvalidArchive(_) => None,
         }
     }
@@ -69,6 +76,51 @@ const GZ_MAGIC: [u8; 2] = [0x1F, 0x8B];
 const BZ2_MAGIC: [u8; 3] = [0x42, 0x5A, 0x68];
 const XZ_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
 const ZST_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+const TAR_BLOCK_SIZE: usize = 512;
+const USTAR_MAGIC_OFFSET: usize = 257;
+const USTAR_MAGIC: &[u8] = b"ustar";
+
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ArchiveError::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Operation canceled",
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_with_progress(
+    reader: &mut dyn Read,
+    writer: &mut dyn io::Write,
+    progress: &Sender<u64>,
+) -> io::Result<u64> {
+    let mut buf = [0u8; 65536];
+    let mut total: u64 = 0;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        writer.write_all(&buf[..n])?;
+        total = total.saturating_add(n as u64);
+        let _ = progress.send(n as u64);
+    }
+    writer.flush()?;
+    Ok(total)
+}
+
+pub(crate) fn cleanup_extracted(paths: &[PathBuf]) {
+    for p in paths.iter().rev() {
+        if p.is_dir() {
+            let _ = fs::remove_dir_all(p);
+        } else {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
 
 pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathBuf, ArchiveError> {
     let entry_path = Path::new(entry_name);
@@ -84,19 +136,11 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
             )));
         }
     }
-    let canonical_dest = dest
-        .canonicalize()
-        .map_err(|e| ArchiveError::Io(Arc::new(e)))?;
+    let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
     let outpath = canonical_dest.join(entry_name);
-    let file_name = outpath
-        .file_name()
-        .ok_or_else(|| ArchiveError::InvalidArchive(format!("invalid entry path: {entry_name}")))?;
-    let canonical_out = outpath
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.join(file_name))
-        .unwrap_or_else(|| outpath.clone());
-    if !canonical_out.starts_with(&canonical_dest) {
+
+    let normalized_out = normalize_path(&outpath);
+    if !normalized_out.starts_with(&canonical_dest) {
         return Err(ArchiveError::InvalidArchive(format!(
             "path traversal: {entry_name}"
         )));
@@ -104,21 +148,74 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
     Ok(outpath)
 }
 
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(comp) => result.push(comp),
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::RootDir => {
+                result.push(component);
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
 fn has_ext_ignore_case(name: &str, ext: &str) -> bool {
     name.len() >= ext.len()
-        && name
-            .as_bytes()
-            .iter()
-            .rev()
-            .zip(ext.as_bytes().iter().rev())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        && name.as_bytes()[name.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes())
+}
+
+fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
+    match format {
+        ArchiveFormat::TarGz => {
+            let mut reader = flate2::read::GzDecoder::new(file);
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            if reader.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        ArchiveFormat::TarBz2 => {
+            let mut reader = bzip2::read::BzDecoder::new(file);
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            if reader.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        ArchiveFormat::TarXz => {
+            let mut decompressed = Vec::with_capacity(TAR_BLOCK_SIZE);
+            let mut buf_reader = io::BufReader::new(file);
+            if lzma_rs::xz_decompress(&mut buf_reader, &mut decompressed).is_err() {
+                return false;
+            }
+            decompressed.len() >= TAR_BLOCK_SIZE
+                && decompressed[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        ArchiveFormat::TarZst => {
+            let mut reader = match zstd::stream::read::Decoder::new(file) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            if reader.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        _ => false,
+    }
 }
 
 pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
     if path.is_file()
         && let Ok(mut f) = std::fs::File::open(path)
     {
-        use std::io::Read;
         let mut header = [0u8; 8];
         if f.read_exact(&mut header).is_ok() {
             if header[..4] == ZIP_MAGIC {
@@ -127,16 +224,16 @@ pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
             if header[..6] == SEVENZ_MAGIC {
                 return Ok(ArchiveFormat::SevenZ);
             }
-            if header[..2] == GZ_MAGIC {
+            if header[..2] == GZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarGz) {
                 return Ok(ArchiveFormat::TarGz);
             }
-            if header[..3] == BZ2_MAGIC {
+            if header[..3] == BZ2_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarBz2) {
                 return Ok(ArchiveFormat::TarBz2);
             }
-            if header[..6] == XZ_MAGIC {
+            if header[..6] == XZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarXz) {
                 return Ok(ArchiveFormat::TarXz);
             }
-            if header[..4] == ZST_MAGIC {
+            if header[..4] == ZST_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarZst) {
                 return Ok(ArchiveFormat::TarZst);
             }
         }

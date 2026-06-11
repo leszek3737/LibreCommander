@@ -1,54 +1,22 @@
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 use zip::CompressionMethod;
 use zip::read::ZipArchive;
 use zip::write::SimpleFileOptions;
 
-use super::{ArchiveEntry, ArchiveError};
+use super::{
+    ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
+    copy_with_progress,
+};
 
-const MAX_LIST_ENTRIES: usize = 100_000;
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
-const ZIP_COPY_BUF_SIZE: usize = 65536;
-
-fn copy_with_progress(
-    reader: &mut dyn io::Read,
-    writer: &mut dyn io::Write,
-    progress: &Sender<u64>,
-) -> io::Result<u64> {
-    let mut buf = [0u8; ZIP_COPY_BUF_SIZE];
-    let mut total: u64 = 0;
-    loop {
-        let n = match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
-        writer.write_all(&buf[..n])?;
-        total = total.saturating_add(n as u64);
-        let _ = progress.send(n as u64);
-    }
-    writer.flush()?;
-    Ok(total)
-}
 
 fn map_zip_err(e: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::InvalidArchive(e.to_string())
-}
-
-fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(ArchiveError::Io(Arc::new(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Operation canceled",
-        ))));
-    }
-    Ok(())
 }
 
 fn compression_method_name(method: CompressionMethod) -> &'static str {
@@ -97,8 +65,12 @@ fn extract_zip_entries(
     cancel: &AtomicBool,
     extracted_paths: &mut Vec<PathBuf>,
 ) -> Result<(), ArchiveError> {
+    let entry_count = archive.len();
+    extracted_paths.reserve(entry_count);
+
     fs::create_dir_all(dest)?;
-    for i in 0..archive.len() {
+    let mut last_parent: Option<PathBuf> = None;
+    for i in 0..entry_count {
         check_cancel(cancel)?;
 
         let mut entry = archive.by_index(i).map_err(map_zip_err)?;
@@ -111,13 +83,24 @@ fn extract_zip_entries(
 
         let outpath = super::sanitize_entry_path(entry.name(), dest)?;
 
+        if entry.size() > MAX_FILE_SIZE {
+            return Err(ArchiveError::InvalidArchive(format!(
+                "entry '{}' size {} exceeds maximum {MAX_FILE_SIZE}",
+                entry.name(),
+                entry.size()
+            )));
+        }
+
         if entry.is_dir() {
             fs::create_dir_all(&outpath)?;
             extracted_paths.push(outpath);
             let _ = progress.send(entry.size());
         } else {
-            if let Some(parent) = outpath.parent() {
+            if let Some(parent) = outpath.parent()
+                && last_parent.as_deref() != Some(parent)
+            {
                 fs::create_dir_all(parent)?;
+                last_parent = Some(parent.to_path_buf());
             }
             let mut outfile = File::create(&outpath)?;
             copy_with_progress(&mut entry, &mut outfile, progress)?;
@@ -151,13 +134,7 @@ pub fn extract_zip(
     let result = extract_zip_entries(&mut archive, dest, progress, cancel, &mut extracted_paths);
 
     if result.is_err() {
-        for p in extracted_paths.iter().rev() {
-            if p.is_dir() {
-                let _ = fs::remove_dir_all(p);
-            } else {
-                let _ = fs::remove_file(p);
-            }
-        }
+        cleanup_extracted(&extracted_paths);
     }
 
     result
