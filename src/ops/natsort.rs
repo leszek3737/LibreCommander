@@ -9,6 +9,7 @@
 use std::cmp::Ordering;
 
 const INLINE_CAP: usize = 24;
+const _: () = assert!(INLINE_CAP <= u8::MAX as usize);
 
 #[derive(Clone, Debug, Eq)]
 pub enum SegData {
@@ -19,7 +20,6 @@ pub enum SegData {
 impl SegData {
     fn from_slice(s: &[u8]) -> Self {
         if s.len() <= INLINE_CAP {
-            debug_assert!(s.len() <= u8::MAX as usize);
             let mut buf = [0u8; INLINE_CAP];
             buf[..s.len()].copy_from_slice(s);
             SegData::Inline(buf, s.len() as u8)

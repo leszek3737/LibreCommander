@@ -143,13 +143,9 @@ fn delete_dir_contents_impl(
             delete_dir_contents_impl(&entry_path, cancel, depth + 1)?;
             check_optional_canceled(cancel)?;
             fs::remove_dir(&entry_path)?;
-        } else if file_type.is_file() {
-            fs::remove_file(&entry_path)?;
         } else {
-            return Err(io::Error::other(format!(
-                "unsupported file type in directory: {}",
-                entry_path.display()
-            )));
+            // unlink(2) handles all non-directory entries: regular files, sockets, FIFOs, block/char devices
+            fs::remove_file(&entry_path)?;
         }
     }
     Ok(())

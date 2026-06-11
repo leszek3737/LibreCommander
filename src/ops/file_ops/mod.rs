@@ -5,6 +5,7 @@ mod entry_ops;
 pub(crate) mod move_ops;
 mod temp;
 
+pub(crate) use copy::preserve_timestamps;
 pub use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
 pub use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
 #[cfg(unix)]

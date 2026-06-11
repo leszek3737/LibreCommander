@@ -80,12 +80,14 @@ pub fn extract_7z(
                 };
 
                 if entry.size() > MAX_FILE_SIZE {
-                    return Err(PathTraversal(format!(
-                        "entry '{}' size {} exceeds maximum {MAX_FILE_SIZE}",
-                        entry.name(),
-                        entry.size()
-                    ))
-                    .into());
+                    return Err(sevenz_rust::Error::Other(
+                        format!(
+                            "entry '{}' size {} exceeds maximum {MAX_FILE_SIZE}",
+                            entry.name(),
+                            entry.size()
+                        )
+                        .into(),
+                    ));
                 }
 
                 if entry.is_directory() {
@@ -98,8 +100,19 @@ pub fn extract_7z(
                         fs::create_dir_all(parent).map_err(sevenz_rust::Error::io)?;
                         last_parent = Some(parent.to_path_buf());
                     }
+                    if let Ok(meta) = fs::symlink_metadata(&outpath)
+                        && meta.file_type().is_symlink()
+                    {
+                        return Err(sevenz_rust::Error::Other(
+                            format!(
+                                "refusing to extract into existing symlink: {}",
+                                outpath.display()
+                            )
+                            .into(),
+                        ));
+                    }
                     let mut outfile = File::create(&outpath).map_err(sevenz_rust::Error::io)?;
-                    copy_with_progress(reader, &mut outfile, progress)
+                    copy_with_progress(reader, &mut outfile, progress, cancel)
                         .map_err(sevenz_rust::Error::io)?;
                     extracted_paths.push(outpath);
                 }

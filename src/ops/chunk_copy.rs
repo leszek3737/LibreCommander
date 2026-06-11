@@ -1,4 +1,5 @@
 use super::helpers::cleanup_file;
+#[cfg(test)]
 use filetime::FileTime;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -51,18 +52,7 @@ pub fn copy_with_progress(
                 return Err(err);
             }
 
-            let accessed = FileTime::from_last_access_time(&metadata);
-            let modified = FileTime::from_last_modification_time(&metadata);
-            filetime::set_file_times(dest, accessed, modified).map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!(
-                        "failed to preserve timestamps for {}: {}",
-                        dest.display(),
-                        e
-                    ),
-                )
-            })?;
+            super::file_ops::preserve_timestamps(dest, &metadata)?;
 
             Ok(total_written)
         }

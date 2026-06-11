@@ -263,9 +263,15 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
         SortMode::NaturalNameAsc => {
             entries.sort_by_cached_key(|e| natural_sort_key(e, dir_first, sensitive))
         }
-        SortMode::NaturalNameDesc => {
-            entries.sort_by_cached_key(|e| Reverse(natural_sort_key(e, dir_first, sensitive)))
-        }
+        SortMode::NaturalNameDesc => entries.sort_by_cached_key(|e| {
+            (
+                entry_group(e, dir_first),
+                Reverse((
+                    natsort::natsort_key(e.name.as_bytes(), !sensitive),
+                    make_tiebreaker(e.name.as_bytes()),
+                )),
+            )
+        }),
     }
 }
 

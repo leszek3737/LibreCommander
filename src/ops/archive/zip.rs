@@ -111,8 +111,16 @@ fn extract_zip_entries(
                 fs::create_dir_all(parent)?;
                 last_parent = Some(parent.to_path_buf());
             }
+            if let Ok(meta) = fs::symlink_metadata(&outpath)
+                && meta.file_type().is_symlink()
+            {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "refusing to extract into existing symlink: {}",
+                    outpath.display()
+                )));
+            }
             let mut outfile = File::create(&outpath)?;
-            copy_with_progress(&mut entry, &mut outfile, progress)?;
+            copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
 
             #[cfg(unix)]
             {

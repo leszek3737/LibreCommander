@@ -54,8 +54,18 @@ pub(super) fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
 }
 
 pub(super) fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
-    let canonical_parent = canonicalize_existing_path(parent)?;
-    let canonical_child = canonicalize_with_nearest_existing_parent(child)?;
+    let canonical_parent = canonicalize_existing_path(parent).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("failed to canonicalize parent '{}': {e}", parent.display()),
+        )
+    })?;
+    let canonical_child = canonicalize_with_nearest_existing_parent(child).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("failed to canonicalize child '{}': {e}", child.display()),
+        )
+    })?;
     Ok(lexical_path_starts_with(
         &canonical_parent,
         &canonical_child,

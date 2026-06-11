@@ -341,6 +341,10 @@ fn scan_lines(
                     return;
                 }
 
+                if ctx.case_sensitive && memmem::find(line, ctx.pattern.as_bytes()).is_none() {
+                    continue;
+                }
+
                 let line_text = match std::str::from_utf8(line) {
                     Ok(s) => s.strip_suffix('\r').unwrap_or(s),
                     Err(_) => {
@@ -356,11 +360,8 @@ fn scan_lines(
                     }
                 };
 
-                if ctx.case_sensitive {
-                    if memmem::find(line, ctx.pattern.as_bytes()).is_none() {
-                        continue;
-                    }
-                } else if let Some(ref finder) = ctx.finder
+                if !ctx.case_sensitive
+                    && let Some(ref finder) = ctx.finder
                     && !contains_case_insensitive(line_text, finder, &mut ctx.bufs.ci_buf)
                 {
                     continue;

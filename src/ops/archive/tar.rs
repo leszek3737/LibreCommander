@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 use super::{
     ArchiveEntry, ArchiveError, ArchiveFormat, MAX_FILE_SIZE, MAX_LIST_ENTRIES, cleanup_extracted,
     copy_with_progress,
@@ -127,6 +130,13 @@ pub fn extract_tar(
                     fs::create_dir_all(parent)?;
                     last_parent = Some(parent.to_path_buf());
                 }
+                // SAFETY: TOCTOU symlink race mitigation — an attacker could replace a
+                // regular file with a symlink between the symlink_metadata check below
+                // and the subsequent open() call. On Unix, O_NOFOLLOW causes open() to
+                // fail with ELOOP if the final path component is a symlink, closing the
+                // race window. On platforms without O_NOFOLLOW support, the inherent
+                // TOCTOU window remains; the symlink_metadata check serves as a
+                // best-effort defense only.
                 if let Ok(meta) = fs::symlink_metadata(&outpath)
                     && meta.file_type().is_symlink()
                 {
@@ -135,22 +145,36 @@ pub fn extract_tar(
                         outpath.display()
                     )));
                 }
-                let mut outfile = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&outpath)
-                    .or_else(|e| {
+                let mut outfile = {
+                    let mut opts = OpenOptions::new();
+                    opts.write(true).create_new(true);
+                    #[cfg(unix)]
+                    opts.custom_flags(libc::O_NOFOLLOW);
+                    opts.open(&outpath).or_else(|e| {
                         if e.kind() == io::ErrorKind::AlreadyExists {
                             debug_log!(
                                 "extract_tar: destination exists, overwriting: {}",
                                 outpath.display()
                             );
-                            File::create(&outpath)
+                            #[cfg(unix)]
+                            {
+                                OpenOptions::new()
+                                    .write(true)
+                                    .create(true)
+                                    .truncate(true)
+                                    .custom_flags(libc::O_NOFOLLOW)
+                                    .open(&outpath)
+                            }
+                            #[cfg(not(unix))]
+                            {
+                                File::create(&outpath)
+                            }
                         } else {
                             Err(e)
                         }
-                    })?;
-                copy_with_progress(&mut entry, &mut outfile, progress)?;
+                    })?
+                };
+                copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
                 extracted_paths.push(outpath.clone());
 
                 #[cfg(unix)]

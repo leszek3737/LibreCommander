@@ -242,7 +242,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     Ok(())
 }
 
-fn preserve_timestamps(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
+pub(crate) fn preserve_timestamps(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     let atime = filetime::FileTime::from_last_access_time(src_meta);
     let mtime = filetime::FileTime::from_last_modification_time(src_meta);
     filetime::set_file_times(target, atime, mtime).map_err(|e| {

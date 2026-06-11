@@ -94,10 +94,17 @@ pub(crate) fn copy_with_progress(
     reader: &mut dyn Read,
     writer: &mut dyn io::Write,
     progress: &Sender<u64>,
+    cancel: &AtomicBool,
 ) -> io::Result<u64> {
     let mut buf = [0u8; 65536];
     let mut total: u64 = 0;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Operation canceled",
+            ));
+        }
         let n = match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
@@ -189,13 +196,12 @@ fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
             buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
         }
         ArchiveFormat::TarXz => {
-            let mut decompressed = Vec::with_capacity(TAR_BLOCK_SIZE);
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            let mut cursor = io::Cursor::new(&mut buf[..]);
             let mut buf_reader = io::BufReader::new(file);
-            if lzma_rs::xz_decompress(&mut buf_reader, &mut decompressed).is_err() {
-                return false;
-            }
-            decompressed.len() >= TAR_BLOCK_SIZE
-                && decompressed[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+            let _ = lzma_rs::xz_decompress(&mut buf_reader, &mut cursor);
+            cursor.position() as usize >= TAR_BLOCK_SIZE
+                && buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
         }
         ArchiveFormat::TarZst => {
             let mut reader = match zstd::stream::read::Decoder::new(file) {
