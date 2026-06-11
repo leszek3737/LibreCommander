@@ -249,7 +249,7 @@ fn search_in_file(
         path,
         pattern,
         case_sensitive,
-        finder: memmem::Finder::new(pattern_bytes),
+        finder: if case_sensitive { None } else { Some(memmem::Finder::new(pattern_bytes)) },
         bufs: ScanBuffers::new(),
         cancel,
     };
@@ -260,7 +260,7 @@ struct ScanContext<'a> {
     path: &'a Path,
     pattern: &'a str,
     case_sensitive: bool,
-    finder: memmem::Finder<'a>,
+    finder: Option<memmem::Finder<'a>>,
     bufs: ScanBuffers,
     cancel: Option<&'a AtomicBool>,
 }
@@ -274,7 +274,7 @@ impl ScanBuffers {
     fn new() -> Self {
         Self {
             line_buf: Vec::new(),
-            ci_buf: Vec::new(),
+            ci_buf: Vec::with_capacity(1024),
         }
     }
 }
@@ -336,9 +336,6 @@ fn scan_lines(
                     }
                     return;
                 }
-                if ctx.case_sensitive && memmem::find(line, ctx.pattern.as_bytes()).is_none() {
-                    continue;
-                }
 
                 let line_text = match std::str::from_utf8(line) {
                     Ok(s) => s.strip_suffix('\r').unwrap_or(s),
@@ -355,10 +352,14 @@ fn scan_lines(
                     }
                 };
 
-                if !ctx.case_sensitive
-                    && !contains_case_insensitive(line_text, &ctx.finder, &mut ctx.bufs.ci_buf)
-                {
-                    continue;
+                if ctx.case_sensitive {
+                    if memmem::find(line, ctx.pattern.as_bytes()).is_none() {
+                        continue;
+                    }
+                } else if let Some(ref finder) = ctx.finder {
+                    if !contains_case_insensitive(line_text, finder, &mut ctx.bufs.ci_buf) {
+                        continue;
+                    }
                 }
 
                 outcome

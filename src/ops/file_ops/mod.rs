@@ -140,13 +140,7 @@ mod tests {
         assert!(bytes > 0);
         assert!(dest.join("file1.txt").exists());
         assert!(dest.join("subdir").join("file2.txt").exists());
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-copy-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -191,13 +185,7 @@ mod tests {
 
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
         assert!(!dest.exists());
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-copy-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -416,13 +404,7 @@ mod tests {
             std::fs::read_to_string(temp.join("file.txt")).unwrap(),
             "new"
         );
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-backup-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_BACKUP]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -848,13 +830,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
         assert!(!dest.exists());
 
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-copy-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
