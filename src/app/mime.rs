@@ -2,6 +2,53 @@ use std::path::Path;
 
 use crate::app::types::FileCategory;
 
+pub const TEXT_APPLICATION_MIMES: &[&str] = &[
+    "application/json",
+    "application/toml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/xml",
+    "application/javascript",
+    "application/typescript",
+    "application/ecmascript",
+    "application/sql",
+    "application/x-httpd-php",
+    "application/x-sh",
+    "application/rtf",
+];
+
+pub const KNOWN_BINARY_MIMES: &[&str] = &[
+    "application/octet-stream",
+    "application/zip",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-gzip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar-compressed",
+    "application/zstd",
+    "application/pdf",
+    "application/msword",
+    "application/epub+zip",
+    "application/wasm",
+    "application/x-mach-binary",
+    "application/x-dosexec",
+    "application/x-executable",
+    "application/x-sharedlib",
+    "application/x-object",
+];
+
+pub const KNOWN_BINARY_PREFIXES: &[&str] = &[
+    "image/",
+    "audio/",
+    "video/",
+    "application/vnd.oasis.opendocument.",
+    "application/vnd.openxmlformats-officedocument.",
+    "application/vnd.ms-",
+];
+
 pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<String> {
     infer::get(bytes)
         .map(|kind| kind.mime_type().to_string())

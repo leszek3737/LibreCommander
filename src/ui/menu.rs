@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
@@ -12,6 +13,14 @@ use crate::ui::theme::{ColorPalette, Theme};
 const MIN_DROPDOWN_ITEM_WIDTH: usize = 10;
 const MENU_PADDING_WIDTH: u16 = 4;
 const MENU_DROPDOWN_OFFSET: u16 = 2;
+
+fn styled_padded_line(text: &str, style: Style) -> Line<'_> {
+    Line::from(vec![
+        Span::styled(" ", style),
+        Span::styled(text, style),
+        Span::styled(" ", style),
+    ])
+}
 
 fn render_menu_title_bar(
     f: &mut Frame,
@@ -26,11 +35,7 @@ fn render_menu_title_bar(
         } else {
             Theme::menu_bar_with_colors(colors)
         };
-        let line = Line::from(vec![
-            Span::styled(" ", style),
-            Span::styled(*title, style),
-            Span::styled(" ", style),
-        ]);
+        let line = styled_padded_line(title, style);
         let p = Paragraph::new(line);
         let area = Rect::new(
             menu_bar_area.x + menu_title_x(menu_bar_area.width, i),
@@ -99,11 +104,7 @@ fn render_menu_dropdown(
             Theme::panel_with_colors(colors)
         };
         let item_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
-        let line = Line::from(vec![
-            Span::styled(" ", style),
-            Span::styled(*item, style),
-            Span::styled(" ", style),
-        ]);
+        let line = styled_padded_line(item, style);
         let p = Paragraph::new(line);
         f.render_widget(p, item_area);
     }

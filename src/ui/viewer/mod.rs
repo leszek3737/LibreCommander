@@ -11,12 +11,11 @@ mod toggle;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
-pub use hex::{HEX_BYTES_PER_LINE, HEX_LINE_WIDTH, HEX_OFFSET_PREFIX_WIDTH, HEX_PART_WIDTH};
-pub use loader::{ImagePreviewLoader, ViewerLoader, run_chafa};
+pub use loader::{ImagePreviewLoader, ViewerLoader};
 pub use open::ViewerState;
 pub use render::{
-    render_hex_view, render_hex_view_with_colors, render_image_view_with_colors, render_loading,
-    render_loading_with_colors, render_viewer, render_viewer_with_colors,
+    render_hex_view_with_colors, render_image_view_with_colors, render_loading_with_colors,
+    render_viewer_with_colors,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

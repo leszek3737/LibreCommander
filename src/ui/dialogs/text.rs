@@ -2,15 +2,18 @@ use std::borrow::Cow;
 use std::path::{MAIN_SEPARATOR, Path};
 
 fn truncate_suffix<'a>(s: &'a str, max_width: usize) -> Cow<'a, str> {
+    if max_width == 0 {
+        return Cow::Owned(String::new());
+    }
+    let total_width: usize = s
+        .chars()
+        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+        .sum();
+    if total_width <= max_width {
+        return Cow::Borrowed(s);
+    }
     if max_width > 3 {
         let suffix_budget = max_width - 3;
-        let total_width: usize = s
-            .chars()
-            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-            .sum();
-        if total_width <= max_width {
-            return Cow::Borrowed(s);
-        }
         let mut remaining = total_width;
         let mut split_idx = s.len();
         for (idx, ch) in s.char_indices() {
@@ -21,18 +24,12 @@ fn truncate_suffix<'a>(s: &'a str, max_width: usize) -> Cow<'a, str> {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
             remaining -= cw;
         }
-        Cow::Owned(format!("...{}", &s[split_idx..]))
+        let tail = &s[split_idx..];
+        let mut out = String::with_capacity(3 + tail.len());
+        out.push_str("...");
+        out.push_str(tail);
+        Cow::Owned(out)
     } else {
-        if max_width == 0 {
-            return Cow::Owned(String::new());
-        }
-        let total_width: usize = s
-            .chars()
-            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-            .sum();
-        if total_width <= max_width {
-            return Cow::Borrowed(s);
-        }
         let mut out = String::new();
         let mut width = 0;
         for ch in s.chars() {
@@ -53,6 +50,8 @@ pub(super) fn truncate_path<'a>(path: &'a str, max_width: usize) -> Cow<'a, str>
         return Cow::Borrowed(path);
     }
     let p = Path::new(path);
+    // non-UTF8 file names are extremely rare; fall back to empty and let
+    // the full-path truncate below handle display
     let file_ref: &str = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
     let file_width = unicode_width::UnicodeWidthStr::width(file_ref);
     if file_width >= max_width {
@@ -64,7 +63,11 @@ pub(super) fn truncate_path<'a>(path: &'a str, max_width: usize) -> Cow<'a, str>
     }
     let budget = max_width - file_width - 1;
     let dir_part = truncate_suffix(dir_ref, budget);
-    let result = format!("{dir_part}{MAIN_SEPARATOR}{file_ref}");
+    let sep_len = MAIN_SEPARATOR.len_utf8();
+    let mut result = String::with_capacity(dir_part.len() + sep_len + file_ref.len());
+    result.push_str(&dir_part);
+    result.push(MAIN_SEPARATOR);
+    result.push_str(file_ref);
     Cow::Owned(result)
 }
 
@@ -81,7 +84,7 @@ pub fn wrapped_line_count(text: &str, available_width: u16) -> usize {
             col = 0;
             continue;
         }
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
         if col + cw > w {
             lines += 1;
             col = cw;

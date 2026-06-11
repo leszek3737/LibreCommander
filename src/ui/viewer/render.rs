@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+use std::fmt::Write;
 use std::path::Path;
 
 use ratatui::{
@@ -13,13 +15,21 @@ use crate::app::types::format_size;
 use super::SearchLineMatch;
 use super::hex::{HEX_BYTES_PER_LINE, format_hex_line_to_buffer};
 use super::open::ViewerState;
-use super::scroll::{line_number_column_width, line_number_digits, paragraph_horizontal_scroll};
+use super::scroll::{line_number_digits, paragraph_horizontal_scroll};
 use crate::ui::theme::{ColorPalette, Theme};
 
 const VIEWER_MARGIN: Margin = Margin {
     horizontal: 0,
     vertical: 1,
 };
+
+fn viewer_title(path_display: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        path_display.to_owned()
+    } else {
+        format!("{path_display} [{suffix}]")
+    }
+}
 
 fn viewer_block<'a>(title: impl Into<Line<'a>>, colors: &ColorPalette) -> Block<'a> {
     Block::default()
@@ -40,16 +50,9 @@ fn viewer_content_areas(area: Rect) -> (Rect, Rect) {
     (inner, content)
 }
 
-fn format_line_number(line_idx: usize, total_lines: usize) -> String {
-    format!(
-        "{:>width$}  ",
-        line_idx + 1,
-        width = line_number_digits(total_lines)
-    )
-}
-
-pub fn render_viewer(f: &mut Frame, area: Rect, state: &ViewerState) {
-    render_viewer_with_colors(f, area, state, &ColorPalette::default());
+fn write_line_number(buf: &mut String, line_idx: usize, width: usize) {
+    buf.clear();
+    let _ = write!(buf, "{:>width$}  ", line_idx + 1, width = width);
 }
 
 pub(crate) fn compute_visible_range(
@@ -57,12 +60,13 @@ pub(crate) fn compute_visible_range(
     visible_height: usize,
 ) -> (usize, usize, usize) {
     if state.is_visual_scroll() {
-        let heights = state.visual_heights.borrow();
+        let heights = state.render_cache.visual_heights.borrow();
         let (logical_start, sub) = state.visual_row_to_logical(state.scroll_offset);
         let mut visual_budget = visible_height.saturating_add(sub);
         let mut end = logical_start;
         while end < state.line_count && visual_budget > 0 {
-            visual_budget = visual_budget.saturating_sub(heights[end]);
+            let h = heights.get(end).copied().unwrap_or(1);
+            visual_budget = visual_budget.saturating_sub(h);
             end += 1;
         }
         (logical_start, sub, end)
@@ -85,7 +89,7 @@ fn render_content_paragraph(
     let separate_line_nums = !state.wrap_lines && state.show_line_numbers;
 
     if separate_line_nums {
-        let num_col_width = line_number_column_width(state.line_count) as u16;
+        let num_col_width = state.render_cache.cached_line_num_col_width.get() as u16;
         let actual_num_width = num_col_width.min(content_area.width);
         let line_num_area = Rect {
             x: content_area.x,
@@ -129,7 +133,7 @@ pub fn render_viewer_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let title = state.file_path.display().to_string();
+    let title = viewer_title(&state.file_path.display().to_string(), "");
     f.render_widget(viewer_block(title, colors), area);
 
     let (inner_area, content_area) = viewer_content_areas(area);
@@ -154,6 +158,9 @@ pub fn render_viewer_with_colors(
     let visible_matches = &state.search_matches_by_line;
     let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
 
+    let digit_width = line_number_digits(state.line_count);
+    let mut line_num_buf = String::with_capacity(digit_width + 2);
+
     for i in start_idx..end_idx {
         let line = state.get_line(i);
         let line_match_start = match_start;
@@ -165,20 +172,27 @@ pub fn render_viewer_with_colors(
         let text_spans: Vec<Span<'_>> = if line_matches.is_empty() {
             vec![Span::raw(line)]
         } else {
-            format_line_with_highlight(&line, line_matches, state.current_match, colors)
-                .into_iter()
-                .map(|s| Span::styled(s.content.into_owned(), s.style))
-                .collect()
+            match line {
+                Cow::Borrowed(s) => {
+                    format_line_with_highlight(s, line_matches, state.current_match, colors)
+                }
+                Cow::Owned(ref s) => {
+                    format_line_with_highlight(s, line_matches, state.current_match, colors)
+                        .into_iter()
+                        .map(|sp| Span::styled(sp.content.into_owned(), sp.style))
+                        .collect()
+                }
+            }
         };
 
         if separate_line_nums {
-            let line_num = format_line_number(i, state.line_count);
-            line_num_lines.push(Line::from(Span::raw(line_num)));
+            write_line_number(&mut line_num_buf, i, digit_width);
+            line_num_lines.push(Line::from(Span::raw(line_num_buf.clone())));
             lines.push(Line::from(text_spans));
         } else if state.show_line_numbers {
-            let line_num = format_line_number(i, state.line_count);
+            write_line_number(&mut line_num_buf, i, digit_width);
             let mut combined: Vec<Span<'_>> = Vec::with_capacity(text_spans.len() + 1);
-            combined.push(Span::raw(line_num));
+            combined.push(Span::raw(line_num_buf.clone()));
             combined.extend(text_spans);
             lines.push(Line::from(combined));
         } else {
@@ -204,11 +218,16 @@ pub fn render_viewer_with_colors(
         state.scroll_offset
     };
     let position_text = format!("Line: {}/{}", current_line + 1, state.line_count);
-    render_viewer_status(f, inner_area, state, "Text", &position_text, colors);
-}
-
-pub fn render_hex_view(f: &mut Frame, area: Rect, state: &ViewerState) {
-    render_hex_view_with_colors(f, area, state, &ColorPalette::default());
+    let size_label = format_size(state.file_size as u64);
+    render_viewer_status(
+        f,
+        inner_area,
+        state,
+        "Text",
+        &position_text,
+        &size_label,
+        colors,
+    );
 }
 
 pub fn render_hex_view_with_colors(
@@ -217,7 +236,7 @@ pub fn render_hex_view_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let title = format!("{} [Hex]", state.file_path.display());
+    let title = viewer_title(&state.file_path.display().to_string(), "Hex");
     f.render_widget(viewer_block(title, colors), area);
 
     let (inner_area, content_area) = viewer_content_areas(area);
@@ -257,9 +276,7 @@ pub fn render_hex_view_with_colors(
         let spans: Vec<Span<'_>> = if line_matches.is_empty() {
             vec![Span::raw(hex_line.clone())]
         } else {
-            let highlighted =
-                format_line_with_highlight(&hex_line, line_matches, state.current_match, colors);
-            highlighted
+            format_line_with_highlight(&hex_line, line_matches, state.current_match, colors)
                 .into_iter()
                 .map(|s| Span::styled(s.content.into_owned(), s.style))
                 .collect()
@@ -277,7 +294,16 @@ pub fn render_hex_view_with_colors(
         state.scroll_offset + 1
     };
     let position_text = format!("Offset: {current_line}/{total_lines}");
-    render_viewer_status(f, inner_area, state, "Hex", &position_text, colors);
+    let size_label = format_size(state.file_size as u64);
+    render_viewer_status(
+        f,
+        inner_area,
+        state,
+        "Hex",
+        &position_text,
+        &size_label,
+        colors,
+    );
 }
 
 pub fn render_image_view_with_colors(
@@ -286,7 +312,7 @@ pub fn render_image_view_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let title = format!("{} [Image]", state.file_path.display());
+    let title = viewer_title(&state.file_path.display().to_string(), "Image");
     f.render_widget(viewer_block(title, colors), area);
 
     let (inner_area, content_area) = viewer_content_areas(area);
@@ -295,7 +321,7 @@ pub fn render_image_view_with_colors(
     }
 
     if content_area.width > 0 && content_area.height > 0 {
-        if let Some(text) = &state.cached_image_text {
+        if let Some(text) = &state.render_cache.cached_image_text {
             f.render_widget(text, content_area);
         } else {
             let paragraph = Paragraph::new("Generating preview\u{2026}");
@@ -303,12 +329,17 @@ pub fn render_image_view_with_colors(
         }
     }
 
-    let position_text = format!("Size: {}", format_size(state.file_size as u64));
-    render_viewer_status(f, inner_area, state, "Image", &position_text, colors);
-}
-
-pub fn render_loading(f: &mut Frame, area: Rect, path: &Path, spinner_frame: u64) {
-    render_loading_with_colors(f, area, path, &ColorPalette::default(), spinner_frame);
+    let size_label = format_size(state.file_size as u64);
+    let position_text = format!("Size: {size_label}");
+    render_viewer_status(
+        f,
+        inner_area,
+        state,
+        "Image",
+        &position_text,
+        &size_label,
+        colors,
+    );
 }
 
 pub fn render_loading_with_colors(
@@ -353,6 +384,7 @@ fn render_viewer_status(
     state: &ViewerState,
     mode_label: &str,
     position_text: &str,
+    size_label: &str,
     colors: &ColorPalette,
 ) {
     let status_area = Rect {
@@ -363,7 +395,9 @@ fn render_viewer_status(
     };
 
     let mime_label = state.detected_mime.as_deref().unwrap_or("—");
-    let size_label = format_size(state.file_size as u64);
+    let has_warning = state.has_invalid_utf8
+        || (!state.is_hex_mode() && state.originally_binary)
+        || state.file_truncated;
     let utf8_warning = if state.has_invalid_utf8 {
         " \u{26a0} INVALID UTF-8"
     } else {
@@ -382,16 +416,40 @@ fn render_viewer_status(
     let status_text = format!(
         " {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}{binary_warning}{truncated_warning}",
     );
-    let status_style = if state.has_invalid_utf8
-        || (!state.is_hex_mode() && state.originally_binary)
-        || state.file_truncated
-    {
-        Theme::status_bar_with_colors(colors).fg(Theme::warning_color_with_colors(colors))
+    let status_style = if has_warning {
+        Theme::status_bar_with_colors(colors).fg(colors.warning)
     } else {
         Theme::status_bar_with_colors(colors)
     };
     let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);
+}
+
+fn resolve_overlap<'a>(
+    orig_start: usize,
+    last_end: usize,
+    is_current: bool,
+    prev_match_start: Option<usize>,
+    spans: &mut [Span<'a>],
+    line: &'a str,
+    regular_style: Style,
+) -> (usize, Option<usize>) {
+    if orig_start >= last_end {
+        return (orig_start, None);
+    }
+    if is_current {
+        if let Some(ps) = prev_match_start
+            && ps < orig_start
+            && !spans.is_empty()
+        {
+            let last_idx = spans.len() - 1;
+            spans[last_idx] = Span::styled(&line[ps..orig_start], regular_style);
+            return (orig_start, Some(last_end));
+        }
+        (orig_start, None)
+    } else {
+        (last_end, None)
+    }
 }
 
 pub(crate) fn format_line_with_highlight<'a>(
@@ -407,11 +465,11 @@ pub(crate) fn format_line_with_highlight<'a>(
     let mut spans = Vec::with_capacity(line_matches.len() * 2 + 1);
 
     let regular_style = Style::default()
-        .fg(Theme::search_match_fg_with_colors(colors))
-        .bg(Theme::search_match_bg_with_colors(colors));
+        .fg(colors.search_match_fg)
+        .bg(colors.search_match_bg);
     let current_style = Style::default()
-        .fg(Theme::search_match_current_fg_with_colors(colors))
-        .bg(Theme::search_match_current_bg_with_colors(colors))
+        .fg(colors.search_match_current_fg)
+        .bg(colors.search_match_current_bg)
         .add_modifier(Modifier::BOLD);
 
     let mut last_end = 0usize;
@@ -422,24 +480,15 @@ pub(crate) fn format_line_with_highlight<'a>(
         let end_byte = line_match.end_byte.min(line.len());
         let is_current = Some(line_match.global_idx) == current_match_idx;
 
-        let start_byte;
-        let mut overlap_prev_end: Option<usize> = None;
-
-        if orig_start < last_end && is_current {
-            if let Some(ps) = prev_match_start
-                && ps < orig_start
-                && !spans.is_empty()
-            {
-                let last_idx = spans.len() - 1;
-                spans[last_idx] = Span::styled(&line[ps..orig_start], regular_style);
-                overlap_prev_end = Some(last_end);
-            }
-            start_byte = orig_start;
-        } else if orig_start < last_end {
-            start_byte = last_end;
-        } else {
-            start_byte = orig_start;
-        }
+        let (start_byte, overlap_tail) = resolve_overlap(
+            orig_start,
+            last_end,
+            is_current,
+            prev_match_start,
+            &mut spans,
+            line,
+            regular_style,
+        );
 
         if end_byte <= start_byte {
             continue;
@@ -458,7 +507,7 @@ pub(crate) fn format_line_with_highlight<'a>(
         prev_match_start = Some(start_byte);
         last_end = end_byte;
 
-        if let Some(pe) = overlap_prev_end
+        if let Some(pe) = overlap_tail
             && end_byte < pe
         {
             spans.push(Span::styled(&line[end_byte..pe], regular_style));

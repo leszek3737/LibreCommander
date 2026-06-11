@@ -2,10 +2,11 @@ use super::SearchLineMatch;
 use super::hex::format_hex_line;
 use super::mime::should_open_as_text;
 use super::open::ViewerState;
-use super::render::{format_line_with_highlight, render_viewer};
+use super::render::{format_line_with_highlight, render_viewer_with_colors};
 use super::scroll::{line_number_column_width, paragraph_horizontal_scroll};
 use crate::app::types::ViewMode;
 use crate::app::types::format_size;
+use crate::ui::theme::ColorPalette;
 use crate::ui::theme::DEFAULT_COLORS;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -32,23 +33,20 @@ fn init_state(content: &str) -> ViewerState {
 }
 
 fn join_lines(lines: impl IntoIterator<Item = impl AsRef<str>>) -> String {
-    let mut iter = lines.into_iter();
-    let mut s = String::new();
-    if let Some(first) = iter.next() {
-        s.push_str(first.as_ref());
-        for line in iter {
-            s.push('\n');
-            s.push_str(line.as_ref());
-        }
-    }
-    s
+    lines
+        .into_iter()
+        .map(|l| l.as_ref().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_viewer_buffer(state: &ViewerState, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
-        .draw(|frame| render_viewer(frame, frame.area(), state))
+        .draw(|frame| {
+            render_viewer_with_colors(frame, frame.area(), state, &ColorPalette::default())
+        })
         .unwrap();
     terminal.backend().buffer().clone()
 }
@@ -61,7 +59,7 @@ fn buffer_line(buffer: &Buffer, y: u16) -> String {
 
 #[test]
 fn test_viewer_loader_drop_cancels_worker() {
-    let (_tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel(); // _tx dropped immediately — closed sender signals worker exit
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_worker = Arc::clone(&cancel);
     let (done_tx, done_rx) = mpsc::channel();
@@ -296,7 +294,7 @@ fn test_search_unicode_repeated_matches_keep_char_columns() {
 
 #[test]
 fn test_format_line_with_highlight_handles_unicode() {
-    let _spans = format_line_with_highlight(
+    let spans = format_line_with_highlight(
         "zażółć gęślą jaźń",
         &[SearchLineMatch {
             line: 0,
@@ -307,17 +305,24 @@ fn test_format_line_with_highlight_handles_unicode() {
         Some(0),
         &DEFAULT_COLORS,
     );
+
+    let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(rendered, "zażółć gęślą jaźń");
+    assert_eq!(spans.len(), 3);
+    assert_eq!(spans[0], Span::raw("zażółć "));
+    assert_eq!(spans[1].content.as_ref(), "gęśl");
+    assert_eq!(spans[2], Span::raw("ą jaźń"));
 }
 
 #[test]
 fn test_format_line_with_highlight_overlapping_matches_no_duplicates() {
     let line = "0123456789abcdef";
     let regular_style = Style::default()
-        .fg(crate::ui::theme::Theme::search_match_fg())
-        .bg(crate::ui::theme::Theme::search_match_bg());
+        .fg(crate::ui::theme::DEFAULT_COLORS.search_match_fg)
+        .bg(crate::ui::theme::DEFAULT_COLORS.search_match_bg);
     let current_style = Style::default()
-        .fg(crate::ui::theme::Theme::search_match_current_fg())
-        .bg(crate::ui::theme::Theme::search_match_current_bg())
+        .fg(crate::ui::theme::DEFAULT_COLORS.search_match_current_fg)
+        .bg(crate::ui::theme::DEFAULT_COLORS.search_match_current_bg)
         .add_modifier(Modifier::BOLD);
 
     let spans = format_line_with_highlight(
@@ -572,7 +577,7 @@ fn test_wrap_scroll_advances_by_visual_row() {
     let total_visual: usize;
     let long_height;
     {
-        let heights = state.visual_heights.borrow();
+        let heights = state.render_cache.visual_heights.borrow();
         assert!(!heights.is_empty());
         assert_eq!(heights[0], 1);
         long_height = heights[1];
@@ -603,8 +608,8 @@ fn test_wrap_scroll_with_narrow_width() {
     let mut state = init_state("abcdefghij");
     state.update_wrap_layout(5);
 
-    assert_eq!(state.visual_heights.borrow().len(), 1);
-    assert_eq!(state.visual_heights.borrow()[0], 2);
+    assert_eq!(state.render_cache.visual_heights.borrow().len(), 1);
+    assert_eq!(state.render_cache.visual_heights.borrow()[0], 2);
 
     state.scroll_down(1);
     assert_eq!(state.scroll_offset, 1);
@@ -621,7 +626,7 @@ fn test_wrap_go_to_bottom_uses_visual_rows() {
     let mut state = ViewerState::open(file.path()).unwrap();
     state.update_wrap_layout(80);
 
-    let total_visual: usize = state.visual_heights.borrow().iter().sum();
+    let total_visual: usize = state.render_cache.visual_heights.borrow().iter().sum();
     state.go_to_bottom(3);
     assert_eq!(
         state.scroll_offset,
@@ -633,11 +638,11 @@ fn test_wrap_go_to_bottom_uses_visual_rows() {
 fn test_toggle_wrap_clears_visual_heights() {
     let mut state = init_state("some text");
     state.update_wrap_layout(80);
-    assert!(!state.visual_heights.borrow().is_empty());
+    assert!(!state.render_cache.visual_heights.borrow().is_empty());
 
     state.toggle_wrap();
-    assert!(state.visual_heights.borrow().is_empty());
-    assert_eq!(*state.cached_content_width.borrow(), 0);
+    assert!(state.render_cache.visual_heights.borrow().is_empty());
+    assert_eq!(*state.render_cache.cached_content_width.borrow(), 0);
 }
 
 #[test]
@@ -657,11 +662,18 @@ fn test_visual_row_to_logical_roundtrip() {
     let state = init_state("short\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nend");
     state.update_wrap_layout(10);
 
-    let total_visual: usize = state.visual_heights.borrow().iter().sum();
+    let total_visual: usize = state.render_cache.visual_heights.borrow().iter().sum();
     for row in 0..total_visual {
         let (logical, sub) = state.visual_row_to_logical(row);
         let back = state.logical_to_visual_row(logical);
         assert_eq!(back + sub, row, "roundtrip failed for visual row {row}");
+    }
+}
+
+fn assert_no_duplicate_matches(matches: &[(usize, usize, usize)]) {
+    let mut seen = std::collections::HashSet::new();
+    for m in matches {
+        assert!(seen.insert(*m), "duplicate match tuple: {:?}", m);
     }
 }
 
@@ -675,12 +687,7 @@ fn test_search_deduplicates_matches_after_multi_char_lowercase() {
         !state.search_matches.is_empty(),
         "expected at least one match"
     );
-    let mut seen = std::collections::HashSet::new();
-    for m in &state.search_matches {
-        assert!(seen.insert(*m), "duplicate match tuple: {:?}", m);
-    }
-    // ß lowercases to "ss" (multi-char), producing overlapping matches on "straße".
-    // Dedup ensures at most 4 distinct matches remain (2 per line).
+    assert_no_duplicate_matches(&state.search_matches);
     assert!(
         state.search_matches.len() <= 4,
         "expected at most 4 matches, got {}",
@@ -730,40 +737,51 @@ fn test_search_scroll_clamp() {
     assert_eq!(state.current_match, Some(0));
 }
 
-#[test]
-fn test_visual_row_to_logical_binary_search() {
+fn create_wrapped_state_30_lines(width: usize) -> ViewerState {
     let content = join_lines((0..30).map(|i| format!("L{i:03}")));
     let file = create_test_file(&content);
     let state = ViewerState::open(file.path()).unwrap();
-    state.update_wrap_layout(10);
+    state.update_wrap_layout(width);
+    state
+}
+
+fn assert_visual_roundtrip(state: &ViewerState, row: usize) {
+    let (logical, sub) = state.visual_row_to_logical(row);
+    let back = state.logical_to_visual_row(logical);
+    assert_eq!(
+        back + sub,
+        row,
+        "roundtrip failed for visual row {row}: logical={logical}, sub={sub}, back={back}"
+    );
+}
+
+#[test]
+fn test_visual_row_to_logical_binary_search() {
+    let state = create_wrapped_state_30_lines(10);
 
     assert!(
-        state.visual_heights.borrow().len() > 24,
+        state.render_cache.visual_heights.borrow().len() > 24,
         "need > 24 visual heights to exercise binary search path"
     );
 
-    let total_visual: usize = state.visual_heights.borrow().iter().sum();
+    let total_visual: usize = state.render_cache.visual_heights.borrow().iter().sum();
 
     assert_eq!(state.visual_row_to_logical(0), (0, 0));
 
     let (last_logical, last_sub) = state.visual_row_to_logical(total_visual.saturating_sub(1));
-    assert_eq!(last_logical, state.visual_heights.borrow().len() - 1);
-    let expected_last_line = state.line_count - 1;
-    assert_eq!(last_logical, expected_last_line);
+    assert_eq!(
+        last_logical,
+        state.render_cache.visual_heights.borrow().len() - 1
+    );
+    assert_eq!(last_logical, state.line_count - 1);
     assert!(
-        last_sub < state.visual_heights.borrow()[last_logical],
+        last_sub < state.render_cache.visual_heights.borrow()[last_logical],
         "sub-row should be within line height"
     );
 
     for &row in &[0usize, 1, 5, 10, 15, 20, 25] {
         if row < total_visual {
-            let (logical, sub) = state.visual_row_to_logical(row);
-            let back = state.logical_to_visual_row(logical);
-            assert_eq!(
-                back + sub,
-                row,
-                "roundtrip failed for visual row {row}: logical={logical}, sub={sub}, back={back}"
-            );
+            assert_visual_roundtrip(&state, row);
         }
     }
 
@@ -810,13 +828,12 @@ fn test_hex_search_skips_offset_prefix() {
     );
 }
 
-const PNG_HEADER: &[u8] = &[
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-    0xDE,
-];
-
 fn create_png_file() -> NamedTempFile {
+    const PNG_HEADER: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE,
+    ];
     let mut file = NamedTempFile::with_suffix(".png").unwrap();
     file.write_all(PNG_HEADER).unwrap();
     file
@@ -850,32 +867,28 @@ fn test_toggle_hex_mode_with_image_file() {
     assert_eq!(state.view_mode, ViewMode::Image);
 }
 
-#[test]
-fn test_toggle_wrap_noop_in_image_mode() {
+fn assert_toggle_noop_in_image_mode(toggle: impl FnOnce(&mut ViewerState)) {
     let file = create_png_file();
     let mut state = ViewerState::open(file.path()).unwrap();
-
     assert_eq!(state.view_mode, ViewMode::Image);
     let original_wrap = state.wrap_lines;
+    let original_line_numbers = state.show_line_numbers;
 
-    state.toggle_wrap();
+    toggle(&mut state);
 
     assert_eq!(state.view_mode, ViewMode::Image);
     assert_eq!(state.wrap_lines, original_wrap);
+    assert_eq!(state.show_line_numbers, original_line_numbers);
+}
+
+#[test]
+fn test_toggle_wrap_noop_in_image_mode() {
+    assert_toggle_noop_in_image_mode(|s| s.toggle_wrap());
 }
 
 #[test]
 fn test_toggle_line_numbers_noop_in_image_mode() {
-    let file = create_png_file();
-    let mut state = ViewerState::open(file.path()).unwrap();
-
-    assert_eq!(state.view_mode, ViewMode::Image);
-    let original_line_numbers = state.show_line_numbers;
-
-    state.toggle_line_numbers();
-
-    assert_eq!(state.view_mode, ViewMode::Image);
-    assert_eq!(state.show_line_numbers, original_line_numbers);
+    assert_toggle_noop_in_image_mode(|s| s.toggle_line_numbers());
 }
 
 #[test]
@@ -901,8 +914,8 @@ fn test_render_image_view_does_not_panic() {
     let file = create_png_file();
     let state = ViewerState::open(file.path()).unwrap();
 
-    assert!(state.cached_image_size.is_none());
-    assert!(state.cached_image_text.is_none());
+    assert!(state.render_cache.cached_image_size.is_none());
+    assert!(state.render_cache.cached_image_text.is_none());
 
     let buffer = render_viewer_buffer(&state, 80, 24);
 
@@ -954,4 +967,67 @@ fn test_image_preview_race_condition_guard_discards_mismatched_path() {
         !matched,
         "loader for old file must not match new viewer path"
     );
+}
+
+#[test]
+fn test_scroll_boundaries() {
+    let mut state = init_state("a\nb\nc\nd\ne\nf\ng\nh\ni\nj");
+    assert_eq!(state.line_count, 10);
+
+    state.scroll_up(100);
+    assert_eq!(state.scroll_offset, 0);
+
+    state.scroll_down(100);
+    assert_eq!(state.scroll_offset, state.max_scroll());
+
+    state.go_to_top();
+    assert_eq!(state.scroll_offset, 0);
+
+    state.go_to_bottom(1);
+    assert_eq!(state.scroll_offset, state.max_scroll());
+}
+
+#[test]
+fn test_search_scroll_interaction() {
+    let content = join_lines((0..50).map(|i| format!("Line {i:03}")));
+    let mut state = init_state(&content);
+    state.wrap_lines = false;
+    let page_height = 5;
+
+    state.search("Line 040", page_height);
+    assert_eq!(state.search_matches.len(), 1);
+    assert_eq!(state.current_match, Some(0));
+    assert!(state.scroll_offset <= state.max_scroll());
+
+    state.search("Line 000", page_height);
+    assert!(!state.search_matches.is_empty());
+    assert_eq!(state.current_match, Some(0));
+
+    state.next_match(page_height);
+    assert!(state.scroll_offset <= state.max_scroll());
+}
+
+#[test]
+fn test_large_unicode_file() {
+    let cjk_line = "日本語テスト".repeat(100);
+    let emoji_line = "🎉🎊🎈".repeat(100);
+    let content = join_lines((0..100).map(|i| {
+        if i % 2 == 0 {
+            cjk_line.clone()
+        } else {
+            emoji_line.clone()
+        }
+    }));
+    let file = create_test_file(&content);
+    let mut state = ViewerState::open(file.path()).unwrap();
+
+    assert_eq!(state.line_count, 100);
+    assert!(!state.has_invalid_utf8);
+    assert!(state.max_line_width > 0);
+
+    state.scroll_down(50);
+    assert!(state.scroll_offset <= state.max_scroll());
+
+    state.go_to_bottom(DEFAULT_PAGE_HEIGHT);
+    assert!(state.scroll_offset <= state.max_scroll());
 }

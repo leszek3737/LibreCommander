@@ -13,6 +13,8 @@ use crate::ui::theme::{ColorPalette, Theme};
 use super::layout::dialog_block;
 use super::text::truncate_path;
 
+const LIST_PADDING: &str = "  ";
+
 fn render_file_list(
     f: &mut Frame,
     area: Rect,
@@ -21,26 +23,29 @@ fn render_file_list(
     colors: &ColorPalette,
 ) {
     let max_visible = area.height as usize;
-    let show_count = files.len().min(max_visible.saturating_sub(1).max(1));
-    let mut lines: Vec<Line> = Vec::with_capacity(show_count + 1);
-    if files.len() <= show_count {
+    if max_visible == 0 {
+        return;
+    }
+    let mut lines: Vec<Line> = Vec::with_capacity(max_visible);
+    if files.len() <= max_visible {
         for name in files {
             let display = truncate_path(name.as_ref(), max_name_width);
             lines.push(
-                Line::from(vec![Span::raw("  "), Span::raw(display)])
+                Line::from(vec![Span::raw(LIST_PADDING), Span::raw(display)])
                     .style(Theme::warning_with_colors(colors)),
             );
         }
     } else {
-        for name in files.iter().take(show_count.saturating_sub(1)) {
+        let file_slots = max_visible.saturating_sub(1);
+        for name in files.iter().take(file_slots) {
             let display = truncate_path(name.as_ref(), max_name_width);
             lines.push(
-                Line::from(vec![Span::raw("  "), Span::raw(display)])
+                Line::from(vec![Span::raw(LIST_PADDING), Span::raw(display)])
                     .style(Theme::warning_with_colors(colors)),
             );
         }
-        let remaining = files.len() - show_count + 1;
-        lines.push(Line::from(format!("  ... +{remaining} more")));
+        let remaining = files.len() - file_slots;
+        lines.push(Line::from(format!("{LIST_PADDING}... +{remaining} more")));
     }
     let file_paragraph = Paragraph::new(lines).alignment(Alignment::Left);
     f.render_widget(file_paragraph, area);
@@ -62,7 +67,7 @@ pub(super) fn render_confirmation_dialog_inner(
     let has_files = !files.is_empty();
     let max_rows = inner.height.saturating_sub(3);
     let file_rows = if has_files {
-        (files.len() as u16 + 1).min(max_rows)
+        (files.len() as u16).min(max_rows)
     } else {
         0
     };
@@ -82,7 +87,7 @@ pub(super) fn render_confirmation_dialog_inner(
     f.render_widget(msg_paragraph, chunks[0]);
 
     if has_files {
-        let max_name_width = inner.width.saturating_sub(2) as usize;
+        let max_name_width = inner.width.saturating_sub(LIST_PADDING.len() as u16) as usize;
         render_file_list(f, chunks[1], files, max_name_width, colors);
     }
 
@@ -107,24 +112,14 @@ pub fn render_confirm_dialog(
     files: &[impl AsRef<str>],
     colors: &ColorPalette,
 ) {
-    let buttons = [
-        (
-            if selection == 0 {
-                Theme::highlight_bold_with_colors(colors)
-            } else {
-                Theme::dialog_with_colors(colors)
-            },
-            "[ Yes ]",
-        ),
-        (
-            if selection == 1 {
-                Theme::highlight_bold_with_colors(colors)
-            } else {
-                Theme::dialog_with_colors(colors)
-            },
-            "[ No ]",
-        ),
-    ];
+    let btn_style = |idx: usize| -> Style {
+        if selection == idx {
+            Theme::highlight_bold_with_colors(colors)
+        } else {
+            Theme::dialog_with_colors(colors)
+        }
+    };
+    let buttons = [(btn_style(0), "[ Yes ]"), (btn_style(1), "[ No ]")];
     render_confirmation_dialog_inner(f, area, title, message, &buttons, files, colors);
 }
 

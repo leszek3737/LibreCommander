@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -9,12 +9,30 @@ use crate::app::types::ViewMode;
 
 use super::hex::HEX_BYTES_PER_LINE;
 use super::mime::{is_image_mime, should_open_as_text};
+use super::scroll::line_number_column_width;
 
-// TODO: ViewerState has 23 fields including 3× RefCell. The hack documented
-// below for cached_image_text applies more broadly — visual_heights,
-// visual_offsets, and cached_content_width are also render caches smuggled
-// into the viewer state. Consider extracting a ViewerRenderCache struct
-// (with RefCells) and holding it as a single field.
+pub(crate) struct ViewerRenderCache {
+    pub(crate) visual_heights: RefCell<Vec<usize>>,
+    pub(crate) visual_offsets: RefCell<Vec<usize>>,
+    pub(crate) cached_content_width: RefCell<usize>,
+    pub(crate) cached_line_num_col_width: Cell<usize>,
+    pub(crate) cached_image_size: Option<(u16, u16)>,
+    pub(crate) cached_image_text: Option<ratatui::text::Text<'static>>,
+}
+
+impl ViewerRenderCache {
+    fn new() -> Self {
+        Self {
+            visual_heights: RefCell::new(Vec::new()),
+            visual_offsets: RefCell::new(Vec::new()),
+            cached_content_width: RefCell::new(0),
+            cached_line_num_col_width: Cell::new(0),
+            cached_image_size: None,
+            cached_image_text: None,
+        }
+    }
+}
+
 pub struct ViewerState {
     pub file_path: PathBuf,
     pub(crate) line_offsets: Vec<usize>,
@@ -34,17 +52,8 @@ pub struct ViewerState {
     pub file_size: usize,
     pub has_invalid_utf8: bool,
     pub(crate) originally_binary: bool,
-    pub(crate) visual_heights: RefCell<Vec<usize>>,
-    pub(crate) visual_offsets: RefCell<Vec<usize>>,
-    pub(crate) cached_content_width: RefCell<usize>,
     pub(crate) file_truncated: bool,
-    pub cached_image_size: Option<(u16, u16)>,
-    // Stored here (rather than a separate render-only struct) because
-    // `scroll.rs::set_image_preview` and `render.rs::draw_image` both
-    // operate on `&mut ViewerState` / `&ViewerState` directly. Moving it
-    // out would require a separate render-state struct plumbed through
-    // every viewer call — not worth the churn for a single cached field.
-    pub cached_image_text: Option<ratatui::text::Text<'static>>,
+    pub(crate) render_cache: ViewerRenderCache,
 }
 
 impl ViewerState {
@@ -120,6 +129,107 @@ impl ViewerState {
         }
     }
 
+    fn new_normal(
+        path: &Path,
+        raw_bytes: Vec<u8>,
+        file_size: usize,
+        view_mode: ViewMode,
+        detected_mime: Option<String>,
+        file_truncated: bool,
+    ) -> Self {
+        let has_invalid_utf8 = !raw_bytes.is_empty() && std::str::from_utf8(&raw_bytes).is_err();
+        let is_text = matches!(view_mode, ViewMode::Text);
+        let line_offsets = if is_text {
+            Self::compute_line_offsets(&raw_bytes)
+        } else {
+            Vec::new()
+        };
+        let line_count = if raw_bytes.is_empty() {
+            1
+        } else if is_text {
+            line_offsets.len()
+        } else {
+            raw_bytes.len().div_ceil(HEX_BYTES_PER_LINE)
+        };
+        let max_line_width = if is_text && !raw_bytes.is_empty() {
+            Self::compute_max_line_width(&line_offsets, &raw_bytes)
+        } else {
+            0
+        };
+        let render_cache = ViewerRenderCache::new();
+        render_cache
+            .cached_line_num_col_width
+            .set(line_number_column_width(line_count));
+        ViewerState {
+            file_path: path.to_path_buf(),
+            line_offsets,
+            scroll_offset: 0,
+            horizontal_offset: 0,
+            line_count,
+            search_query: None,
+            search_matches: Vec::new(),
+            search_matches_by_line: Vec::new(),
+            current_match: None,
+            wrap_lines: true,
+            show_line_numbers: false,
+            view_mode,
+            raw_bytes,
+            max_line_width,
+            detected_mime,
+            file_size,
+            has_invalid_utf8,
+            originally_binary: !is_text,
+            file_truncated,
+            render_cache,
+        }
+    }
+
+    fn new_text_listing(
+        path: &Path,
+        raw_bytes: Vec<u8>,
+        file_size: usize,
+        wrap_lines: bool,
+        show_line_numbers: bool,
+    ) -> Self {
+        let line_offsets = Self::compute_line_offsets(&raw_bytes);
+        let line_count = if raw_bytes.is_empty() {
+            1
+        } else {
+            line_offsets.len()
+        };
+        let max_line_width = if !raw_bytes.is_empty() {
+            Self::compute_max_line_width(&line_offsets, &raw_bytes)
+        } else {
+            0
+        };
+        let render_cache = ViewerRenderCache::new();
+        render_cache
+            .cached_line_num_col_width
+            .set(line_number_column_width(line_count));
+        ViewerState {
+            file_path: path.to_path_buf(),
+            line_offsets,
+            scroll_offset: 0,
+            horizontal_offset: 0,
+            line_count,
+            search_query: None,
+            search_matches: Vec::new(),
+            search_matches_by_line: Vec::new(),
+            current_match: None,
+            wrap_lines,
+            show_line_numbers,
+            view_mode: ViewMode::Text,
+            raw_bytes,
+            max_line_width,
+            detected_mime: Some("text/plain".to_string()),
+            file_size,
+            has_invalid_utf8: false,
+            originally_binary: false,
+            file_truncated: false,
+            render_cache,
+        }
+    }
+
     pub(crate) fn open_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<Self> {
         const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
         const READ_CHUNK: usize = 64 * 1024;
@@ -133,8 +243,14 @@ impl ViewerState {
         }
         let file_size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
 
+        if crate::app::file_type::is_archive(&path.to_string_lossy())
+            && let Some(state) = Self::open_as_archive_listing(path, file_size)
+        {
+            return Ok(state);
+        }
+
         let file = fs::File::open(path)?;
-        let mut raw_bytes = Vec::with_capacity(file_size.min(MAX_VIEW_SIZE));
+        let mut raw_bytes = Vec::with_capacity(file_size.min(MAX_VIEW_SIZE + 1));
         let mut reader = file.take((MAX_VIEW_SIZE + 1) as u64);
         let mut buf = [0u8; READ_CHUNK];
         loop {
@@ -156,124 +272,49 @@ impl ViewerState {
         let mime =
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
 
-        // If it's an archive, list contents as text instead of showing hex
-        if crate::app::file_type::is_archive(&path.to_string_lossy())
-            && let Some(state) = Self::open_as_archive_listing(path, file_size)
-        {
-            return Ok(state);
-        }
-
         let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
-
-        let has_invalid_utf8 = !raw_bytes.is_empty() && std::str::from_utf8(&raw_bytes).is_err();
-
-        let line_offsets = if !open_as_text {
-            Vec::new()
-        } else {
-            Self::compute_line_offsets(&raw_bytes)
-        };
-        let line_count = if raw_bytes.is_empty() {
-            1
-        } else if !open_as_text {
-            raw_bytes.len().div_ceil(HEX_BYTES_PER_LINE)
-        } else {
-            line_offsets.len()
-        };
-        let max_line_width = if open_as_text && !raw_bytes.is_empty() {
-            Self::compute_max_line_width(&line_offsets, &raw_bytes)
-        } else {
-            0
-        };
-
         let is_image = is_image_mime(mime.as_deref());
+        let view_mode = if is_image {
+            ViewMode::Image
+        } else if open_as_text {
+            ViewMode::Text
+        } else {
+            ViewMode::Hex
+        };
 
-        Ok(ViewerState {
-            file_path: path.to_path_buf(),
-            line_offsets,
-            scroll_offset: 0,
-            horizontal_offset: 0,
-            line_count,
-            search_query: None,
-            search_matches: Vec::new(),
-            search_matches_by_line: Vec::new(),
-            current_match: None,
-            wrap_lines: true,
-            show_line_numbers: false,
-            view_mode: if is_image {
-                ViewMode::Image
-            } else if open_as_text {
-                ViewMode::Text
-            } else {
-                ViewMode::Hex
-            },
+        Ok(Self::new_normal(
+            path,
             raw_bytes,
-            max_line_width,
-            detected_mime: mime,
             file_size,
-            has_invalid_utf8,
-            originally_binary: !open_as_text,
-            visual_heights: RefCell::new(Vec::new()),
-            visual_offsets: RefCell::new(Vec::new()),
-            cached_content_width: RefCell::new(0),
+            view_mode,
+            mime,
             file_truncated,
-            cached_image_size: None,
-            cached_image_text: None,
-        })
+        ))
     }
 
     pub fn open_background(path: PathBuf) -> super::loader::ViewerLoader {
         super::loader::ViewerLoader::start(path)
     }
 
-    // TODO: open_with_cancel (lines ~190-220) and open_as_archive_listing
-    // (below) duplicate ViewerState initialization for text-mode fields.
-    // Extract a shared init_text_state(raw_bytes, line_offsets, ...) helper
-    // that both call sites can use.
     fn open_as_archive_listing(path: &Path, file_size: usize) -> Option<Self> {
         let text = Self::format_archive_listing(path).ok()?;
-        let raw_bytes = text.into_bytes();
-        let line_offsets = Self::compute_line_offsets(&raw_bytes);
-        let line_count = if raw_bytes.is_empty() {
-            1
-        } else {
-            line_offsets.len()
-        };
-        let max_line_width = if !raw_bytes.is_empty() {
-            Self::compute_max_line_width(&line_offsets, &raw_bytes)
-        } else {
-            0
-        };
-        Some(ViewerState {
-            file_path: path.to_path_buf(),
-            line_offsets,
-            scroll_offset: 0,
-            horizontal_offset: 0,
-            line_count,
-            search_query: None,
-            search_matches: Vec::new(),
-            search_matches_by_line: Vec::new(),
-            current_match: None,
-            wrap_lines: false,
-            show_line_numbers: true,
-            view_mode: ViewMode::Text,
-            raw_bytes,
-            max_line_width,
-            detected_mime: Some("text/plain".to_string()),
+        Some(Self::new_text_listing(
+            path,
+            text.into_bytes(),
             file_size,
-            has_invalid_utf8: false,
-            originally_binary: false,
-            visual_heights: RefCell::new(Vec::new()),
-            visual_offsets: RefCell::new(Vec::new()),
-            cached_content_width: RefCell::new(0),
-            file_truncated: false,
-            cached_image_size: None,
-            cached_image_text: None,
-        })
+            false,
+            true,
+        ))
     }
 
     #[must_use]
     pub fn is_hex_mode(&self) -> bool {
         matches!(self.view_mode, ViewMode::Hex)
+    }
+
+    #[must_use]
+    pub fn is_image_mode(&self) -> bool {
+        matches!(self.view_mode, ViewMode::Image)
     }
 
     pub fn image_content_size(area_width: u16, area_height: u16) -> (u16, u16) {

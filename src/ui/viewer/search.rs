@@ -2,6 +2,14 @@ use super::SearchLineMatch;
 use super::hex::{HEX_BYTES_PER_LINE, HEX_OFFSET_PREFIX_WIDTH};
 use super::open::ViewerState;
 
+fn lowercase_query(query: &str) -> String {
+    if query.is_ascii() {
+        query.to_ascii_lowercase()
+    } else {
+        query.chars().flat_map(|c| c.to_lowercase()).collect()
+    }
+}
+
 impl ViewerState {
     pub(crate) fn clear_search_results(&mut self) {
         if self.search_matches.capacity() > 1024 {
@@ -14,12 +22,13 @@ impl ViewerState {
         } else {
             self.search_matches_by_line.clear();
         }
+        self.current_match = None;
+        self.search_query = None;
     }
 
     pub fn search(&mut self, query: &str, page_height: usize) {
-        self.search_query = Some(query.to_string());
         self.clear_search_results();
-        self.current_match = None;
+        self.search_query = Some(query.to_string());
 
         if query.is_empty() {
             return;
@@ -30,14 +39,10 @@ impl ViewerState {
             return;
         }
 
-        let lower_query: String = if query.is_ascii() {
-            query.to_ascii_lowercase()
-        } else {
-            query.chars().flat_map(|c| c.to_lowercase()).collect()
-        };
+        let lower_query = lowercase_query(query);
 
         let mut lower_buf = String::new();
-        let mut byte_map_buf = Vec::new();
+        let mut byte_map_buf = Vec::with_capacity(256);
         let mut local_matches: Vec<(usize, usize, usize)> = Vec::with_capacity(64);
         let mut local_by_line: Vec<SearchLineMatch> = Vec::with_capacity(64);
 
@@ -56,6 +61,11 @@ impl ViewerState {
                     .unwrap_or(line.len());
                 let orig_byte_end = if mapped_end <= orig_byte_start && orig_byte_start < line.len()
                 {
+                    debug_assert_eq!(
+                        mapped_end, orig_byte_start,
+                        "lowercase mapping produced non-monotonic byte span: \
+                         orig_start={orig_byte_start}, mapped_end={mapped_end}"
+                    );
                     line[orig_byte_start..]
                         .char_indices()
                         .nth(1)
@@ -82,7 +92,12 @@ impl ViewerState {
                     start_byte: orig_byte_start,
                     end_byte: orig_byte_end,
                 });
-                search_start = match_byte_end;
+                let char_width = lower_buf[match_byte_start..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+                search_start = match_byte_start + char_width;
             }
         }
 
@@ -107,9 +122,8 @@ impl ViewerState {
         }
     }
 
-    fn push_match_segments(
-        search_matches: &mut Vec<(usize, usize, usize)>,
-        search_matches_by_line: &mut Vec<SearchLineMatch>,
+    fn push_hex_match_segments(
+        &mut self,
         start_byte: usize,
         match_byte_len: usize,
         global_idx: usize,
@@ -128,10 +142,10 @@ impl ViewerState {
             let match_hex_len = segment_len * 3 - 1;
 
             if first_segment {
-                search_matches.push((line_idx, hex_col, match_hex_len));
+                self.search_matches.push((line_idx, hex_col, match_hex_len));
                 first_segment = false;
             }
-            search_matches_by_line.push(SearchLineMatch {
+            self.search_matches_by_line.push(SearchLineMatch {
                 line: line_idx,
                 global_idx,
                 start_byte: hex_col,
@@ -144,11 +158,7 @@ impl ViewerState {
     }
 
     pub(crate) fn search_hex(&mut self, query: &str) {
-        let lower_query: String = if query.is_ascii() {
-            query.to_ascii_lowercase()
-        } else {
-            query.chars().flat_map(|c| c.to_lowercase()).collect()
-        };
+        let lower_query = lowercase_query(query);
         let query_bytes = Self::parse_hex_query(&lower_query);
 
         if let Some(ref needle) = query_bytes {
@@ -156,13 +166,7 @@ impl ViewerState {
             while let Some(idx) = super::hex::find_bytes(&self.raw_bytes[pos..], needle) {
                 let abs_offset = pos + idx;
                 let global_idx = self.search_matches.len();
-                Self::push_match_segments(
-                    &mut self.search_matches,
-                    &mut self.search_matches_by_line,
-                    abs_offset,
-                    needle.len(),
-                    global_idx,
-                );
+                self.push_hex_match_segments(abs_offset, needle.len(), global_idx);
                 pos = abs_offset + 1;
             }
         } else {
@@ -179,13 +183,18 @@ impl ViewerState {
                 let buf_end = (primary_end + overlap_bytes).min(total_len);
                 let slice = &self.raw_bytes[chunk_start..buf_end];
 
-                let lossy = String::from_utf8_lossy(slice);
+                let lossy = String::from_utf8_lossy(slice).into_owned();
                 build_lowercase_mapping(&lossy, &mut lower_buf, &mut byte_map);
 
                 let mut search_start = 0;
                 while let Some(pos) = lower_buf[search_start..].find(&lower_query) {
                     let abs_pos = search_start + pos;
-                    search_start = abs_pos + query_lower_len;
+                    let char_width = lower_buf[abs_pos..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(1);
+                    search_start = abs_pos + char_width;
 
                     let orig_byte_in_slice = byte_map.get(abs_pos).copied().unwrap_or(abs_pos);
                     let orig_byte = chunk_start + orig_byte_in_slice;
@@ -229,13 +238,7 @@ impl ViewerState {
                     }
 
                     let global_idx = self.search_matches.len();
-                    Self::push_match_segments(
-                        &mut self.search_matches,
-                        &mut self.search_matches_by_line,
-                        orig_byte,
-                        match_byte_len,
-                        global_idx,
-                    );
+                    self.push_hex_match_segments(orig_byte, match_byte_len, global_idx);
                 }
 
                 chunk_start = primary_end;

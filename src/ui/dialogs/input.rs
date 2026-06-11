@@ -70,73 +70,56 @@ fn compute_visible_window(
     visible_width: usize,
 ) -> (String, usize, usize) {
     let graphemes: Vec<&str> = value.graphemes(true).collect();
-    let grapheme_count = graphemes.len();
-    let clamped_cursor = cursor_pos.min(grapheme_count);
-
-    let cursor_display: usize = graphemes
+    let widths: Vec<usize> = graphemes
         .iter()
-        .take(clamped_cursor)
         .map(|g| UnicodeWidthStr::width(*g))
-        .sum();
+        .collect();
+    let clamped_cursor = cursor_pos.min(graphemes.len());
+
+    let cursor_display: usize = widths[..clamped_cursor].iter().sum();
 
     let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
 
     if scroll_display == 0 {
-        let (visible, vis_width) = take_graphemes_up_to_width(&graphemes, visible_width);
+        let (visible, vis_width) = build_visible(&graphemes, &widths, 0, visible_width);
         (visible, cursor_display, vis_width)
     } else {
-        let (visible, start_cum, vis_width) =
-            compute_scrolled_window(&graphemes, scroll_display, visible_width);
-        let display_cursor_col = cursor_display.saturating_sub(start_cum);
+        let start_idx = match widths
+            .iter()
+            .scan(0, |cum, &w| {
+                let c = *cum;
+                *cum += w;
+                Some(c)
+            })
+            .position(|cum| cum >= scroll_display)
+        {
+            Some(idx) => idx,
+            None => {
+                let (visible, vis_width) = build_visible(&graphemes, &widths, 0, visible_width);
+                return (visible, cursor_display, vis_width);
+            }
+        };
+        let start_cum: usize = widths[..start_idx].iter().sum();
+        let (visible, vis_width) = build_visible(&graphemes, &widths, start_idx, visible_width);
+        let display_cursor_col = cursor_display - start_cum;
         (visible, display_cursor_col, vis_width)
     }
 }
 
-fn take_graphemes_up_to_width(graphemes: &[&str], max_width: usize) -> (String, usize) {
-    let mut visible = String::with_capacity(max_width);
+fn build_visible(
+    graphemes: &[&str],
+    widths: &[usize],
+    start: usize,
+    max_width: usize,
+) -> (String, usize) {
+    let mut visible = String::with_capacity(max_width * 4);
     let mut vis_width = 0;
-    for g in graphemes {
-        let gw = UnicodeWidthStr::width(*g);
-        if vis_width + gw > max_width {
+    for i in start..graphemes.len() {
+        if vis_width + widths[i] > max_width {
             break;
         }
-        visible.push_str(g);
-        vis_width += gw;
+        visible.push_str(graphemes[i]);
+        vis_width += widths[i];
     }
     (visible, vis_width)
-}
-
-fn compute_scrolled_window(
-    graphemes: &[&str],
-    scroll_display: usize,
-    max_width: usize,
-) -> (String, usize, usize) {
-    let mut visible = String::with_capacity(max_width);
-    let mut vis_width = 0;
-    let mut cum = 0usize;
-    let mut found_start = false;
-    let mut start_cum = 0usize;
-
-    for g in graphemes {
-        let gw = UnicodeWidthStr::width(*g);
-        if !found_start && cum + gw > scroll_display {
-            found_start = true;
-            start_cum = cum;
-        }
-        cum += gw;
-        if found_start {
-            if vis_width + gw > max_width {
-                break;
-            }
-            visible.push_str(g);
-            vis_width += gw;
-        }
-    }
-
-    if !found_start {
-        let (visible, vis_width) = take_graphemes_up_to_width(graphemes, max_width);
-        (visible, 0, vis_width)
-    } else {
-        (visible, start_cum, vis_width)
-    }
 }

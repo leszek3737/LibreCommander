@@ -8,33 +8,44 @@ impl ViewerState {
 
     #[must_use]
     pub(crate) fn is_visual_scroll(&self) -> bool {
-        self.wrap_lines && !self.is_hex_mode() && !self.visual_heights.borrow().is_empty()
+        self.wrap_lines
+            && !self.is_hex_mode()
+            && !self.render_cache.visual_heights.borrow().is_empty()
     }
 
     #[must_use]
     pub(crate) fn total_visual_rows(&self) -> usize {
-        self.visual_offsets.borrow().last().copied().unwrap_or(0)
+        self.render_cache
+            .visual_offsets
+            .borrow()
+            .last()
+            .copied()
+            .unwrap_or(0)
     }
 
     #[must_use]
     pub(crate) fn visual_row_to_logical(&self, visual_row: usize) -> (usize, usize) {
         const LINEAR_SEARCH_THRESHOLD: usize = 24;
-        let heights = self.visual_heights.borrow();
+        let heights = self.render_cache.visual_heights.borrow();
         if heights.len() <= LINEAR_SEARCH_THRESHOLD {
             let mut acc = 0usize;
             for (i, &h) in heights.iter().enumerate() {
-                if acc + h > visual_row {
+                let next = match acc.checked_add(h) {
+                    Some(v) => v,
+                    None => return Self::past_end_logical(self.line_count),
+                };
+                if next > visual_row {
                     return (i, visual_row - acc);
                 }
-                acc += h;
+                acc = next;
             }
-            return (self.line_count.saturating_sub(1), 0);
+            return Self::past_end_logical(self.line_count);
         }
         drop(heights);
-        let offsets = self.visual_offsets.borrow();
+        let offsets = self.render_cache.visual_offsets.borrow();
         let idx = offsets.partition_point(|&offset| offset <= visual_row);
         if idx >= offsets.len() {
-            return (self.line_count.saturating_sub(1), 0);
+            return Self::past_end_logical(self.line_count);
         }
         let acc_before = if idx == 0 { 0 } else { offsets[idx - 1] };
         (idx, visual_row - acc_before)
@@ -45,7 +56,8 @@ impl ViewerState {
         if logical_line == 0 {
             0
         } else {
-            self.visual_offsets
+            self.render_cache
+                .visual_offsets
                 .borrow()
                 .get(logical_line - 1)
                 .copied()
@@ -107,7 +119,7 @@ impl ViewerState {
 
     pub fn scroll_right(&mut self, cols: usize, visible_width: usize) {
         let line_num_width = if self.show_line_numbers {
-            line_number_column_width(self.line_count)
+            self.render_cache.cached_line_num_col_width.get()
         } else {
             0
         };
@@ -117,11 +129,7 @@ impl ViewerState {
         } else {
             self.max_line_width
         };
-        let max_offset = if effective_width > 0 {
-            max_line.saturating_sub(effective_width)
-        } else {
-            max_line
-        };
+        let max_offset = max_line.saturating_sub(effective_width);
         self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
     }
 
@@ -129,7 +137,7 @@ impl ViewerState {
         let content_height = area_height.saturating_sub(3);
         area_width > 0
             && content_height > 0
-            && self.cached_image_size != Some((area_width, content_height))
+            && self.render_cache.cached_image_size != Some((area_width, content_height))
     }
 
     pub fn set_image_preview(
@@ -138,8 +146,12 @@ impl ViewerState {
         height: u16,
         text: ratatui::text::Text<'static>,
     ) {
-        self.cached_image_size = Some((width, height));
-        self.cached_image_text = Some(text);
+        self.render_cache.cached_image_size = Some((width, height));
+        self.render_cache.cached_image_text = Some(text);
+    }
+
+    fn past_end_logical(line_count: usize) -> (usize, usize) {
+        (line_count.saturating_sub(1), 0)
     }
 }
 

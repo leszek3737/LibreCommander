@@ -609,7 +609,9 @@ pub(crate) fn handle_dialog(
     }) = &mut state.mode
     {
         let term_rect = Rect::new(0, 0, terminal_size.width, terminal_size.height);
-        let (max_lines, msg_width) = dialogs::help_dialog_geometry(term_rect);
+        let geo = dialogs::help_dialog_geometry(term_rect);
+        let max_lines = geo.height;
+        let msg_width = geo.width;
         let total_lines = dialogs::wrapped_line_count(message, msg_width);
         let should_exit = match key {
             KeyCode::Up | KeyCode::Char('k') => {

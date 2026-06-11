@@ -6,9 +6,9 @@ use super::scroll::line_number_column_width;
 
 impl ViewerState {
     fn invalidate_visual_cache(&self) {
-        self.visual_heights.borrow_mut().clear();
-        self.visual_offsets.borrow_mut().clear();
-        *self.cached_content_width.borrow_mut() = 0;
+        self.render_cache.visual_heights.borrow_mut().clear();
+        self.render_cache.visual_offsets.borrow_mut().clear();
+        *self.render_cache.cached_content_width.borrow_mut() = 0;
     }
 
     fn next_view_mode(&self) -> ViewMode {
@@ -24,18 +24,15 @@ impl ViewerState {
     }
 
     pub fn toggle_line_numbers(&mut self) {
-        if matches!(self.view_mode, ViewMode::Image) {
+        if self.is_image_mode() {
             return;
         }
         self.show_line_numbers = !self.show_line_numbers;
         self.invalidate_visual_cache();
-        if !self.is_hex_mode() {
-            self.view_mode = ViewMode::Text;
-        }
     }
 
     pub fn toggle_wrap(&mut self) {
-        if matches!(self.view_mode, ViewMode::Image) {
+        if self.is_image_mode() {
             return;
         }
         self.wrap_lines = !self.wrap_lines;
@@ -43,32 +40,29 @@ impl ViewerState {
             self.horizontal_offset = 0;
         }
         self.invalidate_visual_cache();
-        if !self.is_hex_mode() {
-            self.view_mode = ViewMode::Text;
-        }
     }
 
     pub fn toggle_hex_mode(&mut self) {
         self.view_mode = self.next_view_mode();
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
+        self.clear_search_results();
 
-        if !self.is_hex_mode() && self.originally_binary {
-            // TODO: compute_line_offsets is O(n) over bytes; consider caching for >10MB files
+        if self.view_mode == ViewMode::Text && self.originally_binary {
             self.line_offsets = Self::compute_line_offsets(&self.raw_bytes);
             self.line_count = if self.raw_bytes.is_empty() {
                 1
             } else {
                 self.line_offsets.len()
             };
+            self.render_cache
+                .cached_line_num_col_width
+                .set(line_number_column_width(self.line_count));
             self.max_line_width = if self.raw_bytes.is_empty() {
                 0
             } else {
                 Self::compute_max_line_width(&self.line_offsets, &self.raw_bytes)
             };
-            self.clear_search_results();
-            self.current_match = None;
-            self.search_query = None;
         }
     }
 
@@ -76,18 +70,18 @@ impl ViewerState {
     /// can update the wrap layout cache when the content width changes.
     pub fn update_wrap_layout(&self, content_width: usize) {
         if !self.wrap_lines || self.is_hex_mode() || self.line_count == 0 {
-            if !self.visual_heights.borrow().is_empty() {
+            if !self.render_cache.visual_heights.borrow().is_empty() {
                 self.invalidate_visual_cache();
             }
             return;
         }
-        if *self.cached_content_width.borrow() == content_width
-            && !self.visual_heights.borrow().is_empty()
+        if *self.render_cache.cached_content_width.borrow() == content_width
+            && !self.render_cache.visual_heights.borrow().is_empty()
         {
             return;
         }
         let line_num_width = if self.show_line_numbers {
-            line_number_column_width(self.line_count)
+            self.render_cache.cached_line_num_col_width.get()
         } else {
             0
         };
@@ -114,8 +108,8 @@ impl ViewerState {
             acc += h;
             new_offsets.push(acc);
         }
-        *self.visual_heights.borrow_mut() = new_heights;
-        *self.visual_offsets.borrow_mut() = new_offsets;
-        *self.cached_content_width.borrow_mut() = content_width;
+        *self.render_cache.visual_heights.borrow_mut() = new_heights;
+        *self.render_cache.visual_offsets.borrow_mut() = new_offsets;
+        *self.render_cache.cached_content_width.borrow_mut() = content_width;
     }
 }

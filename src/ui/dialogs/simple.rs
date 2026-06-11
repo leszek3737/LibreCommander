@@ -1,6 +1,9 @@
+use std::sync::OnceLock;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::Style,
     text::Line,
     widgets::{Gauge, Paragraph, Wrap},
 };
@@ -10,6 +13,31 @@ use crate::ui::theme::{ColorPalette, Theme};
 
 use super::layout::dialog_block;
 use super::text::truncate_path;
+
+const OK_BUTTON_LABEL: &str = "[ OK ]";
+const CLOSE_HINT_LABEL: &str = "[ Press Enter or Esc to close ]";
+const CANCELING_PREFIX: &str = "Canceling:";
+const PROPERTIES_NAME_MAX_WIDTH: usize = 30;
+
+const PROP_NAME_PREFIX: &str = "Name: ";
+const PROP_TYPE_PREFIX: &str = "Type: ";
+const PROP_SIZE_PREFIX: &str = "Size: ";
+const PROP_MODIFIED_PREFIX: &str = "Modified: ";
+const PROP_PERMISSIONS_PREFIX: &str = "Permissions: ";
+const PROP_OWNER_PREFIX: &str = "Owner: ";
+
+static PERCENT_LABELS: OnceLock<[String; 101]> = OnceLock::new();
+
+fn percent_label(n: u16) -> &'static str {
+    let labels = PERCENT_LABELS.get_or_init(|| std::array::from_fn(|i| format!("{i}%")));
+    &labels[n as usize]
+}
+
+fn centered_paragraph<'a>(text: &'a str, style: Style) -> Paragraph<'a> {
+    Paragraph::new(text)
+        .style(style)
+        .alignment(Alignment::Center)
+}
 
 pub fn render_error_dialog(
     f: &mut Frame,
@@ -33,16 +61,9 @@ pub fn render_error_dialog(
         .style(Theme::error_with_colors(colors));
     f.render_widget(message_paragraph, chunks[0]);
 
-    let ok_btn = Paragraph::new(OK_BUTTON_LABEL)
-        .style(Theme::selected_error_with_colors(colors))
-        .alignment(Alignment::Center);
+    let ok_btn = centered_paragraph(OK_BUTTON_LABEL, Theme::selected_error_with_colors(colors));
     f.render_widget(ok_btn, chunks[1]);
 }
-
-const CANCELING_PREFIX: &str = "Canceling:";
-const PROPERTIES_NAME_MAX_WIDTH: usize = 30;
-const OK_BUTTON_LABEL: &str = "[ OK ]";
-const CLOSE_HINT_LABEL: &str = "[ Press Enter or Esc to close ]";
 
 pub fn render_progress_dialog(
     f: &mut Frame,
@@ -76,7 +97,7 @@ pub fn render_progress_dialog(
     let gauge = Gauge::default()
         .gauge_style(Theme::progress_bar_with_colors(colors))
         .percent(clamped)
-        .label(format!("{clamped}%"));
+        .label(percent_label(clamped));
     f.render_widget(gauge, chunks[1]);
 
     let hint_text = if !cancellable {
@@ -87,9 +108,7 @@ pub fn render_progress_dialog(
         "Esc: cancel after current item"
     };
     if !hint_text.is_empty() {
-        let hint = Paragraph::new(hint_text)
-            .style(Theme::warning_with_colors(colors))
-            .alignment(Alignment::Center);
+        let hint = centered_paragraph(hint_text, Theme::warning_with_colors(colors));
         f.render_widget(hint, chunks[2]);
     }
 }
@@ -107,12 +126,12 @@ pub fn render_properties_dialog(
     f.render_widget(block, area);
 
     let lines = vec![
-        Line::from(format!("Name: {display_name}")),
-        Line::from(format!("Type: {}", info.file_type)),
-        Line::from(format!("Size: {}", info.size)),
-        Line::from(format!("Modified: {}", info.mtime)),
-        Line::from(format!("Permissions: {}", info.permissions)),
-        Line::from(format!("Owner: {}:{}", info.owner, info.group)),
+        Line::from(format!("{PROP_NAME_PREFIX}{display_name}")),
+        Line::from(format!("{PROP_TYPE_PREFIX}{}", info.file_type)),
+        Line::from(format!("{PROP_SIZE_PREFIX}{}", info.size)),
+        Line::from(format!("{PROP_MODIFIED_PREFIX}{}", info.mtime)),
+        Line::from(format!("{PROP_PERMISSIONS_PREFIX}{}", info.permissions)),
+        Line::from(format!("{PROP_OWNER_PREFIX}{}:{}", info.owner, info.group)),
         Line::from(""),
         Line::from(CLOSE_HINT_LABEL).style(Theme::info_with_colors(colors)),
     ];
