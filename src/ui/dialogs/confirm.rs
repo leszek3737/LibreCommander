@@ -23,6 +23,9 @@ fn render_file_list(
     colors: &ColorPalette,
 ) {
     let max_visible = area.height as usize;
+    if max_visible == 0 {
+        return;
+    }
     let mut lines: Vec<Line> = Vec::with_capacity(max_visible);
     if files.len() <= max_visible {
         for name in files {
@@ -33,7 +36,7 @@ fn render_file_list(
             );
         }
     } else {
-        let file_slots = max_visible.saturating_sub(1).max(1);
+        let file_slots = max_visible.saturating_sub(1);
         for name in files.iter().take(file_slots) {
             let display = truncate_path(name.as_ref(), max_name_width);
             lines.push(

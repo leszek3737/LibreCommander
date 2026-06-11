@@ -46,6 +46,7 @@ impl ViewerState {
         self.view_mode = self.next_view_mode();
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
+        self.clear_search_results();
 
         if self.view_mode == ViewMode::Text && self.originally_binary {
             self.line_offsets = Self::compute_line_offsets(&self.raw_bytes);
@@ -62,7 +63,6 @@ impl ViewerState {
             } else {
                 Self::compute_max_line_width(&self.line_offsets, &self.raw_bytes)
             };
-            self.clear_search_results();
         }
     }
 

@@ -61,9 +61,9 @@ impl ViewerState {
                     .unwrap_or(line.len());
                 let orig_byte_end = if mapped_end <= orig_byte_start && orig_byte_start < line.len()
                 {
-                    debug_assert!(
-                        mapped_end > orig_byte_start || mapped_end == 0,
-                        "lowercase mapping produced invalid byte span: \
+                    debug_assert_eq!(
+                        mapped_end, orig_byte_start,
+                        "lowercase mapping produced non-monotonic byte span: \
                          orig_start={orig_byte_start}, mapped_end={mapped_end}"
                     );
                     line[orig_byte_start..]

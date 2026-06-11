@@ -500,9 +500,10 @@ pub fn render_status_bar_with_colors(
 
     let mut scratch = String::with_capacity(128);
     let right_width = panel_status_summary(panel, &mut scratch);
+    let right_summary = scratch.clone();
     let remaining = available.saturating_sub(right_width);
 
-    let mut out = String::with_capacity(remaining + scratch.len() + 8);
+    let mut out = String::with_capacity(remaining + right_summary.len() + 8);
 
     if !panel.listing.entries.is_empty() && panel.cursor < panel.listing.entries.len() {
         let entry = &panel.listing.entries[panel.cursor];
@@ -541,7 +542,7 @@ pub fn render_status_bar_with_colors(
     let info_line_width = UnicodeWidthStr::width(out.as_str());
     let padding = remaining.saturating_sub(info_line_width);
     out.extend(std::iter::repeat_n(' ', padding));
-    out.push_str(&scratch);
+    out.push_str(&right_summary);
 
     let paragraph = Paragraph::new(out)
         .style(Theme::status_bar_with_colors(colors))
