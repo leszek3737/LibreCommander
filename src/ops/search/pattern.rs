@@ -265,18 +265,12 @@ impl CompiledPattern {
         if name_chars.len() < prefix_len + suffix_len {
             return false;
         }
-        if let Some(prefix_chars) = prefix {
-            if name_chars.len() < prefix_chars.len() {
-                return false;
-            }
-            if name_chars[..prefix_chars.len()] != prefix_chars[..] {
-                return false;
-            }
+        if let Some(prefix_chars) = prefix
+            && name_chars[..prefix_chars.len()] != prefix_chars[..]
+        {
+            return false;
         }
         if let Some(suffix_chars) = suffix {
-            if name_chars.len() < suffix_chars.len() {
-                return false;
-            }
             let start = name_chars.len() - suffix_chars.len();
             if name_chars[start..] != suffix_chars[..] {
                 return false;

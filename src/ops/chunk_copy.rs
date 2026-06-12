@@ -1,4 +1,5 @@
 use super::helpers::cleanup_file;
+#[cfg(test)]
 use filetime::FileTime;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -51,18 +52,7 @@ pub fn copy_with_progress(
                 return Err(err);
             }
 
-            let accessed = FileTime::from_last_access_time(&metadata);
-            let modified = FileTime::from_last_modification_time(&metadata);
-            filetime::set_file_times(dest, accessed, modified).map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!(
-                        "failed to preserve timestamps for {}: {}",
-                        dest.display(),
-                        e
-                    ),
-                )
-            })?;
+            super::file_ops::preserve_timestamps(dest, &metadata)?;
 
             Ok(total_written)
         }
@@ -82,8 +72,12 @@ fn copy_to_temp(
 ) -> io::Result<u64> {
     let dest_file = File::create_new(temp_dest)?;
 
-    // TODO: zero-copy paths (Linux copy_file_range, macOS fcopyfile) when
-    // stabilized APIs or safe wrappers become available.
+    // TODO: zero-copy paths when kernel APIs are safely available:
+    //   Linux: ioctl FICLONE / copy_file_range can avoid userspace buffer copies
+    //          entirely for same-fs copies; fallback: splice(2) via sendfile.
+    //   macOS: fcopyfile(3) is available via libc but requires an unsafe block
+    //          with manual errno handling; wrap in a platform-specific safe fn.
+    //   Tracking: file an issue once API candidates are scoped.
 
     let mut reader = src_file;
     let mut writer = dest_file;
@@ -114,6 +108,9 @@ fn copy_to_temp(
         bytes_since_progress_check += bytes_read;
 
         if bytes_since_progress_check >= PROGRESS_CHECK_BYTES {
+            // Reset the accumulator so the next throttle check starts from zero.
+            // This is correct despite appearances — we must not carry leftover
+            // bytes from a skipped throttle window into the next cycle.
             bytes_since_progress_check = 0;
             let now = Instant::now();
             if now.duration_since(last_progress) >= PROGRESS_THROTTLE {

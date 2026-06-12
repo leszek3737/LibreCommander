@@ -1,13 +1,58 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
-use super::{ArchiveEntry, ArchiveError, ArchiveFormat};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
-const MAX_LIST_ENTRIES: usize = 100_000;
+use super::{
+    ArchiveEntry, ArchiveError, ArchiveFormat, MAX_FILE_SIZE, MAX_LIST_ENTRIES, cleanup_extracted,
+    copy_with_progress,
+};
+use crate::debug_log;
+
+const MAX_CREATE_ENTRIES: usize = 100_000;
+
+/// Appends the contents of `src` into the tar builder under `dest_name`,
+/// counting entries against `count`. Returns an error if `MAX_CREATE_ENTRIES`
+/// would be exceeded, making the limit check and the append a single pass.
+fn append_dir_counted(
+    builder: &mut tar::Builder<impl Write>,
+    dest_name: &Path,
+    src: &Path,
+    count: &mut usize,
+) -> Result<(), ArchiveError> {
+    let mut stack: Vec<(PathBuf, PathBuf)> = vec![(src.to_path_buf(), dest_name.to_path_buf())];
+    while let Some((src_dir, arch_dir)) = stack.pop() {
+        for entry in fs::read_dir(&src_dir).map_err(ArchiveError::Io)? {
+            let entry = entry.map_err(ArchiveError::Io)?;
+            let src_path = entry.path();
+            let arch_path = arch_dir.join(entry.file_name());
+
+            *count = count.saturating_add(1);
+            if *count > MAX_CREATE_ENTRIES {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "too many entries in directory tree (limit {MAX_CREATE_ENTRIES})"
+                )));
+            }
+
+            let ft = entry.file_type().map_err(ArchiveError::Io)?;
+            if ft.is_dir() {
+                builder
+                    .append_dir(&arch_path, &src_path)
+                    .map_err(ArchiveError::Io)?;
+                stack.push((src_path, arch_path));
+            } else {
+                builder
+                    .append_path_with_name(&src_path, &arch_path)
+                    .map_err(ArchiveError::Io)?;
+            }
+        }
+    }
+    Ok(())
+}
 
 pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     let file = File::open(path)?;
@@ -15,14 +60,11 @@ pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>,
     let mut archive = tar::Archive::new(reader);
 
     let mut entries = Vec::new();
-    for entry in archive
-        .entries()
-        .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?
-    {
+    for entry in archive.entries()? {
         if entries.len() >= MAX_LIST_ENTRIES {
             break;
         }
-        let entry = entry.map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+        let entry = entry?;
         let header = entry.header();
 
         entries.push(ArchiveEntry {
@@ -35,7 +77,7 @@ pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>,
                 .mtime()
                 .ok()
                 .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)),
-            is_dir: entry.header().entry_type().is_dir(),
+            is_dir: header.entry_type().is_dir(),
             method: format!("{format:?}").into_boxed_str(),
         });
     }
@@ -53,47 +95,80 @@ pub fn extract_tar(
     let reader: Box<dyn Read> = wrap_decompress(file, format)?;
     let mut archive = tar::Archive::new(reader);
 
-    let mut extracted_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut extracted_paths: Vec<PathBuf> = Vec::new();
 
     let result = (|| -> Result<(), ArchiveError> {
-        for entry in archive
-            .entries()
-            .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?
-        {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(ArchiveError::Io(Arc::new(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operation canceled",
-                ))));
-            }
+        let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
+        let mut last_parent: Option<PathBuf> = None;
+        let mut total_size = super::TotalSizeGuard::default();
+        for entry in archive.entries()? {
+            super::check_cancel(cancel)?;
 
-            let mut entry = entry.map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+            let mut entry = entry?;
             let header = entry.header();
             let is_dir = header.entry_type().is_dir();
             let is_symlink = header.entry_type().is_symlink();
             let size = entry.size();
 
+            if size > MAX_FILE_SIZE {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "entry '{}' size {size} exceeds maximum {MAX_FILE_SIZE}",
+                    String::from_utf8_lossy(&entry.path_bytes()),
+                )));
+            }
+
             #[cfg(unix)]
             let unix_mode = header.mode().ok();
 
             if is_symlink {
+                let _ = progress.send(size);
                 continue;
             }
 
-            let entry_path = entry
-                .path()
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
-            let outpath = super::sanitize_entry_path(&entry_path.to_string_lossy(), dest)?;
+            let entry_path = entry.path()?;
+            let outpath =
+                super::sanitize_entry_path(&canonical_dest, &entry_path.to_string_lossy())?;
 
             if is_dir {
                 fs::create_dir_all(&outpath)?;
+                super::verify_within_dest(&canonical_dest, &outpath)?;
                 extracted_paths.push(outpath);
+                let _ = progress.send(size);
             } else {
-                if let Some(parent) = outpath.parent() {
+                if let Some(parent) = outpath.parent()
+                    && last_parent.as_deref() != Some(parent)
+                {
                     fs::create_dir_all(parent)?;
+                    super::verify_within_dest(&canonical_dest, parent)?;
+                    last_parent = Some(parent.to_path_buf());
                 }
-                let mut outfile = File::create(&outpath)?;
-                io::copy(&mut entry, &mut outfile)?;
+                // SAFETY: TOCTOU symlink race mitigation — an attacker could replace a
+                // regular file with a symlink between the symlink_metadata check below
+                // and the subsequent open() call. On Unix, O_NOFOLLOW causes open() to
+                // fail with ELOOP if the final path component is a symlink, closing the
+                // race window. On platforms without O_NOFOLLOW support, the inherent
+                // TOCTOU window remains; the symlink_metadata check serves as a
+                // best-effort defense only.
+                super::check_symlink_at_dest(&outpath)?;
+                let mut outfile = {
+                    let mut opts = OpenOptions::new();
+                    opts.write(true).create_new(true);
+                    #[cfg(unix)]
+                    opts.custom_flags(libc::O_NOFOLLOW);
+                    opts.open(&outpath).or_else(|e| {
+                        if e.kind() == io::ErrorKind::AlreadyExists {
+                            debug_log!(
+                                "extract_tar: destination exists, overwriting: {}",
+                                outpath.display()
+                            );
+                            super::open_outfile(&outpath)
+                        } else {
+                            Err(e)
+                        }
+                    })?
+                };
+                let written = copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
+                total_size.add(written)?;
                 extracted_paths.push(outpath.clone());
 
                 #[cfg(unix)]
@@ -105,27 +180,19 @@ pub fn extract_tar(
                     }
                 }
             }
-
-            let _ = progress.send(size);
         }
         Ok(())
     })();
 
     if result.is_err() {
-        for p in extracted_paths.iter().rev() {
-            if p.is_dir() {
-                let _ = fs::remove_dir_all(p);
-            } else {
-                let _ = fs::remove_file(p);
-            }
-        }
+        cleanup_extracted(&extracted_paths);
     }
 
     result
 }
 
 pub fn create_tar(
-    sources: &[std::path::PathBuf],
+    sources: &[PathBuf],
     dest: &Path,
     format: ArchiveFormat,
     progress: &Sender<u64>,
@@ -141,9 +208,7 @@ pub fn create_tar(
     let mut builder = tar::Builder::new(writer);
 
     let result = append_sources(&mut builder, sources, progress, cancel);
-    let finish_result = builder
-        .finish()
-        .map_err(|e| ArchiveError::InvalidArchive(e.to_string()));
+    let finish_result = builder.finish().map_err(ArchiveError::Io);
 
     match (result, finish_result) {
         (Ok(()), Ok(())) => {
@@ -151,46 +216,67 @@ pub fn create_tar(
             Ok(())
         }
         (Err(e), _) | (_, Err(e)) => {
-            let _ = fs::remove_file(&tmp_dest);
+            if let Err(e2) = fs::remove_file(&tmp_dest) {
+                debug_log!(
+                    "create_tar: cleanup temp {} failed: {e2}",
+                    tmp_dest.display()
+                );
+            }
             Err(e)
         }
     }
 }
 
 fn create_tar_xz(
-    sources: &[std::path::PathBuf],
+    sources: &[PathBuf],
     dest: &Path,
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp_tar = std::env::temp_dir().join(format!("lc-xz-tar-{}-{count}", std::process::id()));
-    let tmp_dest = dest.with_extension("tar.xz.tmp");
+    let (tar_file, tmp_tar) =
+        super::create_archive_temp_file("lc-xz-tar", ".tar").map_err(ArchiveError::Io)?;
 
-    // Build tar to temp file
-    {
-        let tar_file = File::create(&tmp_tar)?;
+    let result = (|| -> Result<(), ArchiveError> {
         let mut builder = tar::Builder::new(tar_file);
         append_sources(&mut builder, sources, progress, cancel)?;
-        builder
-            .finish()
-            .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
-    }
-
-    // Compress tar temp file to output
-    let result = (|| -> Result<(), ArchiveError> {
-        let mut input = std::io::BufReader::new(File::open(&tmp_tar)?);
-        let mut output = File::create(&tmp_dest)?;
-        lzma_rs::xz_compress(&mut input, &mut output)
-            .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+        builder.finish().map_err(ArchiveError::Io)?;
         Ok(())
     })();
 
-    let _ = fs::remove_file(&tmp_tar);
     if result.is_err() {
-        let _ = fs::remove_file(&tmp_dest);
+        if let Err(e) = fs::remove_file(&tmp_tar) {
+            debug_log!(
+                "create_tar_xz: cleanup tar temp {} failed: {e}",
+                tmp_tar.display()
+            );
+        }
         return result;
+    }
+
+    let tmp_dest = dest.with_extension("tar.xz.tmp");
+    let compress_result = (|| -> Result<(), ArchiveError> {
+        let mut input = io::BufReader::new(File::open(&tmp_tar)?);
+        let mut output = File::create(&tmp_dest)?;
+        lzma_rs::xz_compress(&mut input, &mut output)
+            .map_err(|e| ArchiveError::Io(io::Error::other(e)))?;
+        Ok(())
+    })();
+
+    if let Err(e) = fs::remove_file(&tmp_tar) {
+        debug_log!(
+            "create_tar_xz: cleanup tar temp {} failed: {e}",
+            tmp_tar.display()
+        );
+    }
+
+    if compress_result.is_err() {
+        if let Err(e) = fs::remove_file(&tmp_dest) {
+            debug_log!(
+                "create_tar_xz: cleanup xz temp {} failed: {e}",
+                tmp_dest.display()
+            );
+        }
+        return compress_result;
     }
     fs::rename(&tmp_dest, dest)?;
     Ok(())
@@ -198,28 +284,36 @@ fn create_tar_xz(
 
 fn append_sources(
     builder: &mut tar::Builder<impl Write>,
-    sources: &[std::path::PathBuf],
+    sources: &[PathBuf],
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
+    let mut entry_count: usize = 0;
+
     for source in sources {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(ArchiveError::Io(Arc::new(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Operation canceled",
-            ))));
-        }
+        super::check_cancel(cancel)?;
 
         if source.is_dir() {
+            let dir_name = source
+                .file_name()
+                .ok_or_else(|| ArchiveError::InvalidArchive("Invalid dir name".into()))?;
             builder
-                .append_dir_all(
-                    source
-                        .file_name()
-                        .ok_or_else(|| ArchiveError::InvalidArchive("Invalid dir name".into()))?,
-                    source,
-                )
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+                .append_dir(dir_name, source)
+                .map_err(ArchiveError::Io)?;
+            entry_count = entry_count.saturating_add(1);
+            if entry_count > MAX_CREATE_ENTRIES {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "too many entries (limit {MAX_CREATE_ENTRIES})"
+                )));
+            }
+            append_dir_counted(builder, Path::new(dir_name), source, &mut entry_count)?;
         } else {
+            entry_count = entry_count.saturating_add(1);
+            if entry_count > MAX_CREATE_ENTRIES {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "too many entries (limit {MAX_CREATE_ENTRIES})"
+                )));
+            }
             let mut file = File::open(source)?;
             builder
                 .append_file(
@@ -228,7 +322,7 @@ fn append_sources(
                         .ok_or_else(|| ArchiveError::InvalidArchive("Invalid file name".into()))?,
                     &mut file,
                 )
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+                .map_err(ArchiveError::Io)?;
         }
 
         let meta = fs::metadata(source)?;
@@ -249,23 +343,25 @@ fn wrap_decompress(file: File, format: ArchiveFormat) -> Result<Box<dyn Read>, A
             Ok(Box::new(decoder))
         }
         ArchiveFormat::TarXz => {
-            static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-            let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let tmp_path = std::env::temp_dir()
-                .join(format!("lc-xz-decompress-{}-{count}", std::process::id()));
-            let mut tmp_file = File::create(&tmp_path)?;
-            let mut reader = std::io::BufReader::new(file);
+            let (mut tmp_file, tmp_path) =
+                super::create_archive_temp_file("lc-xz-decompress", ".tar")
+                    .map_err(ArchiveError::Io)?;
+            let mut reader = io::BufReader::new(file);
             if let Err(e) = lzma_rs::xz_decompress(&mut reader, &mut tmp_file) {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(ArchiveError::InvalidArchive(e.to_string()));
+                if let Err(e2) = fs::remove_file(&tmp_path) {
+                    debug_log!(
+                        "wrap_decompress: cleanup decompress temp {} failed: {e2}",
+                        tmp_path.display()
+                    );
+                }
+                return Err(ArchiveError::Io(io::Error::other(e)));
             }
             drop(tmp_file);
             let mut tmp_file = File::open(&tmp_path)?;
             tmp_file.seek(io::SeekFrom::Start(0))?;
-            // Wrap in a reader that cleans up the temp file on drop
             struct TempFileReader {
                 inner: File,
-                path: std::path::PathBuf,
+                path: PathBuf,
             }
             impl Read for TempFileReader {
                 fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -274,7 +370,12 @@ fn wrap_decompress(file: File, format: ArchiveFormat) -> Result<Box<dyn Read>, A
             }
             impl Drop for TempFileReader {
                 fn drop(&mut self) {
-                    let _ = fs::remove_file(&self.path);
+                    if let Err(e) = fs::remove_file(&self.path) {
+                        debug_log!(
+                            "wrap_decompress: TempFileReader drop cleanup {} failed: {e}",
+                            self.path.display()
+                        );
+                    }
                 }
             }
             Ok(Box::new(TempFileReader {
@@ -283,8 +384,7 @@ fn wrap_decompress(file: File, format: ArchiveFormat) -> Result<Box<dyn Read>, A
             }))
         }
         ArchiveFormat::TarZst => {
-            let decoder = zstd::stream::read::Decoder::new(file)
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+            let decoder = zstd::stream::read::Decoder::new(file)?;
             Ok(Box::new(decoder))
         }
         ArchiveFormat::Zip | ArchiveFormat::SevenZ => Err(ArchiveError::UnsupportedFormat),
@@ -303,8 +403,7 @@ fn wrap_compress(file: File, format: ArchiveFormat) -> Result<Box<dyn Write>, Ar
             Ok(Box::new(encoder))
         }
         ArchiveFormat::TarZst => {
-            let encoder = zstd::stream::write::Encoder::new(file, 0)
-                .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
+            let encoder = zstd::stream::write::Encoder::new(file, 0)?;
             Ok(Box::new(encoder))
         }
         ArchiveFormat::TarXz | ArchiveFormat::Zip | ArchiveFormat::SevenZ => {

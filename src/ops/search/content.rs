@@ -247,9 +247,12 @@ fn search_in_file(
     let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES, file);
     let mut ctx = ScanContext {
         path,
-        pattern,
         case_sensitive,
-        finder: memmem::Finder::new(pattern_bytes),
+        finder: memmem::Finder::new(if case_sensitive {
+            pattern.as_bytes()
+        } else {
+            pattern_bytes
+        }),
         bufs: ScanBuffers::new(),
         cancel,
     };
@@ -258,7 +261,6 @@ fn search_in_file(
 
 struct ScanContext<'a> {
     path: &'a Path,
-    pattern: &'a str,
     case_sensitive: bool,
     finder: memmem::Finder<'a>,
     bufs: ScanBuffers,
@@ -274,7 +276,7 @@ impl ScanBuffers {
     fn new() -> Self {
         Self {
             line_buf: Vec::new(),
-            ci_buf: Vec::new(),
+            ci_buf: Vec::with_capacity(1024),
         }
     }
 }
@@ -336,7 +338,8 @@ fn scan_lines(
                     }
                     return;
                 }
-                if ctx.case_sensitive && memmem::find(line, ctx.pattern.as_bytes()).is_none() {
+
+                if ctx.case_sensitive && ctx.finder.find(line).is_none() {
                     continue;
                 }
 

@@ -2,9 +2,10 @@ mod common;
 mod copy;
 mod delete;
 mod entry_ops;
-mod move_ops;
+pub(crate) mod move_ops;
 mod temp;
 
+pub(crate) use copy::preserve_timestamps;
 pub use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
 pub use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
 #[cfg(unix)]
@@ -20,8 +21,33 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
+
+    const TAG_COPY: &str = "copy";
+    const TAG_BACKUP: &str = "backup";
+
+    fn assert_no_temp_leftovers(tmp_dir: &Path, tags: &[&str]) {
+        let dir_name = tmp_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        for tag in tags {
+            let pattern = format!(".lc-dir-{tag}-");
+            let mut found = vec![];
+            if let Ok(entries) = std::fs::read_dir(tmp_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.contains(&pattern) {
+                        found.push(name_str.into_owned());
+                    }
+                }
+            }
+            assert!(
+                found.is_empty(),
+                "temp leftovers found for tag '{tag}' in {dir_name}: {found:?}"
+            );
+        }
+    }
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -140,13 +166,7 @@ mod tests {
         assert!(bytes > 0);
         assert!(dest.join("file1.txt").exists());
         assert!(dest.join("subdir").join("file2.txt").exists());
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-copy-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -191,13 +211,7 @@ mod tests {
 
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
         assert!(!dest.exists());
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-copy-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -416,13 +430,7 @@ mod tests {
             std::fs::read_to_string(temp.join("file.txt")).unwrap(),
             "new"
         );
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-backup-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_BACKUP]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
@@ -848,13 +856,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
         assert!(!dest.exists());
 
-        assert!(!tmp.read_dir().unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .contains(".lc-dir-copy-")
-        }));
+        assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }

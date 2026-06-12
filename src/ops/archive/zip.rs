@@ -1,54 +1,25 @@
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 use zip::CompressionMethod;
 use zip::read::ZipArchive;
 use zip::write::SimpleFileOptions;
 
-use super::{ArchiveEntry, ArchiveError};
+use super::{
+    ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
+    copy_with_progress,
+};
 
-const MAX_LIST_ENTRIES: usize = 100_000;
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
-const ZIP_COPY_BUF_SIZE: usize = 65536;
 
-fn copy_with_progress(
-    reader: &mut dyn io::Read,
-    writer: &mut dyn io::Write,
-    progress: &Sender<u64>,
-) -> io::Result<u64> {
-    let mut buf = [0u8; ZIP_COPY_BUF_SIZE];
-    let mut total: u64 = 0;
-    loop {
-        let n = match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
-        writer.write_all(&buf[..n])?;
-        total = total.saturating_add(n as u64);
-        let _ = progress.send(n as u64);
+fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {
+    match e {
+        zip::result::ZipError::Io(io_err) => ArchiveError::Io(io_err),
+        other => ArchiveError::InvalidArchive(other.to_string()),
     }
-    writer.flush()?;
-    Ok(total)
-}
-
-fn map_zip_err(e: impl std::fmt::Display) -> ArchiveError {
-    ArchiveError::InvalidArchive(e.to_string())
-}
-
-fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(ArchiveError::Io(Arc::new(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Operation canceled",
-        ))));
-    }
-    Ok(())
 }
 
 fn compression_method_name(method: CompressionMethod) -> &'static str {
@@ -72,10 +43,7 @@ pub fn list_zip(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 
     let capacity = archive.len().min(MAX_LIST_ENTRIES);
     let mut entries = Vec::with_capacity(capacity);
-    for i in 0..archive.len() {
-        if entries.len() >= MAX_LIST_ENTRIES {
-            break;
-        }
+    for i in (0..archive.len()).take(MAX_LIST_ENTRIES) {
         let entry = archive.by_index(i).map_err(map_zip_err)?;
 
         entries.push(ArchiveEntry {
@@ -97,8 +65,14 @@ fn extract_zip_entries(
     cancel: &AtomicBool,
     extracted_paths: &mut Vec<PathBuf>,
 ) -> Result<(), ArchiveError> {
+    let entry_count = archive.len();
+    extracted_paths.reserve(entry_count.min(MAX_LIST_ENTRIES));
+
     fs::create_dir_all(dest)?;
-    for i in 0..archive.len() {
+    let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
+    let mut last_parent: Option<PathBuf> = None;
+    let mut total_size = super::TotalSizeGuard::default();
+    for i in 0..entry_count.min(MAX_LIST_ENTRIES) {
         check_cancel(cancel)?;
 
         let mut entry = archive.by_index(i).map_err(map_zip_err)?;
@@ -109,18 +83,40 @@ fn extract_zip_entries(
             continue;
         }
 
-        let outpath = super::sanitize_entry_path(entry.name(), dest)?;
+        let outpath = super::sanitize_entry_path(&canonical_dest, entry.name())?;
+
+        if entry.size() > MAX_FILE_SIZE {
+            return Err(ArchiveError::InvalidArchive(format!(
+                "entry '{}' size {} exceeds maximum {MAX_FILE_SIZE}",
+                entry.name(),
+                entry.size()
+            )));
+        }
 
         if entry.is_dir() {
             fs::create_dir_all(&outpath)?;
+            super::verify_within_dest(&canonical_dest, &outpath)?;
             extracted_paths.push(outpath);
             let _ = progress.send(entry.size());
         } else {
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent)?;
+            if entry.compressed_size() > MAX_FILE_SIZE {
+                return Err(ArchiveError::InvalidArchive(format!(
+                    "entry '{}' compressed size {} exceeds maximum {MAX_FILE_SIZE}",
+                    entry.name(),
+                    entry.compressed_size()
+                )));
             }
-            let mut outfile = File::create(&outpath)?;
-            copy_with_progress(&mut entry, &mut outfile, progress)?;
+            if let Some(parent) = outpath.parent()
+                && last_parent.as_deref() != Some(parent)
+            {
+                fs::create_dir_all(parent)?;
+                super::verify_within_dest(&canonical_dest, parent)?;
+                last_parent = Some(parent.to_path_buf());
+            }
+            super::check_symlink_at_dest(&outpath)?;
+            let mut outfile = super::open_outfile(&outpath)?;
+            let written = copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
+            total_size.add(written)?;
 
             #[cfg(unix)]
             {
@@ -151,13 +147,7 @@ pub fn extract_zip(
     let result = extract_zip_entries(&mut archive, dest, progress, cancel, &mut extracted_paths);
 
     if result.is_err() {
-        for p in extracted_paths.iter().rev() {
-            if p.is_dir() {
-                let _ = fs::remove_dir_all(p);
-            } else {
-                let _ = fs::remove_file(p);
-            }
-        }
+        cleanup_extracted(&extracted_paths);
     }
 
     result
@@ -173,12 +163,14 @@ fn add_sources_to_zip(
     for source in sources {
         check_cancel(cancel)?;
 
-        if source.is_dir() {
+        // Symlinks already filtered by create_archive before reaching here.
+        let meta = fs::symlink_metadata(source)?;
+        if meta.is_dir() {
             add_dir_to_zip(zip, source, source, options, progress, cancel)?;
         } else {
             let name = source
                 .file_name()
-                .ok_or_else(|| map_zip_err("Invalid file name"))?
+                .ok_or_else(|| ArchiveError::InvalidArchive("Invalid file name".into()))?
                 .to_string_lossy();
             zip.start_file(&*name, *options).map_err(map_zip_err)?;
             let mut file = File::open(source)?;
@@ -236,7 +228,7 @@ fn add_dir_to_zip(
         let path = entry.path();
         let name = path
             .strip_prefix(base)
-            .map_err(|_| map_zip_err("strip_prefix failed"))?
+            .map_err(|_| ArchiveError::InvalidArchive("strip_prefix failed".into()))?
             .to_string_lossy()
             .replace('\\', "/");
 
@@ -244,7 +236,7 @@ fn add_dir_to_zip(
         if meta.is_symlink() {
             continue;
         }
-        if path.is_dir() {
+        if meta.is_dir() {
             zip.add_directory(&name, *options).map_err(map_zip_err)?;
             add_dir_to_zip(zip, base, &path, options, progress, cancel)?;
         } else {
@@ -281,4 +273,37 @@ fn zip_datetime_to_system_time(dt: zip::DateTime) -> SystemTime {
         + dt.minute() as u64 * 60
         + dt.second() as u64;
     SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::mpsc;
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_rejects_entry_through_symlinked_dir() {
+        let work = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        let archive_path = work.path().join("evil.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("subdir/file.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"pwned").unwrap();
+        writer.finish().unwrap();
+
+        let dest = work.path().join("extract");
+        fs::create_dir_all(&dest).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dest.join("subdir")).unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let result = extract_zip(&archive_path, &dest, &tx, &AtomicBool::new(false));
+        assert!(result.is_err());
+        assert!(!outside.path().join("file.txt").exists());
+    }
 }

@@ -1,6 +1,8 @@
-use std::io;
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
 pub mod create;
@@ -9,6 +11,10 @@ pub mod list;
 pub mod sevenz;
 pub mod tar;
 pub mod zip;
+
+pub(crate) const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
+pub(crate) const MAX_TOTAL_ARCHIVE_SIZE: u64 = 256 * 1024 * 1024 * 1024; // 256 GiB
+pub(crate) const MAX_LIST_ENTRIES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -33,14 +39,14 @@ pub struct ArchiveEntry {
 
 #[derive(Debug)]
 pub enum ArchiveError {
-    Io(Arc<io::Error>),
+    Io(io::Error),
     UnsupportedFormat,
     InvalidArchive(String),
 }
 
 impl From<io::Error> for ArchiveError {
     fn from(e: io::Error) -> Self {
-        ArchiveError::Io(Arc::new(e))
+        ArchiveError::Io(e)
     }
 }
 
@@ -57,7 +63,7 @@ impl std::fmt::Display for ArchiveError {
 impl std::error::Error for ArchiveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ArchiveError::Io(e) => Some(e.as_ref()),
+            ArchiveError::Io(e) => Some(e),
             ArchiveError::UnsupportedFormat | ArchiveError::InvalidArchive(_) => None,
         }
     }
@@ -69,8 +75,119 @@ const GZ_MAGIC: [u8; 2] = [0x1F, 0x8B];
 const BZ2_MAGIC: [u8; 3] = [0x42, 0x5A, 0x68];
 const XZ_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
 const ZST_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+const TAR_BLOCK_SIZE: usize = 512;
+const USTAR_MAGIC_OFFSET: usize = 257;
+const USTAR_MAGIC: &[u8] = b"ustar";
 
-pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathBuf, ArchiveError> {
+static ARCHIVE_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Creates a new temporary file with a unique name in the system temp directory.
+/// Used by archive handlers for intermediate decompression buffers.
+pub(crate) fn create_archive_temp_file(
+    prefix: &str,
+    suffix: &str,
+) -> io::Result<(fs::File, PathBuf)> {
+    let pid = std::process::id();
+    for _ in 0..128 {
+        let count = ARCHIVE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("{prefix}-{pid}-{count}{suffix}"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((file, path)),
+            Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "failed to create unique archive temp file after 128 attempts",
+    ))
+}
+
+/// Checks whether `path` is already a symlink and returns an error if so.
+/// Called before writing each archive entry to prevent extraction into pre-planted symlinks.
+pub(crate) fn check_symlink_at_dest(path: &Path) -> Result<(), ArchiveError> {
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "refusing to extract into existing symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ArchiveError::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Operation canceled",
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_with_progress(
+    reader: &mut dyn Read,
+    writer: &mut dyn io::Write,
+    progress: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> io::Result<u64> {
+    let mut buf = [0u8; 65536];
+    let mut total: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Operation canceled",
+            ));
+        }
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        writer.write_all(&buf[..n])?;
+        total = total.saturating_add(n as u64);
+        let _ = progress.send(n as u64);
+    }
+    writer.flush()?;
+    Ok(total)
+}
+
+pub(crate) fn cleanup_extracted(paths: &[PathBuf]) {
+    for p in paths.iter().rev() {
+        let is_dir = fs::symlink_metadata(p)
+            .map(|m| m.is_dir() && !m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_dir {
+            let _ = fs::remove_dir_all(p);
+        } else {
+            let _ = fs::remove_file(p);
+        }
+    }
+}
+
+pub(crate) fn open_outfile(path: &Path) -> io::Result<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path)
+}
+
+pub(crate) fn sanitize_entry_path(
+    canonical_dest: &Path,
+    entry_name: &str,
+) -> Result<PathBuf, ArchiveError> {
     let entry_path = Path::new(entry_name);
     if entry_path.is_absolute() {
         return Err(ArchiveError::InvalidArchive(format!(
@@ -84,19 +201,10 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
             )));
         }
     }
-    let canonical_dest = dest
-        .canonicalize()
-        .map_err(|e| ArchiveError::Io(Arc::new(e)))?;
     let outpath = canonical_dest.join(entry_name);
-    let file_name = outpath
-        .file_name()
-        .ok_or_else(|| ArchiveError::InvalidArchive(format!("invalid entry path: {entry_name}")))?;
-    let canonical_out = outpath
-        .parent()
-        .and_then(|p| p.canonicalize().ok())
-        .map(|p| p.join(file_name))
-        .unwrap_or_else(|| outpath.clone());
-    if !canonical_out.starts_with(&canonical_dest) {
+
+    let normalized_out = normalize_path(&outpath);
+    if !normalized_out.starts_with(canonical_dest) {
         return Err(ArchiveError::InvalidArchive(format!(
             "path traversal: {entry_name}"
         )));
@@ -104,21 +212,118 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
     Ok(outpath)
 }
 
+/// Verifies that `path` (which must already exist), after resolving symlinks,
+/// is still inside `canonical_dest`. The lexical check in `sanitize_entry_path`
+/// cannot see symlinks pre-planted inside the destination (e.g. `dest/subdir`
+/// pointing outside), so callers must invoke this on every directory they are
+/// about to write through, after creating it.
+pub(crate) fn verify_within_dest(canonical_dest: &Path, path: &Path) -> Result<(), ArchiveError> {
+    let canonical = path.canonicalize().map_err(ArchiveError::Io)?;
+    if !canonical.starts_with(canonical_dest) {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "path escapes destination via symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Tracks the cumulative number of bytes written during one extraction and
+/// rejects archives whose decompressed total exceeds `MAX_TOTAL_ARCHIVE_SIZE`
+/// (decompression-bomb guard).
+#[derive(Default)]
+pub(crate) struct TotalSizeGuard(u64);
+
+impl TotalSizeGuard {
+    pub(crate) fn add(&mut self, bytes: u64) -> Result<(), ArchiveError> {
+        self.0 = self.0.saturating_add(bytes);
+        if self.0 > MAX_TOTAL_ARCHIVE_SIZE {
+            return Err(ArchiveError::InvalidArchive(format!(
+                "total extracted size exceeds maximum {MAX_TOTAL_ARCHIVE_SIZE}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                result.push(prefix.as_os_str());
+            }
+            Component::RootDir => {
+                result.push(std::path::MAIN_SEPARATOR.to_string());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !result.pop() {
+                    result.push("..");
+                }
+            }
+            Component::Normal(comp) => {
+                result.push(comp);
+            }
+        }
+    }
+    result
+}
+
 fn has_ext_ignore_case(name: &str, ext: &str) -> bool {
     name.len() >= ext.len()
-        && name
-            .as_bytes()
-            .iter()
-            .rev()
-            .zip(ext.as_bytes().iter().rev())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        && name.as_bytes()[name.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes())
+}
+
+fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
+    if std::io::Seek::seek(file, std::io::SeekFrom::Start(0)).is_err() {
+        return false;
+    }
+    match format {
+        ArchiveFormat::TarGz => {
+            let mut reader = flate2::read::GzDecoder::new(file);
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            if reader.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        ArchiveFormat::TarBz2 => {
+            let mut reader = bzip2::read::BzDecoder::new(file);
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            if reader.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        ArchiveFormat::TarXz => {
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            let mut cursor = io::Cursor::new(&mut buf[..]);
+            let mut buf_reader = io::BufReader::new(file);
+            let _ = lzma_rs::xz_decompress(&mut buf_reader, &mut cursor);
+            cursor.position() as usize >= TAR_BLOCK_SIZE
+                && buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        ArchiveFormat::TarZst => {
+            let mut reader = match zstd::stream::read::Decoder::new(file) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
+            let mut buf = [0u8; TAR_BLOCK_SIZE];
+            if reader.read_exact(&mut buf).is_err() {
+                return false;
+            }
+            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+        }
+        _ => false,
+    }
 }
 
 pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
     if path.is_file()
         && let Ok(mut f) = std::fs::File::open(path)
     {
-        use std::io::Read;
         let mut header = [0u8; 8];
         if f.read_exact(&mut header).is_ok() {
             if header[..4] == ZIP_MAGIC {
@@ -127,16 +332,16 @@ pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
             if header[..6] == SEVENZ_MAGIC {
                 return Ok(ArchiveFormat::SevenZ);
             }
-            if header[..2] == GZ_MAGIC {
+            if header[..2] == GZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarGz) {
                 return Ok(ArchiveFormat::TarGz);
             }
-            if header[..3] == BZ2_MAGIC {
+            if header[..3] == BZ2_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarBz2) {
                 return Ok(ArchiveFormat::TarBz2);
             }
-            if header[..6] == XZ_MAGIC {
+            if header[..6] == XZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarXz) {
                 return Ok(ArchiveFormat::TarXz);
             }
-            if header[..4] == ZST_MAGIC {
+            if header[..4] == ZST_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarZst) {
                 return Ok(ArchiveFormat::TarZst);
             }
         }
@@ -163,5 +368,42 @@ pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
         Ok(ArchiveFormat::SevenZ)
     } else {
         Err(ArchiveError::UnsupportedFormat)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_size_guard_rejects_over_limit() {
+        let mut guard = TotalSizeGuard::default();
+        assert!(guard.add(MAX_TOTAL_ARCHIVE_SIZE).is_ok());
+        assert!(guard.add(1).is_err());
+    }
+
+    #[test]
+    fn total_size_guard_saturates_on_overflow() {
+        let mut guard = TotalSizeGuard::default();
+        assert!(guard.add(u64::MAX).is_err());
+        assert!(guard.add(u64::MAX).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_within_dest_rejects_symlinked_subdir() {
+        let dest = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let canonical_dest = dest.path().canonicalize().unwrap();
+
+        let link = dest.path().join("subdir");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        assert!(verify_within_dest(&canonical_dest, &link).is_err());
+
+        let real = dest.path().join("real");
+        fs::create_dir(&real).unwrap();
+        assert!(verify_within_dest(&canonical_dest, &real).is_ok());
     }
 }

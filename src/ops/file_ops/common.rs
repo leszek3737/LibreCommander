@@ -54,34 +54,25 @@ pub(super) fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
 }
 
 pub(super) fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
-    let canonical_parent = canonicalize_existing_path(parent)
-        .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize parent: {e}")))?;
-    let canonical_child = canonicalize_with_nearest_existing_parent(child)
-        .map_err(|e| io::Error::new(e.kind(), format!("failed to canonicalize child: {e}")))?;
+    let canonical_parent = canonicalize_existing_path(parent).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("failed to canonicalize parent '{}': {e}", parent.display()),
+        )
+    })?;
+    let canonical_child = canonicalize_with_nearest_existing_parent(child).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("failed to canonicalize child '{}': {e}", child.display()),
+        )
+    })?;
     Ok(lexical_path_starts_with(
         &canonical_parent,
         &canonical_child,
     ))
 }
 
-#[cfg(unix)]
-pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
-    let src_meta = fs::symlink_metadata(src)?;
-    let dest_meta = match fs::symlink_metadata(dest) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    if same_inode(&src_meta, &dest_meta) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "source and destination are the same file",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     let src_meta = fs::symlink_metadata(src)?;
     let dest_meta = match fs::symlink_metadata(dest) {
@@ -169,7 +160,7 @@ pub(super) fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<P
                     ));
                 }
             }
-            Component::RootDir => base = PathBuf::from(std::path::MAIN_SEPARATOR.to_string()),
+            Component::RootDir => base = PathBuf::from(std::path::MAIN_SEPARATOR_STR),
             Component::Prefix(prefix) => base = PathBuf::from(prefix.as_os_str()),
         }
     }
@@ -181,9 +172,7 @@ pub(super) fn remove_any(path: &Path) -> io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::IsADirectory => std::fs::remove_dir_all(path),
-        Err(e) if e.kind() == io::ErrorKind::NotFound && path.is_dir() => {
-            std::fs::remove_dir_all(path)
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
 }

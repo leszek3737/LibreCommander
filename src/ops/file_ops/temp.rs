@@ -1,12 +1,16 @@
 use crate::debug_log;
 use crate::ops::helpers::{cleanup_dir, cleanup_dir_all};
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::common::remove_any;
+
+const DEFAULT_NAME: &str = "copy";
+const TEMP_NAME_MAX_ATTEMPTS: u32 = 128;
 
 pub(crate) struct TempDirGuard {
     path: PathBuf,
@@ -40,38 +44,58 @@ impl Drop for TempDirGuard {
 
 pub(super) static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[allow(dead_code)]
+fn parent_and_filename(path: &Path) -> io::Result<(&Path, &OsStr)> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination has no parent directory",
+        )
+    })?;
+    let filename = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename")
+    })?;
+    Ok((parent, filename))
+}
+
 fn suffixed_path(dest: &Path, tag: &str, seq: u64) -> PathBuf {
     let mut name = dest
         .file_name()
         .map(|n| n.to_os_string())
-        .unwrap_or_else(|| "copy".into());
+        .unwrap_or_else(|| DEFAULT_NAME.into());
     name.push(format!(".lc-dir-{tag}-{}-{}.tmp", std::process::id(), seq));
     dest.with_file_name(name)
 }
 
+#[allow(dead_code)]
 pub(super) fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     suffixed_path(dest, "copy", seq)
 }
 
-pub(super) fn reserve_temp_dir_for(dest: &Path) -> io::Result<TempDirGuard> {
-    // 128 attempts balances collision avoidance against starvation;
-    // the counter (TEMP_DIR_COUNTER) spaces names linearly so even with
-    // high contention the odds of exceeding 128 unique conflicts are
-    // negligibly small.
-    for _ in 0..128 {
+fn reserve_unique_name(dest: &Path, prefix: &str) -> io::Result<PathBuf> {
+    let mut last_err: Option<io::Error> = None;
+    for _ in 0..TEMP_NAME_MAX_ATTEMPTS {
         let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp = temp_dir_path_for(dest, seq);
-        match fs::create_dir(&temp) {
-            Ok(()) => return Ok(TempDirGuard::new(temp)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+        let path = suffixed_path(dest, prefix, seq);
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                last_err = Some(err);
+                continue;
+            }
             Err(err) => return Err(err),
         }
     }
+    let msg = if let Some(err) = last_err {
+        format!("could not reserve unique name for {prefix}: last error: {err}")
+    } else {
+        format!("could not reserve unique name for {prefix}")
+    };
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, msg))
+}
 
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve temporary copy directory",
-    ))
+pub(super) fn reserve_temp_dir_for(dest: &Path) -> io::Result<TempDirGuard> {
+    reserve_unique_name(dest, "copy").map(TempDirGuard::new)
 }
 
 pub(super) struct DestBackup {
@@ -85,7 +109,10 @@ pub(super) fn publish_temp_dir(
     overwrite: bool,
     src_perms: fs::Permissions,
 ) -> io::Result<()> {
-    fs::set_permissions(temp_dest, src_perms)?;
+    if let Err(e) = fs::set_permissions(temp_dest, src_perms) {
+        cleanup_dir_all(temp_dest);
+        return Err(e);
+    }
     if !overwrite {
         return fs::rename(temp_dest, dest);
     }
@@ -107,13 +134,11 @@ pub(super) fn publish_temp_dir(
         Err(err) => {
             if let Some(backup) = backup {
                 fs::rename(&backup.entry, dest).map_err(|restore_err| {
-                    io::Error::new(
-                        restore_err.kind(),
-                        format!(
-                            "failed to restore destination from backup {}: {restore_err}",
-                            backup.entry.display()
-                        ),
-                    )
+                    io::Error::other(format!(
+                        "failed to restore destination {} from backup {}: {restore_err}",
+                        dest.display(),
+                        backup.entry.display(),
+                    ))
                 })?;
                 if let Err(e) = fs::remove_dir(&backup.container) {
                     debug_log!(
@@ -128,43 +153,36 @@ pub(super) fn publish_temp_dir(
 }
 
 pub(super) fn move_existing_dest_to_backup(dest: &Path) -> io::Result<Option<DestBackup>> {
+    // There is a TOCTOU race between `symlink_metadata` and `rename`:
+    // the destination can be removed or replaced after the metadata check.
+    // This is benign — the `NotFound` fallback on `rename` handles the
+    // case where the destination disappeared, and a concurrent replace
+    // is indistinguishable from a legitimate overwrite (the user asked
+    // to replace the destination).
+    //
+    // On Windows, `rename` may fail with a sharing violation if another
+    // process has the file open; the `.lc_bak` rename trick used in
+    // `replace_file_inner` is not applicable here because this code
+    // deals with directories.
     match fs::symlink_metadata(dest) {
         Ok(_) => {}
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     }
 
-    for _ in 0..128 {
-        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let container = backup_path_for(dest, seq);
-        match fs::create_dir(&container) {
-            Ok(()) => {
-                let entry = container.join("dest");
-                return match fs::rename(dest, &entry) {
-                    Ok(()) => Ok(Some(DestBackup { container, entry })),
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                        cleanup_dir(&container);
-                        Ok(None)
-                    }
-                    Err(err) => {
-                        cleanup_dir(&container);
-                        Err(err)
-                    }
-                };
-            }
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
+    let container = reserve_unique_name(dest, "backup")?;
+    let entry = container.join("dest");
+    match fs::rename(dest, &entry) {
+        Ok(()) => Ok(Some(DestBackup { container, entry })),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            cleanup_dir(&container);
+            Ok(None)
+        }
+        Err(err) => {
+            cleanup_dir(&container);
+            Err(err)
         }
     }
-
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve backup path for destination",
-    ))
-}
-
-fn backup_path_for(dest: &Path, seq: u64) -> PathBuf {
-    suffixed_path(dest, "backup", seq)
 }
 
 pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
@@ -178,15 +196,7 @@ pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io
 
 #[cfg(test)]
 pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
-    let dir = dest.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "destination has no parent directory",
-        )
-    })?;
-    let name = dest.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination has no filename")
-    })?;
+    let (dir, name) = parent_and_filename(dest)?;
     let pid = std::process::id();
     for counter in 0..1024 {
         let temp = dir.join(format!(
@@ -261,7 +271,11 @@ fn replace_file_inner(temp: &Path, dest: &Path, dir_err_msg: &str) -> io::Result
             }
             return Ok(());
         }
+        fs::rename(temp, dest)
     }
-    let _ = need_remove;
-    fs::rename(temp, dest)
+    #[cfg(not(windows))]
+    {
+        let _ = need_remove;
+        fs::rename(temp, dest)
+    }
 }

@@ -7,6 +7,9 @@ use crate::app::types::{CompareMode, FileEntry, PanelState};
 /// network filesystems may lose sub-second precision during sync).
 const MTIME_TOLERANCE: Duration = Duration::from_secs(2);
 
+/// The PARENT_DIR (parent directory) pseudo-entry — ignored during comparison.
+const PARENT_DIR: &str = "..";
+
 #[derive(Clone, Copy, PartialEq)]
 struct EntryMeta {
     is_dir: bool,
@@ -36,6 +39,12 @@ fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
 }
 
 fn mtime_matches(left: std::time::SystemTime, right: std::time::SystemTime) -> bool {
+    // `duration_since` fails when the argument is in the future relative
+    // to `self`.  The `left > right` / `right > left` guards above make
+    // this logically impossible, but clock adjustments or filesystem
+    // inconsistencies can produce timestamps that appear future-dated.
+    // Fallback: return a value strictly larger than tolerance so the
+    // comparison always reports a mismatch (conservative; no false match).
     let diff = if left > right {
         left.duration_since(right)
             .unwrap_or(MTIME_TOLERANCE + Duration::from_secs(1))
@@ -62,7 +71,7 @@ pub fn compare_entries(
     mode: CompareMode,
 ) -> CompareReport {
     let mut right_meta: HashMap<&str, EntryMeta> = HashMap::with_capacity(right.len());
-    for entry in right.iter().filter(|e| e.name != "..") {
+    for entry in right.iter().filter(|e| e.name != PARENT_DIR) {
         right_meta.insert(
             entry.name.as_str(),
             EntryMeta {
@@ -80,7 +89,7 @@ pub fn compare_entries(
     let mut right_to_mark: HashSet<String> = HashSet::with_capacity(right.len());
     let mut seen_right: HashSet<&str> = HashSet::with_capacity(right_meta.len());
 
-    for entry in left.iter().filter(|e| e.name != "..") {
+    for entry in left.iter().filter(|e| e.name != PARENT_DIR) {
         let name = entry.name.as_str();
         match right_meta.get(name) {
             None => {
@@ -134,7 +143,7 @@ pub fn apply_compare_to_panels(
 fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
     let apply = |entries: &mut [FileEntry]| {
         for entry in entries {
-            entry.selected = entry.name != ".." && marks.contains(&entry.name);
+            entry.selected = entry.name != PARENT_DIR && marks.contains(&entry.name);
         }
     };
     apply(&mut panel.listing.entries);
@@ -222,7 +231,7 @@ mod tests {
     fn dotdot_entries_are_ignored() {
         let left = vec![
             FileEntry::builder()
-                .name("..")
+                .name(PARENT_DIR)
                 .path("/tmp/..")
                 .is_dir(true)
                 .permissions(0o755)

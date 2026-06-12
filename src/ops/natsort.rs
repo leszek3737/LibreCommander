@@ -9,6 +9,7 @@
 use std::cmp::Ordering;
 
 const INLINE_CAP: usize = 24;
+const _: () = assert!(INLINE_CAP <= u8::MAX as usize);
 
 #[derive(Clone, Debug, Eq)]
 pub enum SegData {
@@ -76,7 +77,7 @@ impl Ord for NatKeySegment {
                 let bs = b.as_slice();
                 let has_leading_zero = as_.first() == Some(&b'0') || bs.first() == Some(&b'0');
                 if has_leading_zero {
-                    a.cmp(b)
+                    as_.cmp(bs)
                 } else {
                     let sa = strip_leading_zeros(as_);
                     let sb = strip_leading_zeros(bs);
@@ -96,7 +97,7 @@ impl PartialOrd for NatKeySegment {
 }
 
 pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
-    let mut segments = Vec::with_capacity(4);
+    let mut segments = Vec::with_capacity(16);
     let mut i = 0;
 
     while i < name.len() {
@@ -113,18 +114,19 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
             }
             let slice = &name[start..i];
             let seg = if slice.len() <= INLINE_CAP {
+                debug_assert!(slice.len() <= u8::MAX as usize);
                 let mut buf = [0u8; INLINE_CAP];
                 buf[..slice.len()].copy_from_slice(slice);
                 if insensitive {
                     buf[..slice.len()].make_ascii_lowercase();
                 }
                 SegData::Inline(buf, slice.len() as u8)
-            } else if insensitive {
-                let mut buf = slice.to_vec();
-                buf.make_ascii_lowercase();
-                SegData::Heap(buf.into_boxed_slice())
             } else {
-                SegData::Heap(slice.to_vec().into_boxed_slice())
+                let mut buf = slice.to_vec();
+                if insensitive {
+                    buf.make_ascii_lowercase();
+                }
+                SegData::Heap(buf.into_boxed_slice())
             };
             segments.push(NatKeySegment::Text(seg));
         }

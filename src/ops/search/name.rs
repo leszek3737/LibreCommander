@@ -13,6 +13,10 @@ use crate::ops::search::{
     FileSearch, MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchOutcome, TruncationReason,
 };
 
+/// Initial capacity for the visited inode set. Most directories contain well under
+/// 256 entries; this avoids reallocations for typical workloads while staying small.
+const VISITED_INODE_CAP: usize = 256;
+
 impl FileSearch {
     pub fn search_files(
         path: &Path,
@@ -48,7 +52,7 @@ impl FileSearch {
     ) -> SearchOutcome<FileEntry> {
         let mut outcome = SearchOutcome::default();
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
-        let mut visited = HashSet::with_capacity(256);
+        let mut visited = HashSet::with_capacity(VISITED_INODE_CAP);
         seed_visited_dir(path, &mut visited);
         let mut ctx = FileSearchContext {
             outcome: &mut outcome,
@@ -103,6 +107,11 @@ fn search_files_recursive(
             }
         };
         let entry_path = entry.path();
+        // file_type() may issue a stat call if the platform's read_dir
+        // does not populate d_type. When the entry is a directory both
+        // file_type() + get_file_info() + metadata() are called below;
+        // this can be optimized to a single metadata() call shared
+        // between matching, inode tracking, and recursion.
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
@@ -136,6 +145,10 @@ fn search_files_recursive(
         }
 
         if recursive && file_type.is_dir() {
+            // entry.metadata() here is a separate syscall from file_type()
+            // and get_file_info() above. Combining them into a single
+            // metadata() call that feeds file_type, inode tracking, and
+            // get_file_info would reduce syscalls for matched directories.
             if let Ok(meta) = entry.metadata()
                 && let Some(key) = get_inode_key(&meta)
                 && !ctx.visited.insert(key)

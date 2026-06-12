@@ -33,12 +33,14 @@ pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
 
 #[cfg(unix)]
 /// Return a stable filesystem identity for cycle detection.
+#[inline]
 pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     Some((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
 /// Return a stable filesystem identity for cycle detection.
+#[inline]
 pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     use std::os::windows::fs::MetadataExt;
     let vol = metadata.volume_serial_number()? as u64;
@@ -48,13 +50,23 @@ pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> 
 
 #[cfg(not(any(unix, windows)))]
 /// Platforms without inode-like identifiers.
+#[inline]
 pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     None
 }
 
 fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
-    if let Ok(meta) = std::fs::symlink_metadata(path)
-        && meta.is_dir()
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            debug_log!(
+                "seed_visited_dir: symlink_metadata failed for {}: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+    if meta.is_dir()
         && let Some(key) = get_inode_key(&meta)
     {
         visited.insert(key);
@@ -101,6 +113,8 @@ fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) ->
             continue;
         }
         if ft.is_dir() {
+            // insert() returns false when the key was already present,
+            // meaning we've seen this inode before → cycle detected.
             if let Some(key) = get_inode_key(&meta)
                 && !visited.insert(key)
             {
@@ -155,6 +169,26 @@ pub(crate) fn path_size(path: &Path) -> io::Result<u64> {
 ///
 /// Individual failures are logged and reported as 0 so that batch progress
 /// can still proceed.
+#[cfg(feature = "parallel")]
+pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
+    use rayon::prelude::*;
+
+    paths
+        .par_iter()
+        .map(|p| {
+            path_size(p).unwrap_or_else(|e| {
+                debug_log!("path_sizes: using 0 for {}: {e}", p.display());
+                0
+            })
+        })
+        .collect()
+}
+
+/// Best-effort size computation for multiple paths.
+///
+/// Individual failures are logged and reported as 0 so that batch progress
+/// can still proceed.
+#[cfg(not(feature = "parallel"))]
 pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
     paths
         .iter()

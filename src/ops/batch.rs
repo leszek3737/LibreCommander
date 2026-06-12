@@ -365,29 +365,33 @@ fn move_entry(
     })
 }
 
+#[inline]
+fn drain_progress(rx: &mpsc::Receiver<u64>, mut consume: impl FnMut(u64)) {
+    for delta in rx.try_iter() {
+        consume(delta);
+    }
+}
+
 fn wait_for_result_with_progress<T>(
     result_rx: &mpsc::Receiver<io::Result<T>>,
     progress_rx: &mpsc::Receiver<u64>,
-    on_progress: &mut dyn FnMut(u64),
+    mut on_progress: &mut dyn FnMut(u64),
 ) -> io::Result<T> {
     loop {
         match result_rx.recv_timeout(Duration::from_millis(25)) {
             Ok(result) => {
-                for bytes in progress_rx.try_iter() {
-                    on_progress(bytes);
-                }
+                drain_progress(progress_rx, &mut on_progress);
                 return result;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                for bytes in progress_rx.try_iter() {
-                    on_progress(bytes);
-                }
+                drain_progress(progress_rx, &mut on_progress);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                for bytes in progress_rx.try_iter() {
-                    on_progress(bytes);
-                }
-                return Err(io::Error::other("operation worker failed"));
+                drain_progress(progress_rx, &mut on_progress);
+                return Err(io::Error::other(
+                    "worker thread disconnected unexpectedly — \
+                     the spawned thread may have panicked or dropped the result sender",
+                ));
             }
         }
     }
@@ -488,6 +492,39 @@ where
     }
 }
 
+struct ByteProgress<'a, P> {
+    progress: &'a mut P,
+    ctx: &'a ProgressCtx<'a>,
+    bytes_done: u64,
+    bytes_total: u64,
+    file_bytes_so_far: u64,
+    idx: usize,
+    current_total: u64,
+}
+
+impl<'a, P: FnMut(BatchProgress)> ByteProgress<'a, P> {
+    fn on_delta(&mut self, src: &Path, byte_delta: u64) {
+        self.file_bytes_so_far = self.file_bytes_so_far.saturating_add(byte_delta);
+        if self.current_total > 0 {
+            self.file_bytes_so_far = self.file_bytes_so_far.min(self.current_total);
+        }
+        let current_bytes_done = self.bytes_done.saturating_add(self.file_bytes_so_far);
+        self.bytes_total = self.bytes_total.max(current_bytes_done);
+        report_file_active(
+            self.progress,
+            self.ctx,
+            FileProgress {
+                idx: self.idx,
+                src,
+                bytes_done: current_bytes_done,
+                bytes_total: self.bytes_total,
+                file_bytes: self.file_bytes_so_far,
+                file_total: self.current_total.max(self.file_bytes_so_far),
+            },
+        );
+    }
+}
+
 fn process_batch_entry<F>(
     idx: usize,
     src: &Path,
@@ -536,34 +573,19 @@ fn process_batch_entry<F>(
         return;
     }
 
-    let mut file_bytes_so_far = 0_u64;
-    let result = {
-        let bytes_done = &mut state.bytes_done;
-        let bytes_total = &mut state.bytes_total;
-        action(src, &target, &mut |byte_delta: u64| {
-            file_bytes_so_far = file_bytes_so_far.saturating_add(byte_delta);
-            if current_total > 0 {
-                file_bytes_so_far = file_bytes_so_far.min(current_total);
-            }
-            let current_bytes_done = bytes_done.saturating_add(file_bytes_so_far);
-            *bytes_total = (*bytes_total).max(current_bytes_done);
-            report_file_active(
-                progress,
-                ctx,
-                FileProgress {
-                    idx,
-                    src,
-                    bytes_done: current_bytes_done,
-                    bytes_total: *bytes_total,
-                    file_bytes: file_bytes_so_far,
-                    file_total: current_total.max(file_bytes_so_far),
-                },
-            );
-        })
+    let mut bp = ByteProgress {
+        progress,
+        ctx,
+        bytes_done: state.bytes_done,
+        bytes_total: state.bytes_total,
+        file_bytes_so_far: 0,
+        idx,
+        current_total,
     };
+    let result = action(src, &target, &mut |byte_delta| bp.on_delta(src, byte_delta));
 
-    state.bytes_done = state.bytes_done.saturating_add(file_bytes_so_far);
-    state.bytes_total = state.bytes_total.max(state.bytes_done);
+    state.bytes_done = bp.bytes_done.saturating_add(bp.file_bytes_so_far);
+    state.bytes_total = bp.bytes_total.max(state.bytes_done);
 
     if let Err(e) = result {
         if e.kind() == io::ErrorKind::Interrupted && is_canceled(cancel) {
@@ -572,7 +594,7 @@ fn process_batch_entry<F>(
         state.errors.push(format!("{}: {}", src.display(), e));
     } else {
         state.success_count += 1;
-        let remainder = current_total.saturating_sub(file_bytes_so_far);
+        let remainder = current_total.saturating_sub(bp.file_bytes_so_far);
         state.bytes_done = state.bytes_done.saturating_add(remainder);
         state.bytes_total = state.bytes_total.max(state.bytes_done);
     }
@@ -580,43 +602,70 @@ fn process_batch_entry<F>(
     report_transition(progress, ctx, idx + 1, state.bytes_done, state.bytes_total);
 }
 
+#[cfg(unix)]
+mod identity {
+    use std::io;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+
+    #[derive(Hash, Eq, PartialEq)]
+    pub struct Identity {
+        dev: u64,
+        ino: u64,
+    }
+
+    pub fn get_identity(path: &Path) -> io::Result<Identity> {
+        let meta = path.symlink_metadata()?;
+        Ok(Identity {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+mod identity {
+    use std::fs;
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    #[derive(Hash, Eq, PartialEq)]
+    pub struct Identity {
+        path: PathBuf,
+    }
+
+    pub fn get_identity(path: &Path) -> io::Result<Identity> {
+        let _meta = path.symlink_metadata()?;
+        Ok(Identity {
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+use identity::Identity;
+
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
-    #[cfg(unix)]
-    let mut seen_ids: HashSet<(u64, u64)> = HashSet::new();
-    #[cfg(not(unix))]
-    let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+    let mut seen_identities: HashSet<Identity> = HashSet::new();
     let mut identity_ok: Vec<PathBuf> = Vec::new();
     let mut identity_fail: Vec<PathBuf> = Vec::new();
 
     for p in paths {
-        #[cfg(unix)]
-        {
-            match p.symlink_metadata() {
-                Ok(meta) => {
-                    use std::os::unix::fs::MetadataExt;
-                    let id = (meta.dev(), meta.ino());
-                    if !seen_ids.insert(id) {
-                        continue;
-                    }
-                    identity_ok.push(p.clone());
+        match identity::get_identity(p) {
+            Ok(id) => {
+                if !seen_identities.insert(id) {
+                    continue;
                 }
-                Err(_) => {
-                    identity_fail.push(p.clone());
-                }
+                identity_ok.push(p.clone());
             }
-        }
-        #[cfg(not(unix))]
-        {
-            if !seen_paths.insert(p.clone()) {
-                continue;
-            }
-            match p.symlink_metadata() {
-                Ok(_) => identity_ok.push(p.clone()),
-                Err(_) => identity_fail.push(p.clone()),
+            Err(_) => {
+                identity_fail.push(p.clone());
             }
         }
     }
 
+    // PERF: sort + O(n·depth) ancestors check. For very large batches (100k+)
+    // this may become a bottleneck. TODO: profile before considering a trie/hash
+    // prefix tree to reduce worst-case from O(n·depth) to amortized O(n).
     identity_ok.sort_by_key(|p| p.components().count());
     let mut filtered: Vec<PathBuf> = Vec::new();
     let mut accepted: HashSet<&Path> = HashSet::with_capacity(identity_ok.len());
@@ -775,9 +824,7 @@ fn batch_extract_archive(
         loop {
             match result_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => {
-                    for delta in progress_rx.try_iter() {
-                        bytes_done = bytes_done.saturating_add(delta);
-                    }
+                    drain_progress(&progress_rx, |d| bytes_done = bytes_done.saturating_add(d));
                     let errors = match result {
                         Ok(()) => Vec::new(),
                         Err(ref e) => vec![format!("{}: {e}", source.display())],
@@ -791,9 +838,7 @@ fn batch_extract_archive(
                     };
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    for delta in progress_rx.try_iter() {
-                        bytes_done = bytes_done.saturating_add(delta);
-                    }
+                    drain_progress(&progress_rx, |d| bytes_done = bytes_done.saturating_add(d));
                     report_progress(
                         progress,
                         &ProgressSnapshot {
@@ -809,11 +854,12 @@ fn batch_extract_archive(
                     );
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    for delta in progress_rx.try_iter() {
-                        bytes_done = bytes_done.saturating_add(delta);
-                    }
+                    drain_progress(&progress_rx, |d| bytes_done = bytes_done.saturating_add(d));
                     return BatchReport {
-                        errors: vec![format!("{}: operation worker failed", source.display())],
+                        errors: vec![format!(
+                            "{}: operation worker disconnected",
+                            source.display()
+                        )],
                         success_count: 0,
                         canceled: is_canceled(cancel),
                         action_label,
@@ -873,9 +919,7 @@ fn batch_create_archive(
         loop {
             match result_rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => {
-                    for delta in progress_rx.try_iter() {
-                        bytes_done = bytes_done.saturating_add(delta);
-                    }
+                    drain_progress(&progress_rx, |d| bytes_done = bytes_done.saturating_add(d));
                     let errors = match result {
                         Ok(()) => Vec::new(),
                         Err(ref e) => vec![format!("{}: {e}", dest.display())],
@@ -889,9 +933,7 @@ fn batch_create_archive(
                     };
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    for delta in progress_rx.try_iter() {
-                        bytes_done = bytes_done.saturating_add(delta);
-                    }
+                    drain_progress(&progress_rx, |d| bytes_done = bytes_done.saturating_add(d));
                     report_progress(
                         progress,
                         &ProgressSnapshot {
@@ -907,11 +949,9 @@ fn batch_create_archive(
                     );
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    for delta in progress_rx.try_iter() {
-                        bytes_done = bytes_done.saturating_add(delta);
-                    }
+                    drain_progress(&progress_rx, |d| bytes_done = bytes_done.saturating_add(d));
                     return BatchReport {
-                        errors: vec![format!("{}: operation worker failed", dest.display())],
+                        errors: vec![format!("{}: operation worker disconnected", dest.display())],
                         success_count: 0,
                         canceled: is_canceled(cancel),
                         action_label,

@@ -54,7 +54,9 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
         (Ok(old_meta), Ok(new_meta)) => super::common::same_inode(&old_meta, &new_meta),
         _ => false,
     };
-    if !same_file && new_path.try_exists().unwrap_or(true) {
+    // Propagate error from try_exists() — if we can't stat the destination
+    // (e.g., permission denied), fail instead of silently assuming it exists.
+    if !same_file && new_path.try_exists()? {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "destination already exists",
@@ -79,12 +81,13 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     let result = fs::set_permissions(path, permissions).map_err(|e| {
         if e.raw_os_error() == Some(libc::EFTYPE) {
-            return io::Error::new(
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "cannot chmod a symlink, refuse to follow symlinks",
-            );
+            )
+        } else {
+            e
         }
-        e
     });
     #[cfg(not(target_os = "macos"))]
     let result = fs::set_permissions(path, permissions);

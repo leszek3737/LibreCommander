@@ -557,6 +557,87 @@ fn dedup_paths_canonical_failure_keeps_nonexistent() {
 
 #[cfg(unix)]
 #[test]
+fn batch_copy_symlink_preserves_link_not_target() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+    let target = make_file(src_dir.path(), "target.txt", b"data");
+    let link = src_dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let action = PendingAction::Copy {
+        sources: vec![link],
+        dest: dest_dir.path().to_path_buf(),
+        overwrite: false,
+    };
+    let report = execute_batch(action);
+
+    assert_eq!(report.success_count, 1);
+    assert!(report.errors.is_empty());
+    let dest_link = dest_dir.path().join("link.txt");
+    assert!(dest_link.is_symlink());
+    assert_eq!(fs::read_link(&dest_link).unwrap(), target);
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_move_symlink_preserves_link_not_target() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+    let target = make_file(src_dir.path(), "target.txt", b"data");
+    let link = src_dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let action = PendingAction::Move {
+        sources: vec![link.clone()],
+        dest: dest_dir.path().to_path_buf(),
+        overwrite: false,
+    };
+    let report = execute_batch(action);
+
+    assert_eq!(report.success_count, 1);
+    assert!(report.errors.is_empty());
+    assert!(!link.exists());
+    let dest_link = dest_dir.path().join("link.txt");
+    assert!(dest_link.is_symlink());
+    assert_eq!(fs::read_link(&dest_link).unwrap(), target);
+}
+
+#[test]
+fn batch_copy_unicode_filenames() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+    let f1 = make_file(src_dir.path(), "日本語ファイル.txt", b"nihongo");
+    let f2 = make_file(src_dir.path(), "\u{1f680}launch.txt", b"emoji");
+    let f3 = make_file(src_dir.path(), "caf\u{e9}.txt", b"accent");
+
+    let action = PendingAction::Copy {
+        sources: vec![f1, f2, f3],
+        dest: dest_dir.path().to_path_buf(),
+        overwrite: false,
+    };
+    let report = execute_batch(action);
+
+    assert_eq!(report.success_count, 3);
+    assert!(report.errors.is_empty());
+    assert!(dest_dir.path().join("日本語ファイル.txt").exists());
+    assert!(dest_dir.path().join("🚀launch.txt").exists());
+    assert!(dest_dir.path().join("café.txt").exists());
+}
+
+/// Cross-device move fallback (copy+delete) cannot be reliably tested in unit
+/// tests because `tempfile::tempdir()` creates dirs on the same filesystem,
+/// so `fs::rename()` never returns `CrossesDevices`.  The fallback code path
+/// lives in [`super::file_ops::move_ops::move_entry_impl`] and is covered by
+/// integration tests or manual testing across mount points.  This placeholder
+/// ensures the compilation unit references the fallback symbol.
+#[test]
+fn cross_device_move_fallback_is_compiled() {
+    use super::file_ops::move_ops;
+    let _ = move_ops::move_entry_with_progress as fn(_, _, _, _, _) -> _;
+}
+
+#[cfg(unix)]
+#[test]
 fn batch_delete_symlink_preserves_target() {
     let dir = tempfile::tempdir().unwrap();
     let target = make_file(dir.path(), "target.txt", b"keep me");

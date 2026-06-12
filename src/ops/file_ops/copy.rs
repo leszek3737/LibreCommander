@@ -16,43 +16,31 @@ use super::temp::reserve_temp_file_for;
 use super::temp::{publish_temp_dir, reserve_temp_dir_for, swap_temp_to_dest};
 
 #[cfg(test)]
+fn copy_file_to_temp(src: &Path, dest: &Path) -> io::Result<(std::path::PathBuf, u64)> {
+    let temp = reserve_temp_file_for(dest)?;
+    let bytes = match fs::copy(src, &temp) {
+        Ok(b) => b,
+        Err(e) => {
+            cleanup_file(&temp);
+            return Err(e);
+        }
+    };
+    let src_meta = fs::metadata(src)?;
+    if let Err(e) = apply_metadata(&temp, &src_meta) {
+        cleanup_file(&temp);
+        return Err(e);
+    }
+    Ok((temp, bytes))
+}
+
+#[cfg(test)]
 pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     reject_same_file(src, dest)?;
     if !overwrite {
         ensure_destination_absent(dest)?;
     }
-    let src_meta = fs::metadata(src)?;
-    if overwrite {
-        let temp = reserve_temp_file_for(dest)?;
-        let bytes = match fs::copy(src, &temp) {
-            Ok(b) => b,
-            Err(e) => {
-                cleanup_file(&temp);
-                return Err(e);
-            }
-        };
-        if let Err(e) = apply_metadata(&temp, &src_meta) {
-            cleanup_file(&temp);
-            return Err(e);
-        }
-        if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
-            cleanup_file(&temp);
-            return Err(err);
-        }
-        Ok(bytes)
-    } else {
-        let temp = reserve_temp_file_for(dest)?;
-        let bytes = match fs::copy(src, &temp) {
-            Ok(b) => b,
-            Err(e) => {
-                cleanup_file(&temp);
-                return Err(e);
-            }
-        };
-        if let Err(e) = apply_metadata(&temp, &src_meta) {
-            cleanup_file(&temp);
-            return Err(e);
-        }
+    let (temp, bytes) = copy_file_to_temp(src, dest)?;
+    if !overwrite {
         match fs::hard_link(&temp, dest) {
             Ok(()) => {
                 cleanup_file(&temp);
@@ -65,15 +53,14 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
                     format!("destination already exists: {}", dest.display()),
                 ));
             }
-            // Intentional: hardlink is opportunistic; swap_temp_to_dest serves as rename fallback
             Err(_) => {}
         }
-        if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
-            cleanup_file(&temp);
-            return Err(err);
-        }
-        Ok(bytes)
     }
+    if let Err(err) = swap_temp_to_dest(&temp, dest, overwrite) {
+        cleanup_file(&temp);
+        return Err(err);
+    }
+    Ok(bytes)
 }
 
 pub fn copy_file_with_progress(
@@ -192,18 +179,7 @@ fn copy_dir_recursive_with_progress_inner(
 
     check_canceled(ctx.cancel)?;
     fs::set_permissions(dest, src_perms)?;
-    let atime = filetime::FileTime::from_last_access_time(&src_meta);
-    let mtime = filetime::FileTime::from_last_modification_time(&src_meta);
-    filetime::set_file_times(dest, atime, mtime).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!(
-                "failed to preserve timestamps for {}: {}",
-                dest.display(),
-                e
-            ),
-        )
-    })?;
+    preserve_timestamps(dest, &src_meta)?;
     Ok(total_bytes)
 }
 
@@ -266,10 +242,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     Ok(())
 }
 
-#[cfg(test)]
-fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
-    let mode = src_meta.permissions();
-    fs::set_permissions(target, mode)?;
+pub(crate) fn preserve_timestamps(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
     let atime = filetime::FileTime::from_last_access_time(src_meta);
     let mtime = filetime::FileTime::from_last_modification_time(src_meta);
     filetime::set_file_times(target, atime, mtime).map_err(|e| {
@@ -281,6 +254,11 @@ fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
                 e
             ),
         )
-    })?;
-    Ok(())
+    })
+}
+
+#[cfg(test)]
+fn apply_metadata(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
+    fs::set_permissions(target, src_meta.permissions())?;
+    preserve_timestamps(target, src_meta)
 }

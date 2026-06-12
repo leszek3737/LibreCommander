@@ -68,7 +68,7 @@ fn validate_not_critical(canonical: &Path) -> io::Result<()> {
         ));
     }
     for critical in CRITICAL_DIRS {
-        if *canonical == *Path::new(*critical) {
+        if canonical == Path::new(*critical) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("refusing to delete critical system directory: {critical}"),
@@ -133,7 +133,7 @@ fn delete_dir_contents_impl(
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() {
         return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::InvalidInput,
             "refusing to recursively delete symlinked directory",
         ));
     }
@@ -150,6 +150,7 @@ fn delete_dir_contents_impl(
             check_optional_canceled(cancel)?;
             fs::remove_dir(&entry_path)?;
         } else {
+            // unlink(2) handles all non-directory entries: regular files, sockets, FIFOs, block/char devices
             fs::remove_file(&entry_path)?;
         }
     }
