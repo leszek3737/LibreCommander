@@ -38,20 +38,20 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
         }
         KeyCode::F(5) => {
             confirm_file_transfer(state, "Copy Confirm", "Copy", |sources, dest| {
-                lc::app::types::PendingAction::Copy {
+                lc::app::types::PendingAction::Copy(lc::app::types::TransferAction {
                     sources,
                     dest,
                     overwrite: false,
-                }
+                })
             });
         }
         KeyCode::F(6) => {
             confirm_file_transfer(state, "Move Confirm", "Move", |sources, dest| {
-                lc::app::types::PendingAction::Move {
+                lc::app::types::PendingAction::Move(lc::app::types::TransferAction {
                     sources,
                     dest,
                     overwrite: false,
-                }
+                })
             });
         }
         KeyCode::F(7) => {
@@ -72,8 +72,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             if let Some(name) = entry_name
                 && name != ".."
             {
-                state.dialog_input.text = name;
-                state.dialog_input.cursor_end();
+                state.dialog_input.set_text_at_end(name);
                 state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
                     prompt: "Rename to:".to_string(),
                     action: InputAction::Rename,
@@ -384,8 +383,7 @@ pub(crate) fn show_archive_dialog(state: &mut AppState) {
     };
     let path_str = state.active_panel().path().display().to_string();
     let mut dest_input = lc::app::types::TextInput::new();
-    dest_input.text = path_str;
-    dest_input.cursor_end();
+    dest_input.set_text_at_end(path_str);
     state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveExtract(Box::new(
         lc::app::types::ArchiveExtractDetails {
             source,
@@ -474,8 +472,9 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                 prompt: "Quick cd:".to_string(),
                 action: InputAction::QuickCd,
             });
-            state.dialog_input.text = state.active_panel().path().display().to_string();
-            state.dialog_input.cursor_end();
+            state
+                .dialog_input
+                .set_text_at_end(state.active_panel().path().display().to_string());
         }
         KeyCode::Char('x' | 'X') => state.enter_command_line_mode(),
         _ => {}

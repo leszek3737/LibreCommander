@@ -14,6 +14,10 @@ fn state_with_panels(
     state
 }
 
+fn entry(name: &str) -> TestEntry {
+    TestEntry::new(name).path(test_path(name))
+}
+
 fn extract_confirm_details(state: &AppState) -> &app::types::ConfirmDetails {
     match &state.mode {
         AppMode::Dialog(DialogKind::Confirm(d)) => d,
@@ -23,10 +27,7 @@ fn extract_confirm_details(state: &AppState) -> &app::types::ConfirmDetails {
 
 #[test]
 fn compare_directories_reports_summary() {
-    let mut state = state_with_panels(
-        vec![TestEntry::new("a.txt").build()],
-        vec![TestEntry::new("b.txt").build()],
-    );
+    let mut state = state_with_panels(vec![entry("a.txt").build()], vec![entry("b.txt").build()]);
 
     pickers::compare_directories(&mut state, CompareMode::Quick);
 
@@ -63,14 +64,8 @@ fn compare_directories_reports_summary() {
 #[test]
 fn compare_directories_marks_unique_entries_selected() {
     let mut state = state_with_panels(
-        vec![
-            TestEntry::new("same.txt").build(),
-            TestEntry::new("left.txt").build(),
-        ],
-        vec![
-            TestEntry::new("same.txt").build(),
-            TestEntry::new("right.txt").build(),
-        ],
+        vec![entry("same.txt").build(), entry("left.txt").build()],
+        vec![entry("same.txt").build(), entry("right.txt").build()],
     );
 
     pickers::compare_directories(&mut state, CompareMode::Quick);
@@ -96,8 +91,8 @@ fn compare_directories_marks_unique_entries_selected() {
 #[test]
 fn compare_directories_size_mode_reports_mismatches() {
     let mut state = state_with_panels(
-        vec![TestEntry::new("file.txt").file(5).build()],
-        vec![TestEntry::new("file.txt").file(20).build()],
+        vec![entry("file.txt").file(5).build()],
+        vec![entry("file.txt").file(20).build()],
     );
 
     pickers::compare_directories(&mut state, CompareMode::Size);
@@ -157,7 +152,7 @@ fn compare_directories_quick_empty_dirs() {
 #[test]
 fn compare_mode_picker_maps_index_to_mode() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![TestEntry::new("a.txt").build()];
+    state.left_panel.listing.entries = vec![entry("a.txt").build()];
 
     for (idx, mode) in CompareMode::ALL.iter().enumerate() {
         // Reset to picker mode for each iteration — simulates fresh picker invocation
@@ -197,14 +192,14 @@ fn compare_mode_picker_esc_cancels() {
 fn compare_directories_identical_content_mixed_types_symlinks() {
     let mut state = state_with_panels(
         vec![
-            TestEntry::new("file.txt").file(100).build(),
-            TestEntry::new("subdir").build(),
-            TestEntry::new("link.txt").file(100).symlink().build(),
+            entry("file.txt").file(100).build(),
+            entry("subdir").build(),
+            entry("link.txt").file(100).symlink().build(),
         ],
         vec![
-            TestEntry::new("file.txt").file(100).build(),
-            TestEntry::new("subdir").build(),
-            TestEntry::new("link.txt").file(100).symlink().build(),
+            entry("file.txt").file(100).build(),
+            entry("subdir").build(),
+            entry("link.txt").file(100).symlink().build(),
         ],
     );
 

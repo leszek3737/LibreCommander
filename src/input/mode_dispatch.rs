@@ -17,7 +17,7 @@ const HORIZONTAL_SCROLL_STEP: usize = 4;
 fn refresh_or_rebuild(state: &mut AppState, visible_height: usize) {
     let needs_refresh = {
         let panel = state.active_panel();
-        panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty()
+        panel.listing.needs_full_read() || panel.listing.unfiltered_entries.is_empty()
     };
     if needs_refresh {
         panel_ops::refresh_active(state);
@@ -148,8 +148,9 @@ pub(crate) fn handle_viewer_mode(
             KeyCode::Char('n') => vs.next_match(page_height),
             KeyCode::Char('N') => vs.prev_match(page_height),
             KeyCode::Char('/') => {
-                state.dialog_input.text = vs.search_query.as_deref().unwrap_or("").to_owned();
-                state.dialog_input.cursor_end();
+                state
+                    .dialog_input
+                    .set_text_at_end(vs.search_query.as_deref().unwrap_or("").to_owned());
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Find in viewer:".to_string(),
                     action: InputAction::ViewerSearch,

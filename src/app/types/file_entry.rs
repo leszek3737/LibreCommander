@@ -112,8 +112,6 @@ impl std::fmt::Display for FileSize {
         let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
         let mut size_f = size as f64;
         let mut unit_idx = 0;
-        // TODO: merge the two division loops — first pass scales down,
-        // second handles rounding edge case (e.g. 1023.95 -> 1024.0 -> 1.0 KB).
         while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
             size_f /= BYTES_PER_UNIT;
             unit_idx += 1;

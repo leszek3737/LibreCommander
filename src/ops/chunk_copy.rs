@@ -72,13 +72,6 @@ fn copy_to_temp(
 ) -> io::Result<u64> {
     let dest_file = File::create_new(temp_dest)?;
 
-    // TODO: zero-copy paths when kernel APIs are safely available:
-    //   Linux: ioctl FICLONE / copy_file_range can avoid userspace buffer copies
-    //          entirely for same-fs copies; fallback: splice(2) via sendfile.
-    //   macOS: fcopyfile(3) is available via libc but requires an unsafe block
-    //          with manual errno handling; wrap in a platform-specific safe fn.
-    //   Tracking: file an issue once API candidates are scoped.
-
     let mut reader = src_file;
     let mut writer = dest_file;
     let mut buf = vec![0_u8; BUFFER_SIZE];

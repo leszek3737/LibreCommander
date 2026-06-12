@@ -20,8 +20,8 @@ pub(super) fn to_ui_dialog<'a>(
         app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
             title: Cow::Borrowed("Input"),
             prompt: Cow::Borrowed(prompt),
-            value: Cow::Borrowed(&state.dialog_input.text),
-            cursor_pos: state.dialog_input.cursor,
+            value: Cow::Borrowed(state.dialog_input.text()),
+            cursor_pos: state.dialog_input.cursor(),
         },
         app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
             title: Cow::Borrowed("Error"),
@@ -70,7 +70,7 @@ pub(super) fn to_ui_dialog<'a>(
                 files: Cow::Borrowed(&details.source_display),
             }
         }
-        app::types::DialogKind::Properties(..) => properties_to_ui_dialog(dialog_kind),
+        app::types::DialogKind::Properties(details) => properties_to_ui_dialog(details),
         app::types::DialogKind::OverwriteConfirm(details) => {
             dialogs::DialogKind::OverwriteConfirm {
                 selection: state.dialog_selection,
@@ -86,47 +86,29 @@ pub(super) fn to_ui_dialog<'a>(
             );
             dialogs::DialogKind::ArchiveExtract {
                 info: Cow::Owned(info),
-                dest_value: Cow::Borrowed(&details.dest_input.text),
-                dest_cursor: details.dest_input.cursor,
+                dest_value: Cow::Borrowed(details.dest_input.text()),
+                dest_cursor: details.dest_input.cursor(),
                 selection: state.dialog_selection,
             }
         }
         app::types::DialogKind::ArchiveCreate(details) => dialogs::DialogKind::ArchiveCreate {
             source_count: details.sources.len(),
-            dest_value: Cow::Borrowed(&details.dest_input.text),
-            dest_cursor: details.dest_input.cursor,
+            dest_value: Cow::Borrowed(details.dest_input.text()),
+            dest_cursor: details.dest_input.cursor(),
             selection: state.dialog_selection,
         },
     }
 }
 
-fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::DialogKind<'_> {
-    let (name, size, mtime, permissions, owner, group, is_dir, is_symlink) = match dialog_kind {
-        app::types::DialogKind::Properties(details) => (
-            &details.name,
-            &details.size,
-            &details.mtime,
-            &details.permissions,
-            &details.owner,
-            &details.group,
-            &details.is_dir,
-            &details.is_symlink,
-        ),
-        _ => {
-            return dialogs::DialogKind::Error {
-                title: Cow::Borrowed("Internal Error"),
-                message: Cow::Borrowed("Expected Properties dialog"),
-            };
-        }
-    };
-    let file_type = if *is_symlink {
+fn properties_to_ui_dialog(details: &app::types::PropertiesDetails) -> dialogs::DialogKind<'_> {
+    let file_type = if details.is_symlink {
         "Symlink"
-    } else if *is_dir {
+    } else if details.is_dir {
         "Directory"
     } else {
         "File"
     };
-    let mtime_str = if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+    let mtime_str = if let Ok(duration) = details.mtime.duration_since(std::time::UNIX_EPOCH) {
         chrono::Local
             .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
             .single()
@@ -139,12 +121,14 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
     };
     dialogs::DialogKind::Properties {
         info: dialogs::PropertiesInfo {
-            name: Cow::Borrowed(name.as_str()),
-            size: Cow::Owned(app::types::FileEntry::format_size(*size)), // Per-frame alloc; low cost for short strings.
+            name: Cow::Borrowed(details.name.as_str()),
+            size: Cow::Owned(app::types::FileEntry::format_size(details.size)), // Per-frame alloc; low cost for short strings.
             mtime: Cow::Owned(mtime_str),
-            permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(*permissions)), // Per-frame alloc; low cost for short strings.
-            owner: Cow::Borrowed(owner.as_str()),
-            group: Cow::Borrowed(group.as_str()),
+            permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(
+                details.permissions,
+            )), // Per-frame alloc; low cost for short strings.
+            owner: Cow::Borrowed(details.owner.as_str()),
+            group: Cow::Borrowed(details.group.as_str()),
             file_type: Cow::Borrowed(file_type),
         },
     }

@@ -46,7 +46,7 @@ fn history_picker_enter_loads_command_line() {
     let mut state = make_history_picker(&["git status", "git log"], 0);
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
     assert_eq!(state.mode, AppMode::CommandLine);
-    assert_eq!(state.command_line.text, "git log");
+    assert_eq!(state.command_line.text(), "git log");
 }
 
 #[test]

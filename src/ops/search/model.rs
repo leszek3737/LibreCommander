@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TruncationReason {
     DepthLimit,
@@ -8,19 +10,46 @@ pub enum TruncationReason {
     BinaryFile,
 }
 
-// NOTE: Deriving Clone forces T: Clone bound on SearchOutcome<T>.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchErrorKind {
+    ReadDir,
+    ReadEntry,
+    FileType,
+    Metadata,
+    OpenFile,
+    ReadFile,
+    NonUtf8,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchError {
+    pub path: Option<PathBuf>,
+    pub kind: SearchErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.path {
+            Some(p) => write!(f, "{}: {}", p.display(), self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
+// NOTE: Deriving Clone forces T: Clone + E: Clone bounds on SearchOutcome<T, E>.
 // NOTE: Default cannot be derived because it requires T: Default;
 // FileEntry does not implement Default, so we provide a manual impl.
 #[derive(Debug, Clone)]
-pub struct SearchOutcome<T> {
+pub struct SearchOutcome<T, E = String> {
     pub matches: Vec<T>,
-    // TODO: Parameterize error type (currently String) to allow richer error reporting.
-    pub errors: Vec<String>,
+    pub errors: Vec<E>,
     pub truncated: Option<TruncationReason>,
     pub items_scanned: usize,
 }
 
-impl<T> Default for SearchOutcome<T> {
+impl<T, E> Default for SearchOutcome<T, E> {
     fn default() -> Self {
         Self {
             matches: Vec::new(),

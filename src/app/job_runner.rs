@@ -16,7 +16,7 @@ enum JobMessage {
         report: ops::batch::BatchReport,
     },
     SearchFinished {
-        outcome: Box<ops::search::SearchOutcome<FileEntry>>,
+        outcome: Box<ops::search::SearchOutcome<FileEntry, ops::search::SearchError>>,
         pattern: String,
     },
 }
@@ -127,7 +127,6 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
         state.status_message = Some("Another job is already running".to_string());
         return;
     }
-    // TODO: consider Arc<Path> to avoid cloning the path here
     let dir = state.active_panel().path().to_path_buf();
     let pattern_owned = pattern.to_string();
     let (sender, receiver) = mpsc::sync_channel(64);
@@ -251,8 +250,6 @@ pub fn poll_running_job(
                     if let Some(panel) = state.menu_restore_panel.take() {
                         state.active_panel = panel;
                     }
-                    // TODO: avoid .to_string() allocation — use &'static str
-                    // directly or a shared message constant.
                     state.status_message =
                         Some("Operation failed: worker thread panicked".to_string());
                     refresh_both(state);
@@ -265,8 +262,6 @@ pub fn poll_running_job(
                     if let Some(panel) = state.menu_restore_panel.take() {
                         state.active_panel = panel;
                     }
-                    // TODO: avoid .to_string() allocation — use &'static str
-                    // directly or a shared message constant.
                     state.status_message =
                         Some("Operation completed (worker finished without report)".to_string());
                     refresh_both(state);
@@ -279,9 +274,6 @@ pub fn poll_running_job(
     dirty
 }
 
-// TODO: `format_progress_message` and `format_duration_short` each allocate a
-// String. For hot paths, consider writing directly into a pre-allocated buffer
-// to avoid the intermediate allocation in `format_duration_short`.
 fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool) -> String {
     use std::fmt::Write;
 
@@ -291,8 +283,6 @@ fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool
     }
     let _ = write!(buf, "{} of {}: ", progress.completed, progress.total);
     if let Some(path) = progress.current.as_ref().and_then(|p| p.file_name()) {
-        // TODO: to_string_lossy() allocates a new String every call;
-        // write directly into the buffer character-by-character.
         let _ = buf.write_str(&path.to_string_lossy());
     } else {
         buf.push_str("done");
@@ -342,7 +332,7 @@ fn finish_running_job(
 
 fn finish_search_job(
     state: &mut AppState,
-    outcome: &ops::search::SearchOutcome<FileEntry>,
+    outcome: &ops::search::SearchOutcome<FileEntry, ops::search::SearchError>,
     pattern: &str,
     search_origin: Option<ActivePanel>,
     refresh_both: fn(&mut AppState),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::types::PendingAction;
+use crate::app::types::{PendingAction, TransferAction};
 use std::fs;
 use std::sync::atomic::Ordering;
 
@@ -17,11 +17,11 @@ fn batch_copy_files_to_dest() {
     let f1 = make_file(src_dir.path(), "a.txt", b"hello");
     let f2 = make_file(src_dir.path(), "b.txt", b"world");
 
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
 
     let report = execute_batch(action);
 
@@ -41,11 +41,11 @@ fn batch_copy_duplicate_dest_reports_error() {
     let f1 = make_file(src_a.path(), "same.txt", b"a");
     let f2 = make_file(src_b.path(), "same.txt", b"b");
 
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
 
     let report = execute_batch(action);
 
@@ -63,11 +63,11 @@ fn batch_move_files_to_dest() {
     let f1 = make_file(src_dir.path(), "x.txt", b"data");
     let f2 = make_file(src_dir.path(), "y.txt", b"more");
 
-    let action = PendingAction::Move {
+    let action = PendingAction::Move(TransferAction {
         sources: vec![f1.clone(), f2.clone()],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
 
     let report = execute_batch(action);
 
@@ -149,11 +149,11 @@ fn batch_copy_cancel_stops_between_items() {
     let f2 = make_file(src_dir.path(), "second.txt", b"2");
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_progress = Arc::clone(&cancel);
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
 
     let report = execute_batch_with_progress(
         action,
@@ -173,16 +173,45 @@ fn batch_copy_cancel_stops_between_items() {
 }
 
 #[test]
+fn batch_copy_post_action_cancel_reports_canceled() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+    let f1 = make_file(src_dir.path(), "first.txt", b"1");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_for_progress = Arc::clone(&cancel);
+    let action = PendingAction::Copy(TransferAction {
+        sources: vec![f1],
+        dest: dest_dir.path().to_path_buf(),
+        overwrite: false,
+    });
+
+    let report = execute_batch_with_progress(
+        action,
+        |progress| {
+            if progress.completed == 1 {
+                cancel_for_progress.store(true, Ordering::Relaxed);
+            }
+        },
+        &Some(cancel),
+        "Copy",
+    );
+
+    assert_eq!(report.success_count, 1);
+    assert!(report.canceled);
+    assert!(dest_dir.path().join("first.txt").exists());
+}
+
+#[test]
 fn batch_copy_reports_cumulative_byte_progress() {
     let src_dir = tempfile::tempdir().unwrap();
     let dest_dir = tempfile::tempdir().unwrap();
     let f1 = make_file(src_dir.path(), "first.txt", b"12345");
     let f2 = make_file(src_dir.path(), "second.txt", b"1234567");
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let mut updates = Vec::new();
 
     let report =
@@ -211,11 +240,11 @@ fn batch_copy_cancel_before_start_copies_nothing() {
     let f1 = make_file(src_dir.path(), "a.txt", b"data");
     let f2 = make_file(src_dir.path(), "b.txt", b"more");
     let cancel = Arc::new(AtomicBool::new(true));
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch_with_progress(action, |_| {}, &Some(cancel), "Copy");
     assert!(report.canceled);
     assert_eq!(report.success_count, 0);
@@ -253,11 +282,11 @@ fn dedup_paths_parent_removes_child() {
 #[test]
 fn empty_sources_batch_copy_returns_empty() {
     let dest_dir = tempfile::tempdir().unwrap();
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
     assert_eq!(report.success_count, 0);
     assert!(report.errors.is_empty());
@@ -276,11 +305,11 @@ fn empty_sources_batch_delete_returns_empty() {
 #[test]
 fn empty_sources_batch_move_returns_empty() {
     let dest_dir = tempfile::tempdir().unwrap();
-    let action = PendingAction::Move {
+    let action = PendingAction::Move(TransferAction {
         sources: vec![],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
     assert_eq!(report.success_count, 0);
     assert!(report.errors.is_empty());
@@ -290,7 +319,7 @@ fn empty_sources_batch_move_returns_empty() {
 #[test]
 fn batch_copy_nonexistent_source_reports_error() {
     let dest_dir = tempfile::tempdir().unwrap();
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![
             tempfile::tempdir()
                 .unwrap()
@@ -299,7 +328,7 @@ fn batch_copy_nonexistent_source_reports_error() {
         ],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
     assert_eq!(report.success_count, 0);
     assert_eq!(report.errors.len(), 1);
@@ -309,7 +338,7 @@ fn batch_copy_nonexistent_source_reports_error() {
 #[test]
 fn batch_move_nonexistent_source_reports_error() {
     let dest_dir = tempfile::tempdir().unwrap();
-    let action = PendingAction::Move {
+    let action = PendingAction::Move(TransferAction {
         sources: vec![
             tempfile::tempdir()
                 .unwrap()
@@ -318,7 +347,7 @@ fn batch_move_nonexistent_source_reports_error() {
         ],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
     assert_eq!(report.success_count, 0);
     assert_eq!(report.errors.len(), 1);
@@ -331,11 +360,11 @@ fn batch_copy_small_files_progress_invariants() {
     let dest_dir = tempfile::tempdir().unwrap();
     let f1 = make_file(src_dir.path(), "a.txt", b"hello");
     let f2 = make_file(src_dir.path(), "b.txt", b"world");
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let mut updates = Vec::new();
     let report = execute_batch_with_byte_progress(action, |p| updates.push(p), &None, "Copy");
     assert_eq!(report.success_count, 2);
@@ -353,16 +382,36 @@ fn batch_copy_small_files_progress_invariants() {
 }
 
 #[test]
+fn batch_progress_clamps_bytes_to_total() {
+    let progress = BatchProgress {
+        completed: 1,
+        total: 1,
+        current: None,
+        bytes_done: 11,
+        bytes_total: 10,
+        current_file_bytes: 6,
+        current_file_total: 5,
+        start_time: None,
+    }
+    .with_clamped_bytes();
+
+    assert_eq!(progress.bytes_done, 10);
+    assert_eq!(progress.bytes_total, 10);
+    assert_eq!(progress.current_file_bytes, 5);
+    assert_eq!(progress.current_file_total, 5);
+}
+
+#[test]
 fn batch_copy_large_file_progress_never_exceeds_total() {
     let src_dir = tempfile::tempdir().unwrap();
     let dest_dir = tempfile::tempdir().unwrap();
     let data = vec![b'x'; 4097];
     let file = make_file(src_dir.path(), "large.bin", &data);
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![file],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let mut updates = Vec::new();
 
     let report =
@@ -564,11 +613,11 @@ fn batch_copy_symlink_preserves_link_not_target() {
     let link = src_dir.path().join("link.txt");
     std::os::unix::fs::symlink(&target, &link).unwrap();
 
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![link],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
 
     assert_eq!(report.success_count, 1);
@@ -587,11 +636,11 @@ fn batch_move_symlink_preserves_link_not_target() {
     let link = src_dir.path().join("link.txt");
     std::os::unix::fs::symlink(&target, &link).unwrap();
 
-    let action = PendingAction::Move {
+    let action = PendingAction::Move(TransferAction {
         sources: vec![link.clone()],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
 
     assert_eq!(report.success_count, 1);
@@ -610,11 +659,11 @@ fn batch_copy_unicode_filenames() {
     let f2 = make_file(src_dir.path(), "\u{1f680}launch.txt", b"emoji");
     let f3 = make_file(src_dir.path(), "caf\u{e9}.txt", b"accent");
 
-    let action = PendingAction::Copy {
+    let action = PendingAction::Copy(TransferAction {
         sources: vec![f1, f2, f3],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
-    };
+    });
     let report = execute_batch(action);
 
     assert_eq!(report.success_count, 3);
@@ -622,18 +671,6 @@ fn batch_copy_unicode_filenames() {
     assert!(dest_dir.path().join("日本語ファイル.txt").exists());
     assert!(dest_dir.path().join("🚀launch.txt").exists());
     assert!(dest_dir.path().join("café.txt").exists());
-}
-
-/// Cross-device move fallback (copy+delete) cannot be reliably tested in unit
-/// tests because `tempfile::tempdir()` creates dirs on the same filesystem,
-/// so `fs::rename()` never returns `CrossesDevices`.  The fallback code path
-/// lives in [`super::file_ops::move_ops::move_entry_impl`] and is covered by
-/// integration tests or manual testing across mount points.  This placeholder
-/// ensures the compilation unit references the fallback symbol.
-#[test]
-fn cross_device_move_fallback_is_compiled() {
-    use super::file_ops::move_ops;
-    let _ = move_ops::move_entry_with_progress as fn(_, _, _, _, _) -> _;
 }
 
 #[cfg(unix)]

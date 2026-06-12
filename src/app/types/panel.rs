@@ -4,16 +4,20 @@ use std::path::{Path, PathBuf};
 use super::file_entry::FileEntry;
 use super::sorting::{ListingMode, SortMode, SortOptions};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListingState {
+    #[default]
+    Clean,
+    NeedsRebuild,
+    NeedsFullRead,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelListing {
     pub entries: Vec<FileEntry>,
     pub unfiltered_entries: Vec<FileEntry>,
     pub path_index: HashMap<PathBuf, usize>,
-    // TODO: model as type-state or explicit FSM — currently two bools that
-    // interact (needs_rebuild implies unfiltered_dirty should be false, and
-    // vice versa). A State enum would prevent invalid combinations.
-    pub needs_rebuild: bool,
-    pub unfiltered_dirty: bool,
+    state: ListingState,
 }
 
 impl PanelListing {
@@ -22,40 +26,65 @@ impl PanelListing {
             entries: Vec::new(),
             unfiltered_entries: Vec::new(),
             path_index: HashMap::new(),
-            needs_rebuild: false,
-            unfiltered_dirty: true,
+            state: ListingState::NeedsFullRead,
         }
     }
 
     pub fn set_unfiltered(&mut self, entries: Vec<FileEntry>) {
         self.path_index.clear();
         for (i, entry) in entries.iter().enumerate() {
-            // TODO: use Arc<Path> as key to avoid cloning PathBuf per entry
             self.path_index.insert(entry.path.clone(), i);
         }
         self.unfiltered_entries = entries;
-        self.unfiltered_dirty = false;
-        self.needs_rebuild = false;
+        self.state = ListingState::Clean;
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
         self.entries = entries;
     }
 
+    pub fn state(&self) -> ListingState {
+        self.state
+    }
+
+    pub fn is_clean(&self) -> bool {
+        self.state == ListingState::Clean
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.state == ListingState::NeedsRebuild
+    }
+
+    pub fn needs_full_read(&self) -> bool {
+        self.state == ListingState::NeedsFullRead
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_state(&mut self, state: ListingState) {
+        self.state = state;
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.unfiltered_entries.clear();
         self.path_index.clear();
-        self.needs_rebuild = false;
-        self.unfiltered_dirty = true;
+        self.state = ListingState::NeedsFullRead;
     }
 
     pub fn mark_dirty(&mut self) {
-        self.needs_rebuild = true;
+        if self.state == ListingState::Clean {
+            self.state = ListingState::NeedsRebuild;
+        }
     }
 
     pub fn mark_unfiltered_dirty(&mut self) {
-        self.unfiltered_dirty = true;
+        self.state = ListingState::NeedsFullRead;
+    }
+
+    pub fn mark_rebuilt(&mut self) {
+        if self.state == ListingState::NeedsRebuild {
+            self.state = ListingState::Clean;
+        }
     }
 }
 
@@ -293,9 +322,6 @@ impl PanelState {
             return;
         }
 
-        // TODO: clone-free rebuild — use existing path_index instead of
-        // building a new HashMap<PathBuf, usize> every call. Consider
-        // Arc<Path> keys or a secondary index view to avoid N clones.
         let index: HashMap<PathBuf, usize> = self
             .listing
             .unfiltered_entries

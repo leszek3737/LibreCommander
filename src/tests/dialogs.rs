@@ -4,13 +4,19 @@ use crate::render;
 use crate::{confirm_delete, confirm_file_transfer};
 use crossterm::event::KeyCode;
 use lc::app;
-use lc::app::types::{AppMode, AppState, DialogKind, PendingAction, PickerKind};
+use lc::app::types::{
+    AppMode, AppState, DialogKind, InputAction, PendingAction, PickerKind, TransferAction,
+};
 use lc::ui::viewer;
 use ratatui::layout::Size;
 use ratatui::{Terminal, backend::TestBackend};
 
 fn no_viewer_state() -> Option<viewer::ViewerState> {
     None
+}
+
+fn entry(name: &str) -> TestEntry {
+    TestEntry::new(name).path(test_path(name))
 }
 
 #[test]
@@ -49,7 +55,7 @@ fn confirm_enter_with_pending_action_starts_action() {
         active_panel: app::types::ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.listing.entries = vec![TestEntry::new("delme.txt").build()];
+    state.left_panel.listing.entries = vec![entry("delme.txt").build()];
     state.left_panel.cursor = 0;
 
     dialogs::handle_dialog(
@@ -74,25 +80,22 @@ fn confirm_enter_with_pending_action_starts_action() {
 #[test]
 fn confirm_file_transfer_copy_opens_dialog() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![
-        TestEntry::new("a.txt").build(),
-        TestEntry::new("b.txt").build(),
-    ];
+    state.left_panel.listing.entries = vec![entry("a.txt").build(), entry("b.txt").build()];
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
     confirm_file_transfer(&mut state, "Copy Confirm", "Copy", |sources, dest| {
-        PendingAction::Copy {
+        PendingAction::Copy(TransferAction {
             sources,
             dest,
             overwrite: false,
-        }
+        })
     });
     assert!(matches!(
         state.mode,
         AppMode::Dialog(DialogKind::Confirm(_))
     ));
     assert!(
-        matches!(state.pending_action, Some(PendingAction::Copy { .. })),
+        matches!(state.pending_action, Some(PendingAction::Copy(_))),
         "expected PendingAction::Copy, got: {:?}",
         state.pending_action
     );
@@ -101,7 +104,7 @@ fn confirm_file_transfer_copy_opens_dialog() {
 #[test]
 fn confirm_delete_opens_dialog() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![TestEntry::new("delme.txt").build()];
+    state.left_panel.listing.entries = vec![entry("delme.txt").build()];
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
     confirm_delete(&mut state);
@@ -297,4 +300,114 @@ fn status_bar_at_bottom() {
     assert!(!cell.symbol().trim().is_empty());
 }
 
-// TODO: Add integration test for chmod dialog (set mode, verify pending action, apply)
+#[test]
+#[cfg(unix)]
+fn chmod_valid_input_applies_mode_and_dismisses() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("chmod_target.txt");
+    std::fs::write(&file, "data").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Chmod (octal):".to_string(),
+            action: InputAction::Chmod,
+        }),
+        ..Default::default()
+    };
+    state.dialog_input.set_text_at_end("755".to_string());
+    state.left_panel.listing.entries = vec![
+        TestEntry::new("chmod_target.txt")
+            .path(&file)
+            .file(4)
+            .build(),
+    ];
+    state.left_panel.cursor = 0;
+    state.active_panel = app::types::ActivePanel::Left;
+
+    dialogs::handle_dialog(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        Size::new(80, 24),
+    );
+
+    assert_eq!(state.mode, AppMode::Normal);
+    let meta = std::fs::metadata(&file).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o755);
+}
+
+#[test]
+fn chmod_invalid_input_shows_error_stays_in_dialog() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Chmod (octal):".to_string(),
+            action: InputAction::Chmod,
+        }),
+        ..Default::default()
+    };
+    state.dialog_input.set_text_at_end("bad".to_string());
+    state.left_panel.listing.entries = vec![entry("f.txt").file(4).build()];
+    state.left_panel.cursor = 0;
+    state.active_panel = app::types::ActivePanel::Left;
+
+    dialogs::handle_dialog(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Enter,
+        Size::new(80, 24),
+    );
+
+    assert!(
+        matches!(state.mode, AppMode::Dialog(DialogKind::Input { .. })),
+        "expected Input dialog to remain open, got: {:?}",
+        state.mode
+    );
+    let msg = state.status_message.as_deref().unwrap_or("");
+    assert!(
+        msg.to_lowercase().contains("invalid"),
+        "expected 'Invalid' in status_message, got: {msg}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn chmod_esc_dismisses_without_changing_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("chmod_target.txt");
+    std::fs::write(&file, "data").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::Input {
+            prompt: "Chmod (octal):".to_string(),
+            action: InputAction::Chmod,
+        }),
+        ..Default::default()
+    };
+    state.dialog_input.set_text_at_end("777".to_string());
+    state.left_panel.listing.entries = vec![
+        TestEntry::new("chmod_target.txt")
+            .path(&file)
+            .file(4)
+            .build(),
+    ];
+    state.left_panel.cursor = 0;
+    state.active_panel = app::types::ActivePanel::Left;
+
+    dialogs::handle_dialog(
+        &mut state,
+        &mut None,
+        &mut None,
+        KeyCode::Esc,
+        Size::new(80, 24),
+    );
+
+    assert_eq!(state.mode, AppMode::Normal);
+    let meta = std::fs::metadata(&file).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o644);
+}

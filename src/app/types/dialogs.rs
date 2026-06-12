@@ -12,7 +12,6 @@ pub struct ConfirmDetails {
 }
 
 impl ConfirmDetails {
-    // TODO: accept `impl Into<String>` to avoid allocation when caller already has a String
     pub fn simple(title: &str, message: &str) -> Self {
         Self {
             title: title.to_string(),
@@ -21,7 +20,6 @@ impl ConfirmDetails {
         }
     }
 
-    // TODO: accept `impl Into<String>` to avoid allocation when caller already has a String
     pub fn with_files(title: &str, message: &str, files: Vec<String>) -> Self {
         Self {
             title: title.to_string(),
@@ -45,11 +43,9 @@ pub enum InputAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopyMoveDetails {
     pub source: Vec<PathBuf>,
+    pub source_display: Vec<String>,
     pub dest: PathBuf,
     pub is_move: bool,
-    // TODO: remove source_display; render should derive display strings from source
-    // paths on-the-fly to maintain single source of truth
-    pub source_display: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

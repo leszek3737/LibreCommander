@@ -237,13 +237,13 @@ fn apply_panel_changes(
 
     dirty |= left_refreshed || right_refreshed;
 
-    if state.left_panel.listing.needs_rebuild {
-        state.left_panel.listing.needs_rebuild = false;
+    if state.left_panel.listing.is_dirty() {
+        state.left_panel.listing.mark_rebuilt();
         rebuild_visible_entries(&mut state.left_panel, None);
         dirty = true;
     }
-    if state.right_panel.listing.needs_rebuild {
-        state.right_panel.listing.needs_rebuild = false;
+    if state.right_panel.listing.is_dirty() {
+        state.right_panel.listing.mark_rebuilt();
         rebuild_visible_entries(&mut state.right_panel, None);
         dirty = true;
     }
@@ -345,8 +345,6 @@ fn apply_shared_read_result(
         .get(panel.cursor)
         .filter(|entry| entry.name != "..")
         .map(|entry| entry.name.clone());
-    // TODO: cloning PathBuf per selected file into HashSet — consider borrowing or
-    //       using a cheaper index-based selection restore for large selections.
     let saved: HashSet<PathBuf> = panel
         .selected_entries()
         .into_iter()
@@ -354,8 +352,7 @@ fn apply_shared_read_result(
         .collect();
 
     update_panel_read_errors(panel, errors);
-    // TODO: clone needed because entries is &[FileEntry] shared with the other panel;
-    //       refactor to split ownership when both panels share the same dir.
+    // NOTE: clone needed because entries is &[FileEntry] shared with the other panel.
     panel.listing.set_unfiltered(entries.to_vec());
     panel.set_canonical_path(panel.path().canonicalize().ok());
     for entry in &mut panel.listing.unfiltered_entries {
@@ -406,7 +403,6 @@ pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> b
     apply_watcher_remove(panel, &path)
 }
 
-// TODO: inline panel_event_path at call sites — trivial one-liner adds indirection without benefit.
 fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
     path.file_name().map(|name| panel.path().join(name))
 }
@@ -499,8 +495,6 @@ pub(crate) fn refresh_panel_from_disk(panel: &mut PanelState) {
         .get(panel.cursor)
         .filter(|entry| entry.name != "..")
         .map(|entry| entry.name.clone());
-    // TODO: cloning PathBuf per selected file into HashSet — consider borrowing or
-    //       using a cheaper index-based selection restore for large selections.
     let saved: HashSet<PathBuf> = panel
         .selected_entries()
         .into_iter()

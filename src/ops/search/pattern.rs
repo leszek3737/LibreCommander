@@ -12,23 +12,10 @@ pub(super) fn contains_case_insensitive(
     }
     buf.clear();
     for c in haystack.chars().flat_map(|c| c.to_lowercase()) {
-        buf.extend_from_slice(&(c as u32).to_ne_bytes());
+        let mut bytes = [0; 4];
+        buf.extend_from_slice(c.encode_utf8(&mut bytes).as_bytes());
     }
-    if buf.len() < needle.len() {
-        return false;
-    }
-    let mut offset = 0;
-    while offset + needle.len() <= buf.len() {
-        let Some(pos) = finder.find(&buf[offset..]) else {
-            return false;
-        };
-        let aligned = offset + pos;
-        if aligned % 4 == 0 {
-            return true;
-        }
-        offset = aligned + 1;
-    }
-    false
+    finder.find(buf).is_some()
 }
 
 enum PatternKind {
@@ -59,21 +46,17 @@ impl CompiledPattern {
         let insensitive = !case_sensitive;
 
         if !pattern.contains(['*', '?']) {
-            let needle_chars: Vec<char> = if insensitive {
-                pattern.chars().flat_map(|c| c.to_lowercase()).collect()
+            let needle_str = if insensitive {
+                pattern.to_lowercase()
             } else {
-                pattern.chars().collect()
+                pattern.to_owned()
             };
             let needle_ascii = if insensitive && pattern.is_ascii() {
                 Some(pattern.to_ascii_lowercase())
             } else {
                 None
             };
-            let needle_str: String = needle_chars.iter().collect();
-            let needle_bytes: Vec<u8> = needle_chars
-                .iter()
-                .flat_map(|&c| (c as u32).to_ne_bytes())
-                .collect();
+            let needle_bytes = needle_str.clone().into_bytes();
             return Self {
                 kind: PatternKind::Plain {
                     needle_str,
@@ -472,6 +455,13 @@ mod tests {
             "i\u{307}stanbul",
             false
         ));
+        assert!(FileSearch::matches_pattern("zażółć.txt", "ŻÓŁĆ", false));
+        assert!(!FileSearch::matches_pattern("zażółć.txt", "ŻÓŁĆ", true));
+    }
+
+    #[test]
+    fn test_file_search_matches_pattern_case_insensitive_no_alignment_false_negative() {
+        assert!(FileSearch::matches_pattern("aŻółć.txt", "ŻÓŁĆ", false));
     }
 
     #[test]

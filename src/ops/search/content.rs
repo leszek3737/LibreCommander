@@ -13,7 +13,8 @@ use crate::ops::search::walk::{
 };
 use crate::ops::search::{
     FileSearch, MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS,
-    MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchOutcome, TruncationReason,
+    MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
+    TruncationReason,
 };
 
 impl FileSearch {
@@ -32,7 +33,7 @@ impl FileSearch {
         pattern: &str,
         recursive: bool,
         case_sensitive: bool,
-    ) -> SearchOutcome<(PathBuf, usize, String)> {
+    ) -> SearchOutcome<(PathBuf, usize, String), SearchError> {
         let cancel = AtomicBool::new(false);
         Self::search_content_with_diagnostics_cancellable(
             path,
@@ -49,7 +50,7 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
         cancel: &AtomicBool,
-    ) -> SearchOutcome<(PathBuf, usize, String)> {
+    ) -> SearchOutcome<(PathBuf, usize, String), SearchError> {
         let mut outcome = SearchOutcome::default();
         search_content_recursive(
             path,
@@ -70,15 +71,11 @@ fn search_content_recursive(
     recursive: bool,
     case_sensitive: bool,
     depth: usize,
-    outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+    outcome: &mut SearchOutcome<(PathBuf, usize, String), SearchError>,
     cancel: Option<&AtomicBool>,
 ) {
     let pattern_bytes: Vec<u8> = if !case_sensitive {
-        pattern
-            .chars()
-            .flat_map(|c| c.to_lowercase())
-            .flat_map(|c| (c as u32).to_ne_bytes())
-            .collect()
+        pattern.to_lowercase().into_bytes()
     } else {
         Vec::new()
     };
@@ -150,9 +147,11 @@ fn process_content_entry(
     let entry = match entry {
         Ok(entry) => entry,
         Err(err) => {
-            ctx.outcome
-                .errors
-                .push(format!("Failed to read entry in {}: {err}", path.display()));
+            ctx.outcome.errors.push(SearchError {
+                path: Some(path.to_path_buf()),
+                kind: SearchErrorKind::ReadEntry,
+                message: err.to_string(),
+            });
             return false;
         }
     };
@@ -160,10 +159,11 @@ fn process_content_entry(
     let file_type = match entry.file_type() {
         Ok(file_type) => file_type,
         Err(err) => {
-            ctx.outcome.errors.push(format!(
-                "Failed to read type for {}: {err}",
-                entry_path.display()
-            ));
+            ctx.outcome.errors.push(SearchError {
+                path: Some(entry_path.clone()),
+                kind: SearchErrorKind::FileType,
+                message: err.to_string(),
+            });
             return false;
         }
     };
@@ -193,10 +193,11 @@ fn process_content_entry(
         let target_meta = match std::fs::metadata(&entry_path) {
             Ok(meta) => meta,
             Err(err) => {
-                ctx.outcome.errors.push(format!(
-                    "Failed to read metadata for {}: {err}",
-                    entry_path.display()
-                ));
+                ctx.outcome.errors.push(SearchError {
+                    path: Some(entry_path.clone()),
+                    kind: SearchErrorKind::Metadata,
+                    message: err.to_string(),
+                });
                 return false;
             }
         };
@@ -221,7 +222,7 @@ fn search_in_file(
     case_sensitive: bool,
     pattern_bytes: &[u8],
     file_len: u64,
-    outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+    outcome: &mut SearchOutcome<(PathBuf, usize, String), SearchError>,
     cancel: Option<&AtomicBool>,
 ) {
     if pattern.is_empty() {
@@ -237,9 +238,11 @@ fn search_in_file(
     let file = match File::open(path) {
         Ok(f) => f,
         Err(err) => {
-            outcome
-                .errors
-                .push(format!("Failed to open {}: {err}", path.display()));
+            outcome.errors.push(SearchError {
+                path: Some(path.to_path_buf()),
+                kind: SearchErrorKind::OpenFile,
+                message: err.to_string(),
+            });
             return;
         }
     };
@@ -284,7 +287,7 @@ impl ScanBuffers {
 fn scan_lines(
     ctx: &mut ScanContext<'_>,
     reader: &mut BufReader<File>,
-    outcome: &mut SearchOutcome<(PathBuf, usize, String)>,
+    outcome: &mut SearchOutcome<(PathBuf, usize, String), SearchError>,
 ) {
     let mut line_no = 0_usize;
     let mut non_utf8_lines = 0usize;
@@ -348,11 +351,11 @@ fn scan_lines(
                     Err(_) => {
                         non_utf8_lines += 1;
                         if non_utf8_lines <= 3 {
-                            outcome.errors.push(format!(
-                                "non-UTF-8 line {} in {}",
-                                line_no,
-                                ctx.path.display()
-                            ));
+                            outcome.errors.push(SearchError {
+                                path: Some(ctx.path.to_path_buf()),
+                                kind: SearchErrorKind::NonUtf8,
+                                message: format!("non-UTF-8 line {line_no}"),
+                            });
                         }
                         continue;
                     }
@@ -369,19 +372,24 @@ fn scan_lines(
                     .push((ctx.path.to_path_buf(), line_no, line_text.to_owned()));
             }
             Err(err) => {
-                outcome
-                    .errors
-                    .push(format!("Failed to read {}: {err}", ctx.path.display()));
+                outcome.errors.push(SearchError {
+                    path: Some(ctx.path.to_path_buf()),
+                    kind: SearchErrorKind::ReadFile,
+                    message: err.to_string(),
+                });
                 return;
             }
         }
     }
     if non_utf8_lines > 3 {
-        outcome.errors.push(format!(
-            "... and {} more non-UTF-8 lines in {} (suppressed)",
-            non_utf8_lines - 3,
-            ctx.path.display()
-        ));
+        outcome.errors.push(SearchError {
+            path: Some(ctx.path.to_path_buf()),
+            kind: SearchErrorKind::NonUtf8,
+            message: format!(
+                "... and {} more non-UTF-8 lines (suppressed)",
+                non_utf8_lines - 3
+            ),
+        });
     }
 }
 
@@ -658,11 +666,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        fs::write(dir.join("hello.txt"), "Hello World\n").unwrap();
+        fs::write(dir.join("hello.txt"), "Hello World\naŻółć gęślą\n").unwrap();
 
         let outcome = FileSearch::search_content_with_diagnostics(&dir, "hello", false, false);
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 1);
+        assert!(outcome.errors.is_empty());
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, true);
+        assert!(outcome.matches.is_empty());
+        assert!(outcome.errors.is_empty());
+
+        let outcome = FileSearch::search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, false);
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].1, 2);
         assert!(outcome.errors.is_empty());
 
         let _ = fs::remove_dir_all(dir);

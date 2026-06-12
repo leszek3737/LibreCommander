@@ -15,7 +15,7 @@ mod walk;
 
 pub use model::{
     MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS, MAX_SEARCH_DEPTH,
-    MAX_SEARCH_ITEMS, SearchOutcome, TruncationReason,
+    MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
 };
 pub use pattern::CompiledPattern;
 

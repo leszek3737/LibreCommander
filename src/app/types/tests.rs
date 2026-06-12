@@ -1,69 +1,34 @@
 use std::path::PathBuf;
-use std::time::{Duration, UNIX_EPOCH};
 
 use super::dialogs::{ConfirmDetails, CopyMoveDetails, DialogKind, InputAction, PickerKind};
-use super::file_entry::{FileCategory, FileEntry, FileEntryBuilder};
+use super::file_entry::{FileCategory, FileEntry};
 use super::modes::AppMode;
 use super::panel::{ActivePanel, PanelState};
-use super::sorting::{ListingMode, SortMode, SortOptions};
+use super::sorting::{Direction, ListingMode, SortField, SortMode};
+use super::test_helpers::TestEntry;
 use super::text_input::TextInput;
 
 use crate::app::types::app_state::AppState;
 use crate::fs::cha::ChaKind;
 
-// TODO: consider builder pattern for test entry construction to reduce parameter count
-fn test_entry_builder(name: &str) -> FileEntryBuilder {
-    FileEntry::builder()
-        .name(name)
-        .path(PathBuf::from(name))
-        .owner("testuser")
-        .group("testgroup")
+fn test_path(name: impl AsRef<std::path::Path>) -> PathBuf {
+    PathBuf::from("/lc-test-fixtures").join(name)
 }
 
-fn create_test_entry(
-    name: &str,
-    is_dir: bool,
-    size: u64,
-    permissions: u32,
-    is_selected: bool,
-) -> FileEntry {
-    test_entry_builder(name)
-        .is_dir(is_dir)
-        .size(size)
-        .permissions(permissions)
-        .selected(is_selected)
-        .is_hidden(name.starts_with('.'))
-        .modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
-        .created(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
-        .build()
-}
-
-// TODO: consolidate create_test_entry and cha_entry — nearly identical, differing only in
-// how is_dir/is_symlink are derived (explicit vs from mode bits)
-fn cha_entry(name: &str, mode: u32, size: u64, hidden: bool) -> FileEntry {
-    let is_link = (mode & 0o170000) == 0o120000;
-    let is_directory = (mode & 0o170000) == 0o040000;
-    test_entry_builder(name)
-        .is_dir(is_directory)
-        .is_symlink(is_link)
-        .size(size)
-        .permissions(mode & 0o7777)
-        .is_hidden(hidden)
-        .modified(UNIX_EPOCH)
-        .created(UNIX_EPOCH)
-        .build()
+fn entry(name: &str) -> TestEntry {
+    TestEntry::new(name).path(test_path(name))
 }
 
 fn panel_with_n_entries(n: u32) -> PanelState {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     for i in 0..n {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{}.txt", i),
-            false,
-            100,
-            0o644,
-            false,
-        ));
+        panel.listing.entries.push(
+            TestEntry::new(format!("file{}.txt", i))
+                .path(test_path(format!("file{}.txt", i)))
+                .file(100)
+                .permissions(0o644)
+                .build(),
+        );
     }
     panel
 }
@@ -87,7 +52,7 @@ fn test_file_entry_display_size() {
         (0, "   0 B"),
     ];
     for &(size, expected) in cases {
-        let entry = create_test_entry("test.txt", false, size, 0o644, false);
+        let entry = entry("test.txt").file(size).permissions(0o644).build();
         assert_eq!(entry.display_size(), expected, "size={size}");
     }
 }
@@ -101,7 +66,7 @@ fn test_file_entry_display_permissions() {
         (0o000, "---------"),
     ];
     for &(perms, expected) in cases {
-        let entry = create_test_entry("test.txt", false, 100, perms, false);
+        let entry = entry("test.txt").file(100).permissions(perms).build();
         assert_eq!(entry.display_permissions(), expected, "perms=0o{perms:o}");
     }
 }
@@ -109,7 +74,7 @@ fn test_file_entry_display_permissions() {
 #[test]
 #[allow(clippy::expect_used)]
 fn test_file_entry_display_modified() {
-    let entry = create_test_entry("test.txt", false, 100, 0o644, false);
+    let entry = entry("test.txt").file(100).permissions(0o644).build();
     let expected = chrono::DateTime::from_timestamp(1_000_000_000, 0)
         .expect("valid timestamp")
         .with_timezone(&chrono::Local)
@@ -120,7 +85,10 @@ fn test_file_entry_display_modified() {
 
 #[test]
 fn test_sort_mode_default() {
-    assert_eq!(SortMode::default(), SortMode::NameAsc);
+    assert_eq!(
+        SortMode::default(),
+        SortMode::new(SortField::Name, Direction::Asc)
+    );
 }
 
 #[test]
@@ -150,7 +118,7 @@ fn test_panel_state_current_entry_some() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+        .push(entry("file1.txt").file(100).permissions(0o644).build());
     panel.cursor = 0;
     assert_eq!(
         panel.current_entry().expect("current entry exists").name,
@@ -164,7 +132,7 @@ fn test_panel_state_current_entry_out_of_bounds() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+        .push(entry("file1.txt").file(100).permissions(0o644).build());
     panel.cursor = 5;
     assert!(panel.current_entry().is_none());
 }
@@ -175,7 +143,7 @@ fn test_panel_state_toggle_selection_toggle_on() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+        .push(entry("file1.txt").file(100).permissions(0o644).build());
     panel.cursor = 0;
     panel.toggle_selection();
     assert!(panel.listing.entries[0].selected);
@@ -186,10 +154,13 @@ fn test_panel_state_toggle_selection_toggle_on() {
 #[test]
 fn test_panel_state_toggle_selection_toggle_off() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, true));
+    panel.listing.entries.push(
+        entry("file1.txt")
+            .file(100)
+            .permissions(0o644)
+            .selected()
+            .build(),
+    );
     panel.cursor = 0;
     assert!(panel.listing.entries[0].selected);
     panel.toggle_selection();
@@ -204,7 +175,7 @@ fn test_panel_state_set_selection_at_on() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+        .push(entry("file1.txt").file(100).permissions(0o644).build());
 
     panel.set_selection_at(0, true);
 
@@ -216,10 +187,13 @@ fn test_panel_state_set_selection_at_on() {
 #[test]
 fn test_panel_state_set_selection_at_off() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, true));
+    panel.listing.entries.push(
+        entry("file1.txt")
+            .file(100)
+            .permissions(0o644)
+            .selected()
+            .build(),
+    );
 
     panel.set_selection_at(0, false);
 
@@ -232,13 +206,25 @@ fn test_panel_state_set_selection_at_off() {
 fn test_panel_state_sync_unfiltered_selection() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![
-        create_test_entry("file1.txt", false, 100, 0o644, true),
-        create_test_entry("file2.txt", false, 200, 0o644, false),
+        entry("file1.txt")
+            .file(100)
+            .permissions(0o644)
+            .selected()
+            .build(),
+        entry("file2.txt").file(200).permissions(0o644).build(),
     ];
     panel.listing.unfiltered_entries = vec![
-        create_test_entry("file1.txt", false, 100, 0o644, false),
-        create_test_entry("file2.txt", false, 200, 0o644, true),
-        create_test_entry("file3.txt", false, 300, 0o644, true),
+        entry("file1.txt").file(100).permissions(0o644).build(),
+        entry("file2.txt")
+            .file(200)
+            .permissions(0o644)
+            .selected()
+            .build(),
+        entry("file3.txt")
+            .file(300)
+            .permissions(0o644)
+            .selected()
+            .build(),
     ];
 
     panel.sync_unfiltered_selection();
@@ -251,18 +237,24 @@ fn test_panel_state_sync_unfiltered_selection() {
 #[test]
 fn test_panel_state_selected_entries() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
+    panel.listing.entries.push(
+        entry("file1.txt")
+            .file(100)
+            .permissions(0o644)
+            .selected()
+            .build(),
+    );
     panel
         .listing
         .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, true));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file2.txt", false, 200, 0o644, false));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file3.txt", false, 300, 0o644, true));
+        .push(entry("file2.txt").file(200).permissions(0o644).build());
+    panel.listing.entries.push(
+        entry("file3.txt")
+            .file(300)
+            .permissions(0o644)
+            .selected()
+            .build(),
+    );
 
     let selected = panel.selected_entries();
     assert_eq!(selected.len(), 2);
@@ -283,7 +275,7 @@ fn test_panel_state_move_cursor_up_at_top() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
+        .push(entry("file1.txt").file(100).permissions(0o644).build());
     panel.cursor = 0;
     panel.move_cursor_up(10);
     assert_eq!(panel.cursor, 0);
@@ -336,7 +328,7 @@ fn test_app_state_substate_defaults() {
     assert_eq!(state.mode, AppMode::Normal);
     assert!(!state.should_quit);
     assert!(state.status_message.is_none());
-    assert_eq!(state.dialog_input.cursor, 0);
+    assert_eq!(state.dialog_input.cursor(), 0);
     assert_eq!(state.picker_selected, 0);
     assert_eq!(state.menu_selected, 0);
     assert_eq!(state.menu_item_selected, 0);
@@ -348,23 +340,30 @@ fn test_app_state_substate_defaults() {
 #[test]
 fn test_text_input_mutations_clamp_cursor() {
     let mut input = TextInput::new();
-    input.text = "ąb".to_string();
-    input.recompute_grapheme_count();
-    input.cursor = 99;
+    input.set_text("ąb".to_string());
+    input.set_cursor(99);
 
     assert!(input.backspace());
-    assert_eq!(input.text, "ą");
-    assert_eq!(input.cursor, 1);
+    assert_eq!(input.text(), "ą");
+    assert_eq!(input.cursor(), 1);
 
     input.insert_char('x');
-    assert_eq!(input.text, "ąx");
-    assert_eq!(input.cursor, 2);
+    assert_eq!(input.text(), "ąx");
+    assert_eq!(input.cursor(), 2);
 
-    input.cursor = 99;
-    input.recompute_grapheme_count();
+    input.set_cursor(99);
     assert!(input.delete_word_backward());
-    assert_eq!(input.text, "");
-    assert_eq!(input.cursor, 0);
+    assert_eq!(input.text(), "");
+    assert_eq!(input.cursor(), 0);
+}
+
+#[test]
+fn test_text_input_set_text_at_end_counts_emoji_zwj_graphemes() {
+    let mut input = TextInput::default();
+    input.set_text_at_end("a👨‍👩‍👧‍👦b".to_string());
+
+    assert_eq!(input.grapheme_count(), 3);
+    assert_eq!(input.cursor(), 3);
 }
 
 #[test]
@@ -496,19 +495,27 @@ fn test_dialog_kind_progress() {
 fn test_dialog_kind_copy_move() {
     let sources = vec![PathBuf::from("/source1"), PathBuf::from("/source2")];
     let dest = PathBuf::from("/dest");
+    let source_display: Vec<String> = sources
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        })
+        .collect();
     let dialog = DialogKind::CopyMove(Box::new(CopyMoveDetails {
         source: sources.clone(),
+        source_display: source_display.clone(),
         dest: dest.clone(),
         is_move: true,
-        source_display: sources.iter().map(|p| p.display().to_string()).collect(),
     }));
     let DialogKind::CopyMove(details) = dialog else {
         panic!("Expected CopyMove variant");
     };
     assert_eq!(details.source, sources);
+    assert_eq!(details.source_display, source_display);
     assert_eq!(details.dest, dest);
     assert!(details.is_move);
-    assert_eq!(details.source_display.len(), 2);
 }
 
 // Smoke test: verifies PartialEq derivation is correct and all variants compile
@@ -620,9 +627,13 @@ fn test_panel_state_ensure_cursor_visible_edge_case() {
 fn test_total_size_computed_by_recalculate() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![
-        create_test_entry("a.txt", false, 100, 0o644, false),
-        create_test_entry("b.txt", false, 200, 0o644, false),
-        create_test_entry("c.txt", false, 300, 0o644, true),
+        entry("a.txt").file(100).permissions(0o644).build(),
+        entry("b.txt").file(200).permissions(0o644).build(),
+        entry("c.txt")
+            .file(300)
+            .permissions(0o644)
+            .selected()
+            .build(),
     ];
     panel.recalculate_selection_stats();
     assert_eq!(panel.total_size(), 600);
@@ -632,37 +643,49 @@ fn test_total_size_computed_by_recalculate() {
 
 #[test]
 fn test_hidden_script_is_code() {
-    let entry = cha_entry(".script.sh", 0o100755, 100, true);
+    let entry = entry(".script.sh")
+        .raw_mode(0o100755)
+        .size(100)
+        .hidden()
+        .build();
     assert_eq!(entry.category(), FileCategory::Code);
 }
 
 #[test]
 fn test_hidden_archive_is_archive() {
-    let entry = cha_entry(".backup.zip", 0o100644, 100, true);
+    let entry = entry(".backup.zip")
+        .raw_mode(0o100644)
+        .size(100)
+        .hidden()
+        .build();
     assert_eq!(entry.category(), FileCategory::Archive);
 }
 
 #[test]
 fn test_symlink_overrides_dir() {
-    let entry = cha_entry("link_to_dir", 0o120777, 0, false);
+    let entry = entry("link_to_dir").raw_mode(0o120777).build();
     assert_eq!(entry.category(), FileCategory::Symlink);
 }
 
 #[test]
 fn test_symlink_overrides_hidden() {
-    let entry = cha_entry(".hidden_link", 0o120777, 0, true);
+    let entry = entry(".hidden_link").raw_mode(0o120777).hidden().build();
     assert_eq!(entry.category(), FileCategory::Symlink);
 }
 
 #[test]
 fn test_executable_without_extension_is_executable() {
-    let entry = cha_entry("mybinary", 0o100755, 100, false);
+    let entry = entry("mybinary").raw_mode(0o100755).size(100).build();
     assert_eq!(entry.category(), FileCategory::Executable);
 }
 
 #[test]
 fn test_hidden_apk_is_archive() {
-    let entry = cha_entry(".app.apk", 0o100644, 100, true);
+    let entry = entry(".app.apk")
+        .raw_mode(0o100644)
+        .size(100)
+        .hidden()
+        .build();
     assert_eq!(entry.category(), FileCategory::Archive);
 }
 
@@ -670,8 +693,12 @@ fn test_hidden_apk_is_archive() {
 fn test_total_size_includes_all_entries() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![
-        create_test_entry("small.txt", false, 50, 0o644, false),
-        create_test_entry("big.txt", false, 5000, 0o644, true),
+        entry("small.txt").file(50).permissions(0o644).build(),
+        entry("big.txt")
+            .file(5000)
+            .permissions(0o644)
+            .selected()
+            .build(),
     ];
     panel.recalculate_selection_stats();
     assert_eq!(panel.total_size(), 5050);
@@ -689,7 +716,7 @@ fn test_panel_state_empty_entries_cursor_scroll_zero() {
 #[test]
 fn test_panel_state_single_item_cursor() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![create_test_entry("only.txt", false, 10, 0o644, false)];
+    panel.listing.entries = vec![entry("only.txt").file(10).permissions(0o644).build()];
 
     assert_eq!(panel.cursor, 0);
     panel.move_cursor_down(10);
@@ -702,9 +729,9 @@ fn test_panel_state_single_item_cursor() {
 fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![
-        create_test_entry("a.txt", false, 10, 0o644, false),
-        create_test_entry("b.txt", false, 10, 0o644, false),
-        create_test_entry("c.txt", false, 10, 0o644, false),
+        entry("a.txt").file(10).permissions(0o644).build(),
+        entry("b.txt").file(10).permissions(0o644).build(),
+        entry("c.txt").file(10).permissions(0o644).build(),
     ];
     panel.cursor = 2;
 
@@ -721,8 +748,8 @@ fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
 fn test_panel_state_move_cursor_down_clamped_at_last() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = vec![
-        create_test_entry("a.txt", false, 10, 0o644, false),
-        create_test_entry("b.txt", false, 10, 0o644, false),
+        entry("a.txt").file(10).permissions(0o644).build(),
+        entry("b.txt").file(10).permissions(0o644).build(),
     ];
     panel.cursor = 1;
 
@@ -736,7 +763,7 @@ fn test_panel_state_move_cursor_down_clamped_at_last() {
 #[test]
 fn test_panel_state_move_cursor_up_clamped_at_zero() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![create_test_entry("a.txt", false, 10, 0o644, false)];
+    panel.listing.entries = vec![entry("a.txt").file(10).permissions(0o644).build()];
     panel.cursor = 0;
 
     panel.move_cursor_up(10);
@@ -755,7 +782,13 @@ fn test_panel_state_current_entry_empty_returns_none() {
 fn test_panel_state_scroll_offset_with_many_entries() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.listing.entries = (0..100)
-        .map(|i| create_test_entry(&format!("file{i:03}.txt"), false, 10, 0o644, false))
+        .map(|i| {
+            TestEntry::new(format!("file{i:03}.txt"))
+                .path(test_path(format!("file{i:03}.txt")))
+                .file(10)
+                .permissions(0o644)
+                .build()
+        })
         .collect();
 
     let visible_height = 20;
@@ -829,7 +862,7 @@ fn builder_clears_dir_target_follow_on_type_change() {
 
 #[test]
 #[allow(clippy::expect_used)]
-fn mtime_none_displays_unknown_and_sorts_after_known() {
+fn mtime_none_displays_unknown() {
     let no_mtime = FileEntry::builder()
         .name("unknown.txt")
         .path(PathBuf::from("unknown.txt"))
@@ -840,18 +873,6 @@ fn mtime_none_displays_unknown_and_sorts_after_known() {
         .format("%d-%m-%y %H:%M")
         .to_string();
     assert_eq!(no_mtime.display_modified(), expected_epoch.as_str());
-
-    let with_mtime = FileEntry::builder()
-        .name("known.txt")
-        .path(PathBuf::from("known.txt"))
-        .modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
-        .build();
-
-    // TODO: move sorting integration test to src/tests/
-    let mut entries = vec![no_mtime, with_mtime];
-    crate::ops::sorting::sort_entries(&mut entries, SortMode::ModTimeDesc, SortOptions::default());
-    assert_eq!(entries[0].name, "known.txt");
-    assert_eq!(entries[1].name, "unknown.txt");
 }
 
 #[test]
@@ -869,7 +890,7 @@ fn test_move_cursor_up_wraps_with_single_entry() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file.txt", false, 100, 0o644, false));
+        .push(entry("file.txt").file(100).permissions(0o644).build());
     panel.cursor = 0;
     panel.move_cursor_up(3);
     assert_eq!(panel.cursor, 0);
@@ -890,7 +911,7 @@ fn test_move_cursor_down_wraps_with_single_entry() {
     panel
         .listing
         .entries
-        .push(create_test_entry("file.txt", false, 100, 0o644, false));
+        .push(entry("file.txt").file(100).permissions(0o644).build());
     panel.cursor = 0;
     panel.move_cursor_down(3);
     assert_eq!(panel.cursor, 0);

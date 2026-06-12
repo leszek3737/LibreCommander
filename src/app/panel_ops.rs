@@ -55,9 +55,6 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 *panel.sort_options(),
                 panel.show_hidden(),
             );
-            // TODO: sorts unfiltered list separately with same params as filtered_sorted_entries
-            // above. Could sort once then filter without re-sorting, or pass sorted vec to
-            // filtered_sorted_entries to avoid second sort.
             let mut sorted_unfiltered = new_unfiltered;
             ops::sort_entries(
                 &mut sorted_unfiltered,
@@ -88,14 +85,8 @@ pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Err
         let error_summary = errors
             .iter()
             .map(ToString::to_string)
-            // TODO: use itertools::join or collect+join instead of fold for readability
-            .fold(String::new(), |mut acc, s| {
-                if !acc.is_empty() {
-                    acc.push_str("; ");
-                }
-                acc.push_str(&s);
-                acc
-            });
+            .collect::<Vec<_>>()
+            .join("; ");
         panel.set_last_error(Some(format!(
             "{} file(s) failed to read: {error_summary}",
             errors.len()
@@ -130,9 +121,6 @@ pub fn filtered_sorted_entries(
     show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
     let compiled = filter.map(|f| ops::search::CompiledPattern::new(f, false));
-    // TODO(perf): .cloned().collect() allocates O(n) FileEntry structs. Consider
-    // Cow<reader::FileEntry> or an index-based iterator approach to avoid cloning
-    // when only filtering/sorting without modification.
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
         .filter(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden))
