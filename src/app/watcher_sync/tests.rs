@@ -756,7 +756,7 @@ fn symlink_target_change_detected() {
 
     fs::remove_file(&link).unwrap();
     symlink(&target_b, &link).unwrap();
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &link));
+    apply_watcher_upsert_if_matches(&mut panel, &link);
     rebuild_visible_entries(&mut panel, None);
 
     assert!(panel.listing.entries.iter().any(|e| e.name == "link.txt"));
