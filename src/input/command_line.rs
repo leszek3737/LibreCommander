@@ -16,8 +16,8 @@ fn cancel_command_input(state: &mut AppState) {
 }
 
 fn command_execute(state: &mut AppState) {
-    let cmd = std::mem::take(&mut state.command_line.text);
-    state.command_line.cursor = 0;
+    let cmd = state.command_line.text().to_owned();
+    state.command_line.set_text(String::new());
     state.mode = AppMode::Normal;
     state.command_draft.clear();
     reset_history(state);
@@ -81,7 +81,8 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         }
         KeyCode::Up if !state.command_history.is_empty() => {
             if state.history_index.is_none() {
-                state.command_draft = std::mem::take(&mut state.command_line.text);
+                state.command_draft = state.command_line.text().to_owned();
+                state.command_line.set_text(String::new());
             }
             let idx = match state.history_index {
                 Some(i) if i > 0 => i - 1,
@@ -90,19 +91,23 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
                 None => state.command_history.len() - 1,
             };
             state.history_index = Some(idx);
-            state.command_line.text = state.command_history[idx].clone();
-            state.command_line.cursor_end();
+            state
+                .command_line
+                .set_text_at_end(state.command_history[idx].clone());
         }
         KeyCode::Down if !state.command_history.is_empty() => {
             if let Some(idx) = state.history_index {
                 if idx + 1 < state.command_history.len() {
                     state.history_index = Some(idx + 1);
-                    state.command_line.text = state.command_history[idx + 1].clone();
+                    state
+                        .command_line
+                        .set_text_at_end(state.command_history[idx + 1].clone());
                 } else {
                     state.history_index = None;
-                    state.command_line.text = state.command_draft.clone();
+                    state
+                        .command_line
+                        .set_text_at_end(state.command_draft.clone());
                 }
-                state.command_line.cursor_end();
             }
         }
         KeyCode::Char(c) => {
@@ -119,9 +124,8 @@ mod tests {
 
     fn make_cmd_state(line: &str, cursor: usize) -> AppState {
         let mut command_line = TextInput::new();
-        command_line.text = line.to_string();
-        command_line.recompute_grapheme_count();
-        command_line.cursor = cursor;
+        command_line.set_text(line.to_string());
+        command_line.set_cursor(cursor);
         AppState {
             command_line,
             ..Default::default()
@@ -135,8 +139,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
         );
-        assert_eq!(state.command_line.text, "hell");
-        assert_eq!(state.command_line.cursor, 4);
+        assert_eq!(state.command_line.text(), "hell");
+        assert_eq!(state.command_line.cursor(), 4);
     }
 
     #[test]
@@ -147,8 +151,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
         );
-        assert_eq!(state.command_line.text, "hello");
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.text(), "hello");
+        assert_eq!(state.command_line.cursor(), 0);
         assert_eq!(state.history_index, Some(0));
     }
 
@@ -156,14 +160,14 @@ mod tests {
     fn cmd_left_moves_cursor() {
         let mut state = make_cmd_state("hello", 3);
         handle_command_line(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(state.command_line.cursor, 2);
+        assert_eq!(state.command_line.cursor(), 2);
     }
 
     #[test]
     fn cmd_left_at_start_does_nothing() {
         let mut state = make_cmd_state("hello", 0);
         handle_command_line(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.cursor(), 0);
     }
 
     #[test]
@@ -173,7 +177,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         );
-        assert_eq!(state.command_line.cursor, 3);
+        assert_eq!(state.command_line.cursor(), 3);
     }
 
     #[test]
@@ -183,7 +187,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
         );
-        assert_eq!(state.command_line.cursor, 5);
+        assert_eq!(state.command_line.cursor(), 5);
     }
 
     #[test]
@@ -193,7 +197,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.cursor(), 0);
     }
 
     #[test]
@@ -203,7 +207,7 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line.cursor, 5);
+        assert_eq!(state.command_line.cursor(), 5);
     }
 
     #[test]
@@ -213,8 +217,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line.text, " world");
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.text(), " world");
+        assert_eq!(state.command_line.cursor(), 0);
     }
 
     #[test]
@@ -225,8 +229,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line.text, "hello ");
-        assert_eq!(state.command_line.cursor, 6);
+        assert_eq!(state.command_line.text(), "hello ");
+        assert_eq!(state.command_line.cursor(), 6);
         assert!(state.history_index.is_none());
     }
 
@@ -238,8 +242,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line.text, "hello");
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.text(), "hello");
+        assert_eq!(state.command_line.cursor(), 0);
         assert_eq!(state.history_index, Some(0));
     }
 
@@ -250,8 +254,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
         );
-        assert_eq!(state.command_line.text, "hello");
-        assert_eq!(state.command_line.cursor, 2);
+        assert_eq!(state.command_line.text(), "hello");
+        assert_eq!(state.command_line.cursor(), 2);
     }
 
     #[test]
@@ -261,8 +265,8 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('ą'), KeyModifiers::NONE),
         );
-        assert_eq!(state.command_line.text, "testą");
-        assert_eq!(state.command_line.cursor, 5);
+        assert_eq!(state.command_line.text(), "testą");
+        assert_eq!(state.command_line.cursor(), 5);
     }
 
     #[test]
@@ -271,8 +275,8 @@ mod tests {
         state.history_index = Some(0);
         handle_command_line(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(state.mode, AppMode::Normal);
-        assert_eq!(state.command_line.text, "");
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.text(), "");
+        assert_eq!(state.command_line.cursor(), 0);
         assert!(state.history_index.is_none());
     }
 
@@ -282,8 +286,8 @@ mod tests {
         state.command_history.push_back("first".to_string());
         state.command_history.push_back("second".to_string());
         handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(state.command_line.text, "second");
-        assert_eq!(state.command_line.cursor, 6);
+        assert_eq!(state.command_line.text(), "second");
+        assert_eq!(state.command_line.cursor(), 6);
         assert_eq!(state.history_index, Some(1));
     }
 
@@ -294,7 +298,7 @@ mod tests {
         state.history_index = Some(0);
         state.command_draft = "draft".to_string();
         handle_command_line(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(state.command_line.text, "draft");
+        assert_eq!(state.command_line.text(), "draft");
         assert!(state.history_index.is_none());
     }
 
@@ -305,14 +309,14 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
-        assert_eq!(state.command_line.text, "");
-        assert_eq!(state.command_line.cursor, 0);
+        assert_eq!(state.command_line.text(), "");
+        assert_eq!(state.command_line.cursor(), 0);
     }
 
     #[test]
     fn cmd_cursor_respects_char_boundaries() {
         let mut state = make_cmd_state("testą", 5);
         handle_command_line(&mut state, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(state.command_line.cursor, 4);
+        assert_eq!(state.command_line.cursor(), 4);
     }
 }

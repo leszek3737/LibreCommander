@@ -53,8 +53,7 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
             // History displays most-recent-first; reverse visual index to VecDeque position
             let idx = len - 1 - state.picker_selected;
             if let Some(cmd) = state.command_history.get(idx).cloned() {
-                state.command_line.text = cmd;
-                state.command_line.cursor_end();
+                state.command_line.set_text_at_end(cmd);
                 state.mode = AppMode::CommandLine;
             } else {
                 state.mode = AppMode::Normal;

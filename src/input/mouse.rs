@@ -1,10 +1,13 @@
 use crossterm::event::{KeyCode, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::shell;
-use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind, OverwriteConfirmDetails};
+use crate::app::types::{
+    ActivePanel, AppMode, AppState, DialogKind, OverwriteConfirmDetails, TextInput,
+};
 use crate::menu::{MENUS, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::dialogs;
 use crate::ui::viewer;
@@ -14,6 +17,8 @@ use crate::app::panel_ops::{refresh_active, refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
+const ARCHIVE_EXTRACT_INPUT_ROW_OFFSET: u16 = 3;
+const ARCHIVE_CREATE_INPUT_ROW_OFFSET: u16 = 4;
 
 pub enum MouseOutcome {
     Consumed,
@@ -239,6 +244,24 @@ fn handle_mouse_dialog(
         return Some(MouseOutcome::Consumed);
     }
 
+    if let AppMode::Dialog(DialogKind::ArchiveExtract(ref mut details)) = state.mode {
+        position_text_input_cursor(
+            &mut details.dest_input,
+            pos,
+            archive_input_rect(pos, ARCHIVE_EXTRACT_INPUT_ROW_OFFSET),
+        );
+        return Some(MouseOutcome::Consumed);
+    }
+
+    if let AppMode::Dialog(DialogKind::ArchiveCreate(ref mut details)) = state.mode {
+        position_text_input_cursor(
+            &mut details.dest_input,
+            pos,
+            archive_input_rect(pos, ARCHIVE_CREATE_INPUT_ROW_OFFSET),
+        );
+        return Some(MouseOutcome::Consumed);
+    }
+
     if let AppMode::Dialog(DialogKind::Confirm(_)) = state.mode {
         return handle_confirm_click(state, running_job, pos);
     }
@@ -252,6 +275,58 @@ fn handle_mouse_dialog(
     }
 
     None
+}
+
+fn archive_input_rect(pos: &MousePosition, row_offset: u16) -> Rect {
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let dialog = dialogs::centered_rect(50, 40, area);
+    Rect::new(
+        dialog.x.saturating_add(2),
+        dialog.y.saturating_add(row_offset),
+        dialog.width.saturating_sub(4),
+        1,
+    )
+}
+
+fn position_text_input_cursor(input: &mut TextInput, pos: &MousePosition, rect: Rect) {
+    if !hit_rect(rect, pos) || rect.width == 0 {
+        return;
+    }
+
+    let visible_width = usize::from(rect.width);
+    let cursor_display = input
+        .text()
+        .graphemes(true)
+        .take(input.cursor())
+        .map(UnicodeWidthStr::width)
+        .sum::<usize>();
+    let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
+    let click_display = usize::from(pos.col.saturating_sub(rect.x));
+    let target_display = scroll_display.saturating_add(click_display);
+
+    input.set_cursor(text_cursor_for_display(input, target_display));
+}
+
+fn text_cursor_for_display(input: &TextInput, target_display: usize) -> usize {
+    let mut display = 0usize;
+    for (index, grapheme) in input.text().graphemes(true).enumerate() {
+        if display >= target_display {
+            return index;
+        }
+        let width = UnicodeWidthStr::width(grapheme);
+        if display.saturating_add(width) > target_display {
+            return index;
+        }
+        display = display.saturating_add(width);
+    }
+    input.grapheme_count()
+}
+
+fn hit_rect(rect: Rect, pos: &MousePosition) -> bool {
+    pos.row >= rect.y
+        && pos.row < rect.y.saturating_add(rect.height)
+        && pos.col >= rect.x
+        && pos.col < rect.x.saturating_add(rect.width)
 }
 
 struct DialogGeometry {

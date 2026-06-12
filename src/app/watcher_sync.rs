@@ -237,13 +237,13 @@ fn apply_panel_changes(
 
     dirty |= left_refreshed || right_refreshed;
 
-    if state.left_panel.listing.needs_rebuild {
-        state.left_panel.listing.needs_rebuild = false;
+    if state.left_panel.listing.is_dirty() {
+        state.left_panel.listing.mark_rebuilt();
         rebuild_visible_entries(&mut state.left_panel, None);
         dirty = true;
     }
-    if state.right_panel.listing.needs_rebuild {
-        state.right_panel.listing.needs_rebuild = false;
+    if state.right_panel.listing.is_dirty() {
+        state.right_panel.listing.mark_rebuilt();
         rebuild_visible_entries(&mut state.right_panel, None);
         dirty = true;
     }

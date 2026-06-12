@@ -153,7 +153,7 @@ fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::FileEntry;
+    use crate::app::types::{FileEntry, PanelListing};
     use std::path::PathBuf;
 
     fn entry(name: &str, size: u64) -> FileEntry {
@@ -495,16 +495,17 @@ mod tests {
         let mut left_panel = PanelState {
             path: PathBuf::from("/tmp"),
             canonical_path: None,
-            listing: crate::app::types::PanelListing {
-                entries: vec![entry("a.txt", 10), entry("b.txt", 20)],
-                unfiltered_entries: vec![],
-                unfiltered_dirty: true,
-                path_index: HashMap::new(),
-                needs_rebuild: false,
+            listing: {
+                let mut listing = PanelListing::new();
+                listing.entries = vec![entry("a.txt", 10), entry("b.txt", 20)];
+                listing
             },
             cursor: 0,
             scroll_offset: 0,
-            sort_mode: crate::app::types::SortMode::NameAsc,
+            sort_mode: crate::app::types::SortMode::new(
+                crate::app::types::SortField::Name,
+                crate::app::types::Direction::Asc,
+            ),
             listing_mode: crate::app::types::ListingMode::Long,
             show_hidden: false,
             show_permissions: false,
@@ -519,16 +520,17 @@ mod tests {
         let mut right_panel = PanelState {
             path: PathBuf::from("/tmp"),
             canonical_path: None,
-            listing: crate::app::types::PanelListing {
-                entries: vec![entry("a.txt", 10)],
-                unfiltered_entries: vec![],
-                unfiltered_dirty: true,
-                path_index: HashMap::new(),
-                needs_rebuild: false,
+            listing: {
+                let mut listing = PanelListing::new();
+                listing.entries = vec![entry("a.txt", 10)];
+                listing
             },
             cursor: 0,
             scroll_offset: 0,
-            sort_mode: crate::app::types::SortMode::NameAsc,
+            sort_mode: crate::app::types::SortMode::new(
+                crate::app::types::SortField::Name,
+                crate::app::types::Direction::Asc,
+            ),
             listing_mode: crate::app::types::ListingMode::Long,
             show_hidden: false,
             show_permissions: false,

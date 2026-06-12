@@ -36,13 +36,88 @@ fn assert_viewer_mode(vs: &viewer::ViewerState, expected_hex: bool) {
     assert_eq!(vs.view_mode, expected_mode);
 }
 
-// TODO: Add tests for:
-// - Empty file (zero bytes)
-// - Viewport taller than file (scroll should be no-op)
-// - Search wrapping (last match → first match)
-// - Binary / invalid UTF-8 edge cases
-// - Long lines exceeding viewport width
-// - CRLF line endings
+#[test]
+fn viewer_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("empty.txt");
+    std::fs::write(&file, b"").unwrap();
+    let mut viewer = open_viewer(&file);
+    assert_eq!(viewer.line_count, 1);
+    assert_eq!(viewer.get_line(0), "[Empty file]");
+    viewer.scroll_down(1);
+    assert_eq!(viewer.scroll_offset, 0);
+}
+
+#[test]
+fn viewer_viewport_taller_than_content() {
+    let file = create_test_file("line1\nline2\n");
+    let mut vs = open_viewer(file.path());
+    assert_eq!(vs.line_count, 2);
+    vs.scroll_down(1);
+    assert_eq!(vs.scroll_offset, 1);
+    vs.scroll_down(100);
+    assert_eq!(vs.scroll_offset, 1);
+}
+
+#[test]
+fn viewer_search_wraps_around() {
+    let file = create_test_file("foo bar foo baz foo end\n");
+    let h = TEST_VIEWPORT.height as usize;
+    let mut vs = open_viewer(file.path());
+    vs.search("foo", h);
+    assert_eq!(vs.search_matches.len(), 3);
+    assert_eq!(vs.current_match, Some(0));
+    vs.next_match(h);
+    assert_eq!(vs.current_match, Some(1));
+    vs.next_match(h);
+    assert_eq!(vs.current_match, Some(2));
+    vs.next_match(h);
+    assert_eq!(vs.current_match, Some(0));
+    vs.prev_match(h);
+    assert_eq!(vs.current_match, Some(2));
+}
+
+#[test]
+fn viewer_binary_file_opens_in_hex_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("data.bin");
+    std::fs::write(&file, b"hello\x00world").unwrap();
+    let vs = open_viewer(&file);
+    assert_eq!(vs.view_mode, ViewMode::Hex);
+}
+
+#[test]
+fn viewer_invalid_utf8() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bad.txt");
+    std::fs::write(&file, b"hello \xff world").unwrap();
+    let vs = open_viewer(&file);
+    assert!(vs.has_invalid_utf8);
+}
+
+#[test]
+fn viewer_long_line_horizontal_scroll() {
+    let long_line = "a".repeat(120);
+    let file = create_test_file(&format!("{}\n", long_line));
+    let mut vs = open_viewer(file.path());
+    assert_eq!(vs.horizontal_offset, 0);
+    let visible_width: usize = TEST_VIEWPORT.width as usize;
+    vs.scroll_right(10, visible_width);
+    assert_eq!(vs.horizontal_offset, 10);
+    vs.scroll_right(10, visible_width);
+    assert_eq!(vs.horizontal_offset, 20);
+}
+
+#[test]
+fn viewer_crlf_line_endings() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("crlf.txt");
+    std::fs::write(&file, b"line1\r\nline2\r\n").unwrap();
+    let vs = open_viewer(&file);
+    assert_eq!(vs.line_count, 2);
+    assert_eq!(vs.get_line(0), "line1\r");
+    assert_eq!(vs.get_line(1), "line2\r");
+}
 
 #[test]
 fn f3_viewer_clears_stale_prev_mode() {
@@ -76,9 +151,8 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
         }),
         dialog_input: {
             let mut ti = TextInput::new();
-            ti.text = "needle".to_string();
-            ti.recompute_grapheme_count();
-            ti.cursor = 6;
+            ti.set_text("needle".to_string());
+            ti.set_cursor(6);
             ti
         },
         prev_mode: Some(AppMode::Normal),
@@ -97,8 +171,8 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
 
     assert!(matches!(state.mode, AppMode::Viewing));
     assert_eq!(state.prev_mode, Some(AppMode::Normal));
-    assert!(state.dialog_input.text.is_empty());
-    assert_eq!(state.dialog_input.cursor, 0);
+    assert!(state.dialog_input.text().is_empty());
+    assert_eq!(state.dialog_input.cursor(), 0);
 }
 
 #[test]

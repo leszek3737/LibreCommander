@@ -89,6 +89,13 @@ impl BatchProgress {
         }
     }
 
+    #[must_use]
+    fn with_clamped_bytes(mut self) -> Self {
+        self.bytes_done = self.bytes_done.min(self.bytes_total);
+        self.current_file_bytes = self.current_file_bytes.min(self.current_file_total);
+        self
+    }
+
     pub fn percent(&self) -> f32 {
         if self.total == 0 {
             1.0
@@ -158,40 +165,33 @@ pub fn execute_batch_with_byte_progress(
     action_label: &'static str,
 ) -> BatchReport {
     match action {
-        PendingAction::Copy {
-            sources,
-            dest,
-            overwrite,
-        } => batch_copy(
-            &sources,
-            &dest,
+        PendingAction::Copy(t) => batch_copy(
+            &t.sources,
+            &t.dest,
             &mut progress,
             cancel,
-            overwrite,
+            t.overwrite,
             action_label,
         ),
-        PendingAction::Move {
-            sources,
-            dest,
-            overwrite,
-        } => batch_move(
-            &sources,
-            &dest,
+        PendingAction::Move(t) => batch_move(
+            &t.sources,
+            &t.dest,
             &mut progress,
             cancel,
-            overwrite,
+            t.overwrite,
             action_label,
         ),
         PendingAction::Delete { paths } => {
             batch_delete(&paths, &mut progress, cancel, action_label)
         }
-        PendingAction::ExtractArchive { source, dest } => {
+        PendingAction::ExtractArchive { source, dest, .. } => {
             batch_extract_archive(&source, &dest, &mut progress, cancel, action_label)
         }
         PendingAction::CreateArchive {
             sources,
             dest,
             format,
+            ..
         } => batch_create_archive(&sources, &dest, format, &mut progress, cancel, action_label),
     }
 }
@@ -215,16 +215,19 @@ struct ProgressSnapshot<'a> {
 
 #[inline]
 fn report_progress(progress: &mut impl FnMut(BatchProgress), snapshot: &ProgressSnapshot<'_>) {
-    progress(BatchProgress {
-        completed: snapshot.completed,
-        total: snapshot.total,
-        current: snapshot.current.map(Path::to_path_buf),
-        bytes_done: snapshot.bytes_done,
-        bytes_total: snapshot.bytes_total,
-        current_file_bytes: snapshot.current_file_bytes,
-        current_file_total: snapshot.current_file_total,
-        start_time: Some(snapshot.start_time),
-    });
+    progress(
+        BatchProgress {
+            completed: snapshot.completed,
+            total: snapshot.total,
+            current: snapshot.current.map(Path::to_path_buf),
+            bytes_done: snapshot.bytes_done,
+            bytes_total: snapshot.bytes_total,
+            current_file_bytes: snapshot.current_file_bytes,
+            current_file_total: snapshot.current_file_total,
+            start_time: Some(snapshot.start_time),
+        }
+        .with_clamped_bytes(),
+    );
 }
 
 struct ProgressCtx<'a> {
@@ -478,6 +481,10 @@ where
         }
 
         process_batch_entry(idx, src, &ctx, cancel, &mut action, progress, &mut state);
+
+        if is_canceled(cancel) {
+            state.canceled = true;
+        }
 
         if state.canceled {
             break;
@@ -764,6 +771,9 @@ fn batch_delete(
                 start_time,
             },
         );
+        if is_canceled(cancel) {
+            canceled = true;
+        }
         if canceled {
             break;
         }

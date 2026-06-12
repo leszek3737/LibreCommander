@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::types::SortMode;
+use crate::app::types::{Direction, ListingState, SortField, SortMode};
 use std::fs;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -11,6 +11,7 @@ fn test_panel(path: &Path) -> PanelState {
     let mut panel = PanelState::new(path.to_path_buf());
     panel.listing.unfiltered_entries = vec![parent_entry(path)];
     panel.listing.entries = panel.listing.unfiltered_entries.clone();
+    panel.listing.force_state(ListingState::Clean);
     panel.recalculate_selection_stats();
     panel
 }
@@ -31,6 +32,27 @@ fn select_entry_by_name(entries: &mut [reader::FileEntry], name: &str) {
         .find(|e| e.name == name)
         .expect("entry should exist")
         .selected = true;
+}
+
+fn build_panel_with_files(dir: &Path, files: &[(&str, &[u8])]) -> PanelState {
+    let mut panel = test_panel(dir);
+    for (name, contents) in files {
+        let path = dir.join(name);
+        fs::write(&path, contents).unwrap();
+        assert!(apply_watcher_upsert_if_matches(&mut panel, &path));
+    }
+    rebuild_visible_entries(&mut panel, None);
+    panel
+}
+
+fn assert_entry_names_eq(panel: &PanelState, expected: &[&str]) {
+    let names: Vec<_> = panel
+        .listing
+        .entries
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(names, expected);
 }
 
 struct WatcherHarness {
@@ -81,33 +103,25 @@ impl EventHarness {
     }
 }
 
-// TODO: many tests repeat the same setup (tempdir + fs::write +
-// apply_watcher_upsert_if_matches + rebuild_visible_entries). Extract a helper
-// (e.g. `fn build_panel_with_files(dir, &[("name", contents)])`) to cut the
-// boilerplate and reduce drift between scenarios.
-// TODO: extract an `assert_entries_names_eq(panel, &["..", "alpha.txt", ...])`
-// helper to replace the repeated collect-into-Vec<&str> + assert_eq pattern.
+fn setup_cooldown_harness() -> (tempfile::TempDir, WatcherHarness) {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nonexistent_panel_dir");
+    let mut harness = WatcherHarness::new();
+    harness.state.left_panel.set_path(missing);
+    harness.state.right_panel.set_path(dir.path().to_path_buf());
+    harness.sync();
+    (dir, harness)
+}
 
 #[test]
 fn watcher_upsert_adds_visible_entry_sorted_and_updates_stats() {
     let dir = tempfile::tempdir().unwrap();
-    let beta = dir.path().join("beta.txt");
-    let alpha = dir.path().join("alpha.txt");
-    fs::write(&beta, b"beta").unwrap();
-    fs::write(&alpha, b"alpha").unwrap();
+    let panel = build_panel_with_files(
+        dir.path(),
+        &[("beta.txt", b"beta"), ("alpha.txt", b"alpha")],
+    );
 
-    let mut panel = test_panel(dir.path());
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &beta));
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &alpha));
-    rebuild_visible_entries(&mut panel, None);
-
-    let names: Vec<_> = panel
-        .listing
-        .entries
-        .iter()
-        .map(|entry| entry.name.as_str())
-        .collect();
-    assert_eq!(names, vec!["..", "alpha.txt", "beta.txt"]);
+    assert_entry_names_eq(&panel, &["..", "alpha.txt", "beta.txt"]);
     assert_eq!(panel.total_size(), 9);
 }
 
@@ -141,8 +155,6 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     assert!(keep_entry.selected);
     assert_eq!(panel.selected_count(), 1);
     assert_eq!(panel.selected_size(), 7);
-    // total_size aggregates unfiltered_entries, so it includes drop.log (4 bytes)
-    // even though it is filtered out of the visible listing.
     assert_eq!(panel.total_size(), 11);
 }
 
@@ -163,27 +175,15 @@ fn watcher_upsert_hides_hidden_when_hidden_disabled() {
 #[test]
 fn watcher_remove_updates_visible_entries_and_clamps_cursor_scroll() {
     let dir = tempfile::tempdir().unwrap();
-    let a = dir.path().join("a.txt");
-    let b = dir.path().join("b.txt");
-    fs::write(&a, b"a").unwrap();
-    fs::write(&b, b"b").unwrap();
-
-    let mut panel = test_panel(dir.path());
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &a));
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &b));
+    let mut panel = build_panel_with_files(dir.path(), &[("a.txt", b"a"), ("b.txt", b"b")]);
     panel.cursor = 2;
     panel.scroll_offset = 2;
 
-    assert!(apply_watcher_remove_if_matches(&mut panel, &b));
+    let b_path = dir.path().join("b.txt");
+    assert!(apply_watcher_remove_if_matches(&mut panel, &b_path));
     rebuild_visible_entries(&mut panel, None);
 
-    let names: Vec<_> = panel
-        .listing
-        .entries
-        .iter()
-        .map(|entry| entry.name.as_str())
-        .collect();
-    assert_eq!(names, vec!["..", "a.txt"]);
+    assert_entry_names_eq(&panel, &["..", "a.txt"]);
     assert_eq!(panel.cursor, 1);
     assert_eq!(panel.scroll_offset, 1);
     assert_eq!(panel.total_size(), 1);
@@ -255,31 +255,21 @@ fn watcher_upsert_uses_panel_sort_mode() {
     fs::write(&big, b"larger").unwrap();
 
     let mut panel = test_panel(dir.path());
-    panel.set_sort_mode(SortMode::SizeDesc);
+    panel.set_sort_mode(SortMode::new(SortField::Size, Direction::Desc));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &small));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &big));
     rebuild_visible_entries(&mut panel, None);
 
-    let names: Vec<_> = panel
-        .listing
-        .entries
-        .iter()
-        .map(|entry| entry.name.as_str())
-        .collect();
-    assert_eq!(names, vec!["..", "big.txt", "small.txt"]);
+    assert_entry_names_eq(&panel, &["..", "big.txt", "small.txt"]);
 }
 
 #[test]
 fn watcher_skips_update_when_metadata_unchanged() {
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("same.txt");
-    fs::write(&file, b"content").unwrap();
-
-    let mut panel = test_panel(dir.path());
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
-    rebuild_visible_entries(&mut panel, None);
+    let mut panel = build_panel_with_files(dir.path(), &[("same.txt", b"content")]);
     assert_eq!(panel.listing.entries.len(), 2);
 
+    let file = dir.path().join("same.txt");
     assert!(!apply_watcher_upsert_if_matches(&mut panel, &file));
     assert_eq!(panel.listing.entries.len(), 2);
     assert_eq!(panel.listing.unfiltered_entries.len(), 2);
@@ -302,16 +292,9 @@ fn watcher_updates_when_metadata_changes() {
     assert_eq!(panel.total_size(), 18);
 }
 
-// Creates OVERFLOW_EVENT_COUNT files on disk, making it slower than typical unit tests.
-// The I/O cost is intentional: real paths are needed to verify that exactly
-// MAX_WATCHER_EVENTS_PER_POLL events are drained and the overflow event remains in the channel.
 #[test]
 fn poll_watcher_events_processes_at_most_256_events() {
     let dir = tempfile::tempdir().unwrap();
-    // NOTE: this deliberately uses an unbounded mpsc::channel() rather than
-    // sync_channel(WATCHER_CHANNEL_CAPACITY). A bounded channel would block the
-    // test thread on the 257th send (backpressure) before poll_watcher_events
-    // drains anything, deadlocking the test.
     let (tx, rx) = mpsc::channel();
     let mut state = AppState::new();
     state.left_panel = test_panel(dir.path());
@@ -345,15 +328,11 @@ fn poll_watcher_events_processes_at_most_256_events() {
 #[test]
 fn full_refresh_preserves_selected_entries() {
     let dir = tempfile::tempdir().unwrap();
-    let selected = dir.path().join("selected.txt");
-    fs::write(&selected, b"selected").unwrap();
-
-    let mut panel = test_panel(dir.path());
-    assert!(apply_watcher_upsert_if_matches(&mut panel, &selected));
-    rebuild_visible_entries(&mut panel, None);
+    let mut panel = build_panel_with_files(dir.path(), &[("selected.txt", b"selected")]);
     select_entry_by_name(&mut panel.listing.entries, "selected.txt");
     panel.sync_unfiltered_selection();
 
+    let selected = dir.path().join("selected.txt");
     refresh_panel_from_disk(&mut panel);
 
     assert!(
@@ -469,9 +448,16 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
     let dirty = harness.poll();
     assert!(dirty);
     assert_eq!(harness.state.left_panel.path(), new_name);
-    // TODO: assert that panel entries were refreshed from new_name (e.g. that
-    // marker.txt is present) to verify the rename triggers a full reload, not
-    // just a path update.
+    assert!(
+        harness
+            .state
+            .left_panel
+            .listing
+            .unfiltered_entries
+            .iter()
+            .any(|e| e.name == "marker.txt"),
+        "marker.txt should be present after rename triggers full reload"
+    );
 }
 
 #[test]
@@ -484,16 +470,16 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     rebuild_visible_entries(&mut panel, None);
     assert!(panel.listing.entries.len() > 1);
 
-    // Hardcoded nonexistent path — test-only fixture to trigger a read error; must not appear in production code.
-    // TODO: use a tempdir with revoked permissions instead to avoid cross-test path collision risk.
-    panel.set_path(PathBuf::from("/nonexistent_dir_for_test_12345"));
+    let gone = tempfile::tempdir().unwrap();
+    let gone_path = gone.path().to_path_buf();
+    drop(gone);
+    panel.set_path(gone_path);
     refresh_panel_from_disk(&mut panel);
 
     assert!(panel.listing.entries.is_empty());
     assert!(panel.listing.unfiltered_entries.is_empty());
     assert!(panel.listing.path_index.is_empty());
-    assert!(panel.listing.unfiltered_dirty);
-    assert!(!panel.listing.needs_rebuild);
+    assert_eq!(panel.listing.state(), ListingState::NeedsFullRead);
     assert_eq!(panel.cursor, 0);
     assert_eq!(panel.scroll_offset, 0);
     assert!(
@@ -509,9 +495,10 @@ fn full_refresh_recovers_after_error() {
     let file = dir.path().join("recovery.txt");
     fs::write(&file, b"hello").unwrap();
 
-    // Hardcoded nonexistent path — test-only fixture to simulate an unreadable directory; must not appear in production code.
-    // TODO: use a tempdir with revoked permissions instead to avoid cross-test path collision risk.
-    panel.set_path(PathBuf::from("/nonexistent_for_error_test_xyz"));
+    let gone = tempfile::tempdir().unwrap();
+    let gone_path = gone.path().to_path_buf();
+    drop(gone);
+    panel.set_path(gone_path);
     refresh_panel_from_disk(&mut panel);
     assert!(panel.listing.entries.is_empty());
 
@@ -568,10 +555,7 @@ fn event_is_panel_dir_cached_uses_injected_canonical_without_io() {
         canonical: Some(injected.clone()),
         canonical_clean: None,
     };
-    // The cached canonical does not exist on disk; canonicalize() would fail.
-    // Returning true proves the function matched via the cache, not via fresh I/O.
     assert!(event_is_panel_dir_cached(&injected, &cache));
-    // A child file path should not be treated as the panel directory itself.
     assert!(!event_is_panel_dir_cached(
         Path::new("/some/panel/child.txt"),
         &cache,
@@ -581,9 +565,10 @@ fn event_is_panel_dir_cached_uses_injected_canonical_without_io() {
 #[test]
 fn set_path_updates_canonical_path() {
     let dir = tempfile::tempdir().unwrap();
-    // Hardcoded nonexistent path — test-only fixture to verify canonical_path() is None for missing dirs; must not appear in production code.
-    // TODO: use a tempdir (then drop it) instead to avoid cross-test path collision risk.
-    let mut panel = PanelState::new(PathBuf::from("/nonexistent"));
+    let gone = tempfile::tempdir().unwrap();
+    let gone_path = gone.path().to_path_buf();
+    drop(gone);
+    let mut panel = PanelState::new(gone_path);
 
     assert!(panel.canonical_path().is_none());
     panel.set_path(dir.path().to_path_buf());
@@ -661,9 +646,6 @@ fn created_child_file_appears_in_panel() {
 fn deleted_root_dir_stays_at_root_and_refreshes() {
     let (tx, rx) = mpsc::sync_channel(WATCHER_CHANNEL_CAPACITY);
     let mut state = AppState::new();
-    // Hardcoded filesystem root — test-only fixture for the edge case where the panel is at "/";
-    // safe because "/" always exists, but this pattern must not appear in production code.
-    // TODO: "/" is fine, but the other hardcoded paths above should migrate to tempdir fixtures.
     state.left_panel.set_path(PathBuf::from("/"));
 
     tx.send(WatchEvent::Deleted(PathBuf::from("/"))).unwrap();
@@ -679,18 +661,7 @@ fn deleted_root_dir_stays_at_root_and_refreshes() {
 
 #[test]
 fn sync_watcher_paths_does_not_set_last_synced_when_path_missing() {
-    // TODO: the three sync_watcher_paths_*missing/cooldown scenarios below share
-    // near-identical setup (missing panel dir + sync + assert cooldown). Consider
-    // parameterizing them (e.g. a #[test] table or a shared harness builder) to
-    // isolate only the differing expectation per case.
-    let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("nonexistent_panel_dir");
-
-    let mut harness = WatcherHarness::new();
-    harness.state.left_panel.set_path(missing);
-    harness.state.right_panel.set_path(dir.path().to_path_buf());
-
-    harness.sync();
+    let (_dir, harness) = setup_cooldown_harness();
 
     assert!(
         harness.sync_state.last_synced.is_none(),
@@ -704,14 +675,7 @@ fn sync_watcher_paths_does_not_set_last_synced_when_path_missing() {
 
 #[test]
 fn sync_watcher_paths_cooldown_skips_early_retries() {
-    let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("nonexistent_panel_dir");
-
-    let mut harness = WatcherHarness::new();
-    harness.state.left_panel.set_path(missing);
-    harness.state.right_panel.set_path(dir.path().to_path_buf());
-
-    harness.sync();
+    let (_dir, mut harness) = setup_cooldown_harness();
     assert!(harness.sync_state.failed_cooldown.is_some());
 
     let watched_before = harness.watcher.as_ref().unwrap().watched_dirs().len();
@@ -741,7 +705,6 @@ fn sync_watcher_paths_cooldown_allows_different_paths() {
     harness.sync();
     assert!(harness.sync_state.failed_cooldown.is_some());
 
-    // Navigate to valid directory — cooldown should NOT block
     harness.state.left_panel.set_path(dir2.path().to_path_buf());
     harness.sync();
 
@@ -751,8 +714,112 @@ fn sync_watcher_paths_cooldown_allows_different_paths() {
     );
 }
 
-// TODO: missing coverage — add tests for symlink handling (symlinked panel dir,
-// symlink targets changing, broken symlinks during upsert/remove).
-// TODO: missing coverage — add a test for the race between poll_watcher_events
-// draining and concurrent panel navigation (path changes mid-poll) to verify
-// stale events do not mutate a panel that has already navigated away.
+#[cfg(unix)]
+#[test]
+fn symlinked_panel_dir_tracks_target() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let real_dir = dir.path().join("real");
+    fs::create_dir(&real_dir).unwrap();
+    let link_dir = dir.path().join("link");
+    symlink(&real_dir, &link_dir).unwrap();
+
+    let file_via_link = link_dir.join("inside.txt");
+    fs::write(&file_via_link, b"data").unwrap();
+
+    let mut panel = test_panel(&link_dir);
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &file_via_link));
+    rebuild_visible_entries(&mut panel, None);
+
+    assert_entry_names_eq(&panel, &["..", "inside.txt"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_target_change_detected() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target_a = dir.path().join("target_a.txt");
+    let target_b = dir.path().join("target_b.txt");
+    fs::write(&target_a, b"aaa").unwrap();
+    fs::write(&target_b, b"bbb").unwrap();
+
+    let link = dir.path().join("link.txt");
+    symlink(&target_a, &link).unwrap();
+
+    let mut panel = test_panel(dir.path());
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &link));
+    rebuild_visible_entries(&mut panel, None);
+    assert!(panel.listing.entries.iter().any(|e| e.name == "link.txt"));
+
+    fs::remove_file(&link).unwrap();
+    symlink(&target_b, &link).unwrap();
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &link));
+    rebuild_visible_entries(&mut panel, None);
+
+    assert!(panel.listing.entries.iter().any(|e| e.name == "link.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_symlink_handled_gracefully() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dangling = dir.path().join("dangling.txt");
+    symlink(dir.path().join("nonexistent_target"), &dangling).unwrap();
+
+    let mut panel = test_panel(dir.path());
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &dangling));
+    rebuild_visible_entries(&mut panel, None);
+
+    assert!(
+        panel
+            .listing
+            .entries
+            .iter()
+            .any(|e| e.name == "dangling.txt"),
+        "broken symlink should appear in listing"
+    );
+}
+
+#[test]
+fn stale_events_ignored_after_path_change() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+
+    let file_a = dir_a.path().join("stale.txt");
+    fs::write(&file_a, b"stale").unwrap();
+
+    let (tx, rx) = mpsc::sync_channel(WATCHER_CHANNEL_CAPACITY);
+    let mut state = AppState::new();
+    state.left_panel = test_panel(dir_a.path());
+    state.right_panel = test_panel(dir_a.path());
+
+    tx.send(WatchEvent::Created(file_a)).unwrap();
+
+    state.left_panel.set_path(dir_b.path().to_path_buf());
+    state.right_panel.set_path(dir_b.path().to_path_buf());
+
+    poll_watcher_events(&mut state, &rx);
+    assert!(
+        !state
+            .left_panel
+            .listing
+            .entries
+            .iter()
+            .any(|e| e.name == "stale.txt"),
+        "stale file should not appear in left panel after path change"
+    );
+    assert!(
+        !state
+            .right_panel
+            .listing
+            .entries
+            .iter()
+            .any(|e| e.name == "stale.txt"),
+        "stale file should not appear in right panel after path change"
+    );
+}

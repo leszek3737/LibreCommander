@@ -16,7 +16,7 @@ enum JobMessage {
         report: ops::batch::BatchReport,
     },
     SearchFinished {
-        outcome: Box<ops::search::SearchOutcome<FileEntry>>,
+        outcome: Box<ops::search::SearchOutcome<FileEntry, ops::search::SearchError>>,
         pattern: String,
     },
 }
@@ -332,7 +332,7 @@ fn finish_running_job(
 
 fn finish_search_job(
     state: &mut AppState,
-    outcome: &ops::search::SearchOutcome<FileEntry>,
+    outcome: &ops::search::SearchOutcome<FileEntry, ops::search::SearchError>,
     pattern: &str,
     search_origin: Option<ActivePanel>,
     refresh_both: fn(&mut AppState),

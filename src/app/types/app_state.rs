@@ -98,34 +98,22 @@ impl AppState {
         }
     }
 
-    // TODO: active_panel/inactive_panel/panel and their _mut counterparts
-    //       duplicate the same match arms. Consider a helper or macro to deduplicate.
     pub fn active_panel(&self) -> &PanelState {
-        match self.active_panel {
-            ActivePanel::Left => &self.left_panel,
-            ActivePanel::Right => &self.right_panel,
-        }
+        self.panel(self.active_panel)
     }
 
     pub fn active_panel_mut(&mut self) -> &mut PanelState {
-        match self.active_panel {
-            ActivePanel::Left => &mut self.left_panel,
-            ActivePanel::Right => &mut self.right_panel,
-        }
+        let which = self.active_panel;
+        self.panel_mut(which)
     }
 
     pub fn inactive_panel(&self) -> &PanelState {
-        match self.active_panel {
-            ActivePanel::Left => &self.right_panel,
-            ActivePanel::Right => &self.left_panel,
-        }
+        self.panel(self.active_panel.toggle())
     }
 
     pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
-        match self.active_panel {
-            ActivePanel::Left => &mut self.right_panel,
-            ActivePanel::Right => &mut self.left_panel,
-        }
+        let which = self.active_panel.toggle();
+        self.panel_mut(which)
     }
 
     pub fn hotlist(&self) -> &[PathBuf] {
@@ -204,7 +192,6 @@ impl AppState {
         self.drag_anchor_index = None;
     }
 
-    // TODO: same deduplication opportunity as active_panel/inactive_panel above.
     pub fn panel_mut(&mut self, panel: ActivePanel) -> &mut PanelState {
         match panel {
             ActivePanel::Left => &mut self.left_panel,

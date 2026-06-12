@@ -8,7 +8,9 @@
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 
+pub use crate::app::types::Direction;
 pub use crate::app::types::FileEntry;
+pub use crate::app::types::SortField;
 pub use crate::app::types::SortMode;
 pub use crate::app::types::SortOptions;
 
@@ -17,45 +19,6 @@ use crate::ops::natsort;
 const GROUP_UP: u8 = 0;
 const GROUP_DIR: u8 = 1;
 const GROUP_FILE: u8 = 2;
-
-const TIEBREAKER_INLINE: usize = 64;
-
-#[derive(Clone, PartialEq, Eq)]
-enum Tiebreaker {
-    Inline([u8; TIEBREAKER_INLINE], u8),
-    Heap(Box<[u8]>),
-}
-
-impl Tiebreaker {
-    fn as_bytes(&self) -> &[u8] {
-        match self {
-            Tiebreaker::Inline(buf, len) => &buf[..*len as usize],
-            Tiebreaker::Heap(bx) => bx,
-        }
-    }
-}
-
-impl Ord for Tiebreaker {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.as_bytes().cmp(other.as_bytes())
-    }
-}
-
-impl PartialOrd for Tiebreaker {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-fn make_tiebreaker(bytes: &[u8]) -> Tiebreaker {
-    if bytes.len() <= TIEBREAKER_INLINE {
-        let mut buf = [0u8; TIEBREAKER_INLINE];
-        buf[..bytes.len()].copy_from_slice(bytes);
-        Tiebreaker::Inline(buf, bytes.len() as u8)
-    } else {
-        Tiebreaker::Heap(bytes.to_vec().into_boxed_slice())
-    }
-}
 
 /// Pre-computed sort key for name comparisons.
 /// Caches case-folded form and uppercase flag to avoid repeated UTF-8 scans.
@@ -138,96 +101,131 @@ pub fn get_extension(name: &str) -> &str {
 /// Natural sort (`NatAsc`/`NatDesc`) uses ASCII-only case folding
 /// (`make_ascii_lowercase`). Name and Extension sorts use full Unicode
 /// `str::to_lowercase()`. Results may disagree on non-ASCII filenames.
-/// Raw byte values serve as deterministic tiebreaker for natural sort.
+/// Name sort keys serve as deterministic tiebreakers for natural sort.
 #[inline]
 pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOptions) {
     let dir_first = options.dir_first;
     let sensitive = options.sensitive;
+    let asc = mode.direction.is_ascending();
 
-    match mode {
-        SortMode::NameAsc => entries.sort_by_cached_key(|e| {
+    match mode.field {
+        SortField::Name => sort_by_name(entries, dir_first, sensitive, asc),
+        SortField::Extension => sort_by_extension(entries, dir_first, sensitive, asc),
+        SortField::Size => sort_by_size(entries, dir_first, sensitive, asc),
+        SortField::ModTime => sort_by_mod_time(entries, dir_first, sensitive, asc),
+        SortField::Btime => sort_by_btime(entries, dir_first, sensitive, asc),
+        SortField::NaturalName => sort_by_natural_name(entries, dir_first, sensitive, asc),
+    }
+}
+
+fn sort_by_name(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
+    if asc {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::NameDesc => entries.sort_by_cached_key(|e| {
+        })
+    } else {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 Reverse(NameSortKey::new(&e.name, sensitive)),
             )
-        }),
-        SortMode::ExtensionAsc => entries.sort_by_cached_key(|e| {
+        })
+    }
+}
+
+fn sort_by_extension(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
+    if asc {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 NameSortKey::new(get_extension(&e.name), sensitive),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::ExtensionDesc => entries.sort_by_cached_key(|e| {
+        })
+    } else {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 Reverse(NameSortKey::new(get_extension(&e.name), sensitive)),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::SizeAsc => entries.sort_by_cached_key(|e| {
+        })
+    }
+}
+
+fn sort_by_size(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
+    if asc {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 e.size(),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::SizeDesc => entries.sort_by_cached_key(|e| {
+        })
+    } else {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 Reverse(e.size()),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::ModTimeAsc => entries.sort_by_cached_key(|e| {
+        })
+    }
+}
+
+fn sort_by_mod_time(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
+    if asc {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 e.mtime(),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::ModTimeDesc => entries.sort_by_cached_key(|e| {
+        })
+    } else {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 Reverse(e.mtime()),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::BtimeAsc => entries.sort_by_cached_key(|e| {
-            // None always sorts last (no btime = unknown, goes to bottom in both directions)
+        })
+    }
+}
+
+fn sort_by_btime(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
+    if asc {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 e.cha.btime.is_none() as u8,
                 e.cha.btime,
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::BtimeDesc => entries.sort_by_cached_key(|e| {
+        })
+    } else {
+        entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
                 e.cha.btime.is_none() as u8,
                 e.cha.btime.map(Reverse),
                 NameSortKey::new(&e.name, sensitive),
             )
-        }),
-        SortMode::NaturalNameAsc => {
-            entries.sort_by_cached_key(|e| natural_sort_key(e, dir_first, sensitive))
-        }
-        SortMode::NaturalNameDesc => entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                Reverse((
-                    natsort::natsort_key(e.name.as_bytes(), !sensitive),
-                    make_tiebreaker(e.name.as_bytes()),
-                )),
-            )
-        }),
+        })
+    }
+}
+
+fn sort_by_natural_name(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
+    if asc {
+        entries.sort_by_cached_key(|e| natural_sort_key(e, dir_first, sensitive))
+    } else {
+        entries.sort_by_cached_key(|e| {
+            let key = natural_sort_key(e, dir_first, sensitive);
+            (key.group, Reverse((key.segments, key.tiebreaker)))
+        })
     }
 }
 
@@ -235,7 +233,7 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
 struct NaturalSortKey {
     group: u8,
     segments: Vec<natsort::NatKeySegment>,
-    tiebreaker: Tiebreaker,
+    tiebreaker: NameSortKey,
 }
 
 impl Ord for NaturalSortKey {
@@ -260,7 +258,7 @@ fn natural_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> Natu
     NaturalSortKey {
         group: entry_group(entry, dir_first),
         segments: natsort::natsort_key(entry.name.as_bytes(), !sensitive),
-        tiebreaker: make_tiebreaker(entry.name.as_bytes()),
+        tiebreaker: NameSortKey::new(&entry.name, sensitive),
     }
 }
 
@@ -274,20 +272,33 @@ fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
     }
 }
 
+const FIELD_CYCLE_ORDER: [SortField; 6] = [
+    SortField::Name,
+    SortField::NaturalName,
+    SortField::Size,
+    SortField::ModTime,
+    SortField::Btime,
+    SortField::Extension,
+];
+
+fn next_field_in_cycle(current: SortField) -> SortField {
+    let idx = FIELD_CYCLE_ORDER
+        .iter()
+        .position(|&f| f == current)
+        .unwrap_or(0);
+    FIELD_CYCLE_ORDER[(idx + 1) % FIELD_CYCLE_ORDER.len()]
+}
+
 pub fn cycle_sort_mode(current: SortMode) -> SortMode {
-    match current {
-        SortMode::NameAsc => SortMode::NameDesc,
-        SortMode::NameDesc => SortMode::NaturalNameAsc,
-        SortMode::NaturalNameAsc => SortMode::NaturalNameDesc,
-        SortMode::NaturalNameDesc => SortMode::SizeAsc,
-        SortMode::SizeAsc => SortMode::SizeDesc,
-        SortMode::SizeDesc => SortMode::ModTimeAsc,
-        SortMode::ModTimeAsc => SortMode::ModTimeDesc,
-        SortMode::ModTimeDesc => SortMode::BtimeAsc,
-        SortMode::BtimeAsc => SortMode::BtimeDesc,
-        SortMode::BtimeDesc => SortMode::ExtensionAsc,
-        SortMode::ExtensionAsc => SortMode::ExtensionDesc,
-        SortMode::ExtensionDesc => SortMode::NameAsc,
+    match current.direction {
+        Direction::Asc => SortMode {
+            field: current.field,
+            direction: Direction::Desc,
+        },
+        Direction::Desc => SortMode {
+            field: next_field_in_cycle(current.field),
+            direction: Direction::Asc,
+        },
     }
 }
 

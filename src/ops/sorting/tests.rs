@@ -1,6 +1,15 @@
 use super::*;
 use std::time::SystemTime;
 
+macro_rules! sort_mode {
+    ($field:ident, $dir:ident) => {
+        SortMode {
+            field: SortField::$field,
+            direction: Direction::$dir,
+        }
+    };
+}
+
 fn make_entry(
     name: &str,
     is_dir: bool,
@@ -78,30 +87,54 @@ fn test_get_extension_edge_cases() {
 
 #[test]
 fn test_cycle_sort_mode() {
-    assert_eq!(cycle_sort_mode(SortMode::NameAsc), SortMode::NameDesc);
     assert_eq!(
-        cycle_sort_mode(SortMode::NameDesc),
-        SortMode::NaturalNameAsc
+        cycle_sort_mode(sort_mode!(Name, Asc)),
+        sort_mode!(Name, Desc)
     );
     assert_eq!(
-        cycle_sort_mode(SortMode::NaturalNameAsc),
-        SortMode::NaturalNameDesc
+        cycle_sort_mode(sort_mode!(Name, Desc)),
+        sort_mode!(NaturalName, Asc)
     );
     assert_eq!(
-        cycle_sort_mode(SortMode::NaturalNameDesc),
-        SortMode::SizeAsc
+        cycle_sort_mode(sort_mode!(NaturalName, Asc)),
+        sort_mode!(NaturalName, Desc)
     );
-    assert_eq!(cycle_sort_mode(SortMode::SizeAsc), SortMode::SizeDesc);
-    assert_eq!(cycle_sort_mode(SortMode::SizeDesc), SortMode::ModTimeAsc);
-    assert_eq!(cycle_sort_mode(SortMode::ModTimeAsc), SortMode::ModTimeDesc);
-    assert_eq!(cycle_sort_mode(SortMode::ModTimeDesc), SortMode::BtimeAsc);
-    assert_eq!(cycle_sort_mode(SortMode::BtimeAsc), SortMode::BtimeDesc);
-    assert_eq!(cycle_sort_mode(SortMode::BtimeDesc), SortMode::ExtensionAsc);
     assert_eq!(
-        cycle_sort_mode(SortMode::ExtensionAsc),
-        SortMode::ExtensionDesc
+        cycle_sort_mode(sort_mode!(NaturalName, Desc)),
+        sort_mode!(Size, Asc)
     );
-    assert_eq!(cycle_sort_mode(SortMode::ExtensionDesc), SortMode::NameAsc);
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(Size, Asc)),
+        sort_mode!(Size, Desc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(Size, Desc)),
+        sort_mode!(ModTime, Asc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(ModTime, Asc)),
+        sort_mode!(ModTime, Desc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(ModTime, Desc)),
+        sort_mode!(Btime, Asc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(Btime, Asc)),
+        sort_mode!(Btime, Desc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(Btime, Desc)),
+        sort_mode!(Extension, Asc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(Extension, Asc)),
+        sort_mode!(Extension, Desc)
+    );
+    assert_eq!(
+        cycle_sort_mode(sort_mode!(Extension, Desc)),
+        sort_mode!(Name, Asc)
+    );
 }
 
 #[test]
@@ -113,7 +146,7 @@ fn test_sort_ellipsis_at_top() {
         create_test_entry("another.txt", false, 200, 1500),
     ];
 
-    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "..");
 }
@@ -127,7 +160,7 @@ fn test_directories_before_files() {
         create_test_entry("another_dir", true, 0, 2500),
     ];
 
-    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
 
     assert!(entries[0].is_dir());
     assert!(entries[1].is_dir());
@@ -145,13 +178,80 @@ fn test_case_insensitive_sorting() {
         create_test_entry("Cherry", false, 180, 1300),
     ];
 
-    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "apple");
     assert_eq!(entries[1].name, "Apple");
     assert_eq!(entries[2].name, "banana");
     assert_eq!(entries[3].name, "Cherry");
     assert_eq!(entries[4].name, "zebra");
+}
+
+#[test]
+fn test_sort_natural_name_case_tiebreak_matches_name_sort() {
+    let source = vec![
+        create_test_entry("alpha2", false, 100, 100),
+        create_test_entry("Alpha2", false, 100, 100),
+        create_test_entry("ALPHA2", false, 100, 100),
+        create_test_entry("alpha10", false, 100, 100),
+    ];
+
+    let mut name_entries = source.clone();
+    sort_entries(
+        &mut name_entries,
+        sort_mode!(Name, Asc),
+        SortOptions::default(),
+    );
+
+    let mut natural_entries = source;
+    sort_entries(
+        &mut natural_entries,
+        sort_mode!(NaturalName, Asc),
+        SortOptions::default(),
+    );
+
+    let name_case_order: Vec<&str> = name_entries
+        .iter()
+        .filter(|entry| entry.name.eq_ignore_ascii_case("alpha2"))
+        .map(|entry| entry.name.as_str())
+        .collect();
+    let natural_case_order: Vec<&str> = natural_entries
+        .iter()
+        .filter(|entry| entry.name.eq_ignore_ascii_case("alpha2"))
+        .map(|entry| entry.name.as_str())
+        .collect();
+
+    assert_eq!(name_case_order, ["alpha2", "ALPHA2", "Alpha2"]);
+    assert_eq!(natural_case_order, name_case_order);
+}
+
+#[test]
+fn test_sort_natural_name_case_tiebreak_desc_reverses_asc() {
+    let source = vec![
+        create_test_entry("alpha2", false, 100, 100),
+        create_test_entry("Alpha2", false, 100, 100),
+        create_test_entry("ALPHA2", false, 100, 100),
+    ];
+
+    let mut ascending = source.clone();
+    sort_entries(
+        &mut ascending,
+        sort_mode!(NaturalName, Asc),
+        SortOptions::default(),
+    );
+
+    let mut descending = source;
+    sort_entries(
+        &mut descending,
+        sort_mode!(NaturalName, Desc),
+        SortOptions::default(),
+    );
+
+    let ascending_names: Vec<&str> = ascending.iter().map(|entry| entry.name.as_str()).collect();
+    let descending_names: Vec<&str> = descending.iter().map(|entry| entry.name.as_str()).collect();
+
+    assert_eq!(ascending_names, ["alpha2", "ALPHA2", "Alpha2"]);
+    assert_eq!(descending_names, ["Alpha2", "ALPHA2", "alpha2"]);
 }
 
 #[test]
@@ -162,7 +262,7 @@ fn test_sort_name_desc() {
         create_test_entry("gamma", false, 150, 1200),
     ];
 
-    sort_entries(&mut entries, SortMode::NameDesc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Desc), SortOptions::default());
 
     assert_eq!(entries[0].name, "gamma");
     assert_eq!(entries[1].name, "beta");
@@ -177,13 +277,13 @@ fn test_sort_by_size() {
         create_test_entry("medium.txt", false, 1000, 1200),
     ];
 
-    sort_entries(&mut entries, SortMode::SizeAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Size, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "small.txt");
     assert_eq!(entries[1].name, "medium.txt");
     assert_eq!(entries[2].name, "large.txt");
 
-    sort_entries(&mut entries, SortMode::SizeDesc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Size, Desc), SortOptions::default());
 
     assert_eq!(entries[0].name, "large.txt");
     assert_eq!(entries[1].name, "medium.txt");
@@ -198,13 +298,21 @@ fn test_sort_by_mod_time() {
         create_test_entry("middle.txt", false, 150, 1500),
     ];
 
-    sort_entries(&mut entries, SortMode::ModTimeAsc, SortOptions::default());
+    sort_entries(
+        &mut entries,
+        sort_mode!(ModTime, Asc),
+        SortOptions::default(),
+    );
 
     assert_eq!(entries[0].name, "old.txt");
     assert_eq!(entries[1].name, "middle.txt");
     assert_eq!(entries[2].name, "new.txt");
 
-    sort_entries(&mut entries, SortMode::ModTimeDesc, SortOptions::default());
+    sort_entries(
+        &mut entries,
+        sort_mode!(ModTime, Desc),
+        SortOptions::default(),
+    );
 
     assert_eq!(entries[0].name, "new.txt");
     assert_eq!(entries[1].name, "middle.txt");
@@ -220,7 +328,11 @@ fn test_sort_by_extension() {
         create_test_entry("script.sh", false, 50, 1100),
     ];
 
-    sort_entries(&mut entries, SortMode::ExtensionAsc, SortOptions::default());
+    sort_entries(
+        &mut entries,
+        sort_mode!(Extension, Asc),
+        SortOptions::default(),
+    );
 
     assert_eq!(entries[0].name, "image.png");
     assert_eq!(entries[1].name, "script.sh");
@@ -229,7 +341,7 @@ fn test_sort_by_extension() {
 
     sort_entries(
         &mut entries,
-        SortMode::ExtensionDesc,
+        sort_mode!(Extension, Desc),
         SortOptions::default(),
     );
 
@@ -243,7 +355,7 @@ fn test_sort_by_extension() {
 fn test_empty_entries_list() {
     let mut entries: Vec<FileEntry> = vec![];
 
-    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
     assert_eq!(entries.len(), 0);
 }
 
@@ -254,7 +366,7 @@ fn test_sort_with_same_values() {
         make_entry("b.txt", false, 100, 1000, Some(1000)),
     ];
 
-    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
     assert_eq!(entries[0].name, "a.txt");
     assert_eq!(entries[1].name, "b.txt");
 }
@@ -269,7 +381,7 @@ fn test_sort_natural_name_asc() {
 
     sort_entries(
         &mut entries,
-        SortMode::NaturalNameAsc,
+        sort_mode!(NaturalName, Asc),
         SortOptions::default(),
     );
 
@@ -288,7 +400,7 @@ fn test_sort_natural_name_desc() {
 
     sort_entries(
         &mut entries,
-        SortMode::NaturalNameDesc,
+        sort_mode!(NaturalName, Desc),
         SortOptions::default(),
     );
 
@@ -308,7 +420,7 @@ fn test_sort_natural_with_directories_first() {
 
     sort_entries(
         &mut entries,
-        SortMode::NaturalNameAsc,
+        sort_mode!(NaturalName, Asc),
         SortOptions::default(),
     );
 
@@ -329,7 +441,7 @@ fn test_sort_natural_ellipsis_first() {
 
     sort_entries(
         &mut entries,
-        SortMode::NaturalNameAsc,
+        sort_mode!(NaturalName, Asc),
         SortOptions::default(),
     );
 
@@ -344,7 +456,7 @@ fn test_sort_btime_asc_none_after_some() {
         make_entry("new.txt", false, 10, 200, Some(200)),
     ];
 
-    sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Btime, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "old.txt");
     assert_eq!(entries[1].name, "new.txt");
@@ -359,7 +471,11 @@ fn test_sort_btime_desc_none_after_some() {
         make_entry("new.txt", false, 10, 200, Some(200)),
     ];
 
-    sort_entries(&mut entries, SortMode::BtimeDesc, SortOptions::default());
+    sort_entries(
+        &mut entries,
+        sort_mode!(Btime, Desc),
+        SortOptions::default(),
+    );
 
     assert_eq!(entries[0].name, "new.txt");
     assert_eq!(entries[1].name, "old.txt");
@@ -373,7 +489,7 @@ fn test_sort_btime_same_btime_stable() {
         make_entry("alpha.txt", false, 10, 300, Some(300)),
     ];
 
-    sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Btime, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "alpha.txt");
     assert_eq!(entries[1].name, "beta.txt");
@@ -387,7 +503,7 @@ fn test_sort_btime_all_none() {
         make_entry("b.txt", false, 10, 100, None),
     ];
 
-    sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Btime, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "a.txt");
     assert_eq!(entries[1].name, "b.txt");
@@ -402,7 +518,7 @@ fn test_sort_btime_mixed_with_dirs() {
         make_entry("dir_new", true, 0, 200, Some(200)),
     ];
 
-    sort_entries(&mut entries, SortMode::BtimeAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Btime, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "dir_old");
     assert_eq!(entries[1].name, "dir_new");
@@ -456,7 +572,7 @@ fn test_cmp_ignore_case_turkish_dotted_i() {
 
 sort_options_test!(
     test_sort_dir_first_false,
-    SortMode::NameAsc,
+    sort_mode!(Name, Asc),
     false,
     false,
     vec![
@@ -468,7 +584,7 @@ sort_options_test!(
 
 sort_options_test!(
     test_sort_sensitive_true,
-    SortMode::NameAsc,
+    sort_mode!(Name, Asc),
     true,
     true,
     vec![
@@ -481,7 +597,7 @@ sort_options_test!(
 
 sort_options_test!(
     test_sort_extension_asc_sensitive_true,
-    SortMode::ExtensionAsc,
+    sort_mode!(Extension, Asc),
     true,
     true,
     vec![
@@ -494,7 +610,7 @@ sort_options_test!(
 
 sort_options_test!(
     test_sort_size_asc_dir_first_false,
-    SortMode::SizeAsc,
+    sort_mode!(Size, Asc),
     false,
     false,
     vec![
@@ -508,7 +624,7 @@ sort_options_test!(
 
 sort_options_test!(
     test_sort_natural_name_desc_dir_first_false,
-    SortMode::NaturalNameDesc,
+    sort_mode!(NaturalName, Desc),
     false,
     false,
     vec![
@@ -521,7 +637,7 @@ sort_options_test!(
 
 sort_options_test!(
     test_sort_ellipsis_first_even_with_dir_first_false,
-    SortMode::NameAsc,
+    sort_mode!(Name, Asc),
     false,
     false,
     vec![
@@ -536,7 +652,7 @@ sort_options_test!(
 
 sort_options_test!(
     test_sort_dir_first_false_sensitive_true,
-    SortMode::NameAsc,
+    sort_mode!(Name, Asc),
     false,
     true,
     vec![
@@ -557,7 +673,11 @@ fn test_sort_mod_time_asc_same_mtime_stable() {
         create_test_entry("a.txt", false, 200, 1000),
         create_test_entry("b.txt", false, 150, 1000),
     ];
-    sort_entries(&mut entries, SortMode::ModTimeAsc, SortOptions::default());
+    sort_entries(
+        &mut entries,
+        sort_mode!(ModTime, Asc),
+        SortOptions::default(),
+    );
     assert_eq!(entries[0].name, "a.txt");
     assert_eq!(entries[1].name, "b.txt");
     assert_eq!(entries[2].name, "c.txt");
@@ -570,7 +690,7 @@ fn test_sort_size_stable() {
         create_test_entry("a_medium.txt", false, 200, 1000),
         create_test_entry("c_small.txt", false, 100, 1000),
     ];
-    sort_entries(&mut entries, SortMode::SizeAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Size, Asc), SortOptions::default());
     assert_eq!(entries[0].name, "c_small.txt");
     assert_eq!(entries[1].name, "a_medium.txt");
     assert_eq!(entries[2].name, "b_medium.txt");
@@ -583,7 +703,11 @@ fn test_sort_extension_stable() {
         create_test_entry("a_config.txt", false, 100, 1000),
         create_test_entry("c_image.png", false, 100, 1000),
     ];
-    sort_entries(&mut entries, SortMode::ExtensionAsc, SortOptions::default());
+    sort_entries(
+        &mut entries,
+        sort_mode!(Extension, Asc),
+        SortOptions::default(),
+    );
     assert_eq!(entries[0].name, "c_image.png");
     assert_eq!(entries[1].name, "a_config.txt");
     assert_eq!(entries[2].name, "b_data.txt");
@@ -598,7 +722,7 @@ fn test_sort_natural_name_stable() {
     ];
     sort_entries(
         &mut entries,
-        SortMode::NaturalNameAsc,
+        sort_mode!(NaturalName, Asc),
         SortOptions::default(),
     );
     assert_eq!(entries[0].name, "a_file1.txt");
@@ -619,7 +743,7 @@ fn test_sort_entries_unicode() {
         create_test_entry("alpha.txt", false, 100, 1000),
     ];
 
-    sort_entries(&mut entries, SortMode::NameAsc, SortOptions::default());
+    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
 
     assert_eq!(entries[0].name, "alpha.txt");
     assert_eq!(entries[1].name, "caf\u{e9}.txt");
@@ -627,4 +751,26 @@ fn test_sort_entries_unicode() {
     assert_eq!(entries[3].name, "\u{6587}\u{4ef6}\u{540d}.txt");
     assert_eq!(entries[4].name, "\u{6d4b}\u{8bd5}");
     assert_eq!(entries[5].name, "\u{1f680}.rs");
+}
+
+#[test]
+fn test_sort_mtime_none_after_known() {
+    let no_mtime = FileEntry::builder()
+        .name("unknown.txt")
+        .path("unknown.txt")
+        .build();
+    let with_mtime = FileEntry::builder()
+        .name("known.txt")
+        .path("known.txt")
+        .modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+        .build();
+
+    let mut entries = vec![no_mtime, with_mtime];
+    sort_entries(
+        &mut entries,
+        sort_mode!(ModTime, Desc),
+        SortOptions::default(),
+    );
+    assert_eq!(entries[0].name, "known.txt");
+    assert_eq!(entries[1].name, "unknown.txt");
 }

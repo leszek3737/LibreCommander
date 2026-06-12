@@ -12,6 +12,63 @@ use super::common::{
 use super::copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
 use super::delete::delete_dir_recursive_cancelable;
 
+#[derive(Clone, Copy)]
+enum MoveKind {
+    Symlink,
+    Directory,
+    File,
+}
+
+impl MoveKind {
+    fn from_file_type(ft: &std::fs::FileType) -> Self {
+        if ft.is_symlink() {
+            MoveKind::Symlink
+        } else if ft.is_dir() {
+            MoveKind::Directory
+        } else {
+            MoveKind::File
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            MoveKind::Symlink => "symlink",
+            MoveKind::Directory => "directory",
+            MoveKind::File => "file",
+        }
+    }
+
+    fn copy(
+        self,
+        src: &Path,
+        dest: &Path,
+        progress_tx: &Sender<u64>,
+        cancel: &AtomicBool,
+        overwrite: bool,
+    ) -> io::Result<()> {
+        match self {
+            MoveKind::Symlink => {
+                check_canceled(cancel)?;
+                copy_symlink(src, dest, overwrite)
+            }
+            MoveKind::Directory => {
+                copy_dir_recursive_with_progress(src, dest, progress_tx, cancel, overwrite)
+                    .map(|_| ())
+            }
+            MoveKind::File => {
+                copy_file_with_progress(src, dest, progress_tx, cancel, overwrite).map(|_| ())
+            }
+        }
+    }
+
+    fn remove_src(self, src: &Path, cancel: &AtomicBool) -> io::Result<()> {
+        match self {
+            MoveKind::Symlink | MoveKind::File => fs::remove_file(src),
+            MoveKind::Directory => delete_dir_recursive_cancelable(src, cancel),
+        }
+    }
+}
+
 /// Move or rename a filesystem entry.
 ///
 /// The caller is responsible for obtaining user confirmation before
@@ -84,52 +141,20 @@ fn move_entry_impl(
         ensure_destination_absent(dest)?;
     }
 
-    // TODO: deduplicate the three copy_then_remove_src call arms
-    // (symlink/dir/file). Could use an enum or a trait object, but the
-    // closure signatures differ (some take progress_tx, cancel, overwrite;
-    // others are simpler). Evaluate after progress-tx plumbing stabilizes.
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
             check_canceled(cancel)?;
-            let file_type = src_meta.file_type();
-            if file_type.is_symlink() {
-                copy_then_remove_src(
-                    src,
-                    dest,
-                    cancel,
-                    || copy_symlink(src, dest, overwrite),
-                    || fs::remove_file(src),
-                    || remove_any(dest),
-                    "symlink",
-                )
-            } else if file_type.is_dir() {
-                copy_then_remove_src(
-                    src,
-                    dest,
-                    cancel,
-                    || {
-                        copy_dir_recursive_with_progress(src, dest, progress_tx, cancel, overwrite)
-                            .map(|_| ())
-                    },
-                    || delete_dir_recursive_cancelable(src, cancel),
-                    || remove_any(dest),
-                    "directory",
-                )
-            } else {
-                copy_then_remove_src(
-                    src,
-                    dest,
-                    cancel,
-                    || {
-                        copy_file_with_progress(src, dest, progress_tx, cancel, overwrite)
-                            .map(|_| ())
-                    },
-                    || fs::remove_file(src),
-                    || remove_any(dest),
-                    "file",
-                )
-            }
+            let kind = MoveKind::from_file_type(&src_meta.file_type());
+            copy_then_remove_src(
+                src,
+                dest,
+                cancel,
+                || kind.copy(src, dest, progress_tx, cancel, overwrite),
+                || kind.remove_src(src, cancel),
+                || remove_any(dest),
+                kind.label(),
+            )
         }
         Err(e) => Err(e),
     }
@@ -179,4 +204,101 @@ fn copy_then_remove_src(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn copy_then_remove_src_cancel_after_copy_rolls_back_dest_and_keeps_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src.txt");
+        let dest = temp.path().join("dest.txt");
+        fs::write(&src, b"source").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let remove_called = AtomicBool::new(false);
+
+        let err = copy_then_remove_src(
+            &src,
+            &dest,
+            &cancel,
+            || {
+                fs::copy(&src, &dest)?;
+                cancel.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+            || {
+                remove_called.store(true, Ordering::Relaxed);
+                fs::remove_file(&src)
+            },
+            || fs::remove_file(&dest),
+            "file",
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists());
+        assert!(src.exists());
+        assert_eq!(fs::read(&src).unwrap(), b"source");
+        assert!(!remove_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn copy_then_remove_src_success_skips_rollback() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src.txt");
+        let dest = temp.path().join("dest.txt");
+        fs::write(&src, b"source").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let rollback_called = AtomicBool::new(false);
+
+        copy_then_remove_src(
+            &src,
+            &dest,
+            &cancel,
+            || fs::copy(&src, &dest).map(|_| ()),
+            || fs::remove_file(&src),
+            || {
+                rollback_called.store(true, Ordering::Relaxed);
+                fs::remove_file(&dest)
+            },
+            "file",
+        )
+        .unwrap();
+
+        assert!(!src.exists());
+        assert!(dest.exists());
+        assert_eq!(fs::read(&dest).unwrap(), b"source");
+        assert!(!rollback_called.load(Ordering::Relaxed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_move_copy_checks_cancel_before_copy() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.txt");
+        let src = temp.path().join("link.txt");
+        let dest = temp.path().join("dest-link.txt");
+        fs::write(&target, b"target").unwrap();
+        symlink(&target, &src).unwrap();
+
+        let cancel = AtomicBool::new(true);
+        let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
+
+        let err = MoveKind::Symlink
+            .copy(&src, &dest, &progress_tx, &cancel, false)
+            .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dest.exists());
+        assert!(src.symlink_metadata().unwrap().file_type().is_symlink());
+    }
 }

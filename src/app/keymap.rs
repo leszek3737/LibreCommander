@@ -721,6 +721,17 @@ pub fn build_help_message() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::types::{AppMode, DialogKind, InputAction, PickerKind};
+
+    const NORMAL_MODE: &str = "Normal";
+    const VIEWING_MODE: &str = "Viewing";
+    const COMMAND_LINE_MODE: &str = "CommandLine";
+    const SEARCH_MODE: &str = "Search";
+    const MENU_MODE: &str = "Menu";
+    const LIST_PICKER_MODE: &str = "ListPicker";
+    const DIRECTORY_TREE_MODE: &str = "DirectoryTree";
+    const DIALOG_CONFIRM_MODE: &str = "Dialog/Confirm";
+    const DIALOG_INPUT_MODE: &str = "Dialog/Input";
 
     #[test]
     fn no_duplicate_keys_per_mode() {
@@ -736,17 +747,11 @@ mod tests {
         );
     }
 
-    // TODO: this test is O(n²) due to HashSet collection and iteration;
-    // consider a single-pass approach or accept the overhead for now.
-    #[test]
-    fn all_modes_are_non_empty() {
-        let modes: HashSet<&str> = KEYBINDINGS.iter().map(|b| b.mode).collect();
-        assert!(!modes.is_empty(), "No modes present in KEYBINDINGS table");
-    }
-
     #[test]
     fn every_binding_has_non_empty_fields() {
         for (i, b) in KEYBINDINGS.iter().enumerate() {
+            assert!(!b.mode.is_empty(), "Binding #{i} has empty mode");
+            assert!(!b.key.is_empty(), "Binding #{i} ({}) has empty key", b.mode);
             assert!(
                 !b.action.is_empty(),
                 "Binding #{i} ({}, {}) has empty action",
@@ -763,13 +768,27 @@ mod tests {
     }
 
     #[test]
-    fn build_help_message_contains_all_modes() {
+    fn all_app_modes_have_keymap_or_documented_fallback() {
         let msg = build_help_message();
-        let mut modes: Vec<&str> = KEYBINDINGS.iter().map(|b| b.mode).collect();
-        modes.sort();
-        modes.dedup();
-        for mode in &modes {
-            assert!(msg.contains(mode), "Help message missing mode '{}'", mode);
+        let keymap_modes: HashSet<&str> = KEYBINDINGS.iter().map(|binding| binding.mode).collect();
+
+        for keymap_mode in documented_keymap_modes() {
+            assert!(
+                keymap_modes.contains(keymap_mode),
+                "Keymap missing documented mode {keymap_mode:?}"
+            );
+            assert!(
+                msg.contains(keymap_mode),
+                "Help message missing documented mode {keymap_mode:?}"
+            );
+        }
+
+        for mode in representative_app_modes() {
+            let coverage = keymap_coverage_for_mode(&mode);
+            assert!(
+                keymap_modes.contains(coverage.keymap_mode()),
+                "{mode:?} must have keymap coverage or documented fallback"
+            );
         }
     }
 
@@ -787,6 +806,81 @@ mod tests {
                 "Line {i} is suspiciously short: {:?}",
                 line
             );
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum KeymapCoverage {
+        Direct(&'static str),
+        Fallback(&'static str),
+    }
+
+    impl KeymapCoverage {
+        fn keymap_mode(self) -> &'static str {
+            match self {
+                Self::Direct(mode) | Self::Fallback(mode) => mode,
+            }
+        }
+    }
+
+    fn documented_keymap_modes() -> &'static [&'static str] {
+        &[
+            NORMAL_MODE,
+            VIEWING_MODE,
+            COMMAND_LINE_MODE,
+            SEARCH_MODE,
+            MENU_MODE,
+            LIST_PICKER_MODE,
+            DIRECTORY_TREE_MODE,
+            DIALOG_CONFIRM_MODE,
+            DIALOG_INPUT_MODE,
+        ]
+    }
+
+    fn representative_app_modes() -> Vec<AppMode> {
+        vec![
+            AppMode::Normal,
+            AppMode::Viewing,
+            AppMode::CommandLine,
+            AppMode::Search,
+            AppMode::Menu,
+            AppMode::ListPicker(PickerKind::History),
+            AppMode::DirectoryTree,
+            AppMode::Dialog(DialogKind::Input {
+                prompt: "Input".to_string(),
+                action: InputAction::CreateDirectory,
+            }),
+        ]
+    }
+
+    fn keymap_coverage_for_mode(mode: &AppMode) -> KeymapCoverage {
+        match mode {
+            AppMode::Normal => KeymapCoverage::Direct(NORMAL_MODE),
+            AppMode::Viewing => KeymapCoverage::Direct(VIEWING_MODE),
+            AppMode::CommandLine => KeymapCoverage::Direct(COMMAND_LINE_MODE),
+            AppMode::Search => KeymapCoverage::Direct(SEARCH_MODE),
+            AppMode::Menu => KeymapCoverage::Direct(MENU_MODE),
+            AppMode::ListPicker(kind) => match kind {
+                PickerKind::History
+                | PickerKind::Hotlist
+                | PickerKind::CompareMode
+                | PickerKind::UserMenu
+                | PickerKind::ArchiveMenu => KeymapCoverage::Direct(LIST_PICKER_MODE),
+            },
+            AppMode::DirectoryTree => KeymapCoverage::Direct(DIRECTORY_TREE_MODE),
+            AppMode::Dialog(kind) => match kind {
+                DialogKind::Confirm(_) => KeymapCoverage::Direct(DIALOG_CONFIRM_MODE),
+                DialogKind::Input { .. } => KeymapCoverage::Direct(DIALOG_INPUT_MODE),
+                DialogKind::Error(_)
+                | DialogKind::Progress { .. }
+                | DialogKind::CopyMove(_)
+                | DialogKind::Properties(_)
+                | DialogKind::OverwriteConfirm(_) => KeymapCoverage::Fallback(DIALOG_CONFIRM_MODE),
+                DialogKind::Help { .. } => KeymapCoverage::Fallback(VIEWING_MODE),
+                DialogKind::ArchiveExtract(_) | DialogKind::ArchiveCreate(_) => {
+                    KeymapCoverage::Fallback(DIALOG_INPUT_MODE)
+                }
+            },
         }
     }
 }

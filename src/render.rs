@@ -121,7 +121,7 @@ pub(crate) fn render_ui(
     // Per-frame alloc for command bar — low cost (short strings, discarded each frame).
     let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
         let (before, after) =
-            safe_split_at(&state.command_line.text, state.command_line.byte_pos());
+            safe_split_at(state.command_line.text(), state.command_line.byte_pos());
         format!("$ {before}_{after}").into()
     } else if state.mode == AppMode::Search {
         let (before, after) = safe_split_at(&state.search_query, state.search_cursor);

@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::app::types::{
-    ConfirmDetails, DialogKind, InputAction, OverwriteConfirmDetails, PendingAction,
-    PropertiesDetails, TextInput,
+    ArchiveCreateDetails, ArchiveExtractDetails, ConfirmDetails, DialogKind, InputAction,
+    OverwriteConfirmDetails, PendingAction, PropertiesDetails, TextInput, TransferAction,
 };
 
 fn mp(col: u16, row: u16, width: u16, height: u16) -> MousePosition {
@@ -19,6 +19,23 @@ fn confirm_btn_row(height: u16) -> u16 {
     let dialog_height = height * 40 / 100;
     let dialog_y = (height.saturating_sub(dialog_height)) / 2;
     dialog_y + dialog_height.saturating_sub(2)
+}
+
+fn archive_input_col(width: u16, cursor: u16) -> u16 {
+    let dialog_width = (width * 50 / 100).max(30).min(width);
+    (width.saturating_sub(dialog_width)) / 2 + 2 + cursor
+}
+
+fn archive_input_row(height: u16, offset: u16) -> u16 {
+    let dialog_height = (height * 40 / 100).max(5).min(height);
+    (height.saturating_sub(dialog_height)) / 2 + offset
+}
+
+fn text_input(text: &str, cursor: usize) -> TextInput {
+    let mut input = TextInput::new();
+    input.set_text(text.to_string());
+    input.set_cursor(cursor);
+    input
 }
 
 struct TestDirs {
@@ -81,9 +98,8 @@ fn mouse_input_dialog_outside_preserves_text() {
         }),
         dialog_input: {
             let mut ti = TextInput::new();
-            ti.text = "draft".to_string();
-            ti.recompute_grapheme_count();
-            ti.cursor = 5;
+            ti.set_text("draft".to_string());
+            ti.set_cursor(5);
             ti
         },
         ..Default::default()
@@ -95,8 +111,8 @@ fn mouse_input_dialog_outside_preserves_text() {
         state.mode,
         AppMode::Dialog(DialogKind::Input { .. })
     ));
-    assert_eq!(state.dialog_input.text, "draft");
-    assert_eq!(state.dialog_input.cursor, 5);
+    assert_eq!(state.dialog_input.text(), "draft");
+    assert_eq!(state.dialog_input.cursor(), 5);
 }
 
 #[test]
@@ -108,8 +124,7 @@ fn mouse_input_dialog_inside_consumes_click() {
         }),
         dialog_input: {
             let mut ti = TextInput::new();
-            ti.text = "draft".to_string();
-            ti.recompute_grapheme_count();
+            ti.set_text("draft".to_string());
             ti
         },
         ..Default::default()
@@ -121,7 +136,74 @@ fn mouse_input_dialog_inside_consumes_click() {
         state.mode,
         AppMode::Dialog(DialogKind::Input { .. })
     ));
-    assert_eq!(state.dialog_input.text, "draft");
+    assert_eq!(state.dialog_input.text(), "draft");
+}
+
+#[test]
+fn mouse_archive_extract_input_click_positions_cursor() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::ArchiveExtract(Box::new(
+            ArchiveExtractDetails {
+                source: std::path::PathBuf::from("archive.zip"),
+                entries: Vec::new(),
+                dest_input: text_input("target-dir", 10),
+            },
+        ))),
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(
+        &mut state,
+        &mut running_job,
+        &mp(
+            archive_input_col(100, 3),
+            archive_input_row(40, ARCHIVE_EXTRACT_INPUT_ROW_OFFSET),
+            100,
+            40,
+        ),
+    );
+
+    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::ArchiveExtract(..))
+    ));
+    if let AppMode::Dialog(DialogKind::ArchiveExtract(details)) = state.mode {
+        assert_eq!(details.dest_input.text(), "target-dir");
+        assert_eq!(details.dest_input.cursor(), 3);
+    }
+}
+
+#[test]
+fn mouse_archive_create_input_click_positions_cursor() {
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::ArchiveCreate(Box::new(ArchiveCreateDetails {
+            sources: vec![std::path::PathBuf::from("file.txt")],
+            dest_input: text_input("archive.zip", 11),
+        }))),
+        ..Default::default()
+    };
+    let mut running_job = None;
+    let outcomes = handle_mouse_dialog(
+        &mut state,
+        &mut running_job,
+        &mp(
+            archive_input_col(100, 7),
+            archive_input_row(40, ARCHIVE_CREATE_INPUT_ROW_OFFSET),
+            100,
+            40,
+        ),
+    );
+
+    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::ArchiveCreate(..))
+    ));
+    if let AppMode::Dialog(DialogKind::ArchiveCreate(details)) = state.mode {
+        assert_eq!(details.dest_input.text(), "archive.zip");
+        assert_eq!(details.dest_input.cursor(), 7);
+    }
 }
 
 #[test]
@@ -397,11 +479,11 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
             "Copy", "Proceed?",
         ))),
         dialog_selection: 0,
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![dirs.src.join("clash.txt")],
             dest: dirs.dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
     let mut running_job = None;
@@ -434,11 +516,11 @@ fn mouse_confirm_click_without_conflict_starts_action() {
             "Copy", "Proceed?",
         ))),
         dialog_selection: 0,
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![dirs.src.join("unique.txt")],
             dest: dirs.dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
     let mut running_job = None;
@@ -471,11 +553,11 @@ fn mouse_confirm_click_preserves_status_message() {
         ))),
         dialog_selection: 0,
         status_message: Some("Queued".to_string()),
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![dirs.src.join("unique.txt")],
             dest: dirs.dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
     let mut running_job = None;
@@ -515,11 +597,11 @@ fn mouse_confirm_click_keeps_new_status_message() {
             "Copy", "Proceed?",
         ))),
         dialog_selection: 0,
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![first_src_dir.join("first.txt")],
             dest: dest_dir.clone(),
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
     let mut running_job = None;
@@ -539,11 +621,11 @@ fn mouse_confirm_click_keeps_new_status_message() {
         "Copy", "Proceed?",
     )));
     state.status_message = Some("Queued".to_string());
-    state.pending_action = Some(PendingAction::Copy {
+    state.pending_action = Some(PendingAction::Copy(TransferAction {
         sources: vec![second_src_dir.join("second.txt")],
         dest: dest_dir,
         overwrite: false,
-    });
+    }));
 
     let outcome = handle_confirm_click(
         &mut state,

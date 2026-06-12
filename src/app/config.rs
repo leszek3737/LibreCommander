@@ -153,7 +153,10 @@ impl From<PersistedSetup> for Settings {
                 .unwrap_or_default()
                 .iter()
                 .filter(|s| !s.trim().is_empty())
-                .map(|s| crate::fs::path::clean_path(&crate::fs::path::expand_path(s)))
+                .map(|s| {
+                    let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(s));
+                    fs::canonicalize(&path).unwrap_or(path)
+                })
                 .collect(),
         }
     }
@@ -295,7 +298,7 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::{ListingMode, SortMode};
+    use crate::app::types::{Direction, ListingMode, SortField, SortMode};
 
     #[cfg(unix)]
     use std::ffi::OsString;
@@ -311,7 +314,7 @@ mod tests {
             left_panel: PanelState {
                 path: tmp_dir.clone(),
                 listing_mode: ListingMode::Brief,
-                sort_mode: SortMode::SizeDesc,
+                sort_mode: SortMode::new(SortField::Size, Direction::Desc),
                 filter: Some("rs".to_string()),
                 show_hidden: false,
                 ..PanelState::new(tmp_dir.clone())
@@ -332,7 +335,10 @@ mod tests {
         );
         assert_eq!(settings.left.path, tmp_dir.to_str().map(String::from));
         assert_eq!(settings.left.listing_mode, ListingMode::Brief);
-        assert_eq!(settings.left.sort_mode, SortMode::SizeDesc);
+        assert_eq!(
+            settings.left.sort_mode,
+            SortMode::new(SortField::Size, Direction::Desc)
+        );
         assert_eq!(settings.left.filter, "rs");
         assert!(!settings.left.show_hidden);
         assert_eq!(settings.hotlist, state.directory_hotlist);
@@ -349,7 +355,7 @@ mod tests {
             left: PersistedPanel {
                 path: tmp_dir.to_str().map(String::from),
                 listing_mode: ListingMode::Brief,
-                sort_mode: SortMode::ExtensionAsc,
+                sort_mode: SortMode::new(SortField::Extension, Direction::Asc),
                 filter: "txt".to_string(),
                 show_hidden: false,
                 show_permissions: false,
@@ -370,14 +376,24 @@ mod tests {
             tmp_dir.canonicalize().unwrap_or(tmp_dir)
         );
         assert_eq!(state.left_panel.listing_mode(), ListingMode::Brief);
-        assert_eq!(state.left_panel.sort_mode(), SortMode::ExtensionAsc);
+        assert_eq!(
+            state.left_panel.sort_mode(),
+            SortMode::new(SortField::Extension, Direction::Asc)
+        );
         assert_eq!(state.left_panel.filter(), Some("txt"));
         assert!(!state.left_panel.show_hidden());
         assert_eq!(state.directory_hotlist, hotlist);
     }
 
+    #[allow(clippy::unwrap_used)]
     #[test]
     fn persisted_setup_roundtrips_through_settings() {
+        let hotlist_path = std::env::current_dir()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         let setup = PersistedSetup {
             active_panel: "right".to_string(),
             dir_first: true,
@@ -385,13 +401,13 @@ mod tests {
             left: PersistedPanel {
                 path: Some("/tmp".to_string()),
                 listing_mode: ListingMode::Brief,
-                sort_mode: SortMode::ModTimeDesc,
+                sort_mode: SortMode::new(SortField::ModTime, Direction::Desc),
                 filter: "log".to_string(),
                 show_hidden: true,
                 show_permissions: false,
             },
             right: PersistedPanel::default(),
-            hotlist: Some(vec!["/tmp".to_string(), "/usr".to_string()]),
+            hotlist: Some(vec![hotlist_path.clone()]),
         };
         let settings = Settings::from(setup.clone());
         let persisted = PersistedSetup::from(&settings);
@@ -399,16 +415,34 @@ mod tests {
         assert_eq!(settings.active_panel, ActivePanel::Right);
         assert!(settings.dir_first);
         assert!(!settings.sensitive);
-        assert_eq!(
-            settings.hotlist,
-            vec![PathBuf::from("/tmp"), PathBuf::from("/usr")]
-        );
+        assert_eq!(settings.hotlist, vec![PathBuf::from(hotlist_path)]);
         assert_eq!(persisted.active_panel, setup.active_panel);
         assert_eq!(persisted.dir_first, setup.dir_first);
         assert_eq!(persisted.sensitive, setup.sensitive);
         assert_eq!(persisted.left, setup.left);
         assert_eq!(persisted.right, setup.right);
         assert_eq!(persisted.hotlist, setup.hotlist);
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn persisted_setup_canonicalizes_existing_hotlist_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        let dirty_path = nested.join("..").join("nested");
+        let setup = PersistedSetup {
+            active_panel: String::new(),
+            dir_first: false,
+            sensitive: false,
+            left: PersistedPanel::default(),
+            right: PersistedPanel::default(),
+            hotlist: Some(vec![dirty_path.to_string_lossy().into_owned()]),
+        };
+
+        let settings = Settings::from(setup);
+
+        assert_eq!(settings.hotlist, vec![nested.canonicalize().unwrap()]);
     }
 
     #[cfg(unix)]

@@ -1,4 +1,6 @@
-use super::helpers::{TestEntry, VISIBLE_HEIGHT, dispatch_key, dummy_tree_entries, test_terminal};
+use super::helpers::{
+    TestEntry, VISIBLE_HEIGHT, dispatch_key, dummy_tree_entries, test_path, test_terminal,
+};
 use crate::input::{command_line, directory_tree};
 use crate::{handle_alt_keys, handle_function_keys, handle_navigation_keys, launch_editor};
 use crossterm::event::KeyCode;
@@ -12,12 +14,16 @@ fn setup_ctrl_test() -> (Terminal<TestBackend>, AppState) {
     (test_terminal(), AppState::default())
 }
 
+fn entry(name: &str) -> TestEntry {
+    TestEntry::new(name).path(test_path(name))
+}
+
 #[test]
 fn ctrl_s_starts_search_mode() {
     let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -111,8 +117,8 @@ fn ctrl_u_swaps_panels() {
 fn alt_j_does_not_start_search_mode() {
     let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -131,7 +137,7 @@ fn alt_k_does_not_move_cursor() {
     let (mut terminal, mut state) = setup_ctrl_test();
     state
         .left_panel
-        .set_entries(vec![TestEntry::new("a.txt").file(10).build()]);
+        .set_entries(vec![entry("a.txt").file(10).build()]);
     state.left_panel.cursor = 0;
 
     dispatch_key(
@@ -149,8 +155,8 @@ fn alt_k_does_not_move_cursor() {
 fn shift_j_falls_through_to_navigation_down() {
     let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -167,8 +173,8 @@ fn shift_j_falls_through_to_navigation_down() {
 fn shift_k_falls_through_to_navigation_up() {
     let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
     state.left_panel.cursor = 1;
 
@@ -187,7 +193,7 @@ fn alt_enter_shows_properties_dialog() {
     let mut state = AppState::default();
     state
         .left_panel
-        .set_entries(vec![TestEntry::new("file.txt").build()]);
+        .set_entries(vec![entry("file.txt").build()]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Enter, VISIBLE_HEIGHT);
@@ -200,9 +206,7 @@ fn alt_enter_shows_properties_dialog() {
 #[test]
 fn alt_enter_on_dotdot_does_nothing() {
     let mut state = AppState::default();
-    state
-        .left_panel
-        .set_entries(vec![TestEntry::new("..").build()]);
+    state.left_panel.set_entries(vec![entry("..").build()]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Enter, VISIBLE_HEIGHT);
@@ -247,16 +251,15 @@ fn alt_c_opens_quick_cd() {
 #[test]
 fn alt_x_opens_command_line() {
     let mut state = AppState::default();
-    state.command_line.text = "draft".to_string();
-    state.command_line.cursor_end();
+    state.command_line.set_text_at_end("draft".to_string());
     state.history_index = Some(0);
     state.prev_mode = Some(AppMode::Search);
 
     handle_alt_keys(&mut state, KeyCode::Char('X'), VISIBLE_HEIGHT);
 
     assert_eq!(state.mode, AppMode::CommandLine);
-    assert!(state.command_line.text.is_empty());
-    assert_eq!(state.command_line.cursor, 0);
+    assert!(state.command_line.text().is_empty());
+    assert_eq!(state.command_line.cursor(), 0);
     assert_eq!(state.history_index, None);
     assert_eq!(state.prev_mode, None);
 }
@@ -284,7 +287,7 @@ fn f7_opens_create_directory_dialog() {
             ..
         })
     ));
-    assert!(state.dialog_input.text.is_empty());
+    assert!(state.dialog_input.text().is_empty());
 }
 
 #[test]
@@ -317,9 +320,7 @@ fn launch_editor_no_current_entry_does_nothing() {
 #[test]
 fn launch_editor_directory_entry_does_not_launch() {
     let mut state = AppState::default();
-    state
-        .left_panel
-        .set_entries(vec![TestEntry::new("mydir").build()]);
+    state.left_panel.set_entries(vec![entry("mydir").build()]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     let mut terminal = test_terminal();
@@ -350,14 +351,11 @@ fn tab_switches_panel_right_to_left() {
 #[test]
 fn tab_clamps_cursor() {
     let mut state = AppState::default();
-    state
-        .left_panel
-        .set_entries(vec![TestEntry::new("a").build(); 10]);
+    state.left_panel.set_entries(vec![entry("a").build(); 10]);
     state.left_panel.cursor = 9;
-    state.right_panel.set_entries(vec![
-        TestEntry::new("x").build(),
-        TestEntry::new("y").build(),
-    ]);
+    state
+        .right_panel
+        .set_entries(vec![entry("x").build(), entry("y").build()]);
     state.right_panel.cursor = 9;
     state.active_panel = ActivePanel::Left;
     handle_navigation_keys(&mut state, KeyCode::Tab, KeyModifiers::NONE, VISIBLE_HEIGHT);
@@ -400,5 +398,5 @@ fn command_line_up_loads_last_history_entry() {
 
     command_line::handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
-    assert_eq!(state.command_line.text, "git status");
+    assert_eq!(state.command_line.text(), "git status");
 }

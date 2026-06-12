@@ -10,7 +10,8 @@ use crate::ops::search::walk::{
     FileSearchContext, SearchContext, prepare_dir_scan, seed_visited_dir,
 };
 use crate::ops::search::{
-    FileSearch, MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchOutcome, TruncationReason,
+    FileSearch, MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
+    TruncationReason,
 };
 
 /// Initial capacity for the visited inode set. Most directories contain well under
@@ -32,7 +33,7 @@ impl FileSearch {
         pattern: &str,
         recursive: bool,
         case_sensitive: bool,
-    ) -> SearchOutcome<FileEntry> {
+    ) -> SearchOutcome<FileEntry, SearchError> {
         let cancel = AtomicBool::new(false);
         Self::search_files_with_diagnostics_cancellable(
             path,
@@ -49,7 +50,7 @@ impl FileSearch {
         recursive: bool,
         case_sensitive: bool,
         cancel: &AtomicBool,
-    ) -> SearchOutcome<FileEntry> {
+    ) -> SearchOutcome<FileEntry, SearchError> {
         let mut outcome = SearchOutcome::default();
         let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
         let mut visited = HashSet::with_capacity(VISITED_INODE_CAP);
@@ -100,9 +101,11 @@ fn search_files_recursive(
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
-                ctx.outcome
-                    .errors
-                    .push(format!("Failed to read entry in {}: {err}", path.display()));
+                ctx.outcome.errors.push(SearchError {
+                    path: Some(path.to_path_buf()),
+                    kind: SearchErrorKind::ReadEntry,
+                    message: err.to_string(),
+                });
                 continue;
             }
         };
@@ -115,10 +118,11 @@ fn search_files_recursive(
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
-                ctx.outcome.errors.push(format!(
-                    "Failed to read type for {}: {err}",
-                    entry_path.display()
-                ));
+                ctx.outcome.errors.push(SearchError {
+                    path: Some(entry_path.clone()),
+                    kind: SearchErrorKind::FileType,
+                    message: err.to_string(),
+                });
                 continue;
             }
         };
@@ -130,10 +134,11 @@ fn search_files_recursive(
         if pattern.matches(&name_lossy) {
             match get_file_info(&entry_path) {
                 Ok(file_entry) => ctx.outcome.matches.push(file_entry),
-                Err(err) => ctx.outcome.errors.push(format!(
-                    "Failed to read metadata for {}: {err}",
-                    entry_path.display()
-                )),
+                Err(err) => ctx.outcome.errors.push(SearchError {
+                    path: Some(entry_path.clone()),
+                    kind: SearchErrorKind::Metadata,
+                    message: err.to_string(),
+                }),
             }
         }
 

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::types::FileEntry;
 use crate::ops::helpers::get_inode_key;
-use crate::ops::search::{SearchOutcome, TruncationReason};
+use crate::ops::search::{SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
 
 pub(super) trait SearchContext {
     fn is_cancelled(&self) -> bool {
@@ -15,7 +15,7 @@ pub(super) trait SearchContext {
 }
 
 pub(super) struct FileSearchContext<'a> {
-    pub(super) outcome: &'a mut SearchOutcome<FileEntry>,
+    pub(super) outcome: &'a mut SearchOutcome<FileEntry, SearchError>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
     pub(super) cancel: Option<&'a AtomicBool>,
 }
@@ -31,7 +31,7 @@ pub(super) struct ContentSearchContext<'a> {
     pub(super) case_sensitive: bool,
     pub(super) pattern_bytes: &'a [u8],
     pub(super) recursive: bool,
-    pub(super) outcome: &'a mut SearchOutcome<(std::path::PathBuf, usize, String)>,
+    pub(super) outcome: &'a mut SearchOutcome<(std::path::PathBuf, usize, String), SearchError>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
     pub(super) cancel: Option<&'a AtomicBool>,
 }
@@ -56,8 +56,8 @@ pub(super) fn prepare_dir_scan<T>(
     depth: usize,
     max_depth: usize,
     max_items: usize,
-    outcome: &mut SearchOutcome<T>,
-    extra_guard: impl Fn(&SearchOutcome<T>) -> bool,
+    outcome: &mut SearchOutcome<T, SearchError>,
+    extra_guard: impl Fn(&SearchOutcome<T, SearchError>) -> bool,
     guard_reason: TruncationReason,
 ) -> Option<std::fs::ReadDir> {
     if !extra_guard(outcome) {
@@ -77,9 +77,11 @@ pub(super) fn prepare_dir_scan<T>(
     match std::fs::read_dir(path) {
         Ok(entries) => Some(entries),
         Err(err) => {
-            outcome
-                .errors
-                .push(format!("Failed to read {}: {err}", path.display()));
+            outcome.errors.push(SearchError {
+                path: Some(path.to_path_buf()),
+                kind: SearchErrorKind::ReadDir,
+                message: err.to_string(),
+            });
             None
         }
     }

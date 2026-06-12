@@ -31,35 +31,30 @@ pub enum ViewMode {
     Image,
 }
 
-// TODO: Copy and Move share identical fields (sources, dest, overwrite).
-//       Extract into a shared struct (e.g. TransferAction) to reduce duplication.
-//       Plan: introduce `struct TransferAction { sources: Vec<PathBuf>, dest: PathBuf, overwrite: bool }`,
-//       replace both variants with `Copy(TransferAction)` / `Move(TransferAction)`.
-//       Impact: ~38 call sites (construction, match arms, field access) across ops/, input/, app/.
-//       Low risk but high churn — batch with other PendingAction changes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransferAction {
+    pub sources: Vec<PathBuf>,
+    pub dest: PathBuf,
+    pub overwrite: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingAction {
-    Copy {
-        sources: Vec<PathBuf>,
-        dest: PathBuf,
-        overwrite: bool,
-    },
-    Move {
-        sources: Vec<PathBuf>,
-        dest: PathBuf,
-        overwrite: bool,
-    },
+    Copy(TransferAction),
+    Move(TransferAction),
     Delete {
         paths: Vec<PathBuf>,
     },
     ExtractArchive {
         source: PathBuf,
         dest: PathBuf,
+        overwrite: bool,
     },
     CreateArchive {
         sources: Vec<PathBuf>,
         dest: PathBuf,
         format: ArchiveFormat,
+        overwrite: bool,
     },
 }
 
@@ -78,10 +73,13 @@ impl CompareMode {
 impl PendingAction {
     pub fn set_overwrite(&mut self) {
         match self {
-            Self::Copy { overwrite, .. } | Self::Move { overwrite, .. } => {
+            Self::Copy(t) | Self::Move(t) => {
+                t.overwrite = true;
+            }
+            Self::Delete { .. } => {}
+            Self::ExtractArchive { overwrite, .. } | Self::CreateArchive { overwrite, .. } => {
                 *overwrite = true;
             }
-            Self::Delete { .. } | Self::ExtractArchive { .. } | Self::CreateArchive { .. } => {}
         }
     }
 }

@@ -1,4 +1,4 @@
-use super::helpers::{TestEntry, dispatch_key, test_terminal};
+use super::helpers::{TestEntry, dispatch_key, test_path, test_terminal};
 use crate::{reposition_cursor_to_entry, selected_or_current_paths};
 use crossterm::event::{KeyCode, KeyModifiers};
 use lc::app::types::ActivePanel;
@@ -25,9 +25,11 @@ fn assert_selections(state: &AppState, panel: ActivePanel, expected: &[bool]) {
     }
 }
 
+fn entry(name: &str) -> TestEntry {
+    TestEntry::new(name).path(test_path(name))
+}
+
 // Helper for selected_or_current_paths tests.
-// TestEntry::build() defaults path to `std::env::temp_dir()/name`, so expected paths
-// use `std::env::temp_dir()` to stay portable across platforms.
 fn check_selected_paths(entries: Vec<FileEntry>, cursor: usize, expected: Vec<&str>) {
     let mut state = AppState::new();
     state.active_panel = ActivePanel::Left;
@@ -35,10 +37,7 @@ fn check_selected_paths(entries: Vec<FileEntry>, cursor: usize, expected: Vec<&s
     state.left_panel.cursor = cursor;
 
     let paths = selected_or_current_paths(&state);
-    let expected: Vec<PathBuf> = expected
-        .into_iter()
-        .map(|name| std::env::temp_dir().join(name))
-        .collect();
+    let expected: Vec<PathBuf> = expected.into_iter().map(test_path).collect();
     assert_eq!(paths, expected);
 }
 
@@ -47,8 +46,8 @@ fn shift_down_toggles_current_then_moves() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -67,9 +66,9 @@ fn shift_up_toggles_current_then_moves() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
-        TestEntry::new("c.txt").file(30).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
+        entry("c.txt").file(30).build(),
     ]);
     state.left_panel.cursor = 2;
 
@@ -84,10 +83,10 @@ fn shift_selection_preserves_unrelated_entries() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).selected().build(),
-        TestEntry::new("b.txt").file(20).build(),
-        TestEntry::new("c.txt").file(30).build(),
-        TestEntry::new("d.txt").file(40).build(),
+        entry("a.txt").file(10).selected().build(),
+        entry("b.txt").file(20).build(),
+        entry("c.txt").file(30).build(),
+        entry("d.txt").file(40).build(),
     ]);
     state.left_panel.cursor = 2;
 
@@ -106,9 +105,9 @@ fn shift_arrow_then_shift_arrow_toggles_two() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
-        TestEntry::new("c.txt").file(30).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
+        entry("c.txt").file(30).build(),
     ]);
 
     dispatch_key(
@@ -132,8 +131,8 @@ fn shift_arrow_then_shift_arrow_toggles_two() {
 fn selected_or_current_paths_fallback_to_cursor() {
     check_selected_paths(
         vec![
-            TestEntry::new("file_a.txt").file(100).build(),
-            TestEntry::new("file_b.txt").file(100).build(),
+            entry("file_a.txt").file(100).build(),
+            entry("file_b.txt").file(100).build(),
         ],
         1,
         vec!["file_b.txt"],
@@ -144,9 +143,9 @@ fn selected_or_current_paths_fallback_to_cursor() {
 fn selected_or_current_paths_uses_selection_when_present() {
     check_selected_paths(
         vec![
-            TestEntry::new("file_a.txt").file(100).selected().build(),
-            TestEntry::new("file_b.txt").file(100).build(),
-            TestEntry::new("file_c.txt").file(100).selected().build(),
+            entry("file_a.txt").file(100).selected().build(),
+            entry("file_b.txt").file(100).build(),
+            entry("file_c.txt").file(100).selected().build(),
         ],
         1,
         vec!["file_a.txt", "file_c.txt"],
@@ -155,11 +154,7 @@ fn selected_or_current_paths_uses_selection_when_present() {
 
 #[test]
 fn selected_or_current_paths_skips_dotdot() {
-    check_selected_paths(
-        vec![TestEntry::new("..").file(100).selected().build()],
-        0,
-        vec![],
-    );
+    check_selected_paths(vec![entry("..").file(100).selected().build()], 0, vec![]);
 }
 
 #[test]
@@ -173,8 +168,8 @@ fn selected_or_current_paths_empty_panel() {
 fn selected_or_current_paths_no_selection_returns_current() {
     check_selected_paths(
         vec![
-            TestEntry::new("..").file(100).build(),
-            TestEntry::new("file_a.txt").file(100).build(),
+            entry("..").file(100).build(),
+            entry("file_a.txt").file(100).build(),
         ],
         1,
         vec!["file_a.txt"],
@@ -183,15 +178,15 @@ fn selected_or_current_paths_no_selection_returns_current() {
 
 #[test]
 fn selected_or_current_paths_dotdot_current_returns_empty() {
-    check_selected_paths(vec![TestEntry::new("..").file(100).build()], 0, vec![]);
+    check_selected_paths(vec![entry("..").file(100).build()], 0, vec![]);
 }
 
 #[test]
 fn selected_or_current_paths_all_dotdot_selected_fallback() {
     check_selected_paths(
         vec![
-            TestEntry::new("..").file(100).selected().build(),
-            TestEntry::new("file_a.txt").file(100).build(),
+            entry("..").file(100).selected().build(),
+            entry("file_a.txt").file(100).build(),
         ],
         1,
         vec!["file_a.txt"],
@@ -202,9 +197,9 @@ fn selected_or_current_paths_all_dotdot_selected_fallback() {
 fn reposition_cursor_finds_matching_name() {
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a").build(),
-        TestEntry::new("b").build(),
-        TestEntry::new("c").build(),
+        entry("a").build(),
+        entry("b").build(),
+        entry("c").build(),
     ]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
@@ -215,10 +210,9 @@ fn reposition_cursor_finds_matching_name() {
 #[test]
 fn reposition_cursor_no_match_leaves_cursor() {
     let mut state = AppState::new();
-    state.left_panel.set_entries(vec![
-        TestEntry::new("a").build(),
-        TestEntry::new("b").build(),
-    ]);
+    state
+        .left_panel
+        .set_entries(vec![entry("a").build(), entry("b").build()]);
     state.left_panel.cursor = 1;
     state.active_panel = ActivePanel::Left;
     reposition_cursor_to_entry(&mut state, Some("z"), 20);
@@ -228,9 +222,7 @@ fn reposition_cursor_no_match_leaves_cursor() {
 #[test]
 fn reposition_cursor_none_name_unchanged() {
     let mut state = AppState::new();
-    state
-        .left_panel
-        .set_entries(vec![TestEntry::new("a").build()]);
+    state.left_panel.set_entries(vec![entry("a").build()]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     reposition_cursor_to_entry(&mut state, None, 20);
@@ -249,8 +241,8 @@ fn insert_toggles_current_on_then_moves_down() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -269,8 +261,8 @@ fn insert_toggles_current_off_stays_on_last() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).selected().build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).selected().build(),
     ]);
     state.left_panel.cursor = 1;
 
@@ -285,16 +277,73 @@ fn insert_toggles_current_off_stays_on_last() {
     assert_eq!(state.left_panel.cursor, 1);
 }
 
-// TODO: insert_on_last_entry — cursor should stay, selection toggled
-// TODO: insert_on_dotdot — should skip toggle (like shift-arrow on "..")
+#[test]
+fn insert_on_last_entry_cursor_stays_selection_toggled() {
+    let mut terminal = test_terminal();
+    let mut state = AppState::new();
+    state.left_panel.set_entries(vec![
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
+    ]);
+    state.left_panel.cursor = 1;
+
+    dispatch_key(
+        &mut state,
+        KeyCode::Insert,
+        KeyModifiers::NONE,
+        &mut terminal,
+    );
+
+    assert_selections(&state, ActivePanel::Left, &[false, true]);
+    assert_eq!(state.left_panel.cursor, 1);
+}
+
+#[test]
+fn insert_on_dotdot_skips_toggle_and_moves() {
+    let mut terminal = test_terminal();
+    let mut state = AppState::new();
+    state.left_panel.set_entries(vec![
+        entry("..").file(100).build(),
+        entry("a.txt").file(10).build(),
+    ]);
+
+    dispatch_key(
+        &mut state,
+        KeyCode::Insert,
+        KeyModifiers::NONE,
+        &mut terminal,
+    );
+
+    assert_selections(&state, ActivePanel::Left, &[false, false]);
+    assert_eq!(state.left_panel.cursor, 1);
+}
+
+#[test]
+fn insert_on_dotdot_only_entry_no_toggle_cursor_stays() {
+    let mut terminal = test_terminal();
+    let mut state = AppState::new();
+    state
+        .left_panel
+        .set_entries(vec![entry("..").file(100).build()]);
+
+    dispatch_key(
+        &mut state,
+        KeyCode::Insert,
+        KeyModifiers::NONE,
+        &mut terminal,
+    );
+
+    assert_selections(&state, ActivePanel::Left, &[false]);
+    assert_eq!(state.left_panel.cursor, 0);
+}
 
 #[test]
 fn shift_wraparound_down_on_last_and_up_on_first() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").file(10).build(),
-        TestEntry::new("b.txt").file(20).build(),
+        entry("a.txt").file(10).build(),
+        entry("b.txt").file(20).build(),
     ]);
 
     state.left_panel.cursor = 1;
@@ -317,8 +366,8 @@ fn shift_down_on_dotdot_skips_toggle_and_moves() {
     let mut terminal = test_terminal();
     let mut state = AppState::new();
     state.left_panel.set_entries(vec![
-        TestEntry::new("..").file(100).build(),
-        TestEntry::new("a.txt").file(10).build(),
+        entry("..").file(100).build(),
+        entry("a.txt").file(10).build(),
     ]);
 
     dispatch_key(
@@ -338,8 +387,8 @@ fn shift_selection_on_right_panel() {
     let mut state = AppState::new();
     state.active_panel = ActivePanel::Right;
     state.right_panel.set_entries(vec![
-        TestEntry::new("x.txt").file(10).build(),
-        TestEntry::new("y.txt").file(20).build(),
+        entry("x.txt").file(10).build(),
+        entry("y.txt").file(20).build(),
     ]);
 
     dispatch_key(

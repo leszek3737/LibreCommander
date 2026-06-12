@@ -110,12 +110,13 @@ fn execute_panel_config_action(
         }
         MenuAction::OpenFilter => {
             with_menu_panel(state, |state| {
-                state.dialog_input.text = state
-                    .active_panel()
-                    .filter()
-                    .unwrap_or_default()
-                    .to_string();
-                state.dialog_input.cursor_end();
+                state.dialog_input.set_text_at_end(
+                    state
+                        .active_panel()
+                        .filter()
+                        .unwrap_or_default()
+                        .to_string(),
+                );
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Filter:".to_string(),
                     action: InputAction::Filter,
@@ -211,8 +212,7 @@ fn execute_dialog_action(
                 if let Some(name) = entry_name
                     && name != ".."
                 {
-                    state.dialog_input.text = name;
-                    state.dialog_input.cursor_end();
+                    state.dialog_input.set_text_at_end(name);
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Rename to:".to_string(),
                         action: InputAction::Rename,
@@ -230,8 +230,9 @@ fn execute_dialog_action(
                 if let Some((name, permissions)) = entry_info
                     && name != ".."
                 {
-                    state.dialog_input.text = format!("{:o}", permissions & 0o7777);
-                    state.dialog_input.cursor_end();
+                    state
+                        .dialog_input
+                        .set_text_at_end(format!("{:o}", permissions & 0o7777));
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Chmod (octal):".to_string(),
                         action: InputAction::Chmod,

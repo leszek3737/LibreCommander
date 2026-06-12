@@ -1,6 +1,11 @@
 use crate::input::dialogs;
-use lc::app::types::{ActivePanel, AppState, PendingAction};
+use crossterm::event::KeyCode;
+use lc::app::types::{
+    ActivePanel, AppMode, AppState, ArchiveExtractDetails, DialogKind, PendingAction, TextInput,
+    TransferAction,
+};
 use lc::ops::archive::ArchiveFormat;
+use ratatui::layout::Size;
 use std::path::{Path, PathBuf};
 
 fn setup_src_dest(src: &Path, dest: &Path, files: &[&str]) {
@@ -26,11 +31,11 @@ fn check_overwrite_no_conflicts_returns_none() {
     setup_src_dest(&src, &dest, &["new.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![src.join("new.txt")],
             dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
 
@@ -46,11 +51,11 @@ fn check_overwrite_one_conflict_returns_some() {
     setup_dest_files(&dest, &["clash.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![src.join("clash.txt")],
             dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
 
@@ -67,11 +72,11 @@ fn check_overwrite_all_conflicts_returns_all_names() {
     setup_dest_files(&dest, &["a.txt", "b.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![src.join("a.txt"), src.join("b.txt")],
             dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
 
@@ -88,11 +93,11 @@ fn check_overwrite_source_equals_dest_skipped() {
     std::fs::write(&file, b"data").unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![file],
             dest: tmp.path().to_path_buf(),
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
 
@@ -110,11 +115,11 @@ fn check_overwrite_broken_symlink_at_dest_is_conflict() {
     std::os::unix::fs::symlink("/nonexistent/broken", dest.join("link.txt")).unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy {
+        pending_action: Some(PendingAction::Copy(TransferAction {
             sources: vec![src.join("link.txt")],
             dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
 
@@ -131,11 +136,11 @@ fn check_overwrite_move_conflict() {
     setup_dest_files(&dest, &["file.txt"]);
     let state = AppState {
         active_panel: ActivePanel::Left,
-        pending_action: Some(PendingAction::Move {
+        pending_action: Some(PendingAction::Move(TransferAction {
             sources: vec![src.join("file.txt")],
             dest,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -150,11 +155,11 @@ fn check_overwrite_move_same_file_no_conflict() {
     let file = src.join("file.txt");
     let state = AppState {
         active_panel: ActivePanel::Left,
-        pending_action: Some(PendingAction::Move {
+        pending_action: Some(PendingAction::Move(TransferAction {
             sources: vec![file],
             dest: src,
             overwrite: false,
-        }),
+        })),
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -170,11 +175,11 @@ fn check_overwrite_move_overwrite_no_conflict() {
     setup_dest_files(&dest, &["file.txt"]);
     let state = AppState {
         active_panel: ActivePanel::Left,
-        pending_action: Some(PendingAction::Move {
+        pending_action: Some(PendingAction::Move(TransferAction {
             sources: vec![src.join("file.txt")],
             dest,
             overwrite: true,
-        }),
+        })),
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -193,26 +198,101 @@ fn check_overwrite_delete_no_conflict() {
     assert!(conflicts.is_none());
 }
 
-// TODO: ExtractArchive does not check for existing files in dest — add test for
-// conflict when dest already contains a file that would be overwritten by extraction.
+fn create_test_tar_gz(dir: &Path, entries: &[&str]) -> PathBuf {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    let archive_path = dir.join("archive.tar.gz");
+    let file = std::fs::File::create(&archive_path).unwrap();
+    let enc = GzEncoder::new(file, Compression::fast());
+    let mut builder = tar::Builder::new(enc);
+    for name in entries {
+        let data = b"test content";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, name, &data[..]).unwrap();
+    }
+    builder.finish().unwrap();
+    archive_path
+}
+
 #[test]
-fn check_overwrite_extract_archive_returns_none() {
+fn check_overwrite_extract_archive_no_conflict_empty_dest() {
     let tmp = tempfile::tempdir().unwrap();
-    let src = tmp.path().join("archive.tar.gz");
+    let src = create_test_tar_gz(tmp.path(), &["file1.txt", "file2.txt"]);
     let dest = tmp.path().join("dest");
-    std::fs::write(&src, b"fake").unwrap();
     std::fs::create_dir_all(&dest).unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::ExtractArchive { source: src, dest }),
+        pending_action: Some(PendingAction::ExtractArchive {
+            source: src,
+            dest,
+            overwrite: false,
+        }),
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
 }
 
-// TODO: CreateArchive does not check for existing output file — add test for
-// conflict when dest archive path already exists on disk.
 #[test]
-fn check_overwrite_create_archive_returns_none() {
+fn check_overwrite_extract_archive_conflict_with_existing_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = create_test_tar_gz(tmp.path(), &["file1.txt", "file2.txt"]);
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("file1.txt"), b"existing").unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::ExtractArchive {
+            source: src,
+            dest,
+            overwrite: false,
+        }),
+        ..Default::default()
+    };
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
+    assert_eq!(conflicts, vec!["file1.txt"]);
+}
+
+#[test]
+fn check_overwrite_extract_archive_overwrite_true_no_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = create_test_tar_gz(tmp.path(), &["file1.txt"]);
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("file1.txt"), b"existing").unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::ExtractArchive {
+            source: src,
+            dest,
+            overwrite: true,
+        }),
+        ..Default::default()
+    };
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
+
+#[test]
+fn check_overwrite_create_archive_dest_exists_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("out.tar.gz");
+    let file = tmp.path().join("file.txt");
+    std::fs::write(&file, b"data").unwrap();
+    std::fs::write(&dest, b"existing").unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::CreateArchive {
+            sources: vec![file],
+            dest,
+            format: ArchiveFormat::TarGz,
+            overwrite: false,
+        }),
+        ..Default::default()
+    };
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
+    assert_eq!(conflicts, vec!["out.tar.gz"]);
+}
+
+#[test]
+fn check_overwrite_create_archive_dest_not_exists_no_conflict() {
     let tmp = tempfile::tempdir().unwrap();
     let dest = tmp.path().join("out.tar.gz");
     let file = tmp.path().join("file.txt");
@@ -222,13 +302,175 @@ fn check_overwrite_create_archive_returns_none() {
             sources: vec![file],
             dest,
             format: ArchiveFormat::TarGz,
+            overwrite: false,
         }),
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
 }
 
-// TODO: Missing test coverage:
-// - Directories as sources (src is a dir, not a file)
-// - Symlinks as sources (src is a symlink to a file)
-// - Empty sources list (vec![]) — verify no panic/correct none result
+#[test]
+fn check_overwrite_create_archive_overwrite_true_no_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("out.tar.gz");
+    let file = tmp.path().join("file.txt");
+    std::fs::write(&file, b"data").unwrap();
+    std::fs::write(&dest, b"existing").unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::CreateArchive {
+            sources: vec![file],
+            dest,
+            format: ArchiveFormat::TarGz,
+            overwrite: true,
+        }),
+        ..Default::default()
+    };
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
+
+#[test]
+fn check_overwrite_copy_directory_source_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src_dir = tmp.path().join("mydir");
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::create_dir_all(dest.join("mydir")).unwrap();
+
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![src_dir],
+            dest,
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
+    assert_eq!(conflicts, vec!["mydir"]);
+}
+
+#[test]
+fn check_overwrite_copy_directory_source_no_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src_dir = tmp.path().join("mydir");
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![src_dir],
+            dest,
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn check_overwrite_copy_symlink_source_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let target = tmp.path().join("target.txt");
+    std::fs::write(&target, b"target").unwrap();
+    let link = src.join("link.txt");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    std::fs::write(dest.join("link.txt"), b"existing").unwrap();
+
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![link],
+            dest,
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
+    assert_eq!(conflicts, vec!["link.txt"]);
+}
+
+#[test]
+fn check_overwrite_copy_empty_sources_no_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![],
+            dest: dir.path().to_path_buf(),
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+    let result = dialogs::check_overwrite_conflict(&state);
+    assert!(result.is_none());
+}
+
+#[test]
+fn check_overwrite_move_empty_sources_no_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState {
+        pending_action: Some(PendingAction::Move(TransferAction {
+            sources: vec![],
+            dest: dir.path().to_path_buf(),
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+    let result = dialogs::check_overwrite_conflict(&state);
+    assert!(result.is_none());
+}
+
+#[test]
+fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_action() {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = create_test_tar_gz(tmp.path(), &["file1.txt"]);
+    let dest = tmp.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("file1.txt"), b"existing").unwrap();
+
+    let mut dest_input = TextInput::new();
+    dest_input.set_text_at_end(dest.display().to_string());
+
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::ArchiveExtract(Box::new(
+            ArchiveExtractDetails {
+                source: archive,
+                entries: vec![],
+                dest_input,
+            },
+        ))),
+        dialog_selection: 0,
+        ..Default::default()
+    };
+    let mut running_job = None;
+
+    dialogs::handle_dialog(
+        &mut state,
+        &mut None,
+        &mut running_job,
+        KeyCode::Enter,
+        Size::new(80, 24),
+    );
+
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::OverwriteConfirm(..))
+    ));
+    assert!(running_job.is_none());
+    assert!(matches!(
+        state.pending_action,
+        Some(PendingAction::ExtractArchive {
+            overwrite: false,
+            ..
+        })
+    ));
+}

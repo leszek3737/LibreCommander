@@ -11,17 +11,17 @@ use unicode_segmentation::UnicodeSegmentation;
 // `text.graphemes(true).count()`. Direct mutation of `.text`/`.cursor` BREAKS these
 // without immediate call to `recompute_grapheme_count()`/`cursor_end()` (for text)
 // or `clamp_cursor()` (for cursor). Prefer `set_text()` / `set_cursor()`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TextInput {
-    // INVARIANT: Direct assignment must be followed by `recompute_grapheme_count()`
-    // or `cursor_end()`. Prefer `set_text()`.
-    // TODO: make private after migrating callers to set_text() / text()
-    pub text: String,
-    // INVARIANT: Direct assignment must be followed by `clamp_cursor()`.
-    // Prefer `set_cursor()`.
-    // TODO: make private after migrating callers to set_cursor() / cursor()
-    pub cursor: usize,
+    text: String,
+    cursor: usize,
     grapheme_count: usize,
+}
+
+impl Default for TextInput {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn is_whitespace_grapheme(g: &str) -> bool {
@@ -49,6 +49,12 @@ impl TextInput {
         self.text = text;
         self.recompute_grapheme_count();
         self.clamp_cursor();
+    }
+
+    pub fn set_text_at_end(&mut self, text: String) {
+        self.text = text;
+        self.recompute_grapheme_count();
+        self.cursor = self.grapheme_count;
     }
 
     pub fn set_cursor(&mut self, cursor: usize) {

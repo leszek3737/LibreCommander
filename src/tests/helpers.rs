@@ -3,11 +3,9 @@ use crossterm::event::{Event, KeyCode, KeyModifiers};
 use lc::app::dir_tree::TreeEntry;
 use lc::app::job_runner::RunningJob;
 use lc::app::types::AppState;
-use lc::app::types::FileEntry;
 use lc::ui::viewer;
 use ratatui::layout::Size;
 use ratatui::{Terminal, backend::TestBackend};
-use std::path::{Path, PathBuf};
 
 pub const TERMINAL_HEIGHT: u16 = 24;
 pub const TERMINAL_WIDTH: u16 = 80;
@@ -52,70 +50,13 @@ pub fn test_terminal() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(TERMINAL_WIDTH, TERMINAL_HEIGHT)).unwrap()
 }
 
-enum EntryKind {
-    Directory,
-    File(u64),
-}
+#[path = "../app/types/test_helpers.rs"]
+mod test_helpers;
 
-pub struct TestEntry {
-    pub name: String,
-    pub path: Option<PathBuf>,
-    kind: EntryKind,
-    pub selected: bool,
-    symlink: bool,
-}
+pub use test_helpers::TestEntry;
 
-impl TestEntry {
-    pub fn new(name: impl Into<String>) -> Self {
-        let name = name.into();
-        assert!(!name.is_empty(), "TestEntry name must not be empty");
-        Self {
-            name,
-            path: None,
-            kind: EntryKind::Directory,
-            selected: false,
-            symlink: false,
-        }
-    }
-
-    pub fn path(mut self, p: impl Into<PathBuf>) -> Self {
-        self.path = Some(p.into());
-        self
-    }
-
-    pub fn file(mut self, size: u64) -> Self {
-        self.kind = EntryKind::File(size);
-        self
-    }
-
-    pub fn selected(mut self) -> Self {
-        self.selected = true;
-        self
-    }
-
-    pub fn symlink(mut self) -> Self {
-        self.symlink = true;
-        self
-    }
-
-    pub fn build(self) -> FileEntry {
-        let path = self
-            .path
-            .unwrap_or_else(|| std::env::temp_dir().join(Path::new(&self.name)));
-        let cha = match self.kind {
-            EntryKind::File(size) => crate::fs::cha::Cha::regular_file(size),
-            EntryKind::Directory => crate::fs::cha::Cha::dummy_dir(),
-        };
-        let mut builder = FileEntry::builder()
-            .name(&self.name)
-            .path(path)
-            .cha(cha)
-            .selected(self.selected);
-        if self.symlink {
-            builder = builder.is_symlink(true);
-        }
-        builder.build()
-    }
+pub fn test_path(name: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    std::path::PathBuf::from("/lc-test-fixtures").join(name)
 }
 
 pub fn buffer_to_string(buffer: &ratatui::buffer::Buffer) -> String {

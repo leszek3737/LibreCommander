@@ -84,6 +84,18 @@ pub(crate) fn finish_confirmed_action(state: &mut AppState) {
     }
 }
 
+fn dispatch_with_overwrite_check(state: &mut AppState, running_job: &mut Option<RunningJob>) {
+    if let Some(conflicting) = check_overwrite_conflict(state) {
+        state.dialog_selection = 0;
+        state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+            OverwriteConfirmDetails { conflicting },
+        )));
+        return;
+    }
+    start_confirmed_action(state, running_job);
+    finish_confirmed_action(state);
+}
+
 pub(crate) fn dismiss_dialog(state: &mut AppState) {
     reset_dialog_state(state);
 }
@@ -110,42 +122,81 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
 
 pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
     let action = state.pending_action.as_ref()?;
-    let (sources, dest_dir, overwrite) = match action {
-        PendingAction::Copy {
-            sources,
-            dest,
-            overwrite,
-        } => (sources, dest, *overwrite),
-        PendingAction::Move {
-            sources,
-            dest,
-            overwrite,
-        } => (sources, dest, *overwrite),
-        PendingAction::Delete { .. } => return None,
-        PendingAction::ExtractArchive { .. } | PendingAction::CreateArchive { .. } => return None,
-    };
-    if overwrite {
-        return None;
-    }
-    let conflicting: Vec<String> = sources
-        .iter()
-        .filter_map(|s| {
-            let name = s.file_name()?;
-            let target = dest_dir.join(name);
-            if is_same_file(s, &target) {
+    match action {
+        PendingAction::Copy(t) | PendingAction::Move(t) => {
+            if t.overwrite {
                 return None;
             }
-            if std::fs::symlink_metadata(&target).is_ok() {
-                Some(name.to_string_lossy().into_owned())
+            let conflicting: Vec<String> = t
+                .sources
+                .iter()
+                .filter_map(|s| {
+                    let name = s.file_name()?;
+                    let target = t.dest.join(name);
+                    if is_same_file(s, &target) {
+                        return None;
+                    }
+                    if std::fs::symlink_metadata(&target).is_ok() {
+                        Some(name.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if conflicting.is_empty() {
+                None
+            } else {
+                Some(conflicting)
+            }
+        }
+        PendingAction::CreateArchive {
+            dest, overwrite, ..
+        } => {
+            if *overwrite {
+                return None;
+            }
+            if std::fs::symlink_metadata(dest).is_ok() {
+                let name = dest
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Some(vec![name])
             } else {
                 None
             }
-        })
-        .collect();
-    if conflicting.is_empty() {
-        None
-    } else {
-        Some(conflicting)
+        }
+        PendingAction::ExtractArchive {
+            source,
+            dest,
+            overwrite,
+        } => {
+            if *overwrite {
+                return None;
+            }
+            let entries = ops::archive::list::list_archive(source).ok()?;
+            let mut seen = std::collections::HashSet::new();
+            let conflicting: Vec<String> = entries
+                .iter()
+                .filter_map(|e| {
+                    let top = e.name.split('/').next()?;
+                    if top.is_empty() || !seen.insert(top.to_owned()) {
+                        return None;
+                    }
+                    let target = dest.join(top);
+                    if std::fs::symlink_metadata(&target).is_ok() {
+                        Some(top.to_owned())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if conflicting.is_empty() {
+                None
+            } else {
+                Some(conflicting)
+            }
+        }
+        PendingAction::Delete { .. } => None,
     }
 }
 
@@ -173,15 +224,7 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
 
     if confirmed {
         if state.pending_action.is_some() {
-            if let Some(conflicting) = check_overwrite_conflict(state) {
-                state.dialog_selection = 0;
-                state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
-                    OverwriteConfirmDetails { conflicting },
-                )));
-                return;
-            }
-            start_confirmed_action(state, running_job);
-            finish_confirmed_action(state);
+            dispatch_with_overwrite_check(state, running_job);
         } else if let Some(cmd) = state.pending_menu_command.take() {
             state.mode = AppMode::Normal;
             shell::run_shell_command(state, &cmd, true, refresh_active);
@@ -270,7 +313,7 @@ fn handle_input_action(
     action: &InputAction,
     terminal_height: u16,
 ) {
-    let input = state.dialog_input.text.clone();
+    let input = state.dialog_input.text().to_owned();
     match action {
         InputAction::ViewerSearch => {
             if let Some(vs) = viewer_state.as_mut() {
@@ -327,7 +370,7 @@ fn handle_input_action(
             } else {
                 Some(input)
             });
-            if panel.listing.unfiltered_dirty || panel.listing.unfiltered_entries.is_empty() {
+            if panel.listing.needs_full_read() || panel.listing.unfiltered_entries.is_empty() {
                 refresh_active(state);
             } else {
                 rebuild_visible_entries(panel, panel_visible_height(terminal_height));
@@ -449,7 +492,7 @@ fn apply_dialog_text_edit(dest_input: &mut TextInput, key: KeyCode) {
             dest_input.delete_forward();
         }
         KeyCode::Char(c) => {
-            if dest_input.text.len() + c.len_utf8() > MAX_DIALOG_INPUT_BYTES {
+            if dest_input.text().len() + c.len_utf8() > MAX_DIALOG_INPUT_BYTES {
                 return;
             }
             dest_input.insert_char(c);
@@ -483,7 +526,7 @@ fn handle_archive_extract_dialog(
         KeyCode::Enter => {
             let (source, dest_text) =
                 if let AppMode::Dialog(DialogKind::ArchiveExtract(ref details)) = state.mode {
-                    (details.source.clone(), details.dest_input.text.clone())
+                    (details.source.clone(), details.dest_input.text().to_owned())
                 } else {
                     return;
                 };
@@ -492,9 +535,12 @@ fn handle_archive_extract_dialog(
                 return;
             }
             let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
-            state.pending_action = Some(PendingAction::ExtractArchive { source, dest });
-            start_confirmed_action(state, running_job);
-            finish_confirmed_action(state);
+            state.pending_action = Some(PendingAction::ExtractArchive {
+                source,
+                dest,
+                overwrite: false,
+            });
+            dispatch_with_overwrite_check(state, running_job);
             return;
         }
         _ => {}
@@ -525,7 +571,10 @@ fn handle_archive_create_dialog(
         KeyCode::Enter => {
             let (sources, dest_text) =
                 if let AppMode::Dialog(DialogKind::ArchiveCreate(ref details)) = state.mode {
-                    (details.sources.clone(), details.dest_input.text.clone())
+                    (
+                        details.sources.clone(),
+                        details.dest_input.text().to_owned(),
+                    )
                 } else {
                     return;
                 };
@@ -542,9 +591,9 @@ fn handle_archive_create_dialog(
                 sources,
                 dest,
                 format,
+                overwrite: false,
             });
-            start_confirmed_action(state, running_job);
-            finish_confirmed_action(state);
+            dispatch_with_overwrite_check(state, running_job);
             return;
         }
         _ => {}
@@ -565,32 +614,21 @@ fn handle_copymove_dialog(
 
     if confirmed {
         let action = if let AppMode::Dialog(DialogKind::CopyMove(details)) = &state.mode {
+            let transfer = TransferAction {
+                sources: details.source.clone(),
+                dest: details.dest.clone(),
+                overwrite: false,
+            };
             if details.is_move {
-                PendingAction::Move {
-                    sources: details.source.clone(),
-                    dest: details.dest.clone(),
-                    overwrite: false,
-                }
+                PendingAction::Move(transfer)
             } else {
-                PendingAction::Copy {
-                    sources: details.source.clone(),
-                    dest: details.dest.clone(),
-                    overwrite: false,
-                }
+                PendingAction::Copy(transfer)
             }
         } else {
             return;
         };
         state.pending_action = Some(action);
-        if let Some(conflicting) = check_overwrite_conflict(state) {
-            state.dialog_selection = 0;
-            state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
-                OverwriteConfirmDetails { conflicting },
-            )));
-            return;
-        }
-        start_confirmed_action(state, running_job);
-        finish_confirmed_action(state);
+        dispatch_with_overwrite_check(state, running_job);
     } else {
         dismiss_dialog(state);
     }
@@ -703,9 +741,8 @@ mod tests {
 
     fn make_input_state(text: &str, cursor: usize) -> AppState {
         let mut dialog_input = TextInput::new();
-        dialog_input.text = text.to_string();
-        dialog_input.recompute_grapheme_count();
-        dialog_input.cursor = cursor;
+        dialog_input.set_text(text.to_string());
+        dialog_input.set_cursor(cursor);
         AppState {
             dialog_input,
             ..Default::default()
@@ -716,113 +753,113 @@ mod tests {
     fn text_edit_insert_char() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Char('!'));
-        assert_eq!(state.dialog_input.text, "hello!");
-        assert_eq!(state.dialog_input.cursor, 6);
+        assert_eq!(state.dialog_input.text(), "hello!");
+        assert_eq!(state.dialog_input.cursor(), 6);
     }
 
     #[test]
     fn text_edit_insert_middle() {
         let mut state = make_input_state("helo", 2);
         apply_text_edit(&mut state, KeyCode::Char('l'));
-        assert_eq!(state.dialog_input.text, "hello");
-        assert_eq!(state.dialog_input.cursor, 3);
+        assert_eq!(state.dialog_input.text(), "hello");
+        assert_eq!(state.dialog_input.cursor(), 3);
     }
 
     #[test]
     fn text_edit_backspace() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text, "hell");
-        assert_eq!(state.dialog_input.cursor, 4);
+        assert_eq!(state.dialog_input.text(), "hell");
+        assert_eq!(state.dialog_input.cursor(), 4);
     }
 
     #[test]
     fn text_edit_backspace_at_start() {
         let mut state = make_input_state("hello", 0);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text, "hello");
-        assert_eq!(state.dialog_input.cursor, 0);
+        assert_eq!(state.dialog_input.text(), "hello");
+        assert_eq!(state.dialog_input.cursor(), 0);
     }
 
     #[test]
     fn text_edit_delete() {
         let mut state = make_input_state("hello", 0);
         apply_text_edit(&mut state, KeyCode::Delete);
-        assert_eq!(state.dialog_input.text, "ello");
-        assert_eq!(state.dialog_input.cursor, 0);
+        assert_eq!(state.dialog_input.text(), "ello");
+        assert_eq!(state.dialog_input.cursor(), 0);
     }
 
     #[test]
     fn text_edit_delete_at_end() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Delete);
-        assert_eq!(state.dialog_input.text, "hello");
-        assert_eq!(state.dialog_input.cursor, 5);
+        assert_eq!(state.dialog_input.text(), "hello");
+        assert_eq!(state.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_left_right() {
         let mut state = make_input_state("hello", 3);
         apply_text_edit(&mut state, KeyCode::Left);
-        assert_eq!(state.dialog_input.cursor, 2);
+        assert_eq!(state.dialog_input.cursor(), 2);
         apply_text_edit(&mut state, KeyCode::Right);
-        assert_eq!(state.dialog_input.cursor, 3);
+        assert_eq!(state.dialog_input.cursor(), 3);
     }
 
     #[test]
     fn text_edit_home_end() {
         let mut state = make_input_state("hello", 3);
         apply_text_edit(&mut state, KeyCode::Home);
-        assert_eq!(state.dialog_input.cursor, 0);
+        assert_eq!(state.dialog_input.cursor(), 0);
         apply_text_edit(&mut state, KeyCode::End);
-        assert_eq!(state.dialog_input.cursor, 5);
+        assert_eq!(state.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_multibyte_insert() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Char('ą'));
-        assert_eq!(state.dialog_input.text, "helloą");
-        assert_eq!(state.dialog_input.cursor, 6);
+        assert_eq!(state.dialog_input.text(), "helloą");
+        assert_eq!(state.dialog_input.cursor(), 6);
     }
 
     #[test]
     fn text_edit_multibyte_backspace() {
         let mut state = make_input_state("helloą", 6);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text, "hello");
-        assert_eq!(state.dialog_input.cursor, 5);
+        assert_eq!(state.dialog_input.text(), "hello");
+        assert_eq!(state.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_emoji_insert() {
         let mut state = make_input_state("test", 4);
         apply_text_edit(&mut state, KeyCode::Char('🎉'));
-        assert_eq!(state.dialog_input.text, "test🎉");
-        assert_eq!(state.dialog_input.cursor, 5);
+        assert_eq!(state.dialog_input.text(), "test🎉");
+        assert_eq!(state.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_rejects_multibyte_char_past_byte_limit() {
         let mut state = make_input_state(&"a".repeat(MAX_DIALOG_INPUT_BYTES - 1), 4095);
         apply_text_edit(&mut state, KeyCode::Char('ą'));
-        assert_eq!(state.dialog_input.text.len(), MAX_DIALOG_INPUT_BYTES - 1);
-        assert_eq!(state.dialog_input.cursor, 4095);
+        assert_eq!(state.dialog_input.text().len(), MAX_DIALOG_INPUT_BYTES - 1);
+        assert_eq!(state.dialog_input.cursor(), 4095);
     }
 
     #[test]
     fn text_edit_allows_char_at_exact_byte_limit() {
         let mut state = make_input_state(&"a".repeat(MAX_DIALOG_INPUT_BYTES - 1), 4095);
         apply_text_edit(&mut state, KeyCode::Char('!'));
-        assert_eq!(state.dialog_input.text.len(), MAX_DIALOG_INPUT_BYTES);
-        assert_eq!(state.dialog_input.cursor, 4096);
+        assert_eq!(state.dialog_input.text().len(), MAX_DIALOG_INPUT_BYTES);
+        assert_eq!(state.dialog_input.cursor(), 4096);
     }
 
     #[test]
     fn text_edit_emoji_backspace() {
         let mut state = make_input_state("test🎉", 5);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text, "test");
-        assert_eq!(state.dialog_input.cursor, 4);
+        assert_eq!(state.dialog_input.text(), "test");
+        assert_eq!(state.dialog_input.cursor(), 4);
     }
 }

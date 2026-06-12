@@ -45,9 +45,6 @@ pub struct CopyMoveDetails {
     pub source: Vec<PathBuf>,
     pub dest: PathBuf,
     pub is_move: bool,
-    // TODO: remove source_display; render should derive display strings from source
-    // paths on-the-fly to maintain single source of truth
-    pub source_display: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

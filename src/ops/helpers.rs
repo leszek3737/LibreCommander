@@ -13,8 +13,8 @@ use crate::debug_log;
 #[inline]
 pub(crate) fn action_label(action: &PendingAction) -> &'static str {
     match action {
-        PendingAction::Copy { .. } => "Copy",
-        PendingAction::Move { .. } => "Move",
+        PendingAction::Copy(_) => "Copy",
+        PendingAction::Move(_) => "Move",
         PendingAction::Delete { .. } => "Delete",
         PendingAction::ExtractArchive { .. } => "Extract",
         PendingAction::CreateArchive { .. } => "Archive",
@@ -311,18 +311,18 @@ mod tests {
 
     #[test]
     fn test_action_label() {
-        let copy = PendingAction::Copy {
+        let copy = PendingAction::Copy(crate::app::types::TransferAction {
             sources: vec![],
             dest: PathBuf::new(),
             overwrite: false,
-        };
+        });
         assert_eq!(action_label(&copy), "Copy");
 
-        let mv = PendingAction::Move {
+        let mv = PendingAction::Move(crate::app::types::TransferAction {
             sources: vec![],
             dest: PathBuf::new(),
             overwrite: false,
-        };
+        });
         assert_eq!(action_label(&mv), "Move");
 
         let del = PendingAction::Delete { paths: vec![] };
@@ -331,6 +331,7 @@ mod tests {
         let extract = PendingAction::ExtractArchive {
             source: PathBuf::new(),
             dest: PathBuf::new(),
+            overwrite: false,
         };
         assert_eq!(action_label(&extract), "Extract");
 
@@ -338,6 +339,7 @@ mod tests {
             sources: vec![],
             dest: PathBuf::new(),
             format: crate::ops::archive::ArchiveFormat::Zip,
+            overwrite: false,
         };
         assert_eq!(action_label(&create), "Archive");
     }
