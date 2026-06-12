@@ -3,6 +3,16 @@ use crossterm::event::KeyCode;
 use lc::app::shell;
 use lc::app::types::{AppMode, AppState, PickerKind};
 
+fn make_history_picker(commands: &[&str], selected: usize) -> AppState {
+    let mut state = AppState::default();
+    for cmd in commands {
+        shell::push_history(&mut state, cmd);
+    }
+    state.mode = AppMode::ListPicker(PickerKind::History);
+    state.picker_selected = selected;
+    state
+}
+
 #[test]
 fn history_dedup_consecutive() {
     let mut state = AppState::default();
@@ -33,52 +43,31 @@ fn history_cap_at_100() {
 
 #[test]
 fn history_picker_enter_loads_command_line() {
-    let mut state = AppState::default();
-    state.command_history.push_back("git status".to_string());
-    state.command_history.push_back("git log".to_string());
-    state.mode = AppMode::ListPicker(PickerKind::History);
-    state.picker_selected = 0;
-
+    let mut state = make_history_picker(&["git status", "git log"], 0);
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
-
     assert_eq!(state.mode, AppMode::CommandLine);
     assert_eq!(state.command_line.text, "git log");
 }
 
 #[test]
 fn history_picker_esc_cancels() {
-    let mut state = AppState::default();
-    state.command_history.push_back("ls".to_string());
-    state.mode = AppMode::ListPicker(PickerKind::History);
-
+    let mut state = make_history_picker(&["ls"], 0);
     pickers::handle_list_picker(&mut state, KeyCode::Esc);
-
     assert_eq!(state.mode, AppMode::Normal);
 }
 
 #[test]
 fn history_picker_navigate_up_down() {
-    let mut state = AppState::default();
-    state.command_history.push_back("cmd1".to_string());
-    state.command_history.push_back("cmd2".to_string());
-    state.command_history.push_back("cmd3".to_string());
-    state.mode = AppMode::ListPicker(PickerKind::History);
-    state.picker_selected = 0;
-
+    let mut state = make_history_picker(&["cmd1", "cmd2", "cmd3"], 0);
     pickers::handle_list_picker(&mut state, KeyCode::Down);
     assert_eq!(state.picker_selected, 1);
-
     pickers::handle_list_picker(&mut state, KeyCode::Up);
     assert_eq!(state.picker_selected, 0);
 }
 
 #[test]
 fn empty_history_does_not_open_picker() {
-    let mut state = AppState {
-        mode: AppMode::ListPicker(PickerKind::History),
-        picker_selected: 0,
-        ..Default::default()
-    };
+    let mut state = make_history_picker(&[], 0);
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
     assert_eq!(state.mode, AppMode::Normal);
 }
@@ -107,30 +96,13 @@ fn history_whitespace_after_valid_command() {
 }
 
 #[test]
-fn history_picker_home_sets_cursor_to_first() {
-    let mut state = AppState::default();
-    state.command_history.push_back("cmd1".to_string());
-    state.command_history.push_back("cmd2".to_string());
-    state.command_history.push_back("cmd3".to_string());
-    state.mode = AppMode::ListPicker(PickerKind::History);
-    state.picker_selected = 2;
+fn history_picker_home_end() {
+    let mut state = make_history_picker(&["cmd1", "cmd2", "cmd3"], 1);
 
     pickers::handle_list_picker(&mut state, KeyCode::Home);
-
     assert_eq!(state.picker_selected, 0);
-}
-
-#[test]
-fn history_picker_end_sets_cursor_to_last() {
-    let mut state = AppState::default();
-    state.command_history.push_back("cmd1".to_string());
-    state.command_history.push_back("cmd2".to_string());
-    state.command_history.push_back("cmd3".to_string());
-    state.mode = AppMode::ListPicker(PickerKind::History);
-    state.picker_selected = 0;
 
     pickers::handle_list_picker(&mut state, KeyCode::End);
-
     assert_eq!(state.picker_selected, 2);
 }
 
@@ -143,4 +115,34 @@ fn history_dedup_non_consecutive_moves_to_end() {
     assert_eq!(state.command_history.len(), 2);
     assert_eq!(state.command_history[0], "echo B");
     assert_eq!(state.command_history[1], "echo A");
+}
+
+#[test]
+fn history_picker_enter_selected_beyond_len() {
+    let mut state = make_history_picker(&["cmd1"], 5);
+    pickers::handle_list_picker(&mut state, KeyCode::Enter);
+    assert_eq!(state.mode, AppMode::Normal);
+}
+
+#[test]
+fn history_picker_up_at_zero_clamps() {
+    let mut state = make_history_picker(&["cmd1", "cmd2"], 0);
+    pickers::handle_list_picker(&mut state, KeyCode::Up);
+    assert_eq!(state.picker_selected, 0);
+}
+
+#[test]
+fn history_picker_down_at_last_clamps() {
+    let mut state = make_history_picker(&["cmd1", "cmd2"], 1);
+    pickers::handle_list_picker(&mut state, KeyCode::Down);
+    assert_eq!(state.picker_selected, 1);
+}
+
+#[test]
+fn history_picker_empty_list_all_directions_clamped() {
+    let mut state = make_history_picker(&[], 0);
+    for key in [KeyCode::Up, KeyCode::Down, KeyCode::Home, KeyCode::End] {
+        pickers::handle_list_picker(&mut state, key);
+        assert_eq!(state.picker_selected, 0, "failed on {key:?}");
+    }
 }

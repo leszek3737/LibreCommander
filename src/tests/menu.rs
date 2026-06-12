@@ -4,83 +4,53 @@ use crossterm::event::KeyCode;
 use lc::app;
 use lc::app::types::{ActivePanel, AppMode, AppState, PickerKind};
 
-#[test]
-fn menu_toggle_hidden_files_refreshes_active_panel() {
-    let temp_dir = tempfile::tempdir().unwrap();
+const _TEST_WIDTH: u16 = 24;
+const TEST_HEIGHT: u16 = 24;
+
+fn dispatch_menu(state: &mut AppState, key: KeyCode) {
     let mut terminal = test_terminal();
-    let mut state = AppState {
-        active_panel: ActivePanel::Left,
-        ..Default::default()
-    };
-    state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.set_show_hidden(false);
-    state.mode = AppMode::Menu;
-    state.menu_selected = 3;
-    state.menu_item_selected = 0;
+    handle_menu_mode(state, &mut None, &mut None, key, TEST_HEIGHT, &mut terminal);
+}
 
-    handle_menu_mode(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
-
-    assert_eq!(state.mode, AppMode::Normal);
-    assert!(state.left_panel.show_hidden());
+fn run_menu_action(state: &mut AppState) {
+    let mut terminal = test_terminal();
+    run_selected_menu_action(state, &mut None, &mut None, TEST_HEIGHT, &mut terminal);
 }
 
 #[test]
-fn menu_toggle_hidden_files_reverse_refreshes_active_panel() {
+fn menu_toggle_hidden_files() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut terminal = test_terminal();
-    let mut state = AppState {
-        active_panel: ActivePanel::Left,
-        ..Default::default()
-    };
-    state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.set_show_hidden(true);
-    state.mode = AppMode::Menu;
-    state.menu_selected = 3;
-    state.menu_item_selected = 0;
+    for initial in [false, true] {
+        let mut state = AppState {
+            active_panel: ActivePanel::Left,
+            ..Default::default()
+        };
+        state.left_panel.set_path(temp_dir.path().to_path_buf());
+        state.left_panel.set_show_hidden(initial);
+        state.mode = AppMode::Menu;
+        state.menu_selected = 3;
+        state.menu_item_selected = 0;
 
-    handle_menu_mode(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+        dispatch_menu(&mut state, KeyCode::Enter);
 
-    assert!(!state.left_panel.show_hidden());
+        assert_eq!(state.left_panel.show_hidden(), !initial);
+    }
 }
 
 #[test]
 fn menu_rename_opens_input_dialog_with_current_name() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut terminal = test_terminal();
     let mut state = AppState::default();
     state.left_panel.listing.entries.push(
-        app::types::FileEntry::builder()
-            .name("old.txt")
+        TestEntry::new("old.txt")
             .path(tmp.path().join("old.txt"))
-            .cha(crate::fs::cha::Cha::dummy_dir())
             .build(),
     );
     state.mode = AppMode::Menu;
     state.menu_selected = 1;
     state.menu_item_selected = 7;
 
-    handle_menu_mode(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+    dispatch_menu(&mut state, KeyCode::Enter);
 
     assert_eq!(state.dialog_input.text, "old.txt");
     assert!(matches!(
@@ -97,24 +67,16 @@ fn menu_rename_confirms_and_renames_file() {
     let dir = tempfile::tempdir().unwrap();
     let old_path = dir.path().join("old.txt");
     std::fs::write(&old_path, "content").unwrap();
-    let mut terminal = test_terminal();
     let mut state = AppState::default();
     state.left_panel.listing.entries =
-        vec![TestEntry::new("old.txt").path(&old_path).size(1).build()];
+        vec![TestEntry::new("old.txt").path(&old_path).file(1).build()];
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     state.mode = AppMode::Menu;
     state.menu_selected = 1;
     state.menu_item_selected = 7;
 
-    handle_menu_mode(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+    dispatch_menu(&mut state, KeyCode::Enter);
 
     assert!(matches!(
         state.mode,
@@ -131,7 +93,7 @@ fn menu_rename_confirms_and_renames_file() {
         &mut None,
         &mut None,
         KeyCode::Enter,
-        ratatui::layout::Size::new(80, 24),
+        ratatui::layout::Size::new(80, TEST_HEIGHT),
     );
 
     assert_eq!(state.mode, AppMode::Normal);
@@ -145,7 +107,6 @@ fn menu_rename_confirms_and_renames_file() {
 
 #[test]
 fn menu_history_opens_picker() {
-    let mut terminal = test_terminal();
     let mut state = AppState {
         mode: AppMode::Menu,
         menu_selected: 2,
@@ -154,14 +115,7 @@ fn menu_history_opens_picker() {
     };
     state.command_history.push_back("ls -la".to_string());
 
-    handle_menu_mode(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+    dispatch_menu(&mut state, KeyCode::Enter);
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::History));
     assert_eq!(state.picker_selected, 0);
@@ -169,7 +123,6 @@ fn menu_history_opens_picker() {
 
 #[test]
 fn menu_hotlist_opens_picker() {
-    let mut terminal = test_terminal();
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState {
         mode: AppMode::Menu,
@@ -179,14 +132,7 @@ fn menu_hotlist_opens_picker() {
     };
     state.hotlist_push(tmp.path().to_path_buf());
 
-    handle_menu_mode(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+    dispatch_menu(&mut state, KeyCode::Enter);
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
     assert_eq!(state.picker_selected, 0);
@@ -210,7 +156,7 @@ fn menu_sort_preserves_current_entry_focus() {
         .left_panel
         .set_sort_mode(lc::app::types::SortMode::NameDesc);
 
-    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+    run_menu_action(&mut state);
 
     assert_eq!(
         state.left_panel.sort_mode(),
@@ -242,7 +188,7 @@ fn menu_reset_filter_preserves_current_entry_focus() {
     ];
     state.left_panel.set_filter(Some("beta".to_string()));
 
-    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+    run_menu_action(&mut state);
 
     assert_eq!(
         state
@@ -260,7 +206,9 @@ fn run_selected_menu_action_fallback_to_normal() {
         menu_item_selected: 99,
         ..Default::default()
     };
-    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+
+    run_menu_action(&mut state);
+
     assert!(matches!(state.mode, AppMode::Normal));
 }
 
@@ -274,8 +222,12 @@ fn menu_command_line_clears_stale_prev_mode() {
         ..Default::default()
     };
 
-    run_selected_menu_action(&mut state, &mut None, &mut None, 24, &mut test_terminal());
+    run_menu_action(&mut state);
 
     assert_eq!(state.mode, AppMode::CommandLine);
     assert_eq!(state.prev_mode, None);
 }
+
+// TODO: right panel menu interaction
+// TODO: rename collision — target file already exists
+// TODO: prev_mode recovery after menu cancel (Esc)

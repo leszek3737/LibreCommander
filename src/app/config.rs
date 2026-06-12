@@ -153,6 +153,7 @@ impl From<PersistedSetup> for Settings {
                 .unwrap_or_default()
                 .iter()
                 .filter(|s| !s.trim().is_empty())
+                // TODO: two allocations per path (expand_path + clean_path), combine into one pass
                 .map(|s| crate::fs::path::clean_path(&crate::fs::path::expand_path(s)))
                 .collect(),
         }
@@ -261,18 +262,24 @@ fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml
 fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
     if let Some(ref path_str) = persisted.path {
         let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
-        // Fall back to the cleaned path when canonicalize fails (e.g. a valid
-        // directory on a filesystem that rejects canonicalize) so the panel is
-        // still restored instead of being left at its default path.
-        let resolved = fs::canonicalize(&path).unwrap_or_else(|e| {
-            crate::debug_log!("config: canonicalize failed for {}: {e}", path.display());
-            path.clone()
-        });
-        if resolved.is_dir() {
-            panel.set_path(resolved.clone());
-            panel.set_canonical_path(Some(resolved));
+        let canonical = fs::canonicalize(&path).ok();
+        if let Some(c) = canonical {
+            if c.is_dir() {
+                panel.set_path(c.clone());
+                panel.set_canonical_path(Some(c));
+            }
         } else {
-            crate::debug_log!("configured panel path ignored: {}", path.display());
+            crate::debug_log!(
+                "config: canonicalize failed for {}: {}",
+                path.display(),
+                "falling back to raw path"
+            );
+            if path.is_dir() {
+                panel.set_path(path);
+                panel.set_canonical_path(None);
+            } else {
+                crate::debug_log!("configured panel path ignored: {}", path.display());
+            }
         }
     }
     panel.set_listing_mode(persisted.listing_mode);

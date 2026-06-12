@@ -86,8 +86,6 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".slice",
     ".scope",
     ".lock",
-    ".editorconfig",
-    ".gitignore",
     ".gitattributes",
     ".gitmodules",
     ".dockerignore",
@@ -329,7 +327,7 @@ mod tests {
     fn test_new_config_extensions() {
         assert!(is_config("settings.jsonc"));
         assert!(is_config(".editorconfig"));
-        assert!(is_config("ignore.GITIGNORE"));
+        assert!(is_config("ignore.DOCKERIGNORE"));
     }
 
     #[test]

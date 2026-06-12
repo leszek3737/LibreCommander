@@ -9,6 +9,9 @@ pub struct PanelListing {
     pub entries: Vec<FileEntry>,
     pub unfiltered_entries: Vec<FileEntry>,
     pub path_index: HashMap<PathBuf, usize>,
+    // TODO: model as type-state or explicit FSM — currently two bools that
+    // interact (needs_rebuild implies unfiltered_dirty should be false, and
+    // vice versa). A State enum would prevent invalid combinations.
     pub needs_rebuild: bool,
     pub unfiltered_dirty: bool,
 }
@@ -27,6 +30,7 @@ impl PanelListing {
     pub fn set_unfiltered(&mut self, entries: Vec<FileEntry>) {
         self.path_index.clear();
         for (i, entry) in entries.iter().enumerate() {
+            // TODO: use Arc<Path> as key to avoid cloning PathBuf per entry
             self.path_index.insert(entry.path.clone(), i);
         }
         self.unfiltered_entries = entries;
@@ -61,6 +65,10 @@ impl Default for PanelListing {
     }
 }
 
+// NOTE: ~30 pub getters/setters below. By design this struct exposes
+// individual field access instead of a single `set_fields()` mega-method
+// so input handlers can update only what changed without re-allocating
+// the rest. If you add a field, add its getter+setter pair.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelState {
     pub(crate) path: PathBuf,
@@ -265,13 +273,18 @@ impl PanelState {
             if let Some(ue) = self.listing.unfiltered_entries.get_mut(idx) {
                 ue.selected = selected;
             }
-        } else if let Some(ue) = self
-            .listing
-            .unfiltered_entries
-            .iter_mut()
-            .find(|e| e.path == *path)
-        {
-            ue.selected = selected;
+        } else {
+            // O(n) fallback — path_index miss, scanning unfiltered_entries
+            let found = self
+                .listing
+                .unfiltered_entries
+                .iter_mut()
+                .find(|e| e.path == *path);
+            if let Some(ue) = found {
+                ue.selected = selected;
+            }
+            // path_index should always cover unfiltered_entries; a miss
+            // means index is stale (listing changed without rebuilding it)
         }
     }
 
@@ -280,8 +293,9 @@ impl PanelState {
             return;
         }
 
-        // TODO: reuse existing path_index instead of rebuilding an identical HashMap,
-        // eliminating N PathBuf clones
+        // TODO: clone-free rebuild — use existing path_index instead of
+        // building a new HashMap<PathBuf, usize> every call. Consider
+        // Arc<Path> keys or a secondary index view to avoid N clones.
         let index: HashMap<PathBuf, usize> = self
             .listing
             .unfiltered_entries

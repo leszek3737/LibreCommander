@@ -5,7 +5,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
 use crate::app::shell;
 use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind, OverwriteConfirmDetails};
-use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
+use crate::menu::{MENUS, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::dialogs;
 use crate::ui::viewer;
 
@@ -379,7 +379,8 @@ fn handle_mouse_menu_bar(state: &mut AppState, pos: &MousePosition) -> Option<Mo
     {
         return None;
     }
-    for (i, title) in MENU_TITLES.iter().enumerate() {
+    for (i, entry) in MENUS.iter().enumerate() {
+        let title = entry.title;
         let x_offset = menu_title_x(pos.width, i);
         let title_width = menu_title_width(title);
         if pos.col >= x_offset && pos.col < x_offset + title_width {
@@ -399,7 +400,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
     if !matches!(state.mode, AppMode::Menu) || pos.row < 1 {
         return None;
     }
-    let items = MENU_ITEMS[state.menu_selected];
+    let items = MENUS[state.menu_selected].items;
     let dropdown_width = items
         .iter()
         .map(|s| UnicodeWidthStr::width(*s))

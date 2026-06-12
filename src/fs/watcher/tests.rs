@@ -5,37 +5,57 @@ use std::sync::mpsc;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-#[test]
-fn watcher_can_watch_and_unwatch_directory() -> TestResult {
-    let tempdir = tempfile::tempdir()?;
-    let (event_tx, _event_rx) = mpsc::sync_channel(2048);
-    let mut watcher = Watcher::new(Arc::new(event_tx))?;
-    let watched_path = tempdir.path().canonicalize()?;
-
-    watcher.watch(tempdir.path())?;
-    assert_eq!(watcher.watched_dirs(), vec![watched_path]);
-
-    watcher.unwatch(tempdir.path())?;
-    assert!(watcher.watched_dirs().is_empty());
-    Ok(())
+fn expired_instant() -> Instant {
+    Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1)
 }
 
-#[test]
-fn watcher_unwatch_cleans_state_when_directory_vanished() -> TestResult {
+fn full_channel() -> (mpsc::SyncSender<WatchEvent>, mpsc::Receiver<WatchEvent>) {
+    mpsc::sync_channel(0)
+}
+
+fn insert_expired_modified(watcher: &Watcher, path: &Path) {
+    let mut debounce = watcher.debounce_state.lock().unwrap();
+    debounce.insert(
+        path.to_path_buf(),
+        PendingEntry {
+            last_seen: expired_instant(),
+            coalesced: Some(WatchEvent::Modified(path.to_path_buf())),
+        },
+    );
+}
+
+fn watch_unwatch_lifecycle(remove_before_unwatch: bool) -> TestResult {
     let tempdir = tempfile::tempdir()?;
-    let watched_path = tempdir.path().to_path_buf();
-    let canonical = watched_path.canonicalize()?;
     let (event_tx, _event_rx) = mpsc::sync_channel(2048);
     let mut watcher = Watcher::new(Arc::new(event_tx))?;
+    let watched_path = tempdir.path().to_path_buf();
+    let canonical = watched_path.canonicalize()?;
 
     watcher.watch(&watched_path)?;
-    std::fs::remove_dir_all(&watched_path)?;
+
+    if remove_before_unwatch {
+        std::fs::remove_dir_all(&watched_path)?;
+    } else {
+        assert_eq!(watcher.watched_dirs(), vec![canonical.clone()]);
+    }
 
     watcher.unwatch(&canonical)?;
 
     assert!(watcher.watched_dirs().is_empty());
-    assert!(watcher.watchers.is_empty());
+    if remove_before_unwatch {
+        assert!(watcher.watchers.is_empty());
+    }
     Ok(())
+}
+
+#[test]
+fn watcher_can_watch_and_unwatch_directory() -> TestResult {
+    watch_unwatch_lifecycle(false)
+}
+
+#[test]
+fn watcher_unwatch_cleans_state_when_directory_vanished() -> TestResult {
+    watch_unwatch_lifecycle(true)
 }
 
 #[cfg(unix)]
@@ -121,16 +141,7 @@ fn flush_pending_emits_coalesced_event_after_debounce_window() -> TestResult {
     let watcher = Watcher::new(Arc::new(tx))?;
 
     let path = PathBuf::from("/tmp/test_file.txt");
-    {
-        let mut debounce = watcher.debounce_state.lock().unwrap();
-        debounce.insert(
-            path.clone(),
-            PendingEntry {
-                last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
-                coalesced: Some(WatchEvent::Modified(path.clone())),
-            },
-        );
-    }
+    insert_expired_modified(&watcher, &path);
 
     watcher.flush_pending();
 
@@ -147,16 +158,7 @@ fn flush_pending_does_not_emit_while_paused() -> TestResult {
     watcher.pause();
 
     let path = PathBuf::from("/tmp/test_file.txt");
-    {
-        let mut debounce = watcher.debounce_state.lock().unwrap();
-        debounce.insert(
-            path.clone(),
-            PendingEntry {
-                last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
-                coalesced: Some(WatchEvent::Modified(path.clone())),
-            },
-        );
-    }
+    insert_expired_modified(&watcher, &path);
 
     watcher.flush_pending();
 
@@ -172,11 +174,11 @@ fn flush_pending_does_not_emit_while_paused() -> TestResult {
 
 #[test]
 fn flush_pending_does_not_block_when_queue_is_full() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(0);
+    let (tx, rx) = full_channel();
     let watcher = Watcher::new(Arc::new(tx))?;
 
     let first = PathBuf::from("/tmp/first.txt");
-    let expired = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
+    let expired = expired_instant();
     {
         let mut debounce = watcher.debounce_state.lock().unwrap();
         debounce.insert(
@@ -210,7 +212,7 @@ fn flush_pending_retries_full_debounced_event() -> TestResult {
         debounce.insert(
             path.clone(),
             PendingEntry {
-                last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
+                last_seen: expired_instant(),
                 coalesced: Some(WatchEvent::Modified(path.clone())),
             },
         );
@@ -226,7 +228,7 @@ fn flush_pending_retries_full_debounced_event() -> TestResult {
     {
         let mut debounce = watcher.debounce_state.lock().unwrap();
         let entry = debounce.get_mut(&path).unwrap();
-        entry.last_seen = Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1);
+        entry.last_seen = expired_instant();
     }
 
     watcher.flush_pending();
@@ -291,6 +293,42 @@ fn process_debounce_coalesces_suppressed_event() {
 }
 
 #[test]
+fn process_debounce_with_skip_debounce_true_never_suppresses() {
+    let debounce_state: Mutex<HashMap<PathBuf, PendingEntry>> = Mutex::new(HashMap::new());
+    let path = PathBuf::from("/tmp/skip.txt");
+    let event = WatchEvent::Modified(path.clone());
+
+    // First call with no prior entry: emits immediately, nothing to flush.
+    let (emit1, flushed1) =
+        process_debounce(&debounce_state, &[path.as_path()], Some(&event), true);
+    assert!(emit1);
+    assert!(flushed1.is_empty());
+
+    // Seed a coalesced entry as if a prior debounced event had been suppressed.
+    {
+        let mut map = debounce_state.lock().unwrap();
+        map.get_mut(&path).unwrap().coalesced = Some(WatchEvent::Modified(path.clone()));
+    }
+
+    // Second call within the debounce window: skip_debounce still emits and
+    // flushes the prior coalesced event instead of suppressing it.
+    let (emit2, flushed2) =
+        process_debounce(&debounce_state, &[path.as_path()], Some(&event), true);
+    assert!(emit2, "skip_debounce=true should never suppress");
+    assert_eq!(flushed2.len(), 1);
+    assert!(matches!(&flushed2[0].event, WatchEvent::Modified(p) if p == &path));
+
+    let map = debounce_state.lock().unwrap();
+    let entry = map.get(&path).unwrap();
+    assert!(
+        entry.coalesced.is_none(),
+        "skip_debounce=true should leave no coalesced event"
+    );
+}
+
+#[test]
+// Known limitation: FIFO pairing lacks semantic matching. Pairing depends on
+// emission order from notify, which may cause incorrect pairs with concurrent renames.
 fn multiple_from_same_dir_buffered_and_paired_fifo() {
     let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
@@ -500,33 +538,39 @@ fn multiple_from_same_parent_both_buffered() {
 }
 
 #[test]
-fn pause_clears_debounce_state() -> TestResult {
+fn pause_clears_all_state() -> TestResult {
     let (tx, rx) = mpsc::sync_channel(2048);
     let watcher = Watcher::new(Arc::new(tx))?;
 
-    let path = PathBuf::from("/tmp/test_pause_clear.txt");
+    // Seed debounce_state with an expired entry.
+    insert_expired_modified(&watcher, Path::new("/tmp/test_pause_clear.txt"));
+
+    // Seed pending_from with a fresh entry.
     {
-        let mut debounce = watcher.debounce_state.lock().unwrap();
-        debounce.insert(
-            path,
-            PendingEntry {
-                last_seen: Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1),
-                coalesced: Some(WatchEvent::Modified(PathBuf::from(
-                    "/tmp/test_pause_clear.txt",
-                ))),
-            },
+        let mut pending = watcher.pending_from.lock().unwrap();
+        pending.insert(
+            PathBuf::from("/some/dir"),
+            VecDeque::from([PendingFromEntry {
+                path: PathBuf::from("/some/dir/old.txt"),
+                time: Instant::now(),
+            }]),
         );
     }
 
     watcher.pause();
+
     assert!(
         watcher.debounce_state.lock().unwrap().is_empty(),
         "pause should clear debounce_state"
     );
+    assert!(
+        watcher.pending_from.lock().unwrap().is_empty(),
+        "pause() should clear all pending_from entries"
+    );
 
     watcher.resume();
     watcher.flush_pending();
-    assert!(rx.try_recv().is_err(), "no events after clearing debounce");
+    assert!(rx.try_recv().is_err(), "no events after clearing state");
     Ok(())
 }
 
@@ -553,7 +597,7 @@ fn reinsert_or_overflow_sends_overflow_marker() -> TestResult {
 
 #[test]
 fn reinsert_or_overflow_sets_pending_flag_on_full_queue() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(0);
+    let (tx, rx) = full_channel();
     let debounce: Mutex<HashMap<PathBuf, PendingEntry>> = Mutex::new(HashMap::new());
     let overflow_pending = AtomicBool::new(false);
 
@@ -614,31 +658,5 @@ fn stale_from_per_parent_times_out_independently() -> TestResult {
     let pending = watcher.pending_from.lock().unwrap();
     assert!(pending.contains_key(&dir_b));
     assert!(!pending.contains_key(&dir_a));
-    Ok(())
-}
-
-#[test]
-fn pause_clears_pending_from_entries() -> TestResult {
-    let (tx, _rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
-
-    {
-        let mut pending = watcher.pending_from.lock().unwrap();
-        pending.insert(
-            PathBuf::from("/some/dir"),
-            VecDeque::from([PendingFromEntry {
-                path: PathBuf::from("/some/dir/old.txt"),
-                time: Instant::now(),
-            }]),
-        );
-    }
-
-    watcher.pause();
-
-    let pending = watcher.pending_from.lock().unwrap();
-    assert!(
-        pending.is_empty(),
-        "pause() should clear all pending_from entries"
-    );
     Ok(())
 }

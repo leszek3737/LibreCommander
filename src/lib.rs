@@ -13,4 +13,7 @@ pub use app::types::{
     ListingMode, PanelState, PendingAction, SortMode, SortOptions, ViewMode,
 };
 pub use menu::MenuAction;
+pub use ops::compare::{CompareReport, apply_compare_to_panels, compare_entries};
+pub use ops::file_ops::{chmod, create_directory, rename_entry};
 pub use ops::search::{FileSearch, SearchOutcome, TruncationReason};
+pub use ops::sorting::{cycle_sort_mode, sort_entries};

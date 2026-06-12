@@ -28,45 +28,47 @@ pub(crate) fn render_ui(
     let colors = &state.theme_colors;
     let icon_theme = colors.icon_theme();
 
-    if state.mode == AppMode::Viewing {
-        if let Some(vs) = viewer_state {
-            match vs.view_mode {
-                ViewMode::Hex => {
-                    viewer::render_hex_view_with_colors(f, f.area(), vs, colors);
+    match &state.mode {
+        AppMode::Viewing => {
+            if let Some(vs) = viewer_state {
+                match vs.view_mode {
+                    ViewMode::Hex => {
+                        viewer::render_hex_view_with_colors(f, f.area(), vs, colors);
+                    }
+                    ViewMode::Image => {
+                        viewer::render_image_view_with_colors(f, f.area(), vs, colors);
+                    }
+                    ViewMode::Text => {
+                        viewer::render_viewer_with_colors(f, f.area(), vs, colors);
+                    }
                 }
-                ViewMode::Image => {
-                    viewer::render_image_view_with_colors(f, f.area(), vs, colors);
-                }
-                ViewMode::Text => {
-                    viewer::render_viewer_with_colors(f, f.area(), vs, colors);
-                }
+                return;
             }
-            return;
+            if let Some(loader) = viewer_loader {
+                viewer::render_loading_with_colors(
+                    f,
+                    f.area(),
+                    &loader.path,
+                    colors,
+                    state.viewer_spinner_frame,
+                );
+                return;
+            }
+            // Viewing mode entered but no state or loader ready yet — fall through
+            // to the normal panel layout so the screen isn't blank.
         }
-        if let Some(loader) = viewer_loader {
-            viewer::render_loading_with_colors(
+        AppMode::DirectoryTree => {
+            ui::dir_tree::render_directory_tree_with_colors(
                 f,
-                f.area(),
-                &loader.path,
+                &state.tree_root,
+                &state.tree_entries,
+                state.tree_selected,
+                state.tree_scroll,
                 colors,
-                state.viewer_spinner_frame,
             );
             return;
         }
-        // Viewing mode entered but no state or loader ready yet — fall through
-        // to the normal panel layout so the screen isn't blank.
-    }
-
-    if state.mode == AppMode::DirectoryTree {
-        ui::dir_tree::render_directory_tree_with_colors(
-            f,
-            &state.tree_root,
-            &state.tree_entries,
-            state.tree_selected,
-            state.tree_scroll,
-            colors,
-        );
-        return;
+        _ => {}
     }
 
     let size = f.area();
@@ -116,6 +118,7 @@ pub(crate) fn render_ui(
     };
     panels::render_status_bar_with_colors(f, main_layout[2], active, colors);
 
+    // Per-frame alloc for command bar — low cost (short strings, discarded each frame).
     let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
         let (before, after) =
             safe_split_at(&state.command_line.text, state.command_line.byte_pos());
@@ -171,6 +174,9 @@ fn render_list_picker_overlay(
 ) {
     match kind {
         PickerKind::History => {
+            // TODO: Do NOT cache this Vec — command_history is mutable state.
+            // Caching would require invalidation tracking and break the
+            // "render is a pure function of AppState" invariant.
             let items: Vec<&str> = state
                 .command_history
                 .iter()

@@ -30,10 +30,10 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
 #[cfg(unix)]
 fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
-    // ctime_nsec should always fit in u32, but clamp to 0 if the OS returns garbage.
+    // ctime_nsec() returns i64; negative values (broken OS) are clamped to 0.
     let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
     if secs >= 0 {
-        // Cap at 999ms to stay within Duration's valid nanosecond range.
+        // Cap at max Duration nanoseconds (999_999_999).
         let nsecs = nsecs.min(999_999_999);
         UNIX_EPOCH.checked_add(Duration::new(secs as u64, nsecs))
     } else {
@@ -56,6 +56,7 @@ macro_rules! cfg_trivial {
         #[cfg(not(unix))]
         // These fields are Unix-only concepts (uid, gid, device ID, link count);
         // returning 0 lets the rest of the code compile without guarding every access.
+        // Synthetic values on non-Unix platforms.
         $vis fn $name(_: &fs::Metadata) -> $ret {
             0
         }
@@ -72,6 +73,7 @@ bitflags::bitflags! {
     pub struct ChaKind: u8 {
         const FOLLOW = 0b0000_0001;
         const HIDDEN = 0b0000_0010;
+        // Bit 3 unused. Bit 4 = DIR_TARGET. Bits 5-7 reserved for future flags.
         const DIR_TARGET = 0b0001_0000;
     }
 }
@@ -321,11 +323,6 @@ impl Cha {
     }
 
     #[inline]
-    pub fn len(&self) -> u64 {
-        self.len
-    }
-
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -379,18 +376,30 @@ impl Cha {
             && self.gid == other.gid
     }
 
-    pub fn with_hidden(mut self, hidden: bool) -> Self {
+    pub fn with_hidden(&mut self, hidden: bool) -> &mut Self {
         self.kind.set(ChaKind::HIDDEN, hidden);
         self
     }
 
-    pub fn with_executable(mut self, executable: bool) -> Self {
+    pub fn with_executable(&mut self, executable: bool) -> &mut Self {
         if executable {
             self.mode = ChaMode::new(self.mode.mode_u32() | 0o111);
         } else {
             self.mode = ChaMode::new(self.mode.mode_u32() & !0o111);
         }
         self
+    }
+
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.kind.set(ChaKind::HIDDEN, hidden);
+    }
+
+    pub fn set_executable(&mut self, executable: bool) {
+        if executable {
+            self.mode = ChaMode::new(self.mode.mode_u32() | 0o111);
+        } else {
+            self.mode = ChaMode::new(self.mode.mode_u32() & !0o111);
+        }
     }
 }
 
@@ -581,9 +590,11 @@ mod tests {
 
     #[test]
     fn cha_with_hidden() {
-        let cha = Cha::dummy_dir().with_hidden(true);
+        let mut cha = Cha::dummy_dir();
+        cha.set_hidden(true);
         assert!(cha.is_hidden());
-        let cha = Cha::dummy_dir().with_hidden(false);
+        let mut cha = Cha::dummy_dir();
+        cha.set_hidden(false);
         assert!(!cha.is_hidden());
     }
 
@@ -619,9 +630,11 @@ mod tests {
 
     #[test]
     fn cha_with_executable() {
-        let cha = Cha::dummy_dir().with_executable(true);
+        let mut cha = Cha::dummy_dir();
+        cha.set_executable(true);
         assert!(cha.is_executable());
-        let cha = Cha::dummy_dir().with_executable(false);
+        let mut cha = Cha::dummy_dir();
+        cha.set_executable(false);
         assert!(!cha.is_executable());
     }
 

@@ -19,60 +19,81 @@ use crate::fs::cha::Cha;
 /// 1024 covers typical multi-user systems; oldest entries are evicted (FIFO) when exceeded.
 const CACHE_MAX_SIZE: usize = 1024;
 
+const INITIAL_DIR_CAPACITY: usize = 256;
+
 #[cfg(test)]
 use crate::app::types::format_permissions;
 
 pub use crate::app::types::FileEntry;
 
-struct UidCache {
-    uid_to_name: HashMap<u32, Arc<str>>,
-    uid_order: VecDeque<u32>,
-    gid_to_name: HashMap<u32, Arc<str>>,
-    gid_order: VecDeque<u32>,
+#[cfg(unix)]
+struct NameMapCache {
+    map: HashMap<u32, Arc<str>>,
+    order: VecDeque<u32>,
 }
 
+#[cfg(unix)]
+struct UidCache {
+    uid: NameMapCache,
+    gid: NameMapCache,
+}
+
+#[cfg(unix)]
 static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
     Mutex::new(UidCache {
-        uid_to_name: HashMap::new(),
-        uid_order: VecDeque::new(),
-        gid_to_name: HashMap::new(),
-        gid_order: VecDeque::new(),
+        uid: NameMapCache {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        },
+        gid: NameMapCache {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        },
     })
 });
 
 #[cfg(unix)]
+fn get_or_insert_name(
+    cache: &mut NameMapCache,
+    id: u32,
+    lookup: impl FnOnce(u32) -> Option<Arc<str>>,
+) -> Arc<str> {
+    if let Some(name) = cache.map.get(&id) {
+        return name.clone();
+    }
+    if cache.map.len() >= CACHE_MAX_SIZE
+        && let Some(old) = cache.order.pop_front()
+    {
+        cache.map.remove(&old);
+    }
+    cache.order.push_back(id);
+    let name = lookup(id).unwrap_or_else(|| Arc::from(id.to_string()));
+    cache.map.insert(id, name.clone());
+    name
+}
+
+#[cfg(unix)]
+fn os_str_to_arc(s: &std::ffi::OsStr) -> Arc<str> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = s.as_bytes();
+    if bytes.is_ascii() {
+        String::from_utf8(bytes.to_vec())
+            .ok()
+            .map_or_else(|| Arc::from(s.to_string_lossy().into_owned()), Arc::from)
+    } else {
+        Arc::from(s.to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(unix)]
 fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
     let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let owner = if let Some(name) = cache.uid_to_name.get(&uid) {
-        name.clone()
-    } else {
-        if cache.uid_to_name.len() >= CACHE_MAX_SIZE
-            && let Some(old) = cache.uid_order.pop_front()
-        {
-            cache.uid_to_name.remove(&old);
-        }
-        cache.uid_order.push_back(uid);
-        let name: Arc<str> = users::get_user_by_uid(uid)
-            .map(|u| Arc::from(u.name().to_string_lossy().into_owned()))
-            .unwrap_or_else(|| Arc::from(uid.to_string()));
-        cache.uid_to_name.insert(uid, name.clone());
-        name
-    };
-    let group = if let Some(name) = cache.gid_to_name.get(&gid) {
-        name.clone()
-    } else {
-        if cache.gid_to_name.len() >= CACHE_MAX_SIZE
-            && let Some(old) = cache.gid_order.pop_front()
-        {
-            cache.gid_to_name.remove(&old);
-        }
-        cache.gid_order.push_back(gid);
-        let name: Arc<str> = users::get_group_by_gid(gid)
-            .map(|g| Arc::from(g.name().to_string_lossy().into_owned()))
-            .unwrap_or_else(|| Arc::from(gid.to_string()));
-        cache.gid_to_name.insert(gid, name.clone());
-        name
-    };
+    let owner = get_or_insert_name(&mut cache.uid, uid, |id| {
+        users::get_user_by_uid(id).map(|u| os_str_to_arc(u.name()))
+    });
+    let group = get_or_insert_name(&mut cache.gid, gid, |id| {
+        users::get_group_by_gid(id).map(|g| os_str_to_arc(g.name()))
+    });
     (owner, group)
 }
 
@@ -118,12 +139,12 @@ fn build_file_entry_from_metadata(
     target_meta: Option<&fs::Metadata>,
 ) -> FileEntry {
     let is_symlink = metadata.is_symlink();
-    let cha = if is_symlink {
+    let mut cha = if is_symlink {
         Cha::from_link_metadata(metadata, target_meta)
     } else {
         Cha::new(metadata)
     };
-    let cha = cha.with_hidden(file_name.starts_with('.'));
+    cha.set_hidden(file_name.starts_with('.'));
 
     let (uid, gid) = (cha.uid, cha.gid);
     let (owner, group) = lookup_owner_group(uid, gid);
@@ -167,7 +188,7 @@ pub fn ensure_path_index(panel: &mut PanelState) {
 }
 
 pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
-    let mut entries = Vec::with_capacity(256);
+    let mut entries = Vec::with_capacity(INITIAL_DIR_CAPACITY);
     let mut errors = Vec::new();
 
     if path != Path::new("/") {
@@ -329,25 +350,8 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
-
-    fn create_temp_dir() -> PathBuf {
-        static CTR: AtomicU64 = AtomicU64::new(0);
-        let id = CTR.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!(
-            "lc_reader_{}_{}_{}",
-            std::process::id(),
-            id,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
+    use tempfile::TempDir;
 
     fn test_entry(name: &str, selected: bool) -> FileEntry {
         FileEntry::builder()
@@ -498,12 +502,13 @@ mod tests {
 
     #[test]
     fn test_read_directory_basic() {
-        let temp_dir = create_temp_dir();
+        let temp = TempDir::new().unwrap();
+        let temp_dir = temp.path();
         File::create(temp_dir.join("file1.txt")).unwrap();
         File::create(temp_dir.join("file2.txt")).unwrap();
         fs::create_dir(temp_dir.join("subdir")).unwrap();
 
-        let (entries, errors) = read_directory(&temp_dir).unwrap();
+        let (entries, errors) = read_directory(temp_dir).unwrap();
         assert!(errors.is_empty());
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&".."));
@@ -513,54 +518,50 @@ mod tests {
 
         let subdir_entry = entries.iter().find(|e| e.name == "subdir").unwrap();
         assert!(subdir_entry.is_dir());
-
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_read_directory_hidden_files() {
-        let temp_dir = create_temp_dir();
+        let temp = TempDir::new().unwrap();
+        let temp_dir = temp.path();
         File::create(temp_dir.join("visible.txt")).unwrap();
         File::create(temp_dir.join(".hidden")).unwrap();
 
-        let (entries, errors) = read_directory(&temp_dir).unwrap();
+        let (entries, errors) = read_directory(temp_dir).unwrap();
         assert!(errors.is_empty());
         assert!(entries.iter().any(|e| e.name == ".hidden"));
         assert!(entries.iter().any(|e| e.name == "visible.txt"));
-
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_get_file_info_file() {
-        let temp_dir = create_temp_dir();
+        let temp = TempDir::new().unwrap();
+        let temp_dir = temp.path();
         let file_path = temp_dir.join("test.txt");
         File::create(&file_path).unwrap();
 
         let info = get_file_info(&file_path).unwrap();
         assert_eq!(info.name, "test.txt");
         assert!(!info.is_dir());
-
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
     fn test_get_file_info_directory() {
-        let temp_dir = create_temp_dir();
+        let temp = TempDir::new().unwrap();
+        let temp_dir = temp.path();
         let subdir = temp_dir.join("subdir");
         fs::create_dir(&subdir).unwrap();
 
         let info = get_file_info(&subdir).unwrap();
         assert_eq!(info.name, "subdir");
         assert!(info.is_dir());
-
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn test_get_file_info_executable() {
-        let temp_dir = create_temp_dir();
+        let temp = TempDir::new().unwrap();
+        let temp_dir = temp.path();
         let file_path = temp_dir.join("script.sh");
         let file = File::create(&file_path).unwrap();
         let mut perms = file.metadata().unwrap().permissions();
@@ -569,26 +570,23 @@ mod tests {
 
         let info = get_file_info(&file_path).unwrap();
         assert!(info.is_executable());
-
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn test_read_directory_symlinks() {
-        let temp_dir = create_temp_dir();
+        let temp = TempDir::new().unwrap();
+        let temp_dir = temp.path();
         let target = temp_dir.join("target.txt");
         File::create(&target).unwrap();
         let link = temp_dir.join("link.txt");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let (entries, errors) = read_directory(&temp_dir).unwrap();
+        let (entries, errors) = read_directory(temp_dir).unwrap();
         assert!(errors.is_empty());
         if let Some(link_entry) = entries.iter().find(|e| e.name == "link.txt") {
             assert!(link_entry.is_symlink());
         }
-
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]

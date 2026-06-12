@@ -1,19 +1,23 @@
-use super::helpers::*;
+use super::helpers::{TestEntry, VISIBLE_HEIGHT, dispatch_key, dummy_tree_entries, test_terminal};
 use crate::input::{command_line, directory_tree};
 use crate::{handle_alt_keys, handle_function_keys, handle_navigation_keys, launch_editor};
 use crossterm::event::KeyCode;
 use crossterm::event::{KeyEvent, KeyModifiers};
 use lc::app;
 use lc::app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction};
+use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
+fn setup_ctrl_test() -> (Terminal<TestBackend>, AppState) {
+    (test_terminal(), AppState::default())
+}
+
 #[test]
-fn ctrl_alt_s_starts_search_mode() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+fn ctrl_s_starts_search_mode() {
+    let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").size(10).build(),
-        TestEntry::new("b.txt").size(20).build(),
+        TestEntry::new("a.txt").file(10).build(),
+        TestEntry::new("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -28,35 +32,25 @@ fn ctrl_alt_s_starts_search_mode() {
 }
 
 #[test]
-fn ctrl_alt_h_toggles_hidden() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+fn ctrl_h_toggles_hidden() {
+    let (mut terminal, mut state) = setup_ctrl_test();
     let temp_dir = tempfile::tempdir().unwrap();
     state.left_panel.set_path(temp_dir.path().to_path_buf());
+    state.active_panel = ActivePanel::Left;
+
     state.left_panel.set_show_hidden(false);
     state.left_panel.cursor = 3;
     state.left_panel.scroll_offset = 2;
-
     dispatch_key(
         &mut state,
         KeyCode::Char('h'),
         KeyModifiers::CONTROL,
         &mut terminal,
     );
-
     assert!(state.left_panel.show_hidden());
     assert_eq!(state.left_panel.cursor, 0);
     assert_eq!(state.left_panel.scroll_offset, 0);
-}
 
-#[test]
-fn ctrl_alt_h_toggles_hidden_back() {
-    let mut terminal = test_terminal();
-    let temp_dir = tempfile::tempdir().unwrap();
-    let mut state = AppState::default();
-    state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.set_show_hidden(true);
-    state.active_panel = ActivePanel::Left;
     dispatch_key(
         &mut state,
         KeyCode::Char('h'),
@@ -67,9 +61,8 @@ fn ctrl_alt_h_toggles_hidden_back() {
 }
 
 #[test]
-fn ctrl_alt_r_refreshes() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+fn ctrl_r_refreshes() {
+    let (mut terminal, mut state) = setup_ctrl_test();
     let temp_dir = tempfile::tempdir().unwrap();
     std::fs::write(temp_dir.path().join("existing.txt"), b"data").unwrap();
     state.left_panel.set_path(temp_dir.path().to_path_buf());
@@ -96,9 +89,8 @@ fn ctrl_alt_r_refreshes() {
 }
 
 #[test]
-fn ctrl_alt_u_swaps_panels() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+fn ctrl_u_swaps_panels() {
+    let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_path(PathBuf::from("/tmp/left"));
     state.right_panel.set_path(PathBuf::from("/tmp/right"));
     state.active_panel = ActivePanel::Left;
@@ -117,11 +109,10 @@ fn ctrl_alt_u_swaps_panels() {
 
 #[test]
 fn alt_j_does_not_start_search_mode() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").size(10).build(),
-        TestEntry::new("b.txt").size(20).build(),
+        TestEntry::new("a.txt").file(10).build(),
+        TestEntry::new("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -137,11 +128,10 @@ fn alt_j_does_not_start_search_mode() {
 
 #[test]
 fn alt_k_does_not_move_cursor() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let (mut terminal, mut state) = setup_ctrl_test();
     state
         .left_panel
-        .set_entries(vec![TestEntry::new("a.txt").size(10).build()]);
+        .set_entries(vec![TestEntry::new("a.txt").file(10).build()]);
     state.left_panel.cursor = 0;
 
     dispatch_key(
@@ -157,11 +147,10 @@ fn alt_k_does_not_move_cursor() {
 
 #[test]
 fn shift_j_falls_through_to_navigation_down() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").size(10).build(),
-        TestEntry::new("b.txt").size(20).build(),
+        TestEntry::new("a.txt").file(10).build(),
+        TestEntry::new("b.txt").file(20).build(),
     ]);
 
     dispatch_key(
@@ -176,11 +165,10 @@ fn shift_j_falls_through_to_navigation_down() {
 
 #[test]
 fn shift_k_falls_through_to_navigation_up() {
-    let mut terminal = test_terminal();
-    let mut state = AppState::default();
+    let (mut terminal, mut state) = setup_ctrl_test();
     state.left_panel.set_entries(vec![
-        TestEntry::new("a.txt").size(10).build(),
-        TestEntry::new("b.txt").size(20).build(),
+        TestEntry::new("a.txt").file(10).build(),
+        TestEntry::new("b.txt").file(20).build(),
     ]);
     state.left_panel.cursor = 1;
 
@@ -380,7 +368,7 @@ fn tab_clamps_cursor() {
 #[test]
 fn directory_tree_page_down_uses_terminal_height() {
     let mut state = AppState {
-        tree_entries: dummy_tree_entries(50),
+        tree_entries: dummy_tree_entries(50, None, None, None),
         ..Default::default()
     };
 
@@ -393,7 +381,7 @@ fn directory_tree_page_down_uses_terminal_height() {
 #[test]
 fn directory_tree_page_up_uses_terminal_height() {
     let mut state = AppState {
-        tree_entries: dummy_tree_entries(50),
+        tree_entries: dummy_tree_entries(50, None, None, None),
         tree_selected: 25,
         tree_scroll: 25,
         ..Default::default()

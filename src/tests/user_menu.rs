@@ -35,16 +35,41 @@ fn test_menu_state(tmp: &tempfile::TempDir) -> AppState {
     state
 }
 
+fn test_user_menu_entries() -> Vec<app::user_menu::MenuEntry> {
+    vec![
+        app::user_menu::MenuEntry {
+            hotkey: 'A',
+            title: "Archive".to_string(),
+            command: "echo archive".to_string(),
+            condition: app::user_menu::CompiledCondition::Always,
+        },
+        app::user_menu::MenuEntry {
+            hotkey: 'B',
+            title: "Build".to_string(),
+            command: "echo build".to_string(),
+            condition: app::user_menu::CompiledCondition::Always,
+        },
+    ]
+}
+
+fn single_menu_entry() -> Vec<app::user_menu::MenuEntry> {
+    vec![app::user_menu::MenuEntry {
+        hotkey: 'A',
+        title: "Archive".to_string(),
+        command: "tar czf a.tgz".to_string(),
+        condition: app::user_menu::CompiledCondition::Always,
+    }]
+}
+
+fn test_viewer_refs() -> (Option<viewer::ViewerState>, Option<viewer::ViewerLoader>) {
+    (None, None)
+}
+
 #[test]
 fn user_menu_picker_esc_closes() {
     let mut state = AppState {
         mode: AppMode::ListPicker(PickerKind::UserMenu),
-        user_menu_entries: vec![app::user_menu::MenuEntry {
-            hotkey: 'A',
-            title: "Archive".to_string(),
-            command: "tar czf a.tgz".to_string(),
-            condition: app::user_menu::CompiledCondition::Always,
-        }],
+        user_menu_entries: single_menu_entry(),
         ..Default::default()
     };
 
@@ -57,20 +82,7 @@ fn user_menu_picker_esc_closes() {
 fn user_menu_picker_navigate() {
     let mut state = AppState {
         mode: AppMode::ListPicker(PickerKind::UserMenu),
-        user_menu_entries: vec![
-            app::user_menu::MenuEntry {
-                hotkey: 'A',
-                title: "Archive".to_string(),
-                command: "echo archive".to_string(),
-                condition: app::user_menu::CompiledCondition::Always,
-            },
-            app::user_menu::MenuEntry {
-                hotkey: 'B',
-                title: "Build".to_string(),
-                command: "echo build".to_string(),
-                condition: app::user_menu::CompiledCondition::Always,
-            },
-        ],
+        user_menu_entries: test_user_menu_entries(),
         ..Default::default()
     };
 
@@ -82,30 +94,26 @@ fn user_menu_picker_navigate() {
 }
 
 #[test]
-fn user_menu_picker_navigate_boundary_no_wrap() {
+fn user_menu_picker_boundary_top_no_wrap() {
     let mut state = AppState {
         mode: AppMode::ListPicker(PickerKind::UserMenu),
-        user_menu_entries: vec![
-            app::user_menu::MenuEntry {
-                hotkey: 'A',
-                title: "Archive".to_string(),
-                command: "echo archive".to_string(),
-                condition: app::user_menu::CompiledCondition::Always,
-            },
-            app::user_menu::MenuEntry {
-                hotkey: 'B',
-                title: "Build".to_string(),
-                command: "echo build".to_string(),
-                condition: app::user_menu::CompiledCondition::Always,
-            },
-        ],
+        user_menu_entries: test_user_menu_entries(),
         ..Default::default()
     };
 
     pickers::handle_list_picker(&mut state, KeyCode::Up);
     assert_eq!(state.picker_selected, 0);
+}
 
+#[test]
+fn user_menu_picker_boundary_bottom_no_wrap() {
+    let mut state = AppState {
+        mode: AppMode::ListPicker(PickerKind::UserMenu),
+        user_menu_entries: test_user_menu_entries(),
+        ..Default::default()
+    };
     state.picker_selected = 1;
+
     pickers::handle_list_picker(&mut state, KeyCode::Down);
     assert_eq!(state.picker_selected, 1);
 }
@@ -126,6 +134,7 @@ fn user_menu_picker_enter_dismisses() {
 
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
 
+    assert_eq!(state.user_menu_source, MenuSource::Local);
     assert!(matches!(
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Confirm(_))
@@ -137,8 +146,7 @@ fn user_menu_file_menu_no_menu_file_shows_error() {
     let tmp = tempfile::tempdir().unwrap();
     let mut terminal = test_terminal();
     let mut state = test_menu_state(&tmp);
-    let mut no_viewer: Option<viewer::ViewerState> = None;
-    let mut no_loader: Option<viewer::ViewerLoader> = None;
+    let (mut no_viewer, mut no_loader) = test_viewer_refs();
 
     handle_menu_mode(
         &mut state,
@@ -161,8 +169,7 @@ fn user_menu_file_menu_with_entries_opens_picker() {
     create_menu_file(tmp.path());
     let mut terminal = test_terminal();
     let mut state = test_menu_state(&tmp);
-    let mut no_viewer: Option<viewer::ViewerState> = None;
-    let mut no_loader: Option<viewer::ViewerLoader> = None;
+    let (mut no_viewer, mut no_loader) = test_viewer_refs();
 
     handle_menu_mode(
         &mut state,
@@ -188,8 +195,7 @@ fn f2_loads_user_menu_file_with_entries() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    let mut no_viewer: Option<viewer::ViewerState> = None;
-    let mut no_loader: Option<viewer::ViewerLoader> = None;
+    let (mut no_viewer, mut no_loader) = test_viewer_refs();
 
     handle_normal_mode(
         &mut state,
@@ -212,8 +218,7 @@ fn f2_no_user_menu_file_shows_error() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    let mut no_viewer: Option<viewer::ViewerState> = None;
-    let mut no_loader: Option<viewer::ViewerLoader> = None;
+    let (mut no_viewer, mut no_loader) = test_viewer_refs();
 
     handle_normal_mode(
         &mut state,

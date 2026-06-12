@@ -5,24 +5,29 @@ use crossterm::event::KeyCode;
 use lc::app;
 use lc::app::types::{AppMode, AppState};
 
+fn setup_temp_files(names: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for name in names {
+        std::fs::write(dir.path().join(name), name.as_bytes()).unwrap();
+    }
+    dir
+}
+
 #[test]
 fn search_enter_preserves_current_entry_focus() {
-    let temp_dir = tempfile::tempdir().unwrap();
+    let temp_dir = setup_temp_files(&["alpha.txt", "beta.txt"]);
     let alpha = temp_dir.path().join("alpha.txt");
     let beta = temp_dir.path().join("beta.txt");
-    std::fs::write(&alpha, b"alpha").unwrap();
-    std::fs::write(&beta, b"beta").unwrap();
     let mut state = AppState {
         mode: AppMode::Search,
         search_query: "beta".to_string(),
-        search_cursor: 4,
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.listing.entries = vec![TestEntry::new("beta.txt").path(&beta).size(1).build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("beta.txt").path(&beta).file(1).build()];
     state.left_panel.listing.unfiltered_entries = vec![
-        TestEntry::new("alpha.txt").path(&alpha).size(1).build(),
-        TestEntry::new("beta.txt").path(&beta).size(1).build(),
+        TestEntry::new("alpha.txt").path(&alpha).file(1).build(),
+        TestEntry::new("beta.txt").path(&beta).file(1).build(),
     ];
     state.left_panel.set_filter(Some("beta".to_string()));
 
@@ -39,17 +44,15 @@ fn search_enter_preserves_current_entry_focus() {
 
 #[test]
 fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    std::fs::write(temp_dir.path().join("fresh.txt"), b"fresh").unwrap();
+    let temp_dir = setup_temp_files(&["fresh.txt"]);
     let mut state = AppState {
         mode: AppMode::Search,
         search_query: "fresh".to_string(),
-        search_cursor: 5,
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.listing.entries = vec![TestEntry::new("stale.txt").size(1).build()];
-    state.left_panel.listing.unfiltered_entries = vec![TestEntry::new("stale.txt").size(1).build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("stale.txt").file(1).build()];
+    state.left_panel.listing.unfiltered_entries = vec![TestEntry::new("stale.txt").file(1).build()];
     state.left_panel.listing.unfiltered_dirty = true;
     state.left_panel.set_filter(Some("fresh".to_string()));
 
@@ -75,21 +78,18 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
 
 #[test]
 fn search_enter_clears_filter_and_restores_unfiltered_entries() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    std::fs::write(temp_dir.path().join("alpha.txt"), b"alpha").unwrap();
-    std::fs::write(temp_dir.path().join("beta.txt"), b"beta").unwrap();
+    let temp_dir = setup_temp_files(&["alpha.txt", "beta.txt"]);
 
     let mut state = AppState {
         mode: AppMode::Search,
         search_query: "alpha".to_string(),
-        search_cursor: 5,
         ..Default::default()
     };
     state.left_panel.set_path(temp_dir.path().to_path_buf());
-    state.left_panel.listing.entries = vec![TestEntry::new("alpha.txt").size(1).build()];
+    state.left_panel.listing.entries = vec![TestEntry::new("alpha.txt").file(1).build()];
     state.left_panel.listing.unfiltered_entries = vec![
-        TestEntry::new("alpha.txt").size(1).build(),
-        TestEntry::new("beta.txt").size(2).build(),
+        TestEntry::new("alpha.txt").file(1).build(),
+        TestEntry::new("beta.txt").file(2).build(),
     ];
     state.left_panel.set_filter(Some("alpha".to_string()));
 
@@ -98,15 +98,38 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
     assert_eq!(state.mode, AppMode::Normal);
     assert_eq!(state.search_query, "");
     assert!(state.left_panel.filter().is_none());
-    let names: Vec<&str> = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .map(|e| e.name.as_str())
-        .collect();
-    assert!(names.contains(&"alpha.txt"), "alpha.txt missing: {names:?}");
-    assert!(names.contains(&"beta.txt"), "beta.txt missing: {names:?}");
+    assert!(
+        state
+            .left_panel
+            .listing
+            .entries
+            .iter()
+            .any(|e| e.name == "alpha.txt"),
+        "alpha.txt missing: {:?}",
+        state
+            .left_panel
+            .listing
+            .entries
+            .iter()
+            .map(|e| &e.name)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        state
+            .left_panel
+            .listing
+            .entries
+            .iter()
+            .any(|e| e.name == "beta.txt"),
+        "beta.txt missing: {:?}",
+        state
+            .left_panel
+            .listing
+            .entries
+            .iter()
+            .map(|e| &e.name)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -153,14 +176,14 @@ fn apply_search_filter_exact_match() {
     state.left_panel.listing.unfiltered_entries = entries;
     state.left_panel.set_filter(Some("foo".to_string()));
     apply_search_filter(&mut state.left_panel);
-    let names: Vec<_> = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .map(|e| &e.name)
-        .collect();
-    assert!(names.iter().all(|n| *n == "foo"));
+    assert!(
+        state
+            .left_panel
+            .listing
+            .entries
+            .iter()
+            .all(|e| e.name == "foo")
+    );
 }
 
 #[test]
@@ -200,3 +223,6 @@ fn apply_search_filter_partial_match() {
     apply_search_filter(&mut state.left_panel);
     assert_eq!(state.left_panel.listing.entries.len(), 2);
 }
+
+// TODO: test search_query with Unicode (CJK, emoji, combining chars) — verify filter matches correctly
+// TODO: test cancellation (Esc) restores original entries and cursor position from before search

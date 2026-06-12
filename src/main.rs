@@ -66,7 +66,9 @@ fn install_panic_hook() {
 pub(crate) fn enter_tui_stdout() -> io::Result<()> {
     enable_raw_mode()?;
     if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide) {
-        let _ = disable_raw_mode();
+        if let Err(e) = disable_raw_mode() {
+            lc::debug_log!("failed to disable raw mode: {e}");
+        }
         return Err(err);
     }
     Ok(())
@@ -273,10 +275,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     loop {
         panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
         watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut watcher_sync_state);
-        if let Some(ref w) = watcher {
-            w.flush_pending();
-        }
         if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
+            if let Some(ref w) = watcher {
+                w.flush_pending();
+            }
             dirty = true;
         }
         if poll_running_job(&mut state, &mut running_job, panel_ops::refresh_both) {

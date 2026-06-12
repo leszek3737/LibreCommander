@@ -7,22 +7,25 @@ use unicode_segmentation::UnicodeSegmentation;
 /// * `cursor <= grapheme_count` at all times.
 /// * `grapheme_count` is kept in sync with `text` and is O(1) to read.
 ///
-/// # Safety (Field Access)
-///
-/// **TODO:** Make `text` and `cursor` private once all callers migrated to
-/// [`set_text`] / [`set_cursor`] / accessors. Until then:
-///
-/// - **Never** assign `.text = …` without immediately calling
-///   [`recompute_grapheme_count`] or [`cursor_end`].
-/// - **Never** assign `.cursor = …` without calling [`clamp_cursor`].
-/// - Prefer [`set_text`] and [`set_cursor`] which maintain invariants.
+// INVARIANT: `cursor` MUST be ≤ `grapheme_count`. `grapheme_count` MUST match
+// `text.graphemes(true).count()`. Direct mutation of `.text`/`.cursor` BREAKS these
+// without immediate call to `recompute_grapheme_count()`/`cursor_end()` (for text)
+// or `clamp_cursor()` (for cursor). Prefer `set_text()` / `set_cursor()`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextInput {
+    // INVARIANT: Direct assignment must be followed by `recompute_grapheme_count()`
+    // or `cursor_end()`. Prefer `set_text()`.
     // TODO: make private after migrating callers to set_text() / text()
     pub text: String,
+    // INVARIANT: Direct assignment must be followed by `clamp_cursor()`.
+    // Prefer `set_cursor()`.
     // TODO: make private after migrating callers to set_cursor() / cursor()
     pub cursor: usize,
     grapheme_count: usize,
+}
+
+fn is_whitespace_grapheme(g: &str) -> bool {
+    g.chars().all(|c| c.is_whitespace())
 }
 
 impl TextInput {
@@ -87,8 +90,9 @@ impl TextInput {
             .unwrap_or(self.text.len())
     }
 
-    fn is_whitespace_grapheme(g: &str) -> bool {
-        g.chars().all(|c| c.is_whitespace())
+    fn delete_grapheme_at(&mut self, pos: usize) {
+        let end = self.next_grapheme_end(pos);
+        self.text.drain(pos..end);
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -112,8 +116,7 @@ impl TextInput {
         self.cursor -= 1;
         self.grapheme_count -= 1;
         let pos = self.byte_pos();
-        let end = self.next_grapheme_end(pos);
-        self.text.drain(pos..end);
+        self.delete_grapheme_at(pos);
         true
     }
 
@@ -123,8 +126,7 @@ impl TextInput {
         if pos >= self.text.len() {
             return false;
         }
-        let end = self.next_grapheme_end(pos);
-        self.text.drain(pos..end);
+        self.delete_grapheme_at(pos);
         self.grapheme_count -= 1;
         true
     }
@@ -160,8 +162,8 @@ impl TextInput {
         let word_start = text
             .grapheme_indices(true)
             .rev()
-            .skip_while(|&(_, g)| Self::is_whitespace_grapheme(g))
-            .find(|&(_, g)| Self::is_whitespace_grapheme(g))
+            .skip_while(|&(_, g)| is_whitespace_grapheme(g))
+            .find(|&(_, g)| is_whitespace_grapheme(g))
             .map(|(i, g)| i + g.len())
             .unwrap_or(0);
         let removed_graphemes = text[word_start..].graphemes(true).count();

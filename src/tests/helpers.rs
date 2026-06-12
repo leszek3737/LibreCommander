@@ -7,7 +7,7 @@ use lc::app::types::FileEntry;
 use lc::ui::viewer;
 use ratatui::layout::Size;
 use ratatui::{Terminal, backend::TestBackend};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const TERMINAL_HEIGHT: u16 = 24;
 pub const TERMINAL_WIDTH: u16 = 80;
@@ -52,11 +52,17 @@ pub fn test_terminal() -> Terminal<TestBackend> {
     Terminal::new(TestBackend::new(TERMINAL_WIDTH, TERMINAL_HEIGHT)).unwrap()
 }
 
+enum EntryKind {
+    Directory,
+    File(u64),
+}
+
 pub struct TestEntry {
     pub name: String,
     pub path: Option<PathBuf>,
-    pub size: u64,
+    kind: EntryKind,
     pub selected: bool,
+    symlink: bool,
 }
 
 impl TestEntry {
@@ -66,8 +72,9 @@ impl TestEntry {
         Self {
             name,
             path: None,
-            size: 0,
+            kind: EntryKind::Directory,
             selected: false,
+            symlink: false,
         }
     }
 
@@ -76,8 +83,8 @@ impl TestEntry {
         self
     }
 
-    pub fn size(mut self, s: u64) -> Self {
-        self.size = s;
+    pub fn file(mut self, size: u64) -> Self {
+        self.kind = EntryKind::File(size);
         self
     }
 
@@ -86,21 +93,28 @@ impl TestEntry {
         self
     }
 
+    pub fn symlink(mut self) -> Self {
+        self.symlink = true;
+        self
+    }
+
     pub fn build(self) -> FileEntry {
         let path = self
             .path
-            .unwrap_or_else(|| PathBuf::from(format!("/tmp/{}", self.name)));
-        let cha = if self.size > 0 {
-            crate::fs::cha::Cha::regular_file(self.size)
-        } else {
-            crate::fs::cha::Cha::dummy_dir()
+            .unwrap_or_else(|| std::env::temp_dir().join(Path::new(&self.name)));
+        let cha = match self.kind {
+            EntryKind::File(size) => crate::fs::cha::Cha::regular_file(size),
+            EntryKind::Directory => crate::fs::cha::Cha::dummy_dir(),
         };
-        FileEntry::builder()
+        let mut builder = FileEntry::builder()
             .name(&self.name)
             .path(path)
             .cha(cha)
-            .selected(self.selected)
-            .build()
+            .selected(self.selected);
+        if self.symlink {
+            builder = builder.is_symlink(true);
+        }
+        builder.build()
     }
 }
 
@@ -137,19 +151,27 @@ pub fn dispatch_key(
     );
 }
 
-pub fn dummy_tree_entries(count: usize) -> Vec<TreeEntry> {
+pub fn dummy_tree_entries(
+    count: usize,
+    depth: Option<usize>,
+    expanded: Option<bool>,
+    read_error: Option<bool>,
+) -> Vec<TreeEntry> {
+    let depth = depth.unwrap_or(0);
+    let expanded = expanded.unwrap_or(false);
+    let read_error = read_error.unwrap_or(false);
     (0..count)
         .map(|i| {
             let name = format!("entry-{i}");
             let name_width = unicode_width::UnicodeWidthStr::width(name.as_str());
             TreeEntry {
-                path: PathBuf::from(format!("/tmp/{i}")),
-                depth: 0,
+                path: std::env::temp_dir().join(format!("{i}")),
+                depth,
                 is_dir: false,
-                expanded: false,
+                expanded,
                 name,
                 name_width,
-                read_error: false,
+                read_error,
             }
         })
         .collect()
