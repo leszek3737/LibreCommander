@@ -664,7 +664,7 @@ fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     }
 
     // PERF: sort + O(n·depth) ancestors check. For very large batches (100k+)
-    // this may become a bottleneck. TODO: profile before considering a trie/hash
+    // this may become a bottleneck; profile before considering a trie/hash
     // prefix tree to reduce worst-case from O(n·depth) to amortized O(n).
     identity_ok.sort_by_key(|p| p.components().count());
     let mut filtered: Vec<PathBuf> = Vec::new();

@@ -132,10 +132,6 @@ fn build_tree_recursive(
             }
         };
         let path = entry.path();
-        // TODO: Consider `Cow<str>` in `TreeEntry::name` to avoid the heap
-        // allocation here when the filename is pure ASCII (borrowed OsStr).
-        // Currently blocked by widespread `.name.as_str()` / `.name == ...`
-        // usage across ui/, input/, and test modules.
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())

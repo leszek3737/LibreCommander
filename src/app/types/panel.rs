@@ -30,7 +30,6 @@ impl PanelListing {
     pub fn set_unfiltered(&mut self, entries: Vec<FileEntry>) {
         self.path_index.clear();
         for (i, entry) in entries.iter().enumerate() {
-            // TODO: use Arc<Path> as key to avoid cloning PathBuf per entry
             self.path_index.insert(entry.path.clone(), i);
         }
         self.unfiltered_entries = entries;
@@ -293,9 +292,6 @@ impl PanelState {
             return;
         }
 
-        // TODO: clone-free rebuild — use existing path_index instead of
-        // building a new HashMap<PathBuf, usize> every call. Consider
-        // Arc<Path> keys or a secondary index view to avoid N clones.
         let index: HashMap<PathBuf, usize> = self
             .listing
             .unfiltered_entries

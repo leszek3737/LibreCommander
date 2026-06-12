@@ -12,7 +12,6 @@ pub struct ConfirmDetails {
 }
 
 impl ConfirmDetails {
-    // TODO: accept `impl Into<String>` to avoid allocation when caller already has a String
     pub fn simple(title: &str, message: &str) -> Self {
         Self {
             title: title.to_string(),
@@ -21,7 +20,6 @@ impl ConfirmDetails {
         }
     }
 
-    // TODO: accept `impl Into<String>` to avoid allocation when caller already has a String
     pub fn with_files(title: &str, message: &str, files: Vec<String>) -> Self {
         Self {
             title: title.to_string(),

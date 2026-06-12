@@ -80,7 +80,6 @@ impl AppState {
             picker_selected: 0,
             user_menu_entries: Vec::new(),
             user_menu_source: MenuSource::Global,
-            // TODO: use with_capacity when hotlist length is known at construction time
             cached_hotlist_strings: vec![current_dir.display().to_string()],
             cached_user_menu_strings: Vec::new(),
             pending_menu_command: None,

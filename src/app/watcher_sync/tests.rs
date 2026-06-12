@@ -308,11 +308,10 @@ fn watcher_updates_when_metadata_changes() {
 #[test]
 fn poll_watcher_events_processes_at_most_256_events() {
     let dir = tempfile::tempdir().unwrap();
-    // TODO: this deliberately uses an unbounded mpsc::channel() rather than
+    // NOTE: this deliberately uses an unbounded mpsc::channel() rather than
     // sync_channel(WATCHER_CHANNEL_CAPACITY). A bounded channel would block the
     // test thread on the 257th send (backpressure) before poll_watcher_events
-    // drains anything, deadlocking the test. Switch to sync_channel by spawning
-    // a dedicated sender thread so the bounded backpressure path is exercised.
+    // drains anything, deadlocking the test.
     let (tx, rx) = mpsc::channel();
     let mut state = AppState::new();
     state.left_panel = test_panel(dir.path());

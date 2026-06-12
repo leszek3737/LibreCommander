@@ -60,8 +60,6 @@ impl PartialEq for MenuEntry {
 pub fn shell_quote(s: &str) -> String {
     // Exact for the common quote-free case (content + two surrounding quotes);
     // only the rare embedded-quote path triggers a reallocation.
-    // TODO(perf): s.len() measures bytes, then s.chars() re-scans. Could fuse into
-    // a single pass if the embedded-quote path becomes a bottleneck.
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -144,9 +142,6 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
                         .ok_or_else(non_utf8_err)?;
                     out.push_str(&safe_file_arg(name));
                 } else {
-                    // TODO(perf): build directly into `out` with space separators instead of
-                    // collecting into Vec<String> then joining — avoids intermediate allocs
-                    // when >50 tagged files are present.
                     let quoted: Result<Vec<String>, String> = ctx
                         .tagged
                         .iter()

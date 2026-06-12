@@ -174,7 +174,7 @@ fn render_list_picker_overlay(
 ) {
     match kind {
         PickerKind::History => {
-            // TODO: Do NOT cache this Vec — command_history is mutable state.
+            // NOTE: Do NOT cache this Vec — command_history is mutable state.
             // Caching would require invalidation tracking and break the
             // "render is a pure function of AppState" invariant.
             let items: Vec<&str> = state

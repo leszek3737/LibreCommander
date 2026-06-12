@@ -153,7 +153,6 @@ impl From<PersistedSetup> for Settings {
                 .unwrap_or_default()
                 .iter()
                 .filter(|s| !s.trim().is_empty())
-                // TODO: two allocations per path (expand_path + clean_path), combine into one pass
                 .map(|s| crate::fs::path::clean_path(&crate::fs::path::expand_path(s)))
                 .collect(),
         }
