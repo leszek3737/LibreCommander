@@ -911,7 +911,7 @@ fn test_move_cursor_up_wrap_with_many_entries_scroll_check() {
 }
 
 #[test]
-fn test_move_cursor_down_with_zero_height_keeps_cursor() {
+fn test_move_cursor_down_with_zero_height_no_scroll_adjust() {
     let mut panel = panel_with_n_entries(5);
     panel.cursor = 2;
     panel.move_cursor_down(0);
