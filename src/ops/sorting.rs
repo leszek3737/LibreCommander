@@ -7,7 +7,6 @@
 //! eliminating repeated UTF-8 scans and `rfind` calls in O(n log n) comparisons.
 use std::cmp::Ordering;
 use std::cmp::Reverse;
-use std::time::SystemTime;
 
 pub use crate::app::types::FileEntry;
 pub use crate::app::types::SortMode;
@@ -99,52 +98,6 @@ impl Ord for NameSortKey {
 }
 
 impl PartialOrd for NameSortKey {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Wrapper for btime that sorts `Some` before `None` (ascending within `Some`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct BtimeAsc(Option<SystemTime>);
-
-impl Ord for BtimeAsc {
-    #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self.0, other.0) {
-            (Some(a), Some(b)) => a.cmp(&b),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        }
-    }
-}
-
-impl PartialOrd for BtimeAsc {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Wrapper for btime that sorts `Some` before `None` (descending within `Some`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct BtimeDesc(Option<SystemTime>);
-
-impl Ord for BtimeDesc {
-    #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self.0, other.0) {
-            (Some(a), Some(b)) => b.cmp(&a),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => Ordering::Equal,
-        }
-    }
-}
-
-impl PartialOrd for BtimeDesc {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
@@ -247,16 +200,19 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
             )
         }),
         SortMode::BtimeAsc => entries.sort_by_cached_key(|e| {
+            // None always sorts last (no btime = unknown, goes to bottom in both directions)
             (
                 entry_group(e, dir_first),
-                BtimeAsc(e.cha.btime),
+                e.cha.btime.is_none() as u8,
+                e.cha.btime,
                 NameSortKey::new(&e.name, sensitive),
             )
         }),
         SortMode::BtimeDesc => entries.sort_by_cached_key(|e| {
             (
                 entry_group(e, dir_first),
-                BtimeDesc(e.cha.btime),
+                e.cha.btime.is_none() as u8,
+                e.cha.btime.map(Reverse),
                 NameSortKey::new(&e.name, sensitive),
             )
         }),

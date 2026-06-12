@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
@@ -13,7 +13,6 @@ pub mod tar;
 pub mod zip;
 
 pub(crate) const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
-#[allow(dead_code)]
 pub(crate) const MAX_TOTAL_ARCHIVE_SIZE: u64 = 256 * 1024 * 1024 * 1024; // 256 GiB
 pub(crate) const MAX_LIST_ENTRIES: usize = 100_000;
 
@@ -79,6 +78,48 @@ const ZST_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 const TAR_BLOCK_SIZE: usize = 512;
 const USTAR_MAGIC_OFFSET: usize = 257;
 const USTAR_MAGIC: &[u8] = b"ustar";
+
+static ARCHIVE_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Creates a new temporary file with a unique name in the system temp directory.
+/// Used by archive handlers for intermediate decompression buffers.
+pub(crate) fn create_archive_temp_file(
+    prefix: &str,
+    suffix: &str,
+) -> io::Result<(fs::File, PathBuf)> {
+    let pid = std::process::id();
+    for _ in 0..128 {
+        let count = ARCHIVE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("{prefix}-{pid}-{count}{suffix}"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((file, path)),
+            Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "failed to create unique archive temp file after 128 attempts",
+    ))
+}
+
+/// Checks whether `path` is already a symlink and returns an error if so.
+/// Called before writing each archive entry to prevent extraction into pre-planted symlinks.
+pub(crate) fn check_symlink_at_dest(path: &Path) -> Result<(), ArchiveError> {
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "refusing to extract into existing symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
 
 pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
     if cancel.load(Ordering::Relaxed) {
@@ -169,6 +210,40 @@ pub(crate) fn sanitize_entry_path(
         )));
     }
     Ok(outpath)
+}
+
+/// Verifies that `path` (which must already exist), after resolving symlinks,
+/// is still inside `canonical_dest`. The lexical check in `sanitize_entry_path`
+/// cannot see symlinks pre-planted inside the destination (e.g. `dest/subdir`
+/// pointing outside), so callers must invoke this on every directory they are
+/// about to write through, after creating it.
+pub(crate) fn verify_within_dest(canonical_dest: &Path, path: &Path) -> Result<(), ArchiveError> {
+    let canonical = path.canonicalize().map_err(ArchiveError::Io)?;
+    if !canonical.starts_with(canonical_dest) {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "path escapes destination via symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Tracks the cumulative number of bytes written during one extraction and
+/// rejects archives whose decompressed total exceeds `MAX_TOTAL_ARCHIVE_SIZE`
+/// (decompression-bomb guard).
+#[derive(Default)]
+pub(crate) struct TotalSizeGuard(u64);
+
+impl TotalSizeGuard {
+    pub(crate) fn add(&mut self, bytes: u64) -> Result<(), ArchiveError> {
+        self.0 = self.0.saturating_add(bytes);
+        if self.0 > MAX_TOTAL_ARCHIVE_SIZE {
+            return Err(ArchiveError::InvalidArchive(format!(
+                "total extracted size exceeds maximum {MAX_TOTAL_ARCHIVE_SIZE}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -293,5 +368,42 @@ pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
         Ok(ArchiveFormat::SevenZ)
     } else {
         Err(ArchiveError::UnsupportedFormat)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_size_guard_rejects_over_limit() {
+        let mut guard = TotalSizeGuard::default();
+        assert!(guard.add(MAX_TOTAL_ARCHIVE_SIZE).is_ok());
+        assert!(guard.add(1).is_err());
+    }
+
+    #[test]
+    fn total_size_guard_saturates_on_overflow() {
+        let mut guard = TotalSizeGuard::default();
+        assert!(guard.add(u64::MAX).is_err());
+        assert!(guard.add(u64::MAX).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_within_dest_rejects_symlinked_subdir() {
+        let dest = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let canonical_dest = dest.path().canonicalize().unwrap();
+
+        let link = dest.path().join("subdir");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        assert!(verify_within_dest(&canonical_dest, &link).is_err());
+
+        let real = dest.path().join("real");
+        fs::create_dir(&real).unwrap();
+        assert!(verify_within_dest(&canonical_dest, &real).is_ok());
     }
 }

@@ -69,6 +69,7 @@ pub fn extract_7z(
             .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
 
         let mut last_parent: Option<PathBuf> = None;
+        let mut total_size = super::TotalSizeGuard::default();
         let canonical_ref = &canonical_dest;
         reader
             .for_each_entries(|entry, reader| {
@@ -94,29 +95,27 @@ pub fn extract_7z(
 
                 if entry.is_directory() {
                     fs::create_dir_all(&outpath).map_err(sevenz_rust::Error::io)?;
+                    super::verify_within_dest(canonical_ref, &outpath)
+                        .map_err(|e| PathTraversal(e.to_string()))?;
                     extracted_paths.push(outpath);
                 } else {
                     if let Some(parent) = outpath.parent()
                         && last_parent.as_deref() != Some(parent)
                     {
                         fs::create_dir_all(parent).map_err(sevenz_rust::Error::io)?;
+                        super::verify_within_dest(canonical_ref, parent)
+                            .map_err(|e| PathTraversal(e.to_string()))?;
                         last_parent = Some(parent.to_path_buf());
                     }
-                    if let Ok(meta) = fs::symlink_metadata(&outpath)
-                        && meta.file_type().is_symlink()
-                    {
-                        return Err(sevenz_rust::Error::Other(
-                            format!(
-                                "refusing to extract into existing symlink: {}",
-                                outpath.display()
-                            )
-                            .into(),
-                        ));
-                    }
+                    super::check_symlink_at_dest(&outpath)
+                        .map_err(|e| sevenz_rust::Error::Other(e.to_string().into()))?;
                     let mut outfile =
                         super::open_outfile(&outpath).map_err(sevenz_rust::Error::io)?;
-                    copy_with_progress(reader, &mut outfile, progress, cancel)
+                    let written = copy_with_progress(reader, &mut outfile, progress, cancel)
                         .map_err(sevenz_rust::Error::io)?;
+                    total_size
+                        .add(written)
+                        .map_err(|e| sevenz_rust::Error::Other(e.to_string().into()))?;
                     extracted_paths.push(outpath);
                 }
 

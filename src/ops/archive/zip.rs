@@ -13,8 +13,6 @@ use super::{
     copy_with_progress,
 };
 
-use crate::debug_log;
-
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
 
 fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {
@@ -73,6 +71,7 @@ fn extract_zip_entries(
     fs::create_dir_all(dest)?;
     let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
     let mut last_parent: Option<PathBuf> = None;
+    let mut total_size = super::TotalSizeGuard::default();
     for i in 0..entry_count.min(MAX_LIST_ENTRIES) {
         check_cancel(cancel)?;
 
@@ -96,6 +95,7 @@ fn extract_zip_entries(
 
         if entry.is_dir() {
             fs::create_dir_all(&outpath)?;
+            super::verify_within_dest(&canonical_dest, &outpath)?;
             extracted_paths.push(outpath);
             let _ = progress.send(entry.size());
         } else {
@@ -110,18 +110,13 @@ fn extract_zip_entries(
                 && last_parent.as_deref() != Some(parent)
             {
                 fs::create_dir_all(parent)?;
+                super::verify_within_dest(&canonical_dest, parent)?;
                 last_parent = Some(parent.to_path_buf());
             }
-            if let Ok(meta) = fs::symlink_metadata(&outpath)
-                && meta.file_type().is_symlink()
-            {
-                return Err(ArchiveError::InvalidArchive(format!(
-                    "refusing to extract into existing symlink: {}",
-                    outpath.display()
-                )));
-            }
+            super::check_symlink_at_dest(&outpath)?;
             let mut outfile = super::open_outfile(&outpath)?;
-            copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
+            let written = copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
+            total_size.add(written)?;
 
             #[cfg(unix)]
             {
@@ -168,12 +163,9 @@ fn add_sources_to_zip(
     for source in sources {
         check_cancel(cancel)?;
 
-        if fs::symlink_metadata(source)?.is_symlink() {
-            debug_log!("add_sources_to_zip: skipping symlink {}", source.display());
-            continue;
-        }
-
-        if source.is_dir() {
+        // Symlinks already filtered by create_archive before reaching here.
+        let meta = fs::symlink_metadata(source)?;
+        if meta.is_dir() {
             add_dir_to_zip(zip, source, source, options, progress, cancel)?;
         } else {
             let name = source
@@ -244,7 +236,7 @@ fn add_dir_to_zip(
         if meta.is_symlink() {
             continue;
         }
-        if path.is_dir() {
+        if meta.is_dir() {
             zip.add_directory(&name, *options).map_err(map_zip_err)?;
             add_dir_to_zip(zip, base, &path, options, progress, cancel)?;
         } else {
@@ -281,4 +273,37 @@ fn zip_datetime_to_system_time(dt: zip::DateTime) -> SystemTime {
         + dt.minute() as u64 * 60
         + dt.second() as u64;
     SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::mpsc;
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_rejects_entry_through_symlinked_dir() {
+        let work = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        let archive_path = work.path().join("evil.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("subdir/file.txt", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"pwned").unwrap();
+        writer.finish().unwrap();
+
+        let dest = work.path().join("extract");
+        fs::create_dir_all(&dest).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dest.join("subdir")).unwrap();
+
+        let (tx, _rx) = mpsc::channel();
+        let result = extract_zip(&archive_path, &dest, &tx, &AtomicBool::new(false));
+        assert!(result.is_err());
+        assert!(!outside.path().join("file.txt").exists());
+    }
 }
