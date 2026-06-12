@@ -326,10 +326,10 @@ fn full_refresh_panels(
         }
     } else {
         if left_needs {
-            full_refresh_panel(left);
+            refresh_panel_from_disk(left);
         }
         if right_needs {
-            full_refresh_panel(right);
+            refresh_panel_from_disk(right);
         }
     }
 }
@@ -492,7 +492,7 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     existed
 }
 
-fn refresh_panel_from_disk(panel: &mut PanelState) {
+pub(crate) fn refresh_panel_from_disk(panel: &mut PanelState) {
     let current_name = panel
         .listing
         .entries
@@ -525,10 +525,6 @@ fn refresh_panel_from_disk(panel: &mut PanelState) {
             panel.recalculate_selection_stats();
         }
     }
-}
-
-fn full_refresh_panel(panel: &mut PanelState) {
-    refresh_panel_from_disk(panel);
 }
 
 fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>) {

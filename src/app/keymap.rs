@@ -774,8 +774,19 @@ mod tests {
     }
 
     #[test]
-    fn build_help_message_is_non_empty() {
+    fn build_help_message_is_valid() {
         let msg = build_help_message();
         assert!(!msg.is_empty(), "Help message must not be empty");
+        for (i, line) in msg.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            assert!(
+                trimmed.len() > 2,
+                "Line {i} is suspiciously short: {:?}",
+                line
+            );
+        }
     }
 }

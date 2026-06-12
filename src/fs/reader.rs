@@ -77,9 +77,9 @@ fn os_str_to_arc(s: &std::ffi::OsStr) -> Arc<str> {
     use std::os::unix::ffi::OsStrExt;
     let bytes = s.as_bytes();
     if bytes.is_ascii() {
-        String::from_utf8(bytes.to_vec())
-            .ok()
-            .map_or_else(|| Arc::from(s.to_string_lossy().into_owned()), Arc::from)
+        // ASCII is always valid UTF-8, so this cannot fail
+        #[allow(clippy::unwrap_used)]
+        Arc::from(std::str::from_utf8(bytes).unwrap())
     } else {
         Arc::from(s.to_string_lossy().into_owned())
     }

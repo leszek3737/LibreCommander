@@ -13,18 +13,6 @@ fn no_viewer_state() -> Option<viewer::ViewerState> {
     None
 }
 
-fn _assert_dialog_contains(terminal: &mut Terminal<TestBackend>, state: &AppState, text: &str) {
-    terminal
-        .draw(|f| render::render_ui(f, state, None, None))
-        .unwrap();
-    let buf = terminal.backend().buffer();
-    let rendered = buffer_to_string(buf);
-    assert!(
-        rendered.contains(text),
-        "expected dialog to contain '{text}', got:\n{rendered}"
-    );
-}
-
 #[test]
 fn confirm_enter_without_pending_action_dismisses_dialog() {
     let mut state = AppState {

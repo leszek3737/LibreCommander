@@ -376,20 +376,6 @@ impl Cha {
             && self.gid == other.gid
     }
 
-    pub fn with_hidden(&mut self, hidden: bool) -> &mut Self {
-        self.kind.set(ChaKind::HIDDEN, hidden);
-        self
-    }
-
-    pub fn with_executable(&mut self, executable: bool) -> &mut Self {
-        if executable {
-            self.mode = ChaMode::new(self.mode.mode_u32() | 0o111);
-        } else {
-            self.mode = ChaMode::new(self.mode.mode_u32() & !0o111);
-        }
-        self
-    }
-
     pub fn set_hidden(&mut self, hidden: bool) {
         self.kind.set(ChaKind::HIDDEN, hidden);
     }

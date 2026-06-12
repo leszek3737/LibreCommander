@@ -368,7 +368,7 @@ fn tab_clamps_cursor() {
 #[test]
 fn directory_tree_page_down_uses_terminal_height() {
     let mut state = AppState {
-        tree_entries: dummy_tree_entries(50, None, None, None),
+        tree_entries: dummy_tree_entries(50),
         ..Default::default()
     };
 
@@ -381,7 +381,7 @@ fn directory_tree_page_down_uses_terminal_height() {
 #[test]
 fn directory_tree_page_up_uses_terminal_height() {
     let mut state = AppState {
-        tree_entries: dummy_tree_entries(50, None, None, None),
+        tree_entries: dummy_tree_entries(50),
         tree_selected: 25,
         tree_scroll: 25,
         ..Default::default()

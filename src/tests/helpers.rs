@@ -151,27 +151,19 @@ pub fn dispatch_key(
     );
 }
 
-pub fn dummy_tree_entries(
-    count: usize,
-    depth: Option<usize>,
-    expanded: Option<bool>,
-    read_error: Option<bool>,
-) -> Vec<TreeEntry> {
-    let depth = depth.unwrap_or(0);
-    let expanded = expanded.unwrap_or(false);
-    let read_error = read_error.unwrap_or(false);
+pub fn dummy_tree_entries(count: usize) -> Vec<TreeEntry> {
     (0..count)
         .map(|i| {
             let name = format!("entry-{i}");
             let name_width = unicode_width::UnicodeWidthStr::width(name.as_str());
             TreeEntry {
                 path: std::env::temp_dir().join(format!("{i}")),
-                depth,
+                depth: 0,
                 is_dir: false,
-                expanded,
+                expanded: false,
                 name,
                 name_width,
-                read_error,
+                read_error: false,
             }
         })
         .collect()
