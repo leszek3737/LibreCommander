@@ -60,7 +60,7 @@ pub(crate) fn handle_directory_tree(
 fn ensure_selected_visible(selected: usize, scroll: &mut usize, visible_height: usize) {
     let effective = if selected < *scroll {
         selected
-    } else if selected >= *scroll + visible_height {
+    } else if selected - *scroll >= visible_height {
         selected.saturating_sub(visible_height) + 1
     } else {
         *scroll
