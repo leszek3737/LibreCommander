@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
 use super::dialogs::{ConfirmDetails, CopyMoveDetails, DialogKind, InputAction, PickerKind};
-use super::file_entry::{FileCategory, FileEntry};
+use super::file_entry::{FileCategory, FileEntry, FileEntryBuilder};
 use super::modes::AppMode;
 use super::panel::{ActivePanel, PanelState};
 use super::sorting::{ListingMode, SortMode, SortOptions};
@@ -11,6 +11,15 @@ use super::text_input::TextInput;
 use crate::app::types::app_state::AppState;
 use crate::fs::cha::ChaKind;
 
+// TODO: consider builder pattern for test entry construction to reduce parameter count
+fn test_entry_builder(name: &str) -> FileEntryBuilder {
+    FileEntry::builder()
+        .name(name)
+        .path(PathBuf::from(name))
+        .owner("testuser")
+        .group("testgroup")
+}
+
 fn create_test_entry(
     name: &str,
     is_dir: bool,
@@ -18,9 +27,7 @@ fn create_test_entry(
     permissions: u32,
     is_selected: bool,
 ) -> FileEntry {
-    FileEntry::builder()
-        .name(name)
-        .path(PathBuf::from(name))
+    test_entry_builder(name)
         .is_dir(is_dir)
         .size(size)
         .permissions(permissions)
@@ -28,8 +35,20 @@ fn create_test_entry(
         .is_hidden(name.starts_with('.'))
         .modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
         .created(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
-        .owner("testuser")
-        .group("testgroup")
+        .build()
+}
+
+fn cha_entry(name: &str, mode: u32, size: u64, hidden: bool) -> FileEntry {
+    let is_link = (mode & 0o170000) == 0o120000;
+    let is_directory = (mode & 0o170000) == 0o040000;
+    test_entry_builder(name)
+        .is_dir(is_directory)
+        .is_symlink(is_link)
+        .size(size)
+        .permissions(mode & 0o7777)
+        .is_hidden(hidden)
+        .modified(UNIX_EPOCH)
+        .created(UNIX_EPOCH)
         .build()
 }
 
@@ -47,69 +66,53 @@ fn panel_with_n_entries(n: u32) -> PanelState {
     panel
 }
 
-#[test]
-fn test_file_entry_display_size_bytes() {
-    let entry = create_test_entry("test.txt", false, 500, 0o644, false);
-    assert_eq!(entry.display_size(), " 500 B");
+fn panel_with_cursor(n: u32, cursor: usize, scroll_offset: usize) -> PanelState {
+    let mut panel = panel_with_n_entries(n);
+    panel.cursor = cursor;
+    panel.scroll_offset = scroll_offset;
+    panel
 }
 
 #[test]
-fn test_file_entry_display_size_kilobytes() {
-    let entry = create_test_entry("test.txt", false, 1500, 0o644, false);
-    assert_eq!(entry.display_size(), "1.5 KB");
-}
-
-#[test]
-fn test_file_entry_display_size_megabytes() {
-    let entry = create_test_entry("test.txt", false, 1_500_000, 0o644, false);
-    assert_eq!(entry.display_size(), "1.4 MB");
-}
-
-#[test]
-fn test_file_entry_display_size_gigabytes() {
-    let entry = create_test_entry("test.txt", false, 1_500_000_000, 0o644, false);
-    assert_eq!(entry.display_size(), "1.4 GB");
-}
-
-#[test]
-fn test_file_entry_display_size_zero() {
-    let entry = create_test_entry("test.txt", false, 0, 0o644, false);
-    assert_eq!(entry.display_size(), "   0 B");
+fn test_file_entry_display_size() {
+    let cases: &[(u64, &str)] = &[
+        (500, " 500 B"),
+        (1500, "1.5 KB"),
+        // 1_500_000 / 1_048_576 = 1.43... → display truncates to "1.4 MB"
+        (1_500_000, "1.4 MB"),
+        (1_500_000_000, "1.4 GB"),
+        (0, "   0 B"),
+    ];
+    for &(size, expected) in cases {
+        let entry = create_test_entry("test.txt", false, size, 0o644, false);
+        assert_eq!(entry.display_size(), expected, "size={size}");
+    }
 }
 
 #[test]
 fn test_file_entry_display_permissions() {
-    let entry = create_test_entry("test.txt", false, 100, 0o755, false);
-    assert_eq!(entry.display_permissions(), "rwxr-xr-x");
+    let cases: &[(u32, &str)] = &[
+        (0o755, "rwxr-xr-x"),
+        (0o644, "rw-r--r--"),
+        (0o777, "rwxrwxrwx"),
+        (0o000, "---------"),
+    ];
+    for &(perms, expected) in cases {
+        let entry = create_test_entry("test.txt", false, 100, perms, false);
+        assert_eq!(entry.display_permissions(), expected, "perms=0o{perms:o}");
+    }
 }
 
 #[test]
-fn test_file_entry_display_permissions_no_exec() {
-    let entry = create_test_entry("test.txt", false, 100, 0o644, false);
-    assert_eq!(entry.display_permissions(), "rw-r--r--");
-}
-
-#[test]
-fn test_file_entry_display_permissions_all() {
-    let entry = create_test_entry("test.txt", false, 100, 0o777, false);
-    assert_eq!(entry.display_permissions(), "rwxrwxrwx");
-}
-
-#[test]
-fn test_file_entry_display_permissions_none() {
-    let entry = create_test_entry("test.txt", false, 100, 0o000, false);
-    assert_eq!(entry.display_permissions(), "---------");
-}
-
-#[test]
+#[allow(clippy::expect_used)]
 fn test_file_entry_display_modified() {
     let entry = create_test_entry("test.txt", false, 100, 0o644, false);
     let expected = chrono::DateTime::from_timestamp(1_000_000_000, 0)
-        .unwrap()
+        .expect("valid timestamp")
         .with_timezone(&chrono::Local)
         .format("%d-%m-%y %H:%M")
         .to_string();
-    assert_eq!(entry.display_modified(), expected);
+    assert_eq!(entry.display_modified(), expected.as_str());
 }
 
 #[test]
@@ -262,16 +265,7 @@ fn test_panel_state_selected_entries() {
 
 #[test]
 fn test_panel_state_move_cursor_up() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file2.txt", false, 200, 0o644, false));
-    panel.cursor = 1;
+    let mut panel = panel_with_cursor(2, 1, 0);
     panel.move_cursor_up(10);
     assert_eq!(panel.cursor, 0);
 }
@@ -290,41 +284,21 @@ fn test_panel_state_move_cursor_up_at_top() {
 
 #[test]
 fn test_panel_state_move_cursor_down() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file2.txt", false, 200, 0o644, false));
-    panel.cursor = 0;
+    let mut panel = panel_with_cursor(2, 0, 0);
     panel.move_cursor_down(10);
     assert_eq!(panel.cursor, 1);
 }
 
 #[test]
-fn test_panel_state_move_cursor_down_at_bottom() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file1.txt", false, 100, 0o644, false));
-    panel
-        .listing
-        .entries
-        .push(create_test_entry("file2.txt", false, 200, 0o644, false));
-    panel.cursor = 1;
+fn test_panel_state_move_cursor_down_wraps_to_top() {
+    let mut panel = panel_with_cursor(2, 1, 0);
     panel.move_cursor_down(10);
     assert_eq!(panel.cursor, 0);
 }
 
 #[test]
 fn test_panel_state_move_cursor_down_scroll() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 4;
-    panel.scroll_offset = 0;
+    let mut panel = panel_with_cursor(10, 4, 0);
     panel.move_cursor_down(5);
     assert_eq!(panel.cursor, 5);
     assert_eq!(panel.scroll_offset, 1);
@@ -529,7 +503,7 @@ fn test_dialog_kind_copy_move() {
     assert_eq!(details.source_display.len(), 2);
 }
 
-// Smoke test: verifies PartialEq derivation
+// Smoke test: verifies PartialEq derivation is correct and all variants compile
 #[test]
 fn test_app_mode_variants() {
     let normal = AppMode::Normal;
@@ -556,7 +530,7 @@ fn test_app_mode_variants() {
     assert_eq!(picker, AppMode::ListPicker(PickerKind::History));
 }
 
-// Smoke test: verifies PartialEq derivation
+// Smoke test: verifies PartialEq derivation is correct and all variants compile
 #[test]
 fn test_active_panel_variants() {
     let left = ActivePanel::Left;
@@ -575,9 +549,7 @@ fn test_app_state_default() {
 
 #[test]
 fn test_panel_state_move_cursor_up_scroll_adjust() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 3;
-    panel.scroll_offset = 5;
+    let mut panel = panel_with_cursor(10, 3, 5);
     panel.move_cursor_up(10);
     assert_eq!(panel.cursor, 2);
     assert_eq!(panel.scroll_offset, 2);
@@ -585,9 +557,7 @@ fn test_panel_state_move_cursor_up_scroll_adjust() {
 
 #[test]
 fn test_panel_state_move_cursor_up_no_scroll_when_visible() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 5;
-    panel.scroll_offset = 3;
+    let mut panel = panel_with_cursor(10, 5, 3);
     panel.move_cursor_up(10);
     assert_eq!(panel.cursor, 4);
     assert_eq!(panel.scroll_offset, 3);
@@ -595,9 +565,7 @@ fn test_panel_state_move_cursor_up_no_scroll_when_visible() {
 
 #[test]
 fn test_panel_state_move_cursor_down_scroll_new_formula() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 6;
-    panel.scroll_offset = 3;
+    let mut panel = panel_with_cursor(10, 6, 3);
     panel.move_cursor_down(4);
     assert_eq!(panel.cursor, 7);
     assert_eq!(panel.scroll_offset, 4);
@@ -605,9 +573,7 @@ fn test_panel_state_move_cursor_down_scroll_new_formula() {
 
 #[test]
 fn test_panel_state_move_cursor_down_no_scroll_when_visible() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 3;
-    panel.scroll_offset = 0;
+    let mut panel = panel_with_cursor(10, 3, 0);
     panel.move_cursor_down(5);
     assert_eq!(panel.cursor, 4);
     assert_eq!(panel.scroll_offset, 0);
@@ -615,36 +581,28 @@ fn test_panel_state_move_cursor_down_no_scroll_when_visible() {
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_below() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 7;
-    panel.scroll_offset = 2;
+    let mut panel = panel_with_cursor(10, 7, 2);
     panel.ensure_cursor_visible(4);
     assert_eq!(panel.scroll_offset, 4);
 }
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_above() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 2;
-    panel.scroll_offset = 5;
+    let mut panel = panel_with_cursor(10, 2, 5);
     panel.ensure_cursor_visible(4);
     assert_eq!(panel.scroll_offset, 2);
 }
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_already_visible() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 4;
-    panel.scroll_offset = 2;
+    let mut panel = panel_with_cursor(10, 4, 2);
     panel.ensure_cursor_visible(4);
     assert_eq!(panel.scroll_offset, 2);
 }
 
 #[test]
 fn test_panel_state_ensure_cursor_visible_edge_case() {
-    let mut panel = panel_with_n_entries(10);
-    panel.cursor = 6;
-    panel.scroll_offset = 3;
+    let mut panel = panel_with_cursor(10, 6, 3);
     panel.ensure_cursor_visible(4);
     assert_eq!(panel.scroll_offset, 3);
 }
@@ -661,24 +619,6 @@ fn test_total_size_computed_by_recalculate() {
     assert_eq!(panel.total_size(), 600);
     assert_eq!(panel.selected_count(), 1);
     assert_eq!(panel.selected_size(), 300);
-}
-
-fn cha_entry(name: &str, mode: u32, size: u64, hidden: bool) -> FileEntry {
-    let is_link = (mode & 0o170000) == 0o120000;
-    let is_directory = (mode & 0o170000) == 0o040000;
-    FileEntry::builder()
-        .name(name)
-        .path(PathBuf::from(name))
-        .is_dir(is_directory)
-        .is_symlink(is_link)
-        .size(size)
-        .permissions(mode & 0o7777)
-        .is_hidden(hidden)
-        .modified(UNIX_EPOCH)
-        .created(UNIX_EPOCH)
-        .owner("testuser")
-        .group("testgroup")
-        .build()
 }
 
 #[test]
@@ -761,6 +701,7 @@ fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
 
     panel.listing.entries.truncate(1);
 
+    // Tests same clamping logic as restore_panel_cursor() in panel_ops.rs
     let max_index = panel.listing.entries.len().saturating_sub(1);
     panel.cursor = panel.cursor.min(max_index);
 
@@ -832,7 +773,7 @@ fn test_panel_state_scroll_offset_with_many_entries() {
 }
 
 #[test]
-fn file_entry_builder_clears_dir_target_follow_when_type_changes() {
+fn builder_clears_dir_target_follow_on_type_change() {
     let dir_entry = FileEntry::builder()
         .name("d")
         .path(PathBuf::from("d"))
@@ -873,17 +814,18 @@ fn file_entry_builder_clears_dir_target_follow_when_type_changes() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn mtime_none_displays_unknown_and_sorts_after_known() {
     let no_mtime = FileEntry::builder()
         .name("unknown.txt")
         .path(PathBuf::from("unknown.txt"))
         .build();
     let expected_epoch = chrono::DateTime::from_timestamp(0, 0)
-        .unwrap()
+        .expect("valid timestamp")
         .with_timezone(&chrono::Local)
         .format("%d-%m-%y %H:%M")
         .to_string();
-    assert_eq!(no_mtime.display_modified(), expected_epoch);
+    assert_eq!(no_mtime.display_modified(), expected_epoch.as_str());
 
     let with_mtime = FileEntry::builder()
         .name("known.txt")
@@ -891,6 +833,7 @@ fn mtime_none_displays_unknown_and_sorts_after_known() {
         .modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
         .build();
 
+    // TODO: move sorting integration test to src/tests/
     let mut entries = vec![no_mtime, with_mtime];
     crate::ops::sorting::sort_entries(&mut entries, SortMode::ModTimeDesc, SortOptions::default());
     assert_eq!(entries[0].name, "known.txt");
@@ -899,16 +842,7 @@ fn mtime_none_displays_unknown_and_sorts_after_known() {
 
 #[test]
 fn test_move_cursor_up_wraps_to_last_entry() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..5 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{i}.txt"),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(5);
     panel.cursor = 0;
     panel.move_cursor_up(3);
     assert_eq!(panel.cursor, 4);
@@ -929,16 +863,7 @@ fn test_move_cursor_up_wraps_with_single_entry() {
 
 #[test]
 fn test_move_cursor_down_wraps_to_first_entry() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..5 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{i}.txt"),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(5);
     panel.cursor = 4;
     panel.move_cursor_down(3);
     assert_eq!(panel.cursor, 0);
@@ -959,16 +884,7 @@ fn test_move_cursor_down_wraps_with_single_entry() {
 
 #[test]
 fn test_move_cursor_up_wrap_then_down_wrap() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..5 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{i}.txt"),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(5);
     panel.cursor = 0;
     panel.move_cursor_up(5);
     assert_eq!(panel.cursor, 4);
@@ -978,16 +894,7 @@ fn test_move_cursor_up_wrap_then_down_wrap() {
 
 #[test]
 fn test_move_cursor_down_wrap_with_many_entries_scroll_check() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..20 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{i}.txt"),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(20);
     panel.cursor = 19;
     panel.move_cursor_down(5);
     assert_eq!(panel.cursor, 0);
@@ -996,18 +903,26 @@ fn test_move_cursor_down_wrap_with_many_entries_scroll_check() {
 
 #[test]
 fn test_move_cursor_up_wrap_with_many_entries_scroll_check() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..20 {
-        panel.listing.entries.push(create_test_entry(
-            &format!("file{i}.txt"),
-            false,
-            100,
-            0o644,
-            false,
-        ));
-    }
+    let mut panel = panel_with_n_entries(20);
     panel.cursor = 0;
     panel.move_cursor_up(5);
     assert_eq!(panel.cursor, 19);
     assert_eq!(panel.scroll_offset, 15);
+}
+
+#[test]
+fn test_move_cursor_down_with_zero_height_no_scroll_adjust() {
+    let mut panel = panel_with_n_entries(5);
+    panel.cursor = 2;
+    panel.move_cursor_down(0);
+    assert_eq!(panel.cursor, 3);
+    assert_eq!(panel.scroll_offset, 0);
+}
+
+#[test]
+fn test_scroll_offset_beyond_entries_len_clamped_by_ensure_visible() {
+    let mut panel = panel_with_cursor(5, 2, 100);
+    assert_eq!(panel.scroll_offset, 100);
+    panel.ensure_cursor_visible(5);
+    assert_eq!(panel.scroll_offset, 2);
 }

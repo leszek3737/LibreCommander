@@ -33,7 +33,10 @@ pub enum ViewMode {
 
 // TODO: Copy and Move share identical fields (sources, dest, overwrite).
 //       Extract into a shared struct (e.g. TransferAction) to reduce duplication.
-//       Not refactoring now — ~38 call sites would need updating.
+//       Plan: introduce `struct TransferAction { sources: Vec<PathBuf>, dest: PathBuf, overwrite: bool }`,
+//       replace both variants with `Copy(TransferAction)` / `Move(TransferAction)`.
+//       Impact: ~38 call sites (construction, match arms, field access) across ops/, input/, app/.
+//       Low risk but high churn — batch with other PendingAction changes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PendingAction {
     Copy {
@@ -73,13 +76,12 @@ impl CompareMode {
 }
 
 impl PendingAction {
-    pub fn set_overwrite(&mut self) -> bool {
+    pub fn set_overwrite(&mut self) {
         match self {
             Self::Copy { overwrite, .. } | Self::Move { overwrite, .. } => {
                 *overwrite = true;
-                true
             }
-            Self::Delete { .. } | Self::ExtractArchive { .. } | Self::CreateArchive { .. } => false,
+            Self::Delete { .. } | Self::ExtractArchive { .. } | Self::CreateArchive { .. } => {}
         }
     }
 }

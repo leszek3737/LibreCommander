@@ -127,6 +127,9 @@ pub fn filtered_sorted_entries(
     show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
     let compiled = filter.map(|f| ops::search::CompiledPattern::new(f, false));
+    // TODO(perf): .cloned().collect() allocates O(n) FileEntry structs. Consider
+    // Cow<reader::FileEntry> or an index-based iterator approach to avoid cloning
+    // when only filtering/sorting without modification.
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
         .filter(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden))

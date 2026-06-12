@@ -30,7 +30,7 @@ pub struct RunningJob {
 
 impl RunningJob {
     pub fn shutdown(&mut self) {
-        self.cancel.store(true, Ordering::SeqCst);
+        self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take()
             && let Err(e) = handle.join()
         {
@@ -39,11 +39,17 @@ impl RunningJob {
     }
 }
 
+// The event loop already calls `shutdown()` (via `shutdown_job`) on every exit
+// path, so by the time a job is dropped normally its `handle` is already taken
+// and joined and this reaper does nothing. The reaper only runs as a
+// last-resort safety net when a job is dropped during panic unwinding, where a
+// failed spawn or a worker holding a lock just means we log and detach rather
+// than block teardown.
 impl Drop for RunningJob {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::SeqCst);
+        self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            let _ = std::thread::Builder::new()
+            let result = std::thread::Builder::new()
                 .name("job-reaper".into())
                 .spawn(move || {
                     let deadline = Duration::from_secs(5);
@@ -60,6 +66,13 @@ impl Drop for RunningJob {
                         debug_log!("worker thread did not finish within 5 s — detaching reaper");
                     }
                 });
+            if let Err(e) = result {
+                debug_log!(
+                    "job-reaper spawn failed (resource leak): {:?} — \
+                     consider calling shutdown() explicitly before dropping",
+                    e
+                );
+            }
         }
     }
 }
@@ -93,11 +106,11 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
 
     state.active_panel_mut().clear_selection();
     state.status_message = None;
-    state.mode = AppMode::Dialog(DialogKind::Progress {
-        message: format!("{action_label} starting..."),
-        progress_fraction: 0.0,
-        cancellable: true,
-    });
+    state.mode = AppMode::Dialog(DialogKind::progress(
+        format!("{action_label} starting..."),
+        0.0,
+        true,
+    ));
     *running_job = Some(RunningJob {
         receiver,
         cancel,
@@ -111,6 +124,7 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
         state.status_message = Some("Another job is already running".to_string());
         return;
     }
+    // TODO: consider Arc<Path> to avoid cloning the path here
     let dir = state.active_panel().path().to_path_buf();
     let pattern_owned = pattern.to_string();
     let (sender, receiver) = mpsc::sync_channel(64);
@@ -133,11 +147,11 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
 
     let search_origin = state.active_panel;
     state.status_message = None;
-    state.mode = AppMode::Dialog(DialogKind::Progress {
-        message: format!("Searching for '{}'...", pattern),
-        progress_fraction: 0.0,
-        cancellable: true,
-    });
+    state.mode = AppMode::Dialog(DialogKind::progress(
+        format!("Searching for '{}'...", pattern),
+        0.0,
+        true,
+    ));
     state.dialog_input.clear();
     *running_job = Some(RunningJob {
         receiver,
@@ -167,12 +181,13 @@ pub fn poll_running_job(
             }
             JobMessage::Finished { report } => {
                 if let Some(progress) = latest_progress.take() {
-                    let msg = format_progress_message(&progress, job.cancel.load(Ordering::SeqCst));
-                    state.mode = AppMode::Dialog(DialogKind::Progress {
-                        message: msg,
-                        progress_fraction: progress.byte_percent() / 100.0,
-                        cancellable: true,
-                    });
+                    let msg =
+                        format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
+                    state.mode = AppMode::Dialog(DialogKind::progress(
+                        msg,
+                        progress.byte_percent() / 100.0,
+                        true,
+                    ));
                     dirty = true;
                 }
                 finished = Some(report);
@@ -183,13 +198,17 @@ pub fn poll_running_job(
         }
     }
 
+    // When `Finished` was the last message, `latest_progress` was already
+    // formatted inside the `Finished` arm above (via `take()`). This block
+    // handles the remaining case where Progress arrived but Finished did not
+    // (or arrived in a later poll cycle).
     if let Some(progress) = latest_progress {
-        let msg = format_progress_message(&progress, job.cancel.load(Ordering::SeqCst));
-        state.mode = AppMode::Dialog(DialogKind::Progress {
-            message: msg,
-            progress_fraction: progress.byte_percent() / 100.0,
-            cancellable: true,
-        });
+        let msg = format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
+        state.mode = AppMode::Dialog(DialogKind::progress(
+            msg,
+            progress.byte_percent() / 100.0,
+            true,
+        ));
         dirty = true;
     }
 
@@ -250,6 +269,9 @@ pub fn poll_running_job(
     dirty
 }
 
+// TODO: `format_progress_message` and `format_duration_short` each allocate a
+// String. For hot paths, consider writing directly into a pre-allocated buffer
+// to avoid the intermediate allocation in `format_duration_short`.
 fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool) -> String {
     use std::fmt::Write;
 
@@ -318,26 +340,18 @@ fn finish_search_job(
         && let Some(parent) = first.path.parent()
     {
         let path = parent.to_path_buf();
-        match search_origin {
-            Some(ActivePanel::Left) => state.left_panel.set_path(path),
-            Some(ActivePanel::Right) => state.right_panel.set_path(path),
-            None => state.active_panel_mut().set_path(path),
-        };
+        state.panel_or_active_mut(search_origin).set_path(path);
         refresh_both(state);
 
-        let panel = match search_origin {
-            Some(ActivePanel::Left) => &mut state.left_panel,
-            Some(ActivePanel::Right) => &mut state.right_panel,
-            None => state.active_panel_mut(),
-        };
-        if let Some(pos) = panel
+        let panel_ref = state.panel_or_active_mut(search_origin);
+        if let Some(pos) = panel_ref
             .listing
             .entries
             .iter()
             .position(|e| e.path == first.path)
         {
-            panel.cursor = pos;
-            panel.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
+            panel_ref.cursor = pos;
+            panel_ref.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
         }
     } else {
         refresh_both(state);

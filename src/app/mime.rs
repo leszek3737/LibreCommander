@@ -151,6 +151,10 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     }
     FileCategory::Other
 }
+/// Determine [`FileCategory`] from a filename (basename or full path).
+///
+/// Tries MIME detection first via [`extension_mime`], then falls back to
+/// [`file_type::category`](crate::app::file_type::category).
 #[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
     if let Some(mime) = extension_mime(name) {
@@ -169,60 +173,49 @@ fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
 
 #[must_use]
 fn dotless_config_mime(name: &str) -> Option<&'static str> {
-    if name.eq_ignore_ascii_case("makefile") {
-        return Some("text/x-makefile");
+    match name.to_ascii_lowercase().as_str() {
+        "makefile" => Some("text/x-makefile"),
+        "dockerfile" | "containerfile" => Some("text/x-dockerfile"),
+        "vagrantfile" | "rakefile" | "gemfile" | "brewfile" => Some("text/x-ruby"),
+        "justfile" => Some("text/x-justfile"),
+        "jenkinsfile" => Some("text/x-groovy"),
+        _ => None,
     }
-    if name.eq_ignore_ascii_case("dockerfile") {
-        return Some("text/x-dockerfile");
-    }
-    if name.eq_ignore_ascii_case("vagrantfile") {
-        return Some("text/x-ruby");
-    }
-    if name.eq_ignore_ascii_case("rakefile") {
-        return Some("text/x-ruby");
-    }
-    if name.eq_ignore_ascii_case("gemfile") {
-        return Some("text/x-ruby");
-    }
-    if name.eq_ignore_ascii_case("justfile") {
-        return Some("text/x-justfile");
-    }
-    if name.eq_ignore_ascii_case("brewfile") {
-        return Some("text/x-ruby");
-    }
-    if name.eq_ignore_ascii_case("containerfile") {
-        return Some("text/x-dockerfile");
-    }
-    if name.eq_ignore_ascii_case("jenkinsfile") {
-        return Some("text/x-groovy");
-    }
-    None
 }
 
+/// Determine MIME type from a filename (basename or full path).
+///
+/// Extracts the basename from `name`, checks dotless config files
+/// (Makefile, Dockerfile, etc.), compound extensions (.tar.gz, .tar.bz2, …),
+/// then falls back to single-extension lookup.
 #[must_use]
 pub fn extension_mime(name: &str) -> Option<&'static str> {
     let basename = Path::new(name)
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or(name);
+        .unwrap_or_default();
     if let Some(mime) = dotless_config_mime(basename) {
         return Some(mime);
     }
 
-    if ends_with_ignore_ascii_case(name, ".tar.gz") || ends_with_ignore_ascii_case(name, ".tgz") {
+    if ends_with_ignore_ascii_case(basename, ".tar.gz")
+        || ends_with_ignore_ascii_case(basename, ".tgz")
+    {
         return Some("application/gzip");
     }
-    if ends_with_ignore_ascii_case(name, ".tar.bz2")
-        || ends_with_ignore_ascii_case(name, ".tbz")
-        || ends_with_ignore_ascii_case(name, ".tbz2")
+    if ends_with_ignore_ascii_case(basename, ".tar.bz2")
+        || ends_with_ignore_ascii_case(basename, ".tbz")
+        || ends_with_ignore_ascii_case(basename, ".tbz2")
     {
         return Some("application/x-bzip2");
     }
-    if ends_with_ignore_ascii_case(name, ".tar.xz") || ends_with_ignore_ascii_case(name, ".txz") {
+    if ends_with_ignore_ascii_case(basename, ".tar.xz")
+        || ends_with_ignore_ascii_case(basename, ".txz")
+    {
         return Some("application/x-xz");
     }
 
-    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    let ext = basename.rsplit_once('.')?.1.to_ascii_lowercase();
 
     image_mime(&ext)
         .or_else(|| video_mime(&ext))

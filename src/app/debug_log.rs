@@ -16,10 +16,16 @@ const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
 ///
 /// For pre-TUI and post-TUI output, use eprintln!/println! with #[allow] instead.
 ///
-/// **Blocking behavior:** The internal mutex uses a blocking lock. On a stalled
-/// filesystem (network mount, writeback pressure) this will block the calling
-/// thread until the lock is released. Do not call `debug_log!` from paths where
-/// filesystem latency is expected to be high.
+/// **Blocking behavior:** The internal mutex uses a blocking `std::sync::Mutex`.
+/// On a stalled filesystem (network mount, writeback pressure) the lock
+/// acquisition and subsequent I/O will block the calling thread until complete.
+///
+/// Acceptable because: debug_log is a best-effort diagnostic aid, not on the
+/// hot rendering path. The only non-test callers are event-loop housekeeping
+/// (watcher sync, job runner callbacks) which already tolerate occasional
+/// stalls. If this becomes a problem, switch to `parking_lot::Mutex` (no
+/// poisoning overhead) or a `mpsc` logger thread — but the added complexity
+/// is not justified yet.
 static LOG_FILE: Mutex<Option<BufWriter<std::fs::File>>> = Mutex::new(None);
 
 #[cfg(test)]
@@ -41,14 +47,21 @@ const CHECK_INTERVAL: u32 = 256;
 
 fn ensure_log_file() -> std::io::Result<BufWriter<std::fs::File>> {
     let path = log_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        report_error("mkdir_error", &e);
     }
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .map(BufWriter::new)
+}
+
+/// Report an internal error to stderr with a consistent `[lc:debug_log:<tag>]` prefix.
+fn report_error(tag: &str, error: impl std::fmt::Display) {
+    stderr_fallback(&format!("[lc:debug_log:{tag}] {error}"));
 }
 
 /// Fallback stderr write — used only when the debug logger itself fails.
@@ -75,7 +88,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         match ensure_log_file() {
             Ok(file) => *guard = Some(file),
             Err(e) => {
-                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                report_error("open_error", &e);
                 return;
             }
         }
@@ -96,15 +109,17 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         match OpenOptions::new().write(true).truncate(true).open(&path) {
             Ok(f) => *guard = Some(BufWriter::new(f)),
             Err(e) => {
-                stderr_fallback(&format!("[lc:debug_log:open_error] {e}"));
+                report_error("open_error", &e);
                 return;
             }
         }
     }
     if let Some(bw) = guard.as_mut() {
+        // Timestamp formatting per call — not cached. Acceptable for a debug
+        // logger; chrono's Local::now() + format is ~microsecond-scale.
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
         if let Err(e) = writeln!(bw, "[{timestamp}] {args}") {
-            stderr_fallback(&format!("[lc:debug_log:write_error] {e}"));
+            report_error("write_error", &e);
         }
         let _ = bw.flush();
     }

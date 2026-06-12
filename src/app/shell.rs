@@ -107,6 +107,7 @@ pub fn push_history(state: &mut AppState, cmd: &str) {
     if cmd.trim().is_empty() {
         return;
     }
+    // O(n) dedup scan; acceptable because MAX_HISTORY == 100
     state.command_history.retain(|entry| entry != cmd);
     state.command_history.push_back(cmd.to_string());
     if state.command_history.len() > MAX_HISTORY {
@@ -197,7 +198,9 @@ pub fn toggle_external_view(
     let raw_result = disable_raw_mode();
 
     let resume_result = enter_tui_stdout();
-    restore_guard.already_restored = true;
+    if resume_result.is_ok() {
+        restore_guard.already_restored = true;
+    }
 
     let err = resume_result
         .err()

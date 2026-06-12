@@ -46,7 +46,7 @@ impl MapEnv {
         Self {
             values: values
                 .iter()
-                .map(|(key, value)| ((*key).to_string(), (*value).to_os_string()))
+                .map(|(key, value)| (key.to_string(), value.to_os_string()))
                 .collect(),
         }
     }
@@ -95,19 +95,19 @@ fn xdg_dir(
     home_subdir: &str,
     platform_fn: fn() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    env.var_os(xdg_key)
+    validate_path_env(env, xdg_key)
+        .map(|dir| dir.join(APP_NAME))
+        .or_else(|| {
+            validate_path_env(env, "HOME").map(|home| home.join(home_subdir).join(APP_NAME))
+        })
+        .or_else(platform_fn)
+}
+
+fn validate_path_env(env: &impl EnvProvider, key: &str) -> Option<PathBuf> {
+    env.var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .map(|dir| dir.join(APP_NAME))
-        .or_else(|| {
-            env.var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(home_subdir).join(APP_NAME))
-        })
-        .or_else(platform_fn)
 }
 
 fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {

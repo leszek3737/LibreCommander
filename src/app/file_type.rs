@@ -73,7 +73,6 @@ const CONFIG_SUFFIXES: &[&str] = &[
     ".cfg",
     ".config",
     ".cnf",
-    ".env",
     ".properties",
     ".plist",
     ".desktop",
@@ -128,6 +127,9 @@ fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
         && s_bytes[s_bytes.len() - suffix_bytes.len()..].eq_ignore_ascii_case(suffix_bytes)
 }
 
+// NOTE: linear scan over ~44 suffixes per file. Acceptable for TUI scale
+// (directories rarely exceed thousands of entries). A phf perfect hash or
+// binary search would reduce this but adds dependency complexity.
 #[inline]
 fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
     suffixes

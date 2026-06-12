@@ -42,7 +42,7 @@ pub(super) fn to_ui_dialog<'a>(
         } => dialogs::DialogKind::Progress {
             title: Cow::Borrowed("Progress"),
             message: Cow::Borrowed(message),
-            percent: *progress_fraction * 100.0,
+            percent: progress_fraction.clamp(0.0, 1.0) * 100.0,
             cancellable: *cancellable,
         },
         app::types::DialogKind::CopyMove(details) => {

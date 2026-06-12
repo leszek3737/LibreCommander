@@ -118,7 +118,9 @@ impl std::fmt::Display for FileSize {
         }
         if unit_idx > 0 {
             size_f = (size_f * 10.0).round() / 10.0;
-            while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
+            // Rounding can push the value to at most exactly BYTES_PER_UNIT
+            // (e.g. 1023.95 -> 1024.0), so a single extra step is sufficient.
+            if size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
                 size_f /= BYTES_PER_UNIT;
                 unit_idx += 1;
             }
@@ -407,7 +409,7 @@ impl FileEntry {
         ChaMode::new(mode).to_string()
     }
 
-    pub fn display_modified(&self) -> String {
-        self.time_str.clone()
+    pub fn display_modified(&self) -> &str {
+        &self.time_str
     }
 }

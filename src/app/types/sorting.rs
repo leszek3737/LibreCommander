@@ -9,6 +9,7 @@ fn default_true() -> bool {
 pub struct SortOptions {
     #[serde(default = "default_true")]
     pub dir_first: bool,
+    // Backward compat: old configs used "sort_sensitive" before rename to "sensitive"
     #[serde(default, alias = "sort_sensitive")]
     pub sensitive: bool,
 }
@@ -41,6 +42,7 @@ pub enum SortMode {
 }
 
 impl SortMode {
+    // TODO: After refactoring to SortField + Direction, this becomes a single field comparison
     #[must_use]
     pub fn is_ascending(self) -> bool {
         matches!(
@@ -59,6 +61,8 @@ impl SortMode {
         !self.is_ascending()
     }
 
+    // TODO: Refactor into SortField + Direction enum; toggle becomes flip direction field,
+    // eliminates 12 match arms and risk of missing a variant when adding new sort fields.
     #[must_use]
     pub fn toggle_direction(self) -> Self {
         match self {

@@ -12,6 +12,9 @@ fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
 #[cfg(windows)]
 fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
     use std::os::windows::fs::MetadataExt;
+    // Called once per entry during the symlink-loop walk — keep it allocation-
+    // and lock-free. Missing fields fall back to 0 silently (debug_log would
+    // take a blocking mutex + file I/O on this hot path).
     (
         metadata.volume_serial_number().map(u64::from).unwrap_or(0),
         metadata.file_index().unwrap_or(0),
@@ -72,9 +75,7 @@ pub fn build_tree_with_diagnostics(
     let mut entries = Vec::new();
     let mut diagnostics = Vec::new();
     let mut visited = HashSet::new();
-    if let Ok(meta) = root.metadata() {
-        let _ = visited.insert(file_key(&meta));
-    }
+    insert_root_key(root, &mut visited);
     build_tree_recursive(
         root,
         0,
@@ -87,6 +88,12 @@ pub fn build_tree_with_diagnostics(
     TreeBuildResult {
         entries,
         diagnostics,
+    }
+}
+
+fn insert_root_key(root: &Path, visited: &mut HashSet<(u64, u64)>) {
+    if let Ok(meta) = root.metadata() {
+        let _ = visited.insert(file_key(&meta));
     }
 }
 
@@ -125,6 +132,10 @@ fn build_tree_recursive(
             }
         };
         let path = entry.path();
+        // TODO: Consider `Cow<str>` in `TreeEntry::name` to avoid the heap
+        // allocation here when the filename is pure ASCII (borrowed OsStr).
+        // Currently blocked by widespread `.name.as_str()` / `.name == ...`
+        // usage across ui/, input/, and test modules.
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -174,6 +185,8 @@ fn build_tree_recursive(
                 None => continue,
             };
             if visited.insert(key) {
+                // Clone the path before pushing `child` (which moves it) so
+                // we still have a reference for the recursive call.
                 let child_path = child.path.clone();
                 out.push(child);
                 build_tree_recursive(
@@ -243,9 +256,7 @@ pub fn toggle_expand_with_diagnostics(
         let mut children = Vec::new();
         let mut diagnostics = Vec::new();
         let mut visited = HashSet::new();
-        if let Ok(meta) = path.metadata() {
-            let _ = visited.insert(file_key(&meta));
-        }
+        insert_root_key(&path, &mut visited);
         build_tree_recursive(
             &path,
             depth + 1,
