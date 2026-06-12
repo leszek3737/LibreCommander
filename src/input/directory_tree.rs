@@ -54,11 +54,7 @@ pub(crate) fn handle_directory_tree(
         _ => {}
     }
 
-    ensure_selected_visible(
-        state.tree_selected,
-        &mut state.tree_scroll,
-        visible_height,
-    );
+    ensure_selected_visible(state.tree_selected, &mut state.tree_scroll, visible_height);
 }
 
 fn ensure_selected_visible(selected: usize, scroll: &mut usize, visible_height: usize) {

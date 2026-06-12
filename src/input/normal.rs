@@ -519,7 +519,11 @@ fn is_not_parent_dir(entry: &FileEntry) -> bool {
     entry.name != ".."
 }
 
-fn open_in_viewer(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>, path: PathBuf) {
+fn open_in_viewer(
+    state: &mut AppState,
+    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    path: PathBuf,
+) {
     *viewer_loader = Some(viewer::ViewerState::open_background(path));
     state.prev_mode = None;
     state.mode = AppMode::Viewing;

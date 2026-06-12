@@ -272,17 +272,10 @@ pub fn open_user_menu(state: &mut AppState) {
             let mut parts: Vec<String> = loaded
                 .warnings
                 .iter()
-                .map(|w| {
-                    format!(
-                        "User menu warning: Line {}: {}",
-                        w.line, w.message
-                    )
-                })
+                .map(|w| format!("User menu warning: Line {}: {}", w.line, w.message))
                 .collect();
             if loaded.source == MenuSource::Local {
-                parts.push(
-                    "Local .mc.menu loaded — commands require confirmation".to_string(),
-                );
+                parts.push("Local .mc.menu loaded — commands require confirmation".to_string());
             }
             if !parts.is_empty() {
                 state.status_message = Some(parts.join(" | "));
