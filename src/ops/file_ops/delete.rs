@@ -61,6 +61,12 @@ pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::
 }
 
 fn validate_not_critical(canonical: &Path) -> io::Result<()> {
+    if canonical.parent().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to delete root directory",
+        ));
+    }
     for critical in CRITICAL_DIRS {
         if canonical == Path::new(*critical) {
             return Err(io::Error::new(

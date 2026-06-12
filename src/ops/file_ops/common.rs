@@ -172,11 +172,7 @@ pub(super) fn remove_any(path: &Path) -> io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::IsADirectory => std::fs::remove_dir_all(path),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => match std::fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
 }

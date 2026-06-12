@@ -68,9 +68,10 @@ fn extract_zip_entries(
     extracted_paths: &mut Vec<PathBuf>,
 ) -> Result<(), ArchiveError> {
     let entry_count = archive.len();
-    extracted_paths.reserve(entry_count);
+    extracted_paths.reserve(entry_count.min(MAX_LIST_ENTRIES));
 
     fs::create_dir_all(dest)?;
+    let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
     let mut last_parent: Option<PathBuf> = None;
     for i in 0..entry_count.min(MAX_LIST_ENTRIES) {
         check_cancel(cancel)?;
@@ -83,7 +84,7 @@ fn extract_zip_entries(
             continue;
         }
 
-        let outpath = super::sanitize_entry_path(entry.name(), dest)?;
+        let outpath = super::sanitize_entry_path(&canonical_dest, entry.name())?;
 
         if entry.size() > MAX_FILE_SIZE {
             return Err(ArchiveError::InvalidArchive(format!(
@@ -119,7 +120,7 @@ fn extract_zip_entries(
                     outpath.display()
                 )));
             }
-            let mut outfile = File::create(&outpath)?;
+            let mut outfile = super::open_outfile(&outpath)?;
             copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
 
             #[cfg(unix)]

@@ -91,6 +91,7 @@ pub fn extract_tar(
     let mut extracted_paths: Vec<PathBuf> = Vec::new();
 
     let result = (|| -> Result<(), ArchiveError> {
+        let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
         let mut last_parent: Option<PathBuf> = None;
         for entry in archive.entries()? {
             super::check_cancel(cancel)?;
@@ -117,7 +118,8 @@ pub fn extract_tar(
             }
 
             let entry_path = entry.path()?;
-            let outpath = super::sanitize_entry_path(&entry_path.to_string_lossy(), dest)?;
+            let outpath =
+                super::sanitize_entry_path(&canonical_dest, &entry_path.to_string_lossy())?;
 
             if is_dir {
                 fs::create_dir_all(&outpath)?;
@@ -156,19 +158,7 @@ pub fn extract_tar(
                                 "extract_tar: destination exists, overwriting: {}",
                                 outpath.display()
                             );
-                            #[cfg(unix)]
-                            {
-                                OpenOptions::new()
-                                    .write(true)
-                                    .create(true)
-                                    .truncate(true)
-                                    .custom_flags(libc::O_NOFOLLOW)
-                                    .open(&outpath)
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                File::create(&outpath)
-                            }
+                            super::open_outfile(&outpath)
                         } else {
                             Err(e)
                         }

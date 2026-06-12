@@ -121,7 +121,10 @@ pub(crate) fn copy_with_progress(
 
 pub(crate) fn cleanup_extracted(paths: &[PathBuf]) {
     for p in paths.iter().rev() {
-        if p.is_dir() {
+        let is_dir = fs::symlink_metadata(p)
+            .map(|m| m.is_dir() && !m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_dir {
             let _ = fs::remove_dir_all(p);
         } else {
             let _ = fs::remove_file(p);
@@ -129,7 +132,21 @@ pub(crate) fn cleanup_extracted(paths: &[PathBuf]) {
     }
 }
 
-pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathBuf, ArchiveError> {
+pub(crate) fn open_outfile(path: &Path) -> io::Result<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path)
+}
+
+pub(crate) fn sanitize_entry_path(
+    canonical_dest: &Path,
+    entry_name: &str,
+) -> Result<PathBuf, ArchiveError> {
     let entry_path = Path::new(entry_name);
     if entry_path.is_absolute() {
         return Err(ArchiveError::InvalidArchive(format!(
@@ -143,11 +160,10 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
             )));
         }
     }
-    let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
     let outpath = canonical_dest.join(entry_name);
 
     let normalized_out = normalize_path(&outpath);
-    if !normalized_out.starts_with(&canonical_dest) {
+    if !normalized_out.starts_with(canonical_dest) {
         return Err(ArchiveError::InvalidArchive(format!(
             "path traversal: {entry_name}"
         )));
@@ -156,17 +172,25 @@ pub(crate) fn sanitize_entry_path(entry_name: &str, dest: &Path) -> Result<PathB
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
     let mut result = PathBuf::new();
     for component in path.components() {
         match component {
-            std::path::Component::Normal(comp) => result.push(comp),
-            std::path::Component::ParentDir => {
-                result.pop();
+            Component::Prefix(prefix) => {
+                result.push(prefix.as_os_str());
             }
-            std::path::Component::RootDir => {
-                result.push(component);
+            Component::RootDir => {
+                result.push(std::path::MAIN_SEPARATOR.to_string());
             }
-            _ => {}
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !result.pop() {
+                    result.push("..");
+                }
+            }
+            Component::Normal(comp) => {
+                result.push(comp);
+            }
         }
     }
     result
@@ -178,6 +202,9 @@ fn has_ext_ignore_case(name: &str, ext: &str) -> bool {
 }
 
 fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
+    if std::io::Seek::seek(file, std::io::SeekFrom::Start(0)).is_err() {
+        return false;
+    }
     match format {
         ArchiveFormat::TarGz => {
             let mut reader = flate2::read::GzDecoder::new(file);

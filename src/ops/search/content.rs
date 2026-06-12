@@ -247,13 +247,12 @@ fn search_in_file(
     let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES, file);
     let mut ctx = ScanContext {
         path,
-        pattern,
         case_sensitive,
-        finder: if case_sensitive {
-            None
+        finder: memmem::Finder::new(if case_sensitive {
+            pattern.as_bytes()
         } else {
-            Some(memmem::Finder::new(pattern_bytes))
-        },
+            pattern_bytes
+        }),
         bufs: ScanBuffers::new(),
         cancel,
     };
@@ -262,9 +261,8 @@ fn search_in_file(
 
 struct ScanContext<'a> {
     path: &'a Path,
-    pattern: &'a str,
     case_sensitive: bool,
-    finder: Option<memmem::Finder<'a>>,
+    finder: memmem::Finder<'a>,
     bufs: ScanBuffers,
     cancel: Option<&'a AtomicBool>,
 }
@@ -341,7 +339,7 @@ fn scan_lines(
                     return;
                 }
 
-                if ctx.case_sensitive && memmem::find(line, ctx.pattern.as_bytes()).is_none() {
+                if ctx.case_sensitive && ctx.finder.find(line).is_none() {
                     continue;
                 }
 
@@ -361,8 +359,7 @@ fn scan_lines(
                 };
 
                 if !ctx.case_sensitive
-                    && let Some(ref finder) = ctx.finder
-                    && !contains_case_insensitive(line_text, finder, &mut ctx.bufs.ci_buf)
+                    && !contains_case_insensitive(line_text, &ctx.finder, &mut ctx.bufs.ci_buf)
                 {
                     continue;
                 }

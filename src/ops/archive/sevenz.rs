@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,17 +64,19 @@ pub fn extract_7z(
     let mut extracted_paths: Vec<PathBuf> = Vec::new();
     let result = (|| -> Result<(), ArchiveError> {
         fs::create_dir_all(dest)?;
+        let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
         let mut reader = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
             .map_err(|e| ArchiveError::InvalidArchive(e.to_string()))?;
 
         let mut last_parent: Option<PathBuf> = None;
+        let canonical_ref = &canonical_dest;
         reader
             .for_each_entries(|entry, reader| {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(Canceled.into());
                 }
 
-                let outpath = match super::sanitize_entry_path(entry.name(), dest) {
+                let outpath = match super::sanitize_entry_path(canonical_ref, entry.name()) {
                     Ok(p) => p,
                     Err(e) => return Err(PathTraversal(e.to_string()).into()),
                 };
@@ -111,7 +113,8 @@ pub fn extract_7z(
                             .into(),
                         ));
                     }
-                    let mut outfile = File::create(&outpath).map_err(sevenz_rust::Error::io)?;
+                    let mut outfile =
+                        super::open_outfile(&outpath).map_err(sevenz_rust::Error::io)?;
                     copy_with_progress(reader, &mut outfile, progress, cancel)
                         .map_err(sevenz_rust::Error::io)?;
                     extracted_paths.push(outpath);
@@ -155,6 +158,7 @@ pub fn create_7z(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -175,14 +179,16 @@ mod tests {
     #[test]
     fn sanitize_rejects_absolute_path() {
         let dest = PathBuf::from("/tmp");
-        let result = super::super::sanitize_entry_path("/etc/passwd", &dest);
+        let canonical = dest.canonicalize().unwrap();
+        let result = super::super::sanitize_entry_path(&canonical, "/etc/passwd");
         assert!(result.is_err());
     }
 
     #[test]
     fn sanitize_rejects_parent_dir() {
         let dest = PathBuf::from("/tmp");
-        let result = super::super::sanitize_entry_path("../passwd", &dest);
+        let canonical = dest.canonicalize().unwrap();
+        let result = super::super::sanitize_entry_path(&canonical, "../passwd");
         assert!(result.is_err());
     }
 }
