@@ -34,11 +34,14 @@ pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
     refresh_or_rebuild(state, visible_height);
 }
 
+fn set_active_panel_filter(state: &mut AppState, filter: String) {
+    state.active_panel_mut().set_filter(Some(filter));
+}
+
 fn apply_search_filter(state: &mut AppState, visible: usize) {
     let filter_query = state.search_query.clone();
-    let panel = state.active_panel_mut();
-    panel.set_filter(Some(filter_query));
-    panel_ops::rebuild_visible_entries(panel, visible);
+    set_active_panel_filter(state, filter_query);
+    refresh_or_rebuild(state, visible);
 }
 
 pub(crate) fn initiate_search(
@@ -52,7 +55,7 @@ pub(crate) fn initiate_search(
     state.search_cursor = state.search_query.len();
     let filter_query = state.search_query.clone();
     state.mode = AppMode::Search;
-    state.active_panel_mut().set_filter(Some(filter_query));
+    set_active_panel_filter(state, filter_query);
     refresh_or_rebuild(state, visible_height);
 }
 

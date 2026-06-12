@@ -19,6 +19,7 @@ Stack: **Ratatui 0.30 + crossterm 0.29**, edition 2024, MSRV 1.95, `unsafe_code 
 - Cross-device moves MUST use copy+delete fallback with cancellation and no-clobber preserved
 - Archive extraction MUST validate paths (zip slip), set size limits, handle symlinks safely
 - NEVER amend existing commits — always create new commits for each logical change
+- ALWAYS run `cargo fmt` before committing — unformatted code must not land in the repo
 - NEVER commit `target/`, editor swap files, or worktree dirs
 - Don't add network calls — this is an offline tool by design
 

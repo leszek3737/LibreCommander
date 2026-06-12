@@ -269,24 +269,16 @@ pub fn open_user_menu(state: &mut AppState) {
             state.mode = AppMode::Dialog(DialogKind::Error(message));
         }
         Ok(loaded) => {
-            let mut status_parts: String = String::new();
-            for warning in &loaded.warnings {
-                if !status_parts.is_empty() {
-                    status_parts.push_str(" | ");
-                }
-                status_parts.push_str(&format!(
-                    "User menu warning: Line {}: {}",
-                    warning.line, warning.message
-                ));
-            }
+            let mut parts: Vec<String> = loaded
+                .warnings
+                .iter()
+                .map(|w| format!("User menu warning: Line {}: {}", w.line, w.message))
+                .collect();
             if loaded.source == MenuSource::Local {
-                if !status_parts.is_empty() {
-                    status_parts.push_str(" | ");
-                }
-                status_parts.push_str("Local .mc.menu loaded — commands require confirmation");
+                parts.push("Local .mc.menu loaded — commands require confirmation".to_string());
             }
-            if !status_parts.is_empty() {
-                state.status_message = Some(status_parts);
+            if !parts.is_empty() {
+                state.status_message = Some(parts.join(" | "));
             }
             state.user_menu_source = loaded.source;
             state.user_menu_set(loaded.entries);
