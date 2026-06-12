@@ -58,7 +58,9 @@ impl PartialEq for MenuEntry {
 /// against option injection (filenames starting with `-`).
 /// Use `safe_file_arg` which prepends `./` to `-`-prefixed names.
 pub fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2 + 3 * s.chars().filter(|&c| c == '\'').count());
+    // Exact for the common quote-free case (content + two surrounding quotes);
+    // only the rare embedded-quote path triggers a reallocation.
+    let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
         if ch == '\'' {
@@ -139,6 +141,9 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
                         .ok_or_else(non_utf8_err)?;
                     out.push_str(&safe_file_arg(name));
                 } else {
+                    // TODO(perf): build directly into `out` with space separators instead of
+                    // collecting into Vec<String> then joining — avoids intermediate allocs
+                    // when >50 tagged files are present.
                     let quoted: Result<Vec<String>, String> = ctx
                         .tagged
                         .iter()

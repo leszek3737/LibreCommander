@@ -15,6 +15,8 @@ pub struct AppState {
     pub right_panel: PanelState,
     pub active_panel: ActivePanel,
     pub mode: AppMode,
+    /// Mode saved before entering a temporary mode (e.g. CommandLine).
+    /// Used by `restore_prev_mode()` to return to the previous mode.
     pub prev_mode: Option<AppMode>,
     pub should_quit: bool,
     pub dialog_input: TextInput,
@@ -96,6 +98,8 @@ impl AppState {
         }
     }
 
+    // TODO: active_panel/inactive_panel/panel and their _mut counterparts
+    //       duplicate the same match arms. Consider a helper or macro to deduplicate.
     pub fn active_panel(&self) -> &PanelState {
         match self.active_panel {
             ActivePanel::Left => &self.left_panel,
@@ -129,19 +133,23 @@ impl AppState {
     }
 
     pub fn rebuild_hotlist_cache(&mut self) {
-        self.cached_hotlist_strings = self
-            .directory_hotlist
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+        let n = self.directory_hotlist.len();
+        self.cached_hotlist_strings = Vec::with_capacity(n);
+        self.cached_hotlist_strings.extend(
+            self.directory_hotlist
+                .iter()
+                .map(|p| p.display().to_string()),
+        );
     }
 
     pub fn rebuild_user_menu_cache(&mut self) {
-        self.cached_user_menu_strings = self
-            .user_menu_entries
-            .iter()
-            .map(|e| format!("{}  {}", e.hotkey, e.title))
-            .collect();
+        let n = self.user_menu_entries.len();
+        self.cached_user_menu_strings = Vec::with_capacity(n);
+        self.cached_user_menu_strings.extend(
+            self.user_menu_entries
+                .iter()
+                .map(|e| format!("{}  {}", e.hotkey, e.title)),
+        );
     }
 
     pub fn hotlist_push(&mut self, path: PathBuf) {
@@ -170,6 +178,9 @@ impl AppState {
         self.rebuild_user_menu_cache();
     }
 
+    /// Clears any stale `prev_mode` so it cannot leak into a later
+    /// `restore_prev_mode()`. Command-line mode always returns to `Normal`
+    /// directly, so there is no previous mode to preserve.
     pub fn enter_command_line_mode(&mut self) {
         self.command_line.clear();
         self.history_index = None;
@@ -189,10 +200,19 @@ impl AppState {
         self.drag_anchor_index = None;
     }
 
+    // TODO: same deduplication opportunity as active_panel/inactive_panel above.
     pub fn panel_mut(&mut self, panel: ActivePanel) -> &mut PanelState {
         match panel {
             ActivePanel::Left => &mut self.left_panel,
             ActivePanel::Right => &mut self.right_panel,
+        }
+    }
+
+    /// Resolve an explicit panel, falling back to the active panel when `None`.
+    pub fn panel_or_active_mut(&mut self, panel: Option<ActivePanel>) -> &mut PanelState {
+        match panel {
+            Some(p) => self.panel_mut(p),
+            None => self.active_panel_mut(),
         }
     }
 

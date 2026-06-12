@@ -66,6 +66,12 @@ pub struct PersistedSetup {
     pub hotlist: Option<Vec<String>>,
 }
 
+// Settings and PersistedSetup form a parallel type pair:
+//   PersistedSetup/PersistedPanel — serde-shaped, owned strings, optional hotlist.
+//   Settings                       — runtime-shaped, enum active_panel, Vec<PathBuf> hotlist.
+// The duplication is intentional: PersistedSetup mirrors the TOML schema (strings,
+// optional fields), while Settings uses domain types for application logic.
+// Conversion between them (From impls) handles mapping and validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub active_panel: ActivePanel,
@@ -110,7 +116,7 @@ impl From<&Settings> for PersistedSetup {
                 ActivePanel::Left => "left",
                 ActivePanel::Right => "right",
             }
-            .to_owned(),
+            .to_string(),
             dir_first: settings.dir_first,
             sensitive: settings.sensitive,
             left: settings.left.clone(),
@@ -255,6 +261,9 @@ fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml
 fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
     if let Some(ref path_str) = persisted.path {
         let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
+        // Fall back to the cleaned path when canonicalize fails (e.g. a valid
+        // directory on a filesystem that rejects canonicalize) so the panel is
+        // still restored instead of being left at its default path.
         let resolved = fs::canonicalize(&path).unwrap_or_else(|e| {
             crate::debug_log!("config: canonicalize failed for {}: {e}", path.display());
             path.clone()

@@ -15,6 +15,8 @@ pub use dialogs::{
     ArchiveCreateDetails, ArchiveExtractDetails, ConfirmDetails, CopyMoveDetails, DialogKind,
     InputAction, OverwriteConfirmDetails, PickerKind, PropertiesDetails,
 };
+// sanitize_for_display is only needed by test helpers; sanitize_name is used in
+// production code (e.g. file entry construction) and must always be available.
 #[cfg(test)]
 pub(crate) use file_entry::sanitize_for_display;
 pub(crate) use file_entry::sanitize_name;

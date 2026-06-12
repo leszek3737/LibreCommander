@@ -72,7 +72,7 @@ pub fn sync_watcher_paths(
 }
 
 fn canonical_desired_paths(left: &Path, right: &Path) -> HashSet<PathBuf> {
-    let mut desired = HashSet::new();
+    let mut desired = HashSet::with_capacity(2);
     for path in [left, right] {
         desired.insert(crate::fs::path::clean_path(path));
     }
@@ -306,6 +306,8 @@ fn apply_remove_cached(panel: &mut PanelState, path: &Path, cache: &PanelCache) 
     apply_watcher_remove(panel, &path)
 }
 
+// TODO: full_refresh_panels and full_refresh_panel share selection-save/read/restore logic —
+//       extract a common `refresh_panel_from_disk(panel, entries, errors, saved)` helper.
 fn full_refresh_panels(
     left: &mut PanelState,
     right: &mut PanelState,
@@ -345,6 +347,8 @@ fn apply_shared_read_result(
         .get(panel.cursor)
         .filter(|entry| entry.name != "..")
         .map(|entry| entry.name.clone());
+    // TODO: cloning PathBuf per selected file into HashSet — consider borrowing or
+    //       using a cheaper index-based selection restore for large selections.
     let saved: HashSet<PathBuf> = panel
         .selected_entries()
         .into_iter()
@@ -352,6 +356,8 @@ fn apply_shared_read_result(
         .collect();
 
     update_panel_read_errors(panel, errors);
+    // TODO: clone needed because entries is &[FileEntry] shared with the other panel;
+    //       refactor to split ownership when both panels share the same dir.
     panel.listing.set_unfiltered(entries.to_vec());
     panel.set_canonical_path(panel.path().canonicalize().ok());
     for entry in &mut panel.listing.unfiltered_entries {
@@ -381,7 +387,7 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
 }
 
 pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, panel.path(), panel.canonical_path()) {
+    if !path_parent_matches(path, panel) {
         return false;
     }
 
@@ -392,7 +398,7 @@ pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> b
 }
 
 pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, panel.path(), panel.canonical_path()) {
+    if !path_parent_matches(path, panel) {
         return false;
     }
 
@@ -402,10 +408,13 @@ pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> b
     apply_watcher_remove(panel, &path)
 }
 
+// TODO: inline panel_event_path at call sites — trivial one-liner adds indirection without benefit.
 fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
     path.file_name().map(|name| panel.path().join(name))
 }
 
+// TODO: extract `path_matches_any(path, target, target_clean, canonical, canonical_clean)` —
+//       event_is_panel_dir_cached and path_parent_matches_cached repeat the same comparison pattern.
 fn event_is_panel_dir_cached(path: &Path, cache: &PanelCache) -> bool {
     if path == cache.path {
         return true;
@@ -467,16 +476,8 @@ fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {
     false
 }
 
-fn path_parent_matches(path: &Path, panel_path: &Path, panel_canonical: Option<&Path>) -> bool {
-    let clean = crate::fs::path::clean_path(panel_path);
-    let canonical = panel_canonical.map(|p| p.to_path_buf());
-    let canonical_clean = canonical.as_ref().map(|c| crate::fs::path::clean_path(c));
-    let cache = PanelCache {
-        path: panel_path.to_path_buf(),
-        clean,
-        canonical,
-        canonical_clean,
-    };
+fn path_parent_matches(path: &Path, panel: &PanelState) -> bool {
+    let cache = PanelCache::from_panel(panel);
     path_parent_matches_cached(path, &cache)
 }
 
@@ -525,6 +526,8 @@ fn full_refresh_panel(panel: &mut PanelState) {
         .get(panel.cursor)
         .filter(|entry| entry.name != "..")
         .map(|entry| entry.name.clone());
+    // TODO: cloning PathBuf per selected file into HashSet — consider borrowing or
+    //       using a cheaper index-based selection restore for large selections.
     let saved: HashSet<PathBuf> = panel
         .selected_entries()
         .into_iter()

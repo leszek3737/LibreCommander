@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 const WATCHER_CHANNEL_CAPACITY: usize = 256;
-const OVERFLOW_EVENT_COUNT: usize = 257;
+const OVERFLOW_EVENT_COUNT: usize = WATCHER_CHANNEL_CAPACITY + 1;
 
 fn test_panel(path: &Path) -> PanelState {
     let mut panel = PanelState::new(path.to_path_buf());
@@ -29,7 +29,7 @@ fn select_entry_by_name(entries: &mut [reader::FileEntry], name: &str) {
     entries
         .iter_mut()
         .find(|e| e.name == name)
-        .unwrap()
+        .expect("entry should exist")
         .selected = true;
 }
 
@@ -71,13 +71,22 @@ impl EventHarness {
     }
 
     fn send(&self, event: WatchEvent) {
-        self.tx.send(event).unwrap();
+        self.tx
+            .send(event)
+            .expect("watcher event receiver should be alive");
     }
 
     fn poll(&mut self) -> bool {
         poll_watcher_events(&mut self.state, &self.rx)
     }
 }
+
+// TODO: many tests repeat the same setup (tempdir + fs::write +
+// apply_watcher_upsert_if_matches + rebuild_visible_entries). Extract a helper
+// (e.g. `fn build_panel_with_files(dir, &[("name", contents)])`) to cut the
+// boilerplate and reduce drift between scenarios.
+// TODO: extract an `assert_entries_names_eq(panel, &["..", "alpha.txt", ...])`
+// helper to replace the repeated collect-into-Vec<&str> + assert_eq pattern.
 
 #[test]
 fn watcher_upsert_adds_visible_entry_sorted_and_updates_stats() {
@@ -132,6 +141,8 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     assert!(keep_entry.selected);
     assert_eq!(panel.selected_count(), 1);
     assert_eq!(panel.selected_size(), 7);
+    // total_size aggregates unfiltered_entries, so it includes drop.log (4 bytes)
+    // even though it is filtered out of the visible listing.
     assert_eq!(panel.total_size(), 11);
 }
 
@@ -231,7 +242,8 @@ fn path_parent_matches_keeps_raw_fallback_for_missing_paths() {
     let panel_path = dir.path().join("missing");
     let child = panel_path.join("file.txt");
 
-    assert!(path_parent_matches(&child, &panel_path, None));
+    let panel = PanelState::new(panel_path);
+    assert!(path_parent_matches(&child, &panel));
 }
 
 #[test]
@@ -296,6 +308,11 @@ fn watcher_updates_when_metadata_changes() {
 #[test]
 fn poll_watcher_events_processes_at_most_256_events() {
     let dir = tempfile::tempdir().unwrap();
+    // TODO: this deliberately uses an unbounded mpsc::channel() rather than
+    // sync_channel(WATCHER_CHANNEL_CAPACITY). A bounded channel would block the
+    // test thread on the 257th send (backpressure) before poll_watcher_events
+    // drains anything, deadlocking the test. Switch to sync_channel by spawning
+    // a dedicated sender thread so the bounded backpressure path is exercised.
     let (tx, rx) = mpsc::channel();
     let mut state = AppState::new();
     state.left_panel = test_panel(dir.path());
@@ -453,6 +470,9 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
     let dirty = harness.poll();
     assert!(dirty);
     assert_eq!(harness.state.left_panel.path(), new_name);
+    // TODO: assert that panel entries were refreshed from new_name (e.g. that
+    // marker.txt is present) to verify the rename triggers a full reload, not
+    // just a path update.
 }
 
 #[test]
@@ -466,6 +486,7 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     assert!(panel.listing.entries.len() > 1);
 
     // Hardcoded nonexistent path — test-only fixture to trigger a read error; must not appear in production code.
+    // TODO: use a tempdir with revoked permissions instead to avoid cross-test path collision risk.
     panel.set_path(PathBuf::from("/nonexistent_dir_for_test_12345"));
     full_refresh_panel(&mut panel);
 
@@ -490,6 +511,7 @@ fn full_refresh_recovers_after_error() {
     fs::write(&file, b"hello").unwrap();
 
     // Hardcoded nonexistent path — test-only fixture to simulate an unreadable directory; must not appear in production code.
+    // TODO: use a tempdir with revoked permissions instead to avoid cross-test path collision risk.
     panel.set_path(PathBuf::from("/nonexistent_for_error_test_xyz"));
     full_refresh_panel(&mut panel);
     assert!(panel.listing.entries.is_empty());
@@ -561,6 +583,7 @@ fn event_is_panel_dir_cached_uses_injected_canonical_without_io() {
 fn set_path_updates_canonical_path() {
     let dir = tempfile::tempdir().unwrap();
     // Hardcoded nonexistent path — test-only fixture to verify canonical_path() is None for missing dirs; must not appear in production code.
+    // TODO: use a tempdir (then drop it) instead to avoid cross-test path collision risk.
     let mut panel = PanelState::new(PathBuf::from("/nonexistent"));
 
     assert!(panel.canonical_path().is_none());
@@ -641,6 +664,7 @@ fn deleted_root_dir_stays_at_root_and_refreshes() {
     let mut state = AppState::new();
     // Hardcoded filesystem root — test-only fixture for the edge case where the panel is at "/";
     // safe because "/" always exists, but this pattern must not appear in production code.
+    // TODO: "/" is fine, but the other hardcoded paths above should migrate to tempdir fixtures.
     state.left_panel.set_path(PathBuf::from("/"));
 
     tx.send(WatchEvent::Deleted(PathBuf::from("/"))).unwrap();
@@ -656,6 +680,10 @@ fn deleted_root_dir_stays_at_root_and_refreshes() {
 
 #[test]
 fn sync_watcher_paths_does_not_set_last_synced_when_path_missing() {
+    // TODO: the three sync_watcher_paths_*missing/cooldown scenarios below share
+    // near-identical setup (missing panel dir + sync + assert cooldown). Consider
+    // parameterizing them (e.g. a #[test] table or a shared harness builder) to
+    // isolate only the differing expectation per case.
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("nonexistent_panel_dir");
 
@@ -723,3 +751,9 @@ fn sync_watcher_paths_cooldown_allows_different_paths() {
         "different paths should bypass cooldown"
     );
 }
+
+// TODO: missing coverage — add tests for symlink handling (symlinked panel dir,
+// symlink targets changing, broken symlinks during upsert/remove).
+// TODO: missing coverage — add a test for the race between poll_watcher_events
+// draining and concurrent panel navigation (path changes mid-poll) to verify
+// stale events do not mutate a panel that has already navigated away.

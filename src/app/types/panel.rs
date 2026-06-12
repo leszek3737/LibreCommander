@@ -280,6 +280,8 @@ impl PanelState {
             return;
         }
 
+        // TODO: reuse existing path_index instead of rebuilding an identical HashMap,
+        // eliminating N PathBuf clones
         let index: HashMap<PathBuf, usize> = self
             .listing
             .unfiltered_entries
@@ -389,6 +391,7 @@ impl PanelState {
     }
 
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        // Clone required: unfiltered_entries holds the full set, entries holds the filtered view
         self.listing.set_unfiltered(entries.clone());
         self.listing.set_entries(entries);
         self.cursor = 0;

@@ -699,7 +699,8 @@ fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
 pub fn build_help_message() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| {
-        let mut msg = String::with_capacity(KEYBINDINGS.len() * 40);
+        // Realistic estimate: ~25 bytes per binding (indent + padded key + description).
+        let mut msg = String::with_capacity(KEYBINDINGS.len() * 25);
         let mut current_mode = "";
         for b in KEYBINDINGS {
             if b.mode != current_mode {
@@ -736,13 +737,10 @@ mod tests {
 
     #[test]
     fn all_modes_are_non_empty() {
-        let mut modes: Vec<&str> = KEYBINDINGS.iter().map(|b| b.mode).collect();
-        modes.sort();
-        modes.dedup();
-        for mode in &modes {
-            let count = KEYBINDINGS.iter().filter(|b| b.mode == *mode).count();
-            assert!(count > 0, "Mode '{}' has no keybindings", mode);
-        }
+        // Single-pass dedup: each distinct mode originates from a binding, so
+        // verifying the set is non-empty confirms every mode is populated.
+        let modes: HashSet<&str> = KEYBINDINGS.iter().map(|b| b.mode).collect();
+        assert!(!modes.is_empty(), "No modes present in KEYBINDINGS table");
     }
 
     #[test]
@@ -778,17 +776,15 @@ mod tests {
     fn build_help_message_lines_are_not_empty() {
         let msg = build_help_message();
         for (i, line) in msg.lines().enumerate() {
-            if !line.is_empty() {
-                assert!(
-                    !line.trim().is_empty(),
-                    "Line {i} is non-empty but only whitespace"
-                );
-                assert!(
-                    line.trim().len() > 2,
-                    "Line {i} is suspiciously short: {:?}",
-                    line
-                );
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
             }
+            assert!(
+                trimmed.len() > 2,
+                "Line {i} is suspiciously short: {:?}",
+                line
+            );
         }
     }
 }

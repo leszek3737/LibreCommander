@@ -12,6 +12,7 @@ pub struct ConfirmDetails {
 }
 
 impl ConfirmDetails {
+    // TODO: accept `impl Into<String>` to avoid allocation when caller already has a String
     pub fn simple(title: &str, message: &str) -> Self {
         Self {
             title: title.to_string(),
@@ -20,6 +21,7 @@ impl ConfirmDetails {
         }
     }
 
+    // TODO: accept `impl Into<String>` to avoid allocation when caller already has a String
     pub fn with_files(title: &str, message: &str, files: Vec<String>) -> Self {
         Self {
             title: title.to_string(),
@@ -45,6 +47,8 @@ pub struct CopyMoveDetails {
     pub source: Vec<PathBuf>,
     pub dest: PathBuf,
     pub is_move: bool,
+    // TODO: remove source_display; render should derive display strings from source
+    // paths on-the-fly to maintain single source of truth
     pub source_display: Vec<String>,
 }
 
@@ -95,11 +99,23 @@ pub enum DialogKind {
         progress_fraction: f32,
         cancellable: bool,
     },
+    // Boxed to keep the enum small — these variants carry large structs that would
+    // inflate the discriminant size for all other variants (enum size optimization).
     CopyMove(Box<CopyMoveDetails>),
     Properties(Box<PropertiesDetails>),
     OverwriteConfirm(Box<OverwriteConfirmDetails>),
     ArchiveExtract(Box<ArchiveExtractDetails>),
     ArchiveCreate(Box<ArchiveCreateDetails>),
+}
+
+impl DialogKind {
+    pub fn progress(message: String, fraction: f32, cancellable: bool) -> Self {
+        Self::Progress {
+            message,
+            progress_fraction: fraction.clamp(0.0, 1.0),
+            cancellable,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
