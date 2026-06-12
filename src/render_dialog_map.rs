@@ -67,18 +67,7 @@ pub(super) fn to_ui_dialog<'a>(
                 }),
                 message: Cow::Owned(msg),
                 selection: state.dialog_selection,
-                files: {
-                    let file_names: Vec<String> = details
-                        .source
-                        .iter()
-                        .map(|p| {
-                            p.file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| p.display().to_string())
-                        })
-                        .collect();
-                    Cow::Owned(file_names)
-                },
+                files: Cow::Borrowed(&details.source_display),
             }
         }
         app::types::DialogKind::Properties(details) => properties_to_ui_dialog(details),

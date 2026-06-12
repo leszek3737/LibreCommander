@@ -179,7 +179,7 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
                 .iter()
                 .filter_map(|e| {
                     let top = e.name.split('/').next()?;
-                    if top.is_empty() || !seen.insert(top.to_owned()) {
+                    if top.is_empty() || top == ".." || !seen.insert(top.to_owned()) {
                         return None;
                     }
                     let target = dest.join(top);

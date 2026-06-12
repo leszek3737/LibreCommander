@@ -43,6 +43,7 @@ pub enum InputAction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopyMoveDetails {
     pub source: Vec<PathBuf>,
+    pub source_display: Vec<String>,
     pub dest: PathBuf,
     pub is_move: bool,
 }

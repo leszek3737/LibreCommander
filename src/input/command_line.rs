@@ -16,8 +16,7 @@ fn cancel_command_input(state: &mut AppState) {
 }
 
 fn command_execute(state: &mut AppState) {
-    let cmd = state.command_line.text().to_owned();
-    state.command_line.set_text(String::new());
+    let cmd = state.command_line.take_text();
     state.mode = AppMode::Normal;
     state.command_draft.clear();
     reset_history(state);

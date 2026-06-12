@@ -495,8 +495,17 @@ fn test_dialog_kind_progress() {
 fn test_dialog_kind_copy_move() {
     let sources = vec![PathBuf::from("/source1"), PathBuf::from("/source2")];
     let dest = PathBuf::from("/dest");
+    let source_display: Vec<String> = sources
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        })
+        .collect();
     let dialog = DialogKind::CopyMove(Box::new(CopyMoveDetails {
         source: sources.clone(),
+        source_display: source_display.clone(),
         dest: dest.clone(),
         is_move: true,
     }));
@@ -504,6 +513,7 @@ fn test_dialog_kind_copy_move() {
         panic!("Expected CopyMove variant");
     };
     assert_eq!(details.source, sources);
+    assert_eq!(details.source_display, source_display);
     assert_eq!(details.dest, dest);
     assert!(details.is_move);
 }

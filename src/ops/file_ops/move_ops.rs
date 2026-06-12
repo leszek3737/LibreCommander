@@ -63,7 +63,18 @@ impl MoveKind {
 
     fn remove_src(self, src: &Path, cancel: &AtomicBool) -> io::Result<()> {
         match self {
-            MoveKind::Symlink | MoveKind::File => fs::remove_file(src),
+            MoveKind::Symlink => {
+                if let Ok(meta) = fs::symlink_metadata(src) {
+                    if meta.is_dir() {
+                        fs::remove_dir(src)
+                    } else {
+                        fs::remove_file(src)
+                    }
+                } else {
+                    fs::remove_file(src)
+                }
+            }
+            MoveKind::File => fs::remove_file(src),
             MoveKind::Directory => delete_dir_recursive_cancelable(src, cancel),
         }
     }

@@ -294,13 +294,8 @@ fn position_text_input_cursor(input: &mut TextInput, pos: &MousePosition, rect: 
     }
 
     let visible_width = usize::from(rect.width);
-    let cursor_display = input
-        .text()
-        .graphemes(true)
-        .take(input.cursor())
-        .map(UnicodeWidthStr::width)
-        .sum::<usize>();
-    let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
+    input.set_visible_width(visible_width);
+    let scroll_display = input.scroll_offset();
     let click_display = usize::from(pos.col.saturating_sub(rect.x));
     let target_display = scroll_display.saturating_add(click_display);
 
