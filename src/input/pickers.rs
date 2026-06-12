@@ -50,7 +50,8 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
                 state.mode = AppMode::Normal;
                 return;
             }
-            let idx = len.saturating_sub(1).saturating_sub(state.picker_selected);
+            // History displays most-recent-first; reverse visual index to VecDeque position
+            let idx = len - 1 - state.picker_selected;
             if let Some(cmd) = state.command_history.get(idx).cloned() {
                 state.command_line.text = cmd;
                 state.command_line.cursor_end();
@@ -108,7 +109,10 @@ fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
         KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
         KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            let chosen = modes[state.picker_selected.min(len.saturating_sub(1))];
+            let Some(&chosen) = modes.get(state.picker_selected) else {
+                state.mode = AppMode::Normal;
+                return;
+            };
             state.mode = AppMode::Normal;
             compare_directories(state, chosen);
         }

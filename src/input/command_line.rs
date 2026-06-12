@@ -4,11 +4,15 @@ use lc::app::{shell, types::*};
 
 use crate::app::panel_ops::refresh_active;
 
+fn reset_history(state: &mut AppState) {
+    state.history_index = None;
+}
+
 fn cancel_command_input(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.command_line.clear();
     state.command_draft.clear();
-    state.history_index = None;
+    reset_history(state);
 }
 
 fn command_execute(state: &mut AppState) {
@@ -16,7 +20,7 @@ fn command_execute(state: &mut AppState) {
     state.command_line.cursor = 0;
     state.mode = AppMode::Normal;
     state.command_draft.clear();
-    state.history_index = None;
+    reset_history(state);
     if !cmd.is_empty() {
         shell::run_shell_command(state, &cmd, false, refresh_active);
     }
@@ -39,7 +43,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
             }
             KeyCode::Char('w') => {
                 if state.command_line.delete_word_backward() {
-                    state.history_index = None;
+                    reset_history(state);
                 }
                 return;
             }
@@ -54,7 +58,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
 
     if key.modifiers.contains(KeyModifiers::ALT) {
         if key.code == KeyCode::Backspace && state.command_line.delete_word_backward() {
-            state.history_index = None;
+            reset_history(state);
         }
         return;
     }
@@ -67,7 +71,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
             command_execute(state);
         }
         KeyCode::Backspace if state.command_line.backspace() => {
-            state.history_index = None;
+            reset_history(state);
         }
         KeyCode::Left => {
             state.command_line.cursor_left();
@@ -77,10 +81,11 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         }
         KeyCode::Up if !state.command_history.is_empty() => {
             if state.history_index.is_none() {
-                state.command_draft = state.command_line.text.clone();
+                state.command_draft = std::mem::take(&mut state.command_line.text);
             }
             let idx = match state.history_index {
                 Some(i) if i > 0 => i - 1,
+                // idx == 0: already at oldest entry, clamp here
                 Some(i) => i,
                 None => state.command_history.len() - 1,
             };
@@ -102,7 +107,7 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         }
         KeyCode::Char(c) => {
             state.command_line.insert_char(c);
-            state.history_index = None;
+            reset_history(state);
         }
         _ => {}
     }

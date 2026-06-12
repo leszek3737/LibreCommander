@@ -1,5 +1,3 @@
-use std::fmt::Write;
-
 use crossterm::event::KeyCode;
 
 use lc::app::{dir_tree, types::*};
@@ -28,7 +26,7 @@ pub(crate) fn handle_directory_tree(
         {
             state.tree_selected += 1;
         }
-        KeyCode::Home => {
+        KeyCode::Home if !state.tree_entries.is_empty() => {
             state.tree_selected = 0;
             state.tree_scroll = 0;
         }
@@ -56,16 +54,22 @@ pub(crate) fn handle_directory_tree(
         _ => {}
     }
 
-    let selected = state.tree_selected;
-    let scroll = state.tree_scroll;
-    let effective = if selected < scroll {
+    ensure_selected_visible(
+        state.tree_selected,
+        &mut state.tree_scroll,
+        visible_height,
+    );
+}
+
+fn ensure_selected_visible(selected: usize, scroll: &mut usize, visible_height: usize) {
+    let effective = if selected < *scroll {
         selected
-    } else if selected >= scroll + visible_height {
+    } else if selected >= *scroll + visible_height {
         selected.saturating_sub(visible_height) + 1
     } else {
-        scroll
+        *scroll
     };
-    state.tree_scroll = effective;
+    *scroll = effective;
 }
 
 pub(crate) fn directory_tree_visible_height(terminal_height: u16) -> usize {
@@ -83,17 +87,11 @@ pub(crate) fn set_tree_diagnostic_status(
         return;
     }
 
-    let mut msg = String::from("Directory tree warnings: ");
-    for (i, d) in diagnostics.iter().enumerate() {
-        if i > 0 {
-            msg.push_str("] [");
-        } else {
-            msg.push('[');
-        }
-        let _ = write!(msg, "{}: {}", d.path.display(), d.message);
-    }
-    msg.push(']');
-    *status_message = Some(msg);
+    let items: Vec<String> = diagnostics
+        .iter()
+        .map(|d| format!("{}: {}", d.path.display(), d.message))
+        .collect();
+    *status_message = Some(format!("Directory tree warnings: [{}]", items.join("] [")));
 }
 
 fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
@@ -126,10 +124,10 @@ fn handle_tree_cd(state: &mut AppState) {
     let target = if entry_is_dir {
         entry_path
     } else {
-        entry_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(entry_path)
+        match entry_path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => entry_path,
+        }
     };
     if target.is_dir() {
         let panel = state.active_panel_mut();

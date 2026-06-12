@@ -30,10 +30,7 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
             if let Some(entry) = state.active_panel().current_entry()
                 && !entry.is_dir()
             {
-                let path = entry.path.clone();
-                *viewer_loader = Some(viewer::ViewerState::open_background(path));
-                state.prev_mode = None;
-                state.mode = AppMode::Viewing;
+                open_in_viewer(state, viewer_loader, entry.path.clone());
             }
         }
         KeyCode::F(4) => {
@@ -175,16 +172,18 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
         match (status, resume_result) {
-            (Err(e), _) => state.status_message = Some(format!("Editor error: {e}")),
-            (Ok(s), Err(e)) if !s.success() => {
-                state.status_message = Some(format!(
-                    "Editor exited with status: {s}; terminal restore failed: {e}"
-                ));
+            (Err(e), _) => {
+                state.status_message = Some(format!("Editor error: {e}"));
             }
-            (_, Err(e)) => {
-                state.status_message = Some(format!("Terminal restore failed after editor: {e}"));
+            (Ok(s), Err(e)) => {
+                let mut parts = Vec::new();
+                if !s.success() {
+                    parts.push(format!("Editor exited with status: {s}"));
+                }
+                parts.push(format!("Terminal restore failed: {e}"));
+                state.status_message = Some(parts.join("; "));
             }
-            (Ok(s), _) if !s.success() => {
+            (Ok(s), Ok(())) if !s.success() => {
                 state.status_message = Some(format!("Editor exited with status: {s}"));
             }
             (Ok(_), Ok(_)) => {}
@@ -366,10 +365,7 @@ pub(crate) fn handle_enter_key<B: ratatui::backend::Backend>(
         panel_ops::refresh_active(state);
         reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
     } else if is_archive_file(entry) {
-        let path = entry.path.clone();
-        *viewer_loader = Some(viewer::ViewerState::open_background(path));
-        state.prev_mode = None;
-        state.mode = AppMode::Viewing;
+        open_in_viewer(state, viewer_loader, entry.path.clone());
     }
 }
 
@@ -492,7 +488,7 @@ pub(crate) fn selected_or_current_paths(state: &AppState) -> Vec<PathBuf> {
     let current_entry_fallback = || {
         panel
             .current_entry()
-            .filter(|entry| entry.name != "..")
+            .filter(|entry| is_not_parent_dir(entry))
             .map(|entry| vec![entry.path.clone()])
             .unwrap_or_default()
     };
@@ -504,7 +500,7 @@ pub(crate) fn selected_or_current_paths(state: &AppState) -> Vec<PathBuf> {
     let selected: Vec<PathBuf> = panel
         .selected_entries()
         .into_iter()
-        .filter(|entry| entry.name != "..")
+        .filter(|entry| is_not_parent_dir(entry))
         .map(|entry| entry.path.clone())
         .collect();
 
@@ -517,6 +513,16 @@ pub(crate) fn selected_or_current_paths(state: &AppState) -> Vec<PathBuf> {
 
 fn is_archive_file(entry: &FileEntry) -> bool {
     !entry.is_dir() && file_type::is_archive(&entry.name)
+}
+
+fn is_not_parent_dir(entry: &FileEntry) -> bool {
+    entry.name != ".."
+}
+
+fn open_in_viewer(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>, path: PathBuf) {
+    *viewer_loader = Some(viewer::ViewerState::open_background(path));
+    state.prev_mode = None;
+    state.mode = AppMode::Viewing;
 }
 
 fn display_file_names(paths: &[PathBuf]) -> Vec<String> {
