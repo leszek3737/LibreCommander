@@ -96,6 +96,7 @@ pub enum DialogKind {
     },
     Progress {
         message: String,
+        // Range: 0.0..=1.0; validated via clamp in DialogKind::progress() constructor.
         progress_fraction: f32,
         cancellable: bool,
     },

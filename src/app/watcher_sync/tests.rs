@@ -355,7 +355,7 @@ fn full_refresh_preserves_selected_entries() {
     select_entry_by_name(&mut panel.listing.entries, "selected.txt");
     panel.sync_unfiltered_selection();
 
-    full_refresh_panel(&mut panel);
+    refresh_panel_from_disk(&mut panel);
 
     assert!(
         panel
@@ -488,7 +488,7 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     // Hardcoded nonexistent path — test-only fixture to trigger a read error; must not appear in production code.
     // TODO: use a tempdir with revoked permissions instead to avoid cross-test path collision risk.
     panel.set_path(PathBuf::from("/nonexistent_dir_for_test_12345"));
-    full_refresh_panel(&mut panel);
+    refresh_panel_from_disk(&mut panel);
 
     assert!(panel.listing.entries.is_empty());
     assert!(panel.listing.unfiltered_entries.is_empty());
@@ -513,11 +513,11 @@ fn full_refresh_recovers_after_error() {
     // Hardcoded nonexistent path — test-only fixture to simulate an unreadable directory; must not appear in production code.
     // TODO: use a tempdir with revoked permissions instead to avoid cross-test path collision risk.
     panel.set_path(PathBuf::from("/nonexistent_for_error_test_xyz"));
-    full_refresh_panel(&mut panel);
+    refresh_panel_from_disk(&mut panel);
     assert!(panel.listing.entries.is_empty());
 
     panel.set_path(dir.path().to_path_buf());
-    full_refresh_panel(&mut panel);
+    refresh_panel_from_disk(&mut panel);
 
     assert!(
         !panel.listing.entries.is_empty(),

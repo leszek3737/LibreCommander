@@ -80,6 +80,7 @@ impl AppState {
             picker_selected: 0,
             user_menu_entries: Vec::new(),
             user_menu_source: MenuSource::Global,
+            // TODO: use with_capacity when hotlist length is known at construction time
             cached_hotlist_strings: vec![current_dir.display().to_string()],
             cached_user_menu_strings: Vec::new(),
             pending_menu_command: None,
@@ -168,11 +169,15 @@ impl AppState {
         self.rebuild_hotlist_cache();
     }
 
+    /// Replace the entire directory hotlist and rebuild the string cache.
+    /// Used when loading a persisted hotlist from config.
     pub fn hotlist_set(&mut self, hotlist: Vec<PathBuf>) {
         self.directory_hotlist = hotlist;
         self.rebuild_hotlist_cache();
     }
 
+    /// Replace all user-menu entries and rebuild the display-string cache.
+    /// Called after parsing a `.mc.menu` file or switching menu source.
     pub fn user_menu_set(&mut self, entries: Vec<MenuEntry>) {
         self.user_menu_entries = entries;
         self.rebuild_user_menu_cache();

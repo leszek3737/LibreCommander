@@ -112,6 +112,8 @@ impl std::fmt::Display for FileSize {
         let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
         let mut size_f = size as f64;
         let mut unit_idx = 0;
+        // TODO: merge the two division loops — first pass scales down,
+        // second handles rounding edge case (e.g. 1023.95 -> 1024.0 -> 1.0 KB).
         while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
             size_f /= BYTES_PER_UNIT;
             unit_idx += 1;
@@ -241,7 +243,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn is_executable(mut self, v: bool) -> Self {
-        self.cha = self.cha.with_executable(v);
+        self.cha.set_executable(v);
         self
     }
     pub fn size(mut self, v: u64) -> Self {
@@ -274,7 +276,7 @@ impl FileEntryBuilder {
         self
     }
     pub fn is_hidden(mut self, v: bool) -> Self {
-        self.cha = self.cha.with_hidden(v);
+        self.cha.set_hidden(v);
         self
     }
     pub fn mime_type(mut self, v: Option<String>) -> Self {
@@ -312,7 +314,7 @@ impl FileEntry {
         let size_str = if cha.is_dir() {
             "     <DIR>".to_string()
         } else {
-            format!("{:>10}", format_size(cha.len()))
+            format!("{:>10}", format_size(cha.len))
         };
         let name_width = UnicodeWidthStr::width(name);
         let size_width = UnicodeWidthStr::width(size_str.as_str());
@@ -345,7 +347,7 @@ impl FileEntry {
     }
 
     pub fn size(&self) -> u64 {
-        self.cha.len()
+        self.cha.len
     }
 
     pub fn mtime(&self) -> SystemTime {

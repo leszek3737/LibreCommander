@@ -55,6 +55,9 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 *panel.sort_options(),
                 panel.show_hidden(),
             );
+            // TODO: sorts unfiltered list separately with same params as filtered_sorted_entries
+            // above. Could sort once then filter without re-sorting, or pass sorted vec to
+            // filtered_sorted_entries to avoid second sort.
             let mut sorted_unfiltered = new_unfiltered;
             ops::sort_entries(
                 &mut sorted_unfiltered,
@@ -82,17 +85,17 @@ pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Err
     if errors.is_empty() {
         panel.set_last_error(None);
     } else {
-        let error_summary =
-            errors
-                .iter()
-                .map(ToString::to_string)
-                .fold(String::new(), |mut acc, s| {
-                    if !acc.is_empty() {
-                        acc.push_str("; ");
-                    }
-                    acc.push_str(&s);
-                    acc
-                });
+        let error_summary = errors
+            .iter()
+            .map(ToString::to_string)
+            // TODO: use itertools::join or collect+join instead of fold for readability
+            .fold(String::new(), |mut acc, s| {
+                if !acc.is_empty() {
+                    acc.push_str("; ");
+                }
+                acc.push_str(&s);
+                acc
+            });
         panel.set_last_error(Some(format!(
             "{} file(s) failed to read: {error_summary}",
             errors.len()
@@ -165,13 +168,15 @@ pub(crate) fn entry_matches_panel(
             && compiled_filter.is_none_or(|pat| pat.matches(&entry.name)))
 }
 
+fn restore_selection_for(entries: &mut [reader::FileEntry], saved: &HashSet<PathBuf>) {
+    for entry in entries {
+        entry.selected = saved.contains(&entry.path);
+    }
+}
+
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
-    for entry in &mut panel.listing.entries {
-        entry.selected = saved.contains(&entry.path);
-    }
-    for entry in &mut panel.listing.unfiltered_entries {
-        entry.selected = saved.contains(&entry.path);
-    }
+    restore_selection_for(&mut panel.listing.entries, saved);
+    restore_selection_for(&mut panel.listing.unfiltered_entries, saved);
 }
 
 fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
@@ -180,8 +185,8 @@ fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
     {
         panel.cursor = pos;
     }
-    if panel.cursor >= panel.listing.entries.len() && !panel.listing.entries.is_empty() {
-        panel.cursor = panel.listing.entries.len() - 1;
+    if panel.cursor >= panel.listing.entries.len() {
+        panel.cursor = panel.listing.entries.len().saturating_sub(1);
     }
 }
 

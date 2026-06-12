@@ -63,9 +63,17 @@ pub struct Watcher {
     watchers: HashMap<PathBuf, WhichWatcher>,
     event_tx: Arc<SyncSender<WatchEvent>>,
     paused: Arc<AtomicBool>,
+    // Shared debounce map — accessed from notify callback thread and main thread
+    // (flush_pending). Both go through lock_or_recover to handle poison.
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
+    // Unpaired rename-From events awaiting a matching rename-To. Entries are
+    // bounded by PENDING_FROM_TIMEOUT — stale ones are emitted as Deleted in
+    // flush_pending(). No explicit size cap; relies on timeout cleanup.
     pending_from: Arc<Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>>,
     overflow_pending: Arc<AtomicBool>,
+    // Canonical-path cache: maps original (possibly non-canonical) path to its
+    // resolved form. Grows unboundedly — only trimmed on unwatch(). Acceptable
+    // because it mirrors the watched_dirs set which is small by design.
     path_cache: HashMap<PathBuf, PathBuf>,
 }
 
@@ -441,10 +449,13 @@ fn send_expired_events(
     if !reinserts.is_empty() {
         let mut debounce = lock_or_recover(debounce_state, "watcher");
         for (path, event) in reinserts {
-            debounce.entry(path).or_insert(PendingEntry {
-                last_seen: Instant::now(),
-                coalesced: Some(event),
-            });
+            debounce
+                .entry(path)
+                .and_modify(|e| e.coalesced = Some(event.clone()))
+                .or_insert_with(|| PendingEntry {
+                    last_seen: Instant::now(),
+                    coalesced: Some(event),
+                });
         }
     }
 }
@@ -472,10 +483,13 @@ fn reinsert_or_overflow(
         WatchEvent::Overflow => return,
     };
     let mut debounce = lock_or_recover(debounce_state, "watcher");
-    debounce.entry(key).or_insert(PendingEntry {
-        last_seen: Instant::now(),
-        coalesced: Some(event),
-    });
+    debounce
+        .entry(key)
+        .and_modify(|e| e.coalesced = Some(event.clone()))
+        .or_insert_with(|| PendingEntry {
+            last_seen: Instant::now(),
+            coalesced: Some(event),
+        });
     drop(debounce);
     send_overflow_or_flag(event_tx, overflow_pending);
 }
@@ -562,6 +576,15 @@ fn process_debounce(
     (!suppressed, flushed)
 }
 
+/// Lock a `Mutex`, recovering from poison by taking the inner value.
+///
+/// # Poison recovery risk
+///
+/// A thread panicked while holding this lock, meaning the guarded data may be
+/// in an inconsistent state (partially updated). We recover anyway because the
+/// watcher is a background subsystem — crashing the TUI for a stale debounce
+/// entry is worse than emitting a slightly wrong event. If this starts causing
+/// issues, consider clearing the map after recovery instead of reusing it.
 fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
     mutex.lock().unwrap_or_else(|e| {
         debug_log!("{label} mutex poisoned, recovering: {e}");

@@ -7,14 +7,42 @@ use lc::app::types::{
 };
 use lc::ui;
 use lc::ui::viewer;
+use ratatui::layout::Size;
 use std::io::Write;
 use tempfile::NamedTempFile;
+
+const TEST_VIEWPORT: Size = Size::new(80, 24);
 
 fn create_test_file(content: &str) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
     write!(file, "{}", content).unwrap();
     file
 }
+
+fn generate_lines(count: usize) -> String {
+    (0..count).map(|i| format!("line {}\n", i)).collect()
+}
+
+fn open_viewer(path: &std::path::Path) -> viewer::ViewerState {
+    viewer::ViewerState::open(path).unwrap()
+}
+
+fn assert_viewer_mode(vs: &viewer::ViewerState, expected_hex: bool) {
+    let expected_mode = if expected_hex {
+        ViewMode::Hex
+    } else {
+        ViewMode::Text
+    };
+    assert_eq!(vs.view_mode, expected_mode);
+}
+
+// TODO: Add tests for:
+// - Empty file (zero bytes)
+// - Viewport taller than file (scroll should be no-op)
+// - Search wrapping (last match → first match)
+// - Binary / invalid UTF-8 edge cases
+// - Long lines exceeding viewport width
+// - CRLF line endings
 
 #[test]
 fn f3_viewer_clears_stale_prev_mode() {
@@ -29,7 +57,7 @@ fn f3_viewer_clears_stale_prev_mode() {
     state.left_panel.set_path(tmp.path().to_path_buf());
     state
         .left_panel
-        .set_entries(vec![TestEntry::new("view.txt").path(&file).size(4).build()]);
+        .set_entries(vec![TestEntry::new("view.txt").path(&file).file(4).build()]);
     let mut loader = None;
     let mut terminal = test_terminal();
 
@@ -64,7 +92,7 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
         &mut viewer,
         &mut job,
         KeyCode::Esc,
-        ratatui::layout::Size::new(80, 24),
+        TEST_VIEWPORT,
     );
 
     assert!(matches!(state.mode, AppMode::Viewing));
@@ -76,7 +104,7 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
 #[test]
 fn viewer_scroll_up_down() {
     let file = create_test_file("line1\nline2\nline3\nline4\nline5\n");
-    let mut vs = ui::viewer::ViewerState::open(file.path()).unwrap();
+    let mut vs = open_viewer(file.path());
     assert_eq!(vs.scroll_offset, 0);
     vs.scroll_down(2);
     assert_eq!(vs.scroll_offset, 2);
@@ -84,18 +112,16 @@ fn viewer_scroll_up_down() {
     assert_eq!(vs.scroll_offset, 1);
     vs.scroll_up(10);
     assert_eq!(vs.scroll_offset, 0);
+    // Depends on TEST_HEIGHT viewport; will need adjustment if viewport changes.
     vs.scroll_down(100);
     assert_eq!(vs.scroll_offset, 4);
 }
 
 #[test]
 fn viewer_page_up_page_down() {
-    let mut content = String::new();
-    for i in 0..50 {
-        content.push_str(&format!("line {}\n", i));
-    }
+    let content = generate_lines(50);
     let file = create_test_file(&content);
-    let mut vs = ui::viewer::ViewerState::open(file.path()).unwrap();
+    let mut vs = open_viewer(file.path());
     assert_eq!(vs.scroll_offset, 0);
     vs.page_down(10);
     assert_eq!(vs.scroll_offset, 10);
@@ -109,37 +135,35 @@ fn viewer_page_up_page_down() {
 #[test]
 fn viewer_search() {
     let file = create_test_file("apple\nbanana\ncherry\napple pie\ndate\n");
-    let mut vs = ui::viewer::ViewerState::open(file.path()).unwrap();
-    vs.search("apple", 24);
+    let mut vs = open_viewer(file.path());
+    let h = TEST_VIEWPORT.height.into();
+    vs.search("apple", h);
     assert_eq!(vs.search_query.as_deref(), Some("apple"));
     assert!(!vs.search_matches.is_empty());
     assert_eq!(vs.current_match, Some(0));
-    vs.next_match(24);
+    vs.next_match(h);
     assert_eq!(vs.current_match, Some(1));
-    vs.prev_match(24);
+    vs.prev_match(h);
     assert_eq!(vs.current_match, Some(0));
-    vs.search("", 24);
+    vs.search("", h);
     assert!(vs.search_matches.is_empty());
 }
 
 #[test]
 fn viewer_hex_mode_toggle() {
     let file = create_test_file("hello\nworld\n");
-    let mut vs = ui::viewer::ViewerState::open(file.path()).unwrap();
-    assert!(!vs.is_hex_mode());
-    assert!(matches!(vs.view_mode, ViewMode::Text));
+    let mut vs = open_viewer(file.path());
+    assert_viewer_mode(&vs, false);
     vs.toggle_hex_mode();
-    assert!(vs.is_hex_mode());
-    assert!(matches!(vs.view_mode, ViewMode::Hex));
+    assert_viewer_mode(&vs, true);
     vs.toggle_hex_mode();
-    assert!(!vs.is_hex_mode());
-    assert!(matches!(vs.view_mode, ViewMode::Text));
+    assert_viewer_mode(&vs, false);
 }
 
 #[test]
 fn viewer_close_via_escape() {
     let file = create_test_file("content\n");
-    let mut viewer_state = Some(ui::viewer::ViewerState::open(file.path()).unwrap());
+    let mut viewer_state = Some(open_viewer(file.path()));
     let mut state = AppState {
         mode: AppMode::Viewing,
         prev_mode: Some(AppMode::Normal),
@@ -154,7 +178,7 @@ fn viewer_close_via_escape() {
         &mut viewer_loader,
         &mut image_preview_loader,
         KeyCode::Esc,
-        ratatui::layout::Size::new(80, 24),
+        TEST_VIEWPORT,
     );
 
     assert!(matches!(state.mode, AppMode::Normal));

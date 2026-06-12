@@ -49,6 +49,9 @@ impl Drop for RunningJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
+            // Resource leak risk: if the reaper spawn fails the worker
+            // thread is detached — its resources (including file
+            // descriptors held by ops) remain alive until process exit.
             let result = std::thread::Builder::new()
                 .name("job-reaper".into())
                 .spawn(move || {
@@ -180,6 +183,9 @@ pub fn poll_running_job(
                 latest_progress = Some(progress);
             }
             JobMessage::Finished { report } => {
+                // Show the final progress snapshot and prevent the
+                // second pass (lines below) from formatting the same
+                // progress message again.
                 if let Some(progress) = latest_progress.take() {
                     let msg =
                         format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
@@ -245,6 +251,8 @@ pub fn poll_running_job(
                     if let Some(panel) = state.menu_restore_panel.take() {
                         state.active_panel = panel;
                     }
+                    // TODO: avoid .to_string() allocation — use &'static str
+                    // directly or a shared message constant.
                     state.status_message =
                         Some("Operation failed: worker thread panicked".to_string());
                     refresh_both(state);
@@ -257,6 +265,8 @@ pub fn poll_running_job(
                     if let Some(panel) = state.menu_restore_panel.take() {
                         state.active_panel = panel;
                     }
+                    // TODO: avoid .to_string() allocation — use &'static str
+                    // directly or a shared message constant.
                     state.status_message =
                         Some("Operation completed (worker finished without report)".to_string());
                     refresh_both(state);
@@ -281,6 +291,8 @@ fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool
     }
     let _ = write!(buf, "{} of {}: ", progress.completed, progress.total);
     if let Some(path) = progress.current.as_ref().and_then(|p| p.file_name()) {
+        // TODO: to_string_lossy() allocates a new String every call;
+        // write directly into the buffer character-by-character.
         let _ = buf.write_str(&path.to_string_lossy());
     } else {
         buf.push_str("done");
@@ -340,18 +352,20 @@ fn finish_search_job(
         && let Some(parent) = first.path.parent()
     {
         let path = parent.to_path_buf();
-        state.panel_or_active_mut(search_origin).set_path(path);
+        {
+            state.panel_or_active_mut(search_origin).set_path(path);
+        }
         refresh_both(state);
 
-        let panel_ref = state.panel_or_active_mut(search_origin);
-        if let Some(pos) = panel_ref
+        let panel = state.panel_or_active_mut(search_origin);
+        if let Some(pos) = panel
             .listing
             .entries
             .iter()
             .position(|e| e.path == first.path)
         {
-            panel_ref.cursor = pos;
-            panel_ref.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
+            panel.cursor = pos;
+            panel.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
         }
     } else {
         refresh_both(state);

@@ -115,6 +115,8 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
             | "application/x-httpd-php"
             | "application/x-sh" => FileCategory::Code,
             "application/vnd.ms-fontobject" => FileCategory::Font,
+            // NOTE: large archive match — consider extracting to a helper or
+            // using a phf set if the match count grows further.
             "application/zip"
             | "application/x-tar"
             | "application/gzip"
@@ -157,10 +159,14 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
 /// [`file_type::category`](crate::app::file_type::category).
 #[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
-    if let Some(mime) = extension_mime(name) {
+    let basename = Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if let Some(mime) = extension_mime(basename) {
         return mime_to_category(mime);
     }
-    crate::app::file_type::category(name, false, false, false)
+    crate::app::file_type::category(basename, false, false, false)
 }
 
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {

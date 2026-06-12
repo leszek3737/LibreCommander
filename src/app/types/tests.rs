@@ -38,6 +38,8 @@ fn create_test_entry(
         .build()
 }
 
+// TODO: consolidate create_test_entry and cha_entry — nearly identical, differing only in
+// how is_dir/is_symlink are derived (explicit vs from mode bits)
 fn cha_entry(name: &str, mode: u32, size: u64, hidden: bool) -> FileEntry {
     let is_link = (mode & 0o170000) == 0o120000;
     let is_directory = (mode & 0o170000) == 0o040000;
@@ -73,12 +75,13 @@ fn panel_with_cursor(n: u32, cursor: usize, scroll_offset: usize) -> PanelState 
     panel
 }
 
+// Table-driven pattern (repeated in test_file_entry_display_permissions below)
 #[test]
 fn test_file_entry_display_size() {
     let cases: &[(u64, &str)] = &[
         (500, " 500 B"),
         (1500, "1.5 KB"),
-        // 1_500_000 / 1_048_576 = 1.43... → display truncates to "1.4 MB"
+        // 1_500_000 / 1_048_576 ≈ 1.43 → display_size truncates (not rounds) → "1.4 MB"
         (1_500_000, "1.4 MB"),
         (1_500_000_000, "1.4 GB"),
         (0, "   0 B"),
@@ -141,6 +144,7 @@ fn test_panel_state_current_entry_none_when_empty() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn test_panel_state_current_entry_some() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel
@@ -148,7 +152,10 @@ fn test_panel_state_current_entry_some() {
         .entries
         .push(create_test_entry("file1.txt", false, 100, 0o644, false));
     panel.cursor = 0;
-    assert_eq!(panel.current_entry().unwrap().name, "file1.txt");
+    assert_eq!(
+        panel.current_entry().expect("current entry exists").name,
+        "file1.txt"
+    );
 }
 
 #[test]
@@ -313,7 +320,7 @@ fn test_panel_state_move_cursor_down_empty() {
 }
 
 #[test]
-fn test_app_state_new() {
+fn test_app_state_new_sets_field_defaults() {
     let state = AppState::new();
     assert_eq!(state.active_panel, ActivePanel::Left);
     assert_eq!(state.mode, AppMode::Normal);
@@ -428,10 +435,11 @@ fn test_confirm_details_simple() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn test_confirm_details_with_files() {
     let files = vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()];
     let cd = ConfirmDetails::with_files("Delete", "Delete 2 entries?", files);
-    let displayed = cd.files.as_ref().unwrap();
+    let displayed = cd.files.as_ref().expect("files vector is Some");
     assert_eq!(displayed[0], "/tmp/a.txt");
     assert_eq!(displayed[1], "/tmp/b.txt");
 }
@@ -530,7 +538,7 @@ fn test_app_mode_variants() {
     assert_eq!(picker, AppMode::ListPicker(PickerKind::History));
 }
 
-// Smoke test: verifies PartialEq derivation is correct and all variants compile
+// Smoke test: verifies PartialEq derivation is correct and variants compile
 #[test]
 fn test_active_panel_variants() {
     let left = ActivePanel::Left;
@@ -540,6 +548,7 @@ fn test_active_panel_variants() {
     assert_eq!(right, ActivePanel::Right);
 }
 
+// Smoke test: verifies Default derivation produces the same state as new()
 #[test]
 fn test_app_state_default() {
     let state = AppState::default();
@@ -761,9 +770,14 @@ fn test_panel_state_scroll_offset_with_many_entries() {
         "scroll_offset must advance when cursor exits visible window"
     );
 
-    // Advance further into the list
-    panel.cursor = 80;
-    panel.scroll_offset = 61;
+    // Advance further into the list by calling move_cursor_down naturally,
+    // so the method itself computes scroll_offset (don't pre-set it)
+    for _ in 0..60 {
+        panel.move_cursor_down(visible_height);
+    }
+    assert_eq!(panel.cursor, 80);
+    assert_eq!(panel.scroll_offset, 61);
+
     panel.move_cursor_down(visible_height);
     assert_eq!(panel.cursor, 81);
     assert_eq!(

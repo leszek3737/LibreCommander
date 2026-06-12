@@ -60,6 +60,8 @@ impl PartialEq for MenuEntry {
 pub fn shell_quote(s: &str) -> String {
     // Exact for the common quote-free case (content + two surrounding quotes);
     // only the rare embedded-quote path triggers a reallocation.
+    // TODO(perf): s.len() measures bytes, then s.chars() re-scans. Could fuse into
+    // a single pass if the embedded-quote path becomes a bottleneck.
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -75,6 +77,7 @@ pub fn shell_quote(s: &str) -> String {
 
 fn safe_file_arg(s: &str) -> String {
     if s.starts_with('-') {
+        // format! + shell_quote = two String allocations; worth fusing later.
         shell_quote(&format!("./{s}"))
     } else {
         shell_quote(s)

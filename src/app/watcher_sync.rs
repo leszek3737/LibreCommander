@@ -306,8 +306,6 @@ fn apply_remove_cached(panel: &mut PanelState, path: &Path, cache: &PanelCache) 
     apply_watcher_remove(panel, &path)
 }
 
-// TODO: full_refresh_panels and full_refresh_panel share selection-save/read/restore logic —
-//       extract a common `refresh_panel_from_disk(panel, entries, errors, saved)` helper.
 fn full_refresh_panels(
     left: &mut PanelState,
     right: &mut PanelState,
@@ -328,10 +326,10 @@ fn full_refresh_panels(
         }
     } else {
         if left_needs {
-            full_refresh_panel(left);
+            refresh_panel_from_disk(left);
         }
         if right_needs {
-            full_refresh_panel(right);
+            refresh_panel_from_disk(right);
         }
     }
 }
@@ -413,67 +411,42 @@ fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
     path.file_name().map(|name| panel.path().join(name))
 }
 
-// TODO: extract `path_matches_any(path, target, target_clean, canonical, canonical_clean)` —
-//       event_is_panel_dir_cached and path_parent_matches_cached repeat the same comparison pattern.
-fn event_is_panel_dir_cached(path: &Path, cache: &PanelCache) -> bool {
-    if path == cache.path {
+fn path_matches_any(candidate: &Path, cache: &PanelCache) -> bool {
+    if candidate == cache.path {
         return true;
     }
+    let candidate_clean = crate::fs::path::clean_path(candidate);
+    if candidate_clean == cache.clean {
+        return true;
+    }
+    if let Some(ref c) = cache.canonical
+        && candidate_clean == c.as_path()
+    {
+        return true;
+    }
+    if let Some(ref canonical_clean) = cache.canonical_clean
+        && candidate_clean == *canonical_clean
+    {
+        return true;
+    }
+    false
+}
 
+fn event_is_panel_dir_cached(path: &Path, cache: &PanelCache) -> bool {
     if path.parent() == Some(cache.path.as_path()) {
         return false;
     }
-
-    let path_clean = crate::fs::path::clean_path(path);
-    if path_clean == cache.clean {
-        return true;
-    }
-
-    if let Some(ref c) = cache.canonical
-        && path_clean == c.as_path()
-    {
-        return true;
-    }
-
-    if let Some(ref canonical_clean) = cache.canonical_clean
-        && path_clean == *canonical_clean
-    {
-        return true;
-    }
-
-    false
+    path_matches_any(path, cache)
 }
 
 fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {
     if path.file_name().is_none() {
         return false;
     }
-
     let Some(parent) = path.parent() else {
         return false;
     };
-
-    if parent == cache.path {
-        return true;
-    }
-
-    if cache.canonical.as_deref() == Some(parent) {
-        return true;
-    }
-
-    let parent_clean = crate::fs::path::clean_path(parent);
-
-    if parent_clean == cache.clean {
-        return true;
-    }
-
-    if let Some(ref canonical_clean) = cache.canonical_clean
-        && parent_clean == *canonical_clean
-    {
-        return true;
-    }
-
-    false
+    path_matches_any(parent, cache)
 }
 
 fn path_parent_matches(path: &Path, panel: &PanelState) -> bool {
@@ -519,7 +492,7 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     existed
 }
 
-fn full_refresh_panel(panel: &mut PanelState) {
+pub(crate) fn refresh_panel_from_disk(panel: &mut PanelState) {
     let current_name = panel
         .listing
         .entries

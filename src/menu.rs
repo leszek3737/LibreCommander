@@ -143,31 +143,7 @@ pub const MENUS: [MenuEntry; 5] = [
     },
 ];
 
-pub const MENU_TITLES: [&str; 5] = [
-    MENUS[0].title,
-    MENUS[1].title,
-    MENUS[2].title,
-    MENUS[3].title,
-    MENUS[4].title,
-];
-
-pub const MENU_ITEMS: [&[&str]; 5] = [
-    MENUS[0].items,
-    MENUS[1].items,
-    MENUS[2].items,
-    MENUS[3].items,
-    MENUS[4].items,
-];
-
-pub const MENU_ACTIONS: [&[MenuAction]; 5] = [
-    MENUS[0].actions,
-    MENUS[1].actions,
-    MENUS[2].actions,
-    MENUS[3].actions,
-    MENUS[4].actions,
-];
-
-const _: () = {
+const _: () = const {
     let mut i = 0;
     while i < MENUS.len() {
         assert!(MENUS[i].items.len() == MENUS[i].actions.len());

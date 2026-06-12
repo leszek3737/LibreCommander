@@ -9,6 +9,10 @@ use lc::ui::viewer;
 use ratatui::layout::Size;
 use ratatui::{Terminal, backend::TestBackend};
 
+fn no_viewer_state() -> Option<viewer::ViewerState> {
+    None
+}
+
 #[test]
 fn confirm_enter_without_pending_action_dismisses_dialog() {
     let mut state = AppState {
@@ -60,6 +64,11 @@ fn confirm_enter_with_pending_action_starts_action() {
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Confirm(..))
     ));
+    assert!(
+        matches!(state.mode, AppMode::Dialog(DialogKind::Progress { .. })),
+        "expected Delete to start Progress dialog, got: {:?}",
+        state.mode
+    );
 }
 
 #[test]
@@ -82,6 +91,11 @@ fn confirm_file_transfer_copy_opens_dialog() {
         state.mode,
         AppMode::Dialog(DialogKind::Confirm(_))
     ));
+    assert!(
+        matches!(state.pending_action, Some(PendingAction::Copy { .. })),
+        "expected PendingAction::Copy, got: {:?}",
+        state.pending_action
+    );
 }
 
 #[test]
@@ -123,7 +137,7 @@ fn dialog_overlay_renders_error_text() {
         )),
         ..Default::default()
     };
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
 
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
@@ -142,11 +156,12 @@ fn dialog_overlay_centered() {
         ..Default::default()
     };
     let mut terminal = test_terminal();
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer().clone();
+    // Verifies cells exist; centering requires positional assertions.
     assert!(buf.cell((20, 7)).is_some());
     assert!(buf.cell((39, 0)).is_some());
 }
@@ -159,12 +174,13 @@ fn dialog_with_long_title_does_not_overflow() {
         ..Default::default()
     };
     let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
     let text = buffer_to_string(buf);
+    // Verifies title content renders; overflow check would require buffer bounds validation.
     assert!(text.contains("xxxxx"));
 }
 
@@ -178,7 +194,7 @@ fn help_dialog_renders_help_text() {
         }),
         ..Default::default()
     };
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
 
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
@@ -200,7 +216,7 @@ fn progress_dialog_nan_percent_handled() {
         ..Default::default()
     };
     let mut terminal = test_terminal();
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
@@ -222,7 +238,7 @@ fn menu_dropdown_renders_over_panels() {
         menu_item_selected: 0,
         ..Default::default()
     };
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
 
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
@@ -243,7 +259,7 @@ fn list_picker_overlay_renders_title() {
         ..Default::default()
     };
     state.command_history.push_back("echo hello".to_string());
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
 
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
@@ -259,7 +275,7 @@ fn list_picker_overlay_renders_title() {
 fn menu_bar_rendered_at_top() {
     let state = AppState::default();
     let mut terminal = test_terminal();
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
@@ -272,7 +288,7 @@ fn menu_bar_rendered_at_top() {
 fn status_bar_at_bottom() {
     let state = AppState::default();
     let mut terminal = test_terminal();
-    let viewer_state: Option<viewer::ViewerState> = None;
+    let viewer_state = no_viewer_state();
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
@@ -280,3 +296,5 @@ fn status_bar_at_bottom() {
     let cell = buf.cell((2, 23)).unwrap();
     assert!(!cell.symbol().trim().is_empty());
 }
+
+// TODO: Add integration test for chmod dialog (set mode, verify pending action, apply)

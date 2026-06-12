@@ -47,6 +47,7 @@ pub(super) fn to_ui_dialog<'a>(
         },
         app::types::DialogKind::CopyMove(details) => {
             let action = if details.is_move { "Move" } else { "Copy" };
+            // Per-frame alloc; low cost for short strings.
             let msg = format!(
                 "{} {} item(s)\nfrom: {}\n  to: {}",
                 action,
@@ -77,6 +78,7 @@ pub(super) fn to_ui_dialog<'a>(
             }
         }
         app::types::DialogKind::ArchiveExtract(details) => {
+            // Per-frame alloc; low cost for short strings.
             let info = format!(
                 "{}\n{} entries",
                 details.source.display(),
@@ -130,6 +132,7 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
             .single()
             .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
             .format("%Y-%m-%d %H:%M:%S")
+            // Per-frame alloc; low cost for short strings.
             .to_string()
     } else {
         "Unknown".to_string()
@@ -137,9 +140,9 @@ fn properties_to_ui_dialog(dialog_kind: &app::types::DialogKind) -> dialogs::Dia
     dialogs::DialogKind::Properties {
         info: dialogs::PropertiesInfo {
             name: Cow::Borrowed(name.as_str()),
-            size: Cow::Owned(app::types::FileEntry::format_size(*size)),
+            size: Cow::Owned(app::types::FileEntry::format_size(*size)), // Per-frame alloc; low cost for short strings.
             mtime: Cow::Owned(mtime_str),
-            permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(*permissions)),
+            permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(*permissions)), // Per-frame alloc; low cost for short strings.
             owner: Cow::Borrowed(owner.as_str()),
             group: Cow::Borrowed(group.as_str()),
             file_type: Cow::Borrowed(file_type),

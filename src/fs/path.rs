@@ -1,5 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
+// Max expansion ratio ($HOME → full path, variable name ≤ half of expanded).
 const ENV_VAR_EXPANSION_FACTOR: usize = 2;
 
 /// Normalizes a path by resolving `.` and `..` components.
@@ -10,12 +11,13 @@ const ENV_VAR_EXPANSION_FACTOR: usize = 2;
 /// preserved on Unix; on Windows, `ParentDir` after a drive prefix is kept
 /// (drive-relative navigation).
 pub fn clean_path(path: &Path) -> PathBuf {
+    // Heuristic pre-alloc assuming ~4 path components, clamped [8, 32].
     let est_comps = path.as_os_str().len() / 4 + 1;
     let mut comps: Vec<Component<'_>> = Vec::with_capacity(est_comps.clamp(8, 32));
 
     for component in path.components() {
         match component {
-            Component::CurDir => {}
+            Component::CurDir => {} // CurDir segments are no-ops.
             Component::ParentDir => match comps.last() {
                 // RootDir: cannot ascend past root — drop the ParentDir.
                 Some(Component::RootDir) => {}
@@ -148,18 +150,19 @@ fn expand_brace_var(after_dollar: &str) -> Option<(usize, String)> {
     }
     let inner = &after_dollar[1..];
     let close = find_brace_close(inner)?;
-    let total = 1 + close + 1;
+    // 1 (open paren) + close (inner parse) + 1 (close paren).
+    let consumed_bytes = 1 + close + 1;
     let var_name = &inner[..close];
     let Some(first_char) = var_name.chars().next() else {
-        return Some((total, "${}".to_string()));
+        return Some((consumed_bytes, "${}".to_string()));
     };
     if !is_env_name_start(first_char) {
-        return Some((total, format!("${{{var_name}}}")));
+        return Some((consumed_bytes, format!("${{{var_name}}}")));
     }
     if let Some(val) = env_var(var_name) {
-        return Some((total, val));
+        return Some((consumed_bytes, val));
     }
-    Some((total, format!("${{{var_name}}}")))
+    Some((consumed_bytes, format!("${{{var_name}}}")))
 }
 
 fn expand_dollar_var(after_dollar: &str) -> Option<(usize, String)> {

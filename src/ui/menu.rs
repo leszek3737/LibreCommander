@@ -7,7 +7,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::menu::{MENU_ITEMS, MENU_TITLES, menu_dropdown_x, menu_title_width, menu_title_x};
+use crate::menu::{MENUS, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::theme::{ColorPalette, Theme};
 
 const MIN_DROPDOWN_ITEM_WIDTH: usize = 10;
@@ -28,7 +28,8 @@ fn render_menu_title_bar(
     selected_menu: usize,
     colors: &ColorPalette,
 ) {
-    for (i, title) in MENU_TITLES.iter().enumerate() {
+    for (i, entry) in MENUS.iter().enumerate() {
+        let title = entry.title;
         let title_width = menu_title_width(title);
         let style = if i == selected_menu {
             Theme::highlight_bold_with_colors(colors)
@@ -54,7 +55,7 @@ fn render_menu_dropdown(
     selected_item: usize,
     colors: &ColorPalette,
 ) {
-    let items = MENU_ITEMS[active_menu];
+    let items = MENUS[active_menu].items;
     let dropdown_width = u16::try_from(
         items
             .iter()
@@ -132,9 +133,9 @@ pub fn render_menu_bar_with_colors(
     selected_item: usize,
     colors: &ColorPalette,
 ) {
-    let selected_menu = selected_menu.min(MENU_ITEMS.len().saturating_sub(1));
+    let selected_menu = selected_menu.min(MENUS.len().saturating_sub(1));
     render_menu_title_bar(f, menu_bar_area, selected_menu, colors);
-    if !MENU_ITEMS[selected_menu].is_empty() {
+    if !MENUS[selected_menu].items.is_empty() {
         render_menu_dropdown(f, menu_bar_area, selected_menu, selected_item, colors);
     }
 }
@@ -163,7 +164,7 @@ mod tests {
 
     #[test]
     fn render_second_menu_last_item() {
-        render_with(1, MENU_ITEMS[1].len() - 1);
+        render_with(1, MENUS[1].items.len() - 1);
     }
 
     #[test]
@@ -178,7 +179,8 @@ mod tests {
 
     #[test]
     fn render_each_menu_each_item() {
-        for (m, items) in MENU_ITEMS.iter().enumerate() {
+        for (m, entry) in MENUS.iter().enumerate() {
+            let items = entry.items;
             for it in 0..items.len() {
                 render_with(m, it);
             }
