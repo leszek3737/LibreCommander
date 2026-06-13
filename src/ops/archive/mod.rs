@@ -61,7 +61,7 @@ impl std::fmt::Display for ArchiveError {
             ArchiveError::UnsupportedFormat => write!(f, "Unsupported archive format"),
             ArchiveError::InvalidArchive(msg) => write!(f, "Invalid archive: {msg}"),
             ArchiveError::NoValidSources => {
-                write!(f, "No valid sources (all was symlinks or inaccessible)")
+                write!(f, "No valid sources (all were symlinks or inaccessible)")
             }
         }
     }
@@ -334,9 +334,9 @@ fn verify_tar_header(mut reader: impl Read) -> bool {
     buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
 }
 
-fn seek_to_start(mut f: std::fs::File) -> std::fs::File {
-    let _ = std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0));
-    f
+fn seek_to_start(mut f: std::fs::File) -> io::Result<std::fs::File> {
+    std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0))?;
+    Ok(f)
 }
 
 fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
@@ -381,25 +381,28 @@ pub fn detect_format(path: &Path) -> Result<(ArchiveFormat, Option<std::fs::File
         let mut header = [0u8; 8];
         if f.read_exact(&mut header).is_ok() {
             if header[..4] == ZIP_MAGIC {
-                return Ok((ArchiveFormat::Zip, Some(seek_to_start(f))));
+                return Ok((ArchiveFormat::Zip, Some(seek_to_start(f)?)));
             }
             if header[..6] == SEVENZ_MAGIC {
-                return Ok((ArchiveFormat::SevenZ, Some(seek_to_start(f))));
+                return Ok((ArchiveFormat::SevenZ, Some(seek_to_start(f)?)));
             }
             if header[..2] == GZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarGz) {
-                return Ok((ArchiveFormat::TarGz, Some(seek_to_start(f))));
+                return Ok((ArchiveFormat::TarGz, Some(seek_to_start(f)?)));
             }
             if header[..3] == BZ2_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarBz2) {
-                return Ok((ArchiveFormat::TarBz2, Some(seek_to_start(f))));
+                return Ok((ArchiveFormat::TarBz2, Some(seek_to_start(f)?)));
             }
             if header[..6] == XZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarXz) {
-                return Ok((ArchiveFormat::TarXz, Some(seek_to_start(f))));
+                return Ok((ArchiveFormat::TarXz, Some(seek_to_start(f)?)));
             }
             if header[..4] == ZST_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarZst) {
-                return Ok((ArchiveFormat::TarZst, Some(seek_to_start(f))));
+                return Ok((ArchiveFormat::TarZst, Some(seek_to_start(f)?)));
             }
         }
-        open_file = Some(f);
+        // Plain `.tar` has no magic at offset 0 and falls through here. The cursor
+        // is at byte 8 after `read_exact`; rewind so downstream readers (extract,
+        // BufReader) start at the beginning instead of corrupting the stream.
+        open_file = Some(seek_to_start(f)?);
     }
 
     let name = path.file_name().ok_or_else(|| {
@@ -595,5 +598,55 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         assert!(detect_format(root).is_err());
+    }
+
+    // Regression: plain `.tar` has no magic at offset 0, so `detect_format`
+    // returns the handle through the fallback branch. Before the fix the cursor
+    // was left at byte 8 (after `read_exact`), so `extract_tar` -> BufReader read
+    // a truncated, corrupt stream. This drives the full create -> extract round
+    // trip and verifies the extracted contents match byte-for-byte.
+    #[test]
+    fn detect_format_plain_tar_roundtrip_preserves_contents() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        let work = tempfile::tempdir().unwrap();
+        let src_dir = work.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        let f1 = src_dir.join("hello.txt");
+        let f2 = src_dir.join("data.bin");
+        let f1_content = b"hello plain tar world";
+        let f2_content: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&f1, f1_content).unwrap();
+        fs::write(&f2, &f2_content).unwrap();
+
+        let archive_path = work.path().join("out.tar");
+        let (tx, _rx) = mpsc::channel();
+        crate::ops::archive::create::create_archive(
+            &[f1, f2],
+            &archive_path,
+            ArchiveFormat::Tar,
+            &tx,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        // Sanity: plain tar must be detected and the handle rewound to start.
+        let (fmt, _file) = detect_format(&archive_path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::Tar);
+
+        let dest = work.path().join("extract");
+        fs::create_dir(&dest).unwrap();
+        let (tx2, _rx2) = mpsc::channel();
+        crate::ops::archive::extract::extract_archive(
+            &archive_path,
+            &dest,
+            &tx2,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
+        assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);
     }
 }

@@ -12,8 +12,17 @@ use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
     copy_with_progress,
 };
+use crate::debug_log;
 
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
+
+/// Removes a partially written temporary archive, logging any failure instead of
+/// silently dropping the error (mirrors the tar create path).
+fn cleanup_temp_file(path: &Path) {
+    if let Err(e) = fs::remove_file(path) {
+        debug_log!("create_zip: temp cleanup {} failed: {e}", path.display());
+    }
+}
 
 fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {
     match e {
@@ -221,12 +230,12 @@ pub fn create_zip(
 
     match result {
         Err(e) => {
-            let _ = fs::remove_file(&tmp_dest);
+            cleanup_temp_file(&tmp_dest);
             Err(e)
         }
         Ok(()) => {
             if let Err(e) = zip.finish().map_err(map_zip_err) {
-                let _ = fs::remove_file(&tmp_dest);
+                cleanup_temp_file(&tmp_dest);
                 return Err(e);
             }
             fs::rename(&tmp_dest, dest)?;
@@ -259,10 +268,13 @@ fn add_dir_to_zip(
             .to_string_lossy()
             .replace('\\', "/");
 
-        if super::is_symlink_source(&path) {
+        // Single symlink_metadata read: skip symlinks (create-side filter) and
+        // reuse the same metadata to distinguish dir vs file, avoiding a second
+        // syscall.
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
             continue;
         }
-        let meta = fs::symlink_metadata(&path)?;
         if meta.is_dir() {
             zip.add_directory(&name, *options).map_err(map_zip_err)?;
             add_dir_to_zip(zip, base, &path, options, progress, cancel)?;

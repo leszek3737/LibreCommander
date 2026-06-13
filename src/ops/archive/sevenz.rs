@@ -49,6 +49,7 @@ pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 enum SevenzExtractError {
     Canceled,
     PathTraversal(PathBuf),
+    InvalidArchive(String),
     Io(io::Error),
 }
 
@@ -126,8 +127,11 @@ impl<'a> SevenzEntryExtractor<'a> {
             self.extracted_paths.push(outpath);
         } else {
             self.create_parent_if_needed(&outpath)?;
-            super::check_symlink_at_dest(&outpath)
-                .map_err(|e| sevenz_rust::Error::Other(e.to_string().into()))?;
+            super::check_symlink_at_dest(&outpath).map_err(|e| {
+                self.error_slot
+                    .set(Some(SevenzExtractError::InvalidArchive(e.to_string())));
+                sevenz_rust::Error::Other("symlink check failed".into())
+            })?;
             let mut outfile = match super::open_outfile(&outpath) {
                 Ok(f) => f,
                 Err(e) => {
@@ -137,9 +141,11 @@ impl<'a> SevenzEntryExtractor<'a> {
             };
             match copy_with_progress(reader, &mut outfile, self.progress, self.cancel) {
                 Ok(written) => {
-                    self.total_size
-                        .add(written)
-                        .map_err(|e| sevenz_rust::Error::Other(e.to_string().into()))?;
+                    self.total_size.add(written).map_err(|e| {
+                        self.error_slot
+                            .set(Some(SevenzExtractError::InvalidArchive(e.to_string())));
+                        sevenz_rust::Error::Other("total size limit exceeded".into())
+                    })?;
                     self.extracted_paths.push(outpath);
                 }
                 Err(e) => {
@@ -168,6 +174,7 @@ fn translate_extract_error(
         Some(SevenzExtractError::PathTraversal(p)) => {
             ArchiveError::InvalidArchive(format!("path traversal: {}", p.display()))
         }
+        Some(SevenzExtractError::InvalidArchive(msg)) => ArchiveError::InvalidArchive(msg),
         Some(SevenzExtractError::Io(e)) => ArchiveError::Io(e),
         Some(SevenzExtractError::Canceled) => ArchiveError::Io(io::Error::new(
             io::ErrorKind::Interrupted,

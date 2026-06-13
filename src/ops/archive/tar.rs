@@ -45,17 +45,33 @@ fn append_dir_counted(
             }
 
             if ft.is_dir() {
+                // dir->symlink swap guard: `append_dir` and the recursion below
+                // would follow a symlink, so re-check right before treating the
+                // path as a directory (TOCTOU after the filter above).
+                if super::is_symlink_source(&src_path) {
+                    debug_log!(
+                        "append_dir_counted: skipping path that became a symlink: {}",
+                        src_path.display()
+                    );
+                    continue;
+                }
                 builder
                     .append_dir(&arch_path, &src_path)
                     .map_err(ArchiveError::Io)?;
                 stack.push((src_path, arch_path));
             } else {
-                builder
-                    .append_path_with_name(&src_path, &arch_path)
-                    .map_err(ArchiveError::Io)?;
+                // Open the nested file with O_NOFOLLOW to close the TOCTOU window
+                // between the symlink filter above and this open, matching the zip
+                // path. `None` means the entry became a symlink, so skip it.
+                let Some(mut file) = super::open_source_nofollow(&src_path)? else {
+                    continue;
+                };
                 // Report real file bytes so create progress is on the same scale
                 // as extract (per-entry uncompressed size), not inode sizes.
-                let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
+                builder
+                    .append_file(&arch_path, &mut file)
+                    .map_err(ArchiveError::Io)?;
                 let _ = progress.send(bytes);
             }
         }
@@ -74,12 +90,17 @@ pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>,
         let header = entry.header();
 
         let path_bytes = entry.path_bytes();
-        let path_str = std::str::from_utf8(&path_bytes).unwrap_or_else(|e| {
-            debug_log!("list_tar: invalid UTF-8 in tar entry path: {e}");
-            std::str::from_utf8(&path_bytes[..e.valid_up_to()]).unwrap_or("<invalid>")
-        });
+        // Preserve the full path structure on invalid UTF-8 by lossily replacing
+        // only the bad bytes, instead of truncating at the first error.
+        let path_str = match std::str::from_utf8(&path_bytes) {
+            Ok(s) => std::borrow::Cow::Borrowed(s),
+            Err(e) => {
+                debug_log!("list_tar: invalid UTF-8 in tar entry path: {e}");
+                String::from_utf8_lossy(&path_bytes)
+            }
+        };
         entries.push(ArchiveEntry {
-            name: path_str.to_owned().into_boxed_str(),
+            name: path_str.into_owned().into_boxed_str(),
             size: entry.size(),
             compressed_size: 0,
             modified: header
@@ -120,10 +141,16 @@ pub fn extract_tar(
 
             if size > MAX_FILE_SIZE {
                 let path_bytes = entry.path_bytes();
-                let path_str = std::str::from_utf8(&path_bytes).unwrap_or_else(|e| {
-                    debug_log!("extract_tar: invalid UTF-8 in tar entry path: {e}");
-                    std::str::from_utf8(&path_bytes[..e.valid_up_to()]).unwrap_or("<invalid>")
-                });
+                // Preserve the full path structure on invalid UTF-8 by lossily
+                // replacing only the bad bytes, instead of truncating at the first
+                // error.
+                let path_str = match std::str::from_utf8(&path_bytes) {
+                    Ok(s) => std::borrow::Cow::Borrowed(s),
+                    Err(e) => {
+                        debug_log!("extract_tar: invalid UTF-8 in tar entry path: {e}");
+                        String::from_utf8_lossy(&path_bytes)
+                    }
+                };
                 return Err(ArchiveError::InvalidArchive(format!(
                     "entry '{path_str}' size {size} exceeds maximum {MAX_FILE_SIZE}",
                 )));
@@ -296,6 +323,16 @@ fn append_sources(
         super::check_cancel(cancel)?;
 
         if source.is_dir() {
+            // `is_dir()` follows symlinks, so re-check before treating the source
+            // as a directory: skip if it became a symlink after the create-side
+            // filter (dir->symlink swap TOCTOU).
+            if super::is_symlink_source(source) {
+                debug_log!(
+                    "append_sources: skipping source that became a symlink: {}",
+                    source.display()
+                );
+                continue;
+            }
             let dir_name = source
                 .file_name()
                 .ok_or_else(|| ArchiveError::InvalidArchive("Invalid dir name".into()))?;
