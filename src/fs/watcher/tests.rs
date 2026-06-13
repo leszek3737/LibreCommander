@@ -723,9 +723,12 @@ fn from_beyond_pending_from_limit_emits_overflow() {
         "a From past PENDING_FROM_LIMIT must emit Overflow, not buffer unboundedly"
     );
 
-    // The overflowing From must not be buffered: the queue stays capped. If the
-    // bound were removed this would be PENDING_FROM_LIMIT + 1, so the assertion
-    // also guards against a tautological pass.
+    // On overflow the parent's queue is cleared: leaving the buffered Froms in
+    // place would flush them after the 2s timeout as up to PENDING_FROM_LIMIT
+    // stale Deleted events, right after Overflow already triggered a full
+    // refresh. If `entries.clear()` were removed this would still be
+    // PENDING_FROM_LIMIT, so the assertion also guards against a tautological
+    // pass.
     let buffered = watcher
         .pending_from
         .lock()
@@ -733,8 +736,7 @@ fn from_beyond_pending_from_limit_emits_overflow() {
         .get(&parent)
         .map_or(0, |queue| queue.len());
     assert_eq!(
-        buffered,
-        super::PENDING_FROM_LIMIT,
-        "overflow must not append the extra From"
+        buffered, 0,
+        "overflow must clear the parent's queue, not leave stale Froms to flush as Deleted"
     );
 }

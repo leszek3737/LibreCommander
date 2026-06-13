@@ -681,9 +681,20 @@ fn convert_event_with_rename_pairing(
                 // buffering and signal Overflow (full refresh) — consistent with
                 // the channel batch-overflow handling. The unmatched To later
                 // surfaces as a plain Created, which the refresh reconciles.
+                //
+                // Clear the parent's queue before returning: the buffered Froms
+                // would otherwise flush after the 2s timeout as up to
+                // PENDING_FROM_LIMIT stale Deleted events — an event storm right
+                // after we already signalled a full refresh via Overflow. The
+                // Overflow-driven refresh reconciles the final state on its own,
+                // so dropping the buffered Froms is safe (any still-unmatched To
+                // simply surfaces as a Created).
+                let dropped = entries.len();
+                entries.clear();
                 debug_log!(
-                    "pending_from limit hit for {}; emitting Overflow",
-                    path.display()
+                    "pending_from limit hit for {}; clearing {} buffered From(s) and emitting Overflow",
+                    path.display(),
+                    dropped
                 );
                 return vec![WatchEvent::Overflow];
             }
