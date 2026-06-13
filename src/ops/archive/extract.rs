@@ -13,14 +13,30 @@ pub fn extract_archive(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    let format = detect_format(path)?;
+    let (format, file_opt) = detect_format(path)?;
     match format {
-        ArchiveFormat::Zip => extract_zip(path, dest, progress, cancel),
+        ArchiveFormat::Zip => {
+            let file = match file_opt {
+                Some(f) => f,
+                None => std::fs::File::open(path)?,
+            };
+            extract_zip(file, dest, progress, cancel)
+        }
         ArchiveFormat::Tar
         | ArchiveFormat::TarGz
         | ArchiveFormat::TarBz2
         | ArchiveFormat::TarXz
-        | ArchiveFormat::TarZst => extract_tar(path, dest, format, progress, cancel),
-        ArchiveFormat::SevenZ => extract_7z(path, dest, progress, cancel),
+        | ArchiveFormat::TarZst => {
+            let file = match file_opt {
+                Some(f) => f,
+                None => std::fs::File::open(path)?,
+            };
+            extract_tar(file, dest, format, progress, cancel)
+        }
+        ArchiveFormat::SevenZ => {
+            // sevenz_rust reader API requires a path — cannot reuse the file handle
+            drop(file_opt);
+            extract_7z(path, dest, progress, cancel)
+        }
     }
 }
