@@ -792,6 +792,11 @@ fn batch_delete(
         }
     }
 
+    // Final check: catch cancel set during the last item's deletion
+    if !canceled && is_canceled(cancel) {
+        canceled = true;
+    }
+
     BatchReport {
         errors,
         success_count,

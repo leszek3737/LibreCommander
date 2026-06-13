@@ -26,13 +26,7 @@ pub fn create_directory(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)
 }
 
-/// Renames a filesystem entry within its parent directory.
-///
 /// Validates that `new_name` is a single filename component (no separators, no `..`).
-/// Detects same-inode renames (e.g., case-only rename on case-insensitive FS).
-/// On POSIX, the `try_exists` guard is best-effort — `fs::rename` atomically
-/// replaces the destination; true atomic no-replace requires `RENAME_NOREPLACE`
-/// or `renamex_np`, which are out of stdlib.
 fn validate_entry_name(new_name: &str) -> io::Result<()> {
     if new_name.contains('\0') {
         return Err(io::Error::new(
@@ -61,6 +55,12 @@ fn validate_entry_name(new_name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Renames a filesystem entry within its parent directory.
+///
+/// Detects same-inode renames (e.g., case-only rename on case-insensitive FS).
+/// On POSIX, the `try_exists` guard is best-effort — `fs::rename` atomically
+/// replaces the destination; true atomic no-replace requires `RENAME_NOREPLACE`
+/// or `renamex_np`, which are out of stdlib.
 pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
     validate_entry_name(new_name)?;
     let parent = old.parent().ok_or_else(|| {

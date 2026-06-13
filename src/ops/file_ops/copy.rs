@@ -1,3 +1,4 @@
+use crate::debug_log;
 use crate::ops::chunk_copy;
 use crate::ops::helpers::{cleanup_file, lexical_path_starts_with};
 
@@ -127,7 +128,12 @@ pub fn copy_dir_recursive_with_progress(
                 ));
             }
             publish_temp_dir(guard.path(), dest, overwrite, src_perms)?;
-            preserve_timestamps(dest, &fs::metadata(src)?)?;
+            if let Err(e) = preserve_timestamps(dest, &fs::metadata(src)?) {
+                debug_log!(
+                    "warning: failed to preserve timestamps for {}: {e}",
+                    dest.display()
+                );
+            }
             guard.commit();
             Ok(bytes)
         }

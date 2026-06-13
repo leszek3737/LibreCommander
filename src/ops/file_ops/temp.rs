@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::common::remove_any;
+use super::common::{MSG_DEST_EXISTS, remove_any};
 
 const DEFAULT_NAME: &str = "copy";
 const TEMP_NAME_MAX_ATTEMPTS: u32 = 128;
@@ -132,7 +132,7 @@ pub(super) fn publish_temp_dir(
             Ok(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    format!("destination already exists: {}", dest.display()),
+                    format!("{MSG_DEST_EXISTS}: {}", dest.display()),
                 ));
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}

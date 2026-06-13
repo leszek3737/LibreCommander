@@ -41,13 +41,6 @@ pub(super) fn is_dir_meta(meta: &fs::Metadata) -> bool {
     meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
 }
 
-/// Returns true for directory-like reparse points (junctions, dir symlinks).
-/// On non-Windows, delegates to `meta.is_dir()`.
-#[allow(dead_code)]
-pub(super) fn is_dir_reparse(meta: &fs::Metadata) -> bool {
-    is_dir_meta(meta)
-}
-
 /// Mandatory cancel check for callers with a required cancel token.
 pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
     if cancel.load(Ordering::Relaxed) {
@@ -248,6 +241,8 @@ pub(super) fn remove_any(path: &Path) -> io::Result<()> {
     if meta.is_dir() {
         return fs::remove_dir_all(path);
     }
+    // Windows-only: directory symlinks/junctions have is_symlink() + is_dir_meta().
+    // On Unix this branch is unreachable — symlink_metadata symlinks are !is_dir().
     if meta.is_symlink() && is_dir_meta(&meta) {
         return fs::remove_dir(path);
     }
