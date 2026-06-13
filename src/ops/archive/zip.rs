@@ -12,8 +12,17 @@ use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
     copy_with_progress,
 };
+use crate::debug_log;
 
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
+
+/// Removes a partially written temporary archive, logging any failure instead of
+/// silently dropping the error (mirrors the tar create path).
+fn cleanup_temp_file(path: &Path) {
+    if let Err(e) = fs::remove_file(path) {
+        debug_log!("create_zip: temp cleanup {} failed: {e}", path.display());
+    }
+}
 
 fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {
     match e {
@@ -134,12 +143,11 @@ fn extract_zip_entries(
 }
 
 pub fn extract_zip(
-    path: &Path,
+    file: std::fs::File,
     dest: &Path,
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    let file = File::open(path)?;
     let mut archive = ZipArchive::new(file).map_err(map_zip_err)?;
 
     let mut extracted_paths: Vec<PathBuf> = Vec::new();
@@ -163,22 +171,45 @@ fn add_sources_to_zip(
     for source in sources {
         check_cancel(cancel)?;
 
-        // Symlinks already filtered by create_archive before reaching here.
+        // Top-level symlinks are filtered by create_archive; this metadata read
+        // distinguishes dir vs file. Per-entry symlinks are filtered in the walk
+        // (add_dir_to_zip) and the final open is hardened with O_NOFOLLOW.
         let meta = fs::symlink_metadata(source)?;
         if meta.is_dir() {
             add_dir_to_zip(zip, source, source, options, progress, cancel)?;
         } else {
             let name = source
                 .file_name()
-                .ok_or_else(|| ArchiveError::InvalidArchive("Invalid file name".into()))?
+                .ok_or_else(|| {
+                    ArchiveError::InvalidArchive(format!(
+                        "source '{}' has no file name (root paths have none)",
+                        source.display()
+                    ))
+                })?
                 .to_string_lossy();
-            zip.start_file(&*name, *options).map_err(map_zip_err)?;
-            let mut file = File::open(source)?;
-            let bytes = io::copy(&mut file, zip)?;
-            let _ = progress.send(bytes);
+            add_file_to_zip(zip, &name, source, options, progress)?;
         }
     }
 
+    Ok(())
+}
+
+fn add_file_to_zip(
+    zip: &mut zip::ZipWriter<File>,
+    name: &str,
+    source: &Path,
+    options: &SimpleFileOptions,
+    progress: &Sender<u64>,
+) -> Result<(), ArchiveError> {
+    // Open with O_NOFOLLOW before creating the entry so a symlink swapped in
+    // after the create-side filter (TOCTOU) is skipped without leaving an empty
+    // entry behind. `None` means the final component became a symlink.
+    let Some(mut file) = super::open_source_nofollow(source)? else {
+        return Ok(());
+    };
+    zip.start_file(name, *options).map_err(map_zip_err)?;
+    let bytes = io::copy(&mut file, zip)?;
+    let _ = progress.send(bytes);
     Ok(())
 }
 
@@ -199,12 +230,12 @@ pub fn create_zip(
 
     match result {
         Err(e) => {
-            let _ = fs::remove_file(&tmp_dest);
+            cleanup_temp_file(&tmp_dest);
             Err(e)
         }
         Ok(()) => {
             if let Err(e) = zip.finish().map_err(map_zip_err) {
-                let _ = fs::remove_file(&tmp_dest);
+                cleanup_temp_file(&tmp_dest);
                 return Err(e);
             }
             fs::rename(&tmp_dest, dest)?;
@@ -228,22 +259,27 @@ fn add_dir_to_zip(
         let path = entry.path();
         let name = path
             .strip_prefix(base)
-            .map_err(|_| ArchiveError::InvalidArchive("strip_prefix failed".into()))?
+            .map_err(|e| {
+                ArchiveError::InvalidArchive(format!(
+                    "strip_prefix failed for {}: {e}",
+                    path.display()
+                ))
+            })?
             .to_string_lossy()
             .replace('\\', "/");
 
+        // Single symlink_metadata read: skip symlinks (create-side filter) and
+        // reuse the same metadata to distinguish dir vs file, avoiding a second
+        // syscall.
         let meta = fs::symlink_metadata(&path)?;
-        if meta.is_symlink() {
+        if meta.file_type().is_symlink() {
             continue;
         }
         if meta.is_dir() {
             zip.add_directory(&name, *options).map_err(map_zip_err)?;
             add_dir_to_zip(zip, base, &path, options, progress, cancel)?;
         } else {
-            zip.start_file(&name, *options).map_err(map_zip_err)?;
-            let mut file = File::open(&path)?;
-            let bytes = io::copy(&mut file, zip)?;
-            let _ = progress.send(bytes);
+            add_file_to_zip(zip, &name, &path, options, progress)?;
         }
     }
     Ok(())
@@ -255,7 +291,10 @@ fn zip_datetime_to_system_time(dt: zip::DateTime) -> SystemTime {
     let month = dt.month() as u64;
     let day = dt.day() as u64;
 
-    let year = year.max(1970);
+    // year clamped to the ZIP/DOS epoch (1980): zip::DateTime's valid range is
+    // 1980-2107, so earlier years cannot occur in a well-formed archive; the
+    // clamp is a defensive no-op that keeps the arithmetic below non-negative.
+    let year = year.max(1980);
     let month = month.clamp(1, 12);
 
     let leap_years = (year - 1) / 4 - (year - 1) / 100 + (year - 1) / 400;
@@ -302,8 +341,127 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), dest.join("subdir")).unwrap();
 
         let (tx, _rx) = mpsc::channel();
-        let result = extract_zip(&archive_path, &dest, &tx, &AtomicBool::new(false));
+        let result = extract_zip(
+            File::open(&archive_path).unwrap(),
+            &dest,
+            &tx,
+            &AtomicBool::new(false),
+        );
         assert!(result.is_err());
         assert!(!outside.path().join("file.txt").exists());
+    }
+
+    #[test]
+    fn create_zip_basic_with_multiple_files() {
+        let work = tempfile::tempdir().unwrap();
+        let src_dir = work.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        let f1 = src_dir.join("a.txt");
+        let f2 = src_dir.join("b.txt");
+        fs::write(&f1, b"alpha").unwrap();
+        fs::write(&f2, b"beta").unwrap();
+
+        let archive_path = work.path().join("out.zip");
+        let (tx, _rx) = mpsc::channel();
+        let sources = vec![f1, f2];
+        create_zip(&sources, &archive_path, &tx, &AtomicBool::new(false)).unwrap();
+        assert!(archive_path.is_file());
+
+        let file = File::open(&archive_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        assert_eq!(archive.len(), 2);
+
+        let names: std::collections::HashSet<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.iter().any(|n| n == "a.txt"));
+        assert!(names.iter().any(|n| n == "b.txt"));
+    }
+
+    #[test]
+    fn create_zip_canceled_returns_error_without_panicking() {
+        let work = tempfile::tempdir().unwrap();
+        let src_dir = work.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        let f1 = src_dir.join("a.txt");
+        fs::write(&f1, b"alpha").unwrap();
+
+        let archive_path = work.path().join("canceled.zip");
+        let (tx, _rx) = mpsc::channel();
+        // Cancel flag already set: creation must bail out with an Interrupted
+        // error and leave no archive (the temp file is cleaned up).
+        let cancel = AtomicBool::new(true);
+        let result = create_zip(&[f1], &archive_path, &tx, &cancel);
+        assert!(
+            matches!(result, Err(ArchiveError::Io(ref e)) if e.kind() == io::ErrorKind::Interrupted),
+            "expected Interrupted error, got {result:?}"
+        );
+        assert!(!archive_path.exists());
+    }
+
+    #[test]
+    fn create_zip_includes_nested_dir_entries() {
+        let work = tempfile::tempdir().unwrap();
+        let base = work.path().join("root");
+        let sub = base.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("inner.txt"), b"inner").unwrap();
+
+        let archive_path = work.path().join("nested.zip");
+        let (tx, _rx) = mpsc::channel();
+        let sources = vec![base];
+        create_zip(&sources, &archive_path, &tx, &AtomicBool::new(false)).unwrap();
+
+        let file = File::open(&archive_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("inner.txt")),
+            "expected inner.txt entry, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn create_archive_empty_sources_returns_no_valid_sources() {
+        let work = tempfile::tempdir().unwrap();
+        let archive_path = work.path().join("empty.zip");
+        let (tx, _rx) = mpsc::channel();
+        let result = super::super::create::create_archive(
+            &[],
+            &archive_path,
+            super::super::ArchiveFormat::Zip,
+            &tx,
+            &AtomicBool::new(false),
+        );
+        assert!(matches!(result, Err(ArchiveError::NoValidSources)));
+    }
+
+    #[test]
+    fn compression_method_name_covers_all_supported() {
+        assert_eq!(compression_method_name(CompressionMethod::Stored), "Stored");
+        assert_eq!(
+            compression_method_name(CompressionMethod::Deflated),
+            "Deflated"
+        );
+        assert_eq!(
+            compression_method_name(CompressionMethod::Deflate64),
+            "Deflate64"
+        );
+        assert_eq!(compression_method_name(CompressionMethod::Bzip2), "Bzip2");
+        assert_eq!(compression_method_name(CompressionMethod::Lzma), "Lzma");
+        assert_eq!(compression_method_name(CompressionMethod::Ppmd), "Ppmd");
+        assert_eq!(compression_method_name(CompressionMethod::Zstd), "Zstd");
+        assert_eq!(compression_method_name(CompressionMethod::Xz), "Xz");
+        assert_eq!(compression_method_name(CompressionMethod::Aes), "Aes");
+    }
+
+    #[test]
+    fn zip_datetime_handles_minimum_year() {
+        let dt = zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap();
+        let st = zip_datetime_to_system_time(dt);
+        let elapsed = st.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        assert!(elapsed.as_secs() > 0);
     }
 }

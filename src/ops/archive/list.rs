@@ -16,7 +16,7 @@ use super::{ArchiveEntry, ArchiveError, ArchiveFormat, detect_format};
 /// [`ArchiveError::InvalidArchive`] for corrupt archives, or [`ArchiveError::Io`]
 /// on filesystem errors.
 pub fn list_archive(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
-    let format = detect_format(path)?;
+    let (format, _file) = detect_format(path)?;
     match format {
         ArchiveFormat::Zip => list_zip(path),
         ArchiveFormat::Tar

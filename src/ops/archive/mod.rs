@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::SystemTime;
 
+use crate::debug_log;
+
 pub mod create;
 pub mod extract;
 pub mod list;
@@ -15,6 +17,7 @@ pub mod zip;
 pub(crate) const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
 pub(crate) const MAX_TOTAL_ARCHIVE_SIZE: u64 = 256 * 1024 * 1024 * 1024; // 256 GiB
 pub(crate) const MAX_LIST_ENTRIES: usize = 100_000;
+pub(crate) const IO_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveFormat {
@@ -42,6 +45,7 @@ pub enum ArchiveError {
     Io(io::Error),
     UnsupportedFormat,
     InvalidArchive(String),
+    NoValidSources,
 }
 
 impl From<io::Error> for ArchiveError {
@@ -56,6 +60,9 @@ impl std::fmt::Display for ArchiveError {
             ArchiveError::Io(e) => write!(f, "IO error: {e}"),
             ArchiveError::UnsupportedFormat => write!(f, "Unsupported archive format"),
             ArchiveError::InvalidArchive(msg) => write!(f, "Invalid archive: {msg}"),
+            ArchiveError::NoValidSources => {
+                write!(f, "No valid sources (all were symlinks or inaccessible)")
+            }
         }
     }
 }
@@ -64,7 +71,9 @@ impl std::error::Error for ArchiveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ArchiveError::Io(e) => Some(e),
-            ArchiveError::UnsupportedFormat | ArchiveError::InvalidArchive(_) => None,
+            ArchiveError::UnsupportedFormat
+            | ArchiveError::InvalidArchive(_)
+            | ArchiveError::NoValidSources => None,
         }
     }
 }
@@ -137,7 +146,7 @@ pub(crate) fn copy_with_progress(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> io::Result<u64> {
-    let mut buf = [0u8; 65536];
+    let mut buf = [0u8; IO_BUFFER_SIZE];
     let mut total: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -154,6 +163,7 @@ pub(crate) fn copy_with_progress(
         };
         writer.write_all(&buf[..n])?;
         total = total.saturating_add(n as u64);
+        // best-effort: receiver may have dropped
         let _ = progress.send(n as u64);
     }
     writer.flush()?;
@@ -165,10 +175,13 @@ pub(crate) fn cleanup_extracted(paths: &[PathBuf]) {
         let is_dir = fs::symlink_metadata(p)
             .map(|m| m.is_dir() && !m.file_type().is_symlink())
             .unwrap_or(false);
-        if is_dir {
-            let _ = fs::remove_dir_all(p);
+        let result = if is_dir {
+            fs::remove_dir_all(p)
         } else {
-            let _ = fs::remove_file(p);
+            fs::remove_file(p)
+        };
+        if let Err(e) = &result {
+            debug_log!("cleanup_extracted: failed to remove {}: {e}", p.display());
         }
     }
 }
@@ -182,6 +195,43 @@ pub(crate) fn open_outfile(path: &Path) -> io::Result<fs::File> {
         opts.custom_flags(libc::O_NOFOLLOW);
     }
     opts.open(path)
+}
+
+/// Single source of truth for the create-side symlink decision: returns `true`
+/// when `path` is a symlink, so callers skip it rather than following it into a
+/// location chosen by an attacker. Metadata errors (e.g. the path vanished) are
+/// treated as "not a symlink" — the subsequent open is what ultimately fails or
+/// is hardened with `O_NOFOLLOW`.
+pub(crate) fn is_symlink_source(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// Opens a top-level source file for archive creation. On Unix the file is
+/// opened with `O_NOFOLLOW`, closing the TOCTOU window between the create-side
+/// symlink filter (`is_symlink_source`) and this open: if the final component
+/// has been swapped for a symlink, `open()` fails with `ELOOP` and we return
+/// `Ok(None)`, signalling the caller to skip the source consistently with the
+/// filter policy. Non-Unix platforms keep the plain open fallback.
+pub(crate) fn open_source_nofollow(path: &Path) -> Result<Option<fs::File>, ArchiveError> {
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    match opts.open(path) {
+        Ok(file) => Ok(Some(file)),
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            debug_log!(
+                "open_source_nofollow: skipping symlinked source {}",
+                path.display()
+            );
+            Ok(None)
+        }
+        Err(e) => Err(ArchiveError::Io(e)),
+    }
 }
 
 pub(crate) fn sanitize_entry_path(
@@ -276,27 +326,26 @@ fn has_ext_ignore_case(name: &str, ext: &str) -> bool {
         && name.as_bytes()[name.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes())
 }
 
+fn verify_tar_header(mut reader: impl Read) -> bool {
+    let mut buf = [0u8; TAR_BLOCK_SIZE];
+    if reader.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
+}
+
+fn seek_to_start(mut f: std::fs::File) -> io::Result<std::fs::File> {
+    std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0))?;
+    Ok(f)
+}
+
 fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
     if std::io::Seek::seek(file, std::io::SeekFrom::Start(0)).is_err() {
         return false;
     }
     match format {
-        ArchiveFormat::TarGz => {
-            let mut reader = flate2::read::GzDecoder::new(file);
-            let mut buf = [0u8; TAR_BLOCK_SIZE];
-            if reader.read_exact(&mut buf).is_err() {
-                return false;
-            }
-            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
-        }
-        ArchiveFormat::TarBz2 => {
-            let mut reader = bzip2::read::BzDecoder::new(file);
-            let mut buf = [0u8; TAR_BLOCK_SIZE];
-            if reader.read_exact(&mut buf).is_err() {
-                return false;
-            }
-            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
-        }
+        ArchiveFormat::TarGz => verify_tar_header(flate2::read::GzDecoder::new(file)),
+        ArchiveFormat::TarBz2 => verify_tar_header(bzip2::read::BzDecoder::new(file)),
         ArchiveFormat::TarXz => {
             let mut buf = [0u8; TAR_BLOCK_SIZE];
             let mut cursor = io::Cursor::new(&mut buf[..]);
@@ -305,70 +354,75 @@ fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
             cursor.position() as usize >= TAR_BLOCK_SIZE
                 && buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
         }
-        ArchiveFormat::TarZst => {
-            let mut reader = match zstd::stream::read::Decoder::new(file) {
-                Ok(r) => r,
-                Err(_) => return false,
-            };
-            let mut buf = [0u8; TAR_BLOCK_SIZE];
-            if reader.read_exact(&mut buf).is_err() {
-                return false;
-            }
-            buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
-        }
+        ArchiveFormat::TarZst => match zstd::stream::read::Decoder::new(file) {
+            Ok(reader) => verify_tar_header(reader),
+            Err(_) => false,
+        },
         _ => false,
     }
 }
 
-pub fn detect_format(path: &Path) -> Result<ArchiveFormat, ArchiveError> {
+pub fn detect_format(path: &Path) -> Result<(ArchiveFormat, Option<std::fs::File>), ArchiveError> {
+    const EXT_TABLE: &[(&[&str], ArchiveFormat)] = &[
+        (&[".zip"], ArchiveFormat::Zip),
+        (&[".tar.gz", ".tgz"], ArchiveFormat::TarGz),
+        (&[".tar.bz2", ".tbz", ".tbz2"], ArchiveFormat::TarBz2),
+        (&[".tar.xz", ".txz"], ArchiveFormat::TarXz),
+        (&[".tar.zst", ".tzst"], ArchiveFormat::TarZst),
+        (&[".tar"], ArchiveFormat::Tar),
+        (&[".7z"], ArchiveFormat::SevenZ),
+    ];
+
+    let mut open_file: Option<std::fs::File> = None;
+
     if path.is_file()
         && let Ok(mut f) = std::fs::File::open(path)
     {
         let mut header = [0u8; 8];
         if f.read_exact(&mut header).is_ok() {
             if header[..4] == ZIP_MAGIC {
-                return Ok(ArchiveFormat::Zip);
+                return Ok((ArchiveFormat::Zip, Some(seek_to_start(f)?)));
             }
             if header[..6] == SEVENZ_MAGIC {
-                return Ok(ArchiveFormat::SevenZ);
+                return Ok((ArchiveFormat::SevenZ, Some(seek_to_start(f)?)));
             }
             if header[..2] == GZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarGz) {
-                return Ok(ArchiveFormat::TarGz);
+                return Ok((ArchiveFormat::TarGz, Some(seek_to_start(f)?)));
             }
             if header[..3] == BZ2_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarBz2) {
-                return Ok(ArchiveFormat::TarBz2);
+                return Ok((ArchiveFormat::TarBz2, Some(seek_to_start(f)?)));
             }
             if header[..6] == XZ_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarXz) {
-                return Ok(ArchiveFormat::TarXz);
+                return Ok((ArchiveFormat::TarXz, Some(seek_to_start(f)?)));
             }
             if header[..4] == ZST_MAGIC && verify_tar_inside(&mut f, ArchiveFormat::TarZst) {
-                return Ok(ArchiveFormat::TarZst);
+                return Ok((ArchiveFormat::TarZst, Some(seek_to_start(f)?)));
             }
+        }
+        // Plain `.tar` has no magic at offset 0 and falls through here. The cursor
+        // is at byte 8 after `read_exact`; rewind so downstream readers (extract,
+        // BufReader) start at the beginning instead of corrupting the stream.
+        open_file = Some(seek_to_start(f)?);
+    }
+
+    let name = path.file_name().ok_or_else(|| {
+        ArchiveError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot determine archive format: path has no file name: {}",
+                path.display()
+            ),
+        ))
+    })?;
+    let name = name.to_string_lossy();
+
+    for &(exts, fmt) in EXT_TABLE {
+        if exts.iter().any(|ext| has_ext_ignore_case(&name, ext)) {
+            return Ok((fmt, open_file));
         }
     }
 
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-
-    if has_ext_ignore_case(&name, ".zip") {
-        Ok(ArchiveFormat::Zip)
-    } else if has_ext_ignore_case(&name, ".tar.gz") || has_ext_ignore_case(&name, ".tgz") {
-        Ok(ArchiveFormat::TarGz)
-    } else if has_ext_ignore_case(&name, ".tar.bz2")
-        || has_ext_ignore_case(&name, ".tbz")
-        || has_ext_ignore_case(&name, ".tbz2")
-    {
-        Ok(ArchiveFormat::TarBz2)
-    } else if has_ext_ignore_case(&name, ".tar.xz") || has_ext_ignore_case(&name, ".txz") {
-        Ok(ArchiveFormat::TarXz)
-    } else if has_ext_ignore_case(&name, ".tar.zst") || has_ext_ignore_case(&name, ".tzst") {
-        Ok(ArchiveFormat::TarZst)
-    } else if has_ext_ignore_case(&name, ".tar") {
-        Ok(ArchiveFormat::Tar)
-    } else if has_ext_ignore_case(&name, ".7z") {
-        Ok(ArchiveFormat::SevenZ)
-    } else {
-        Err(ArchiveError::UnsupportedFormat)
-    }
+    Err(ArchiveError::UnsupportedFormat)
 }
 
 #[cfg(test)]
@@ -405,5 +459,194 @@ mod tests {
         let real = dest.path().join("real");
         fs::create_dir(&real).unwrap();
         assert!(verify_within_dest(&canonical_dest, &real).is_ok());
+    }
+
+    fn make_ext_file(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, b"").unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn detect_format_zip_by_extension() {
+        let (_dir, path) = make_ext_file("test.zip");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::Zip);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_tar_gz_by_extension() {
+        let (_dir, path) = make_ext_file("test.tar.gz");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarGz);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_tar_bz2_by_extension() {
+        let (_dir, path) = make_ext_file("test.tar.bz2");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarBz2);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_tar_xz_by_extension() {
+        let (_dir, path) = make_ext_file("test.tar.xz");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarXz);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_tar_zst_by_extension() {
+        let (_dir, path) = make_ext_file("test.tar.zst");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarZst);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_tar_by_extension() {
+        let (_dir, path) = make_ext_file("test.tar");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::Tar);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_7z_by_extension() {
+        let (_dir, path) = make_ext_file("test.7z");
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::SevenZ);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_tgz_by_extension() {
+        let (_dir, path) = make_ext_file("test.tgz");
+        let (fmt, _file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarGz);
+    }
+
+    #[test]
+    fn detect_format_tbz_by_extension() {
+        let (_dir, path) = make_ext_file("test.tbz2");
+        let (fmt, _file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarBz2);
+    }
+
+    #[test]
+    fn detect_format_txz_by_extension() {
+        let (_dir, path) = make_ext_file("test.txz");
+        let (fmt, _file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarXz);
+    }
+
+    #[test]
+    fn detect_format_unknown_extension_returns_error() {
+        let (_dir, path) = make_ext_file("test.txt");
+        assert!(matches!(
+            detect_format(&path),
+            Err(ArchiveError::UnsupportedFormat)
+        ));
+    }
+
+    #[test]
+    fn detect_format_magic_bytes_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.dat");
+        let mut content = vec![0x50, 0x4B, 0x03, 0x04];
+        content.extend_from_slice(&[0u8; 4]);
+        fs::write(&path, &content).unwrap();
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::Zip);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_magic_bytes_7z() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.dat");
+        let mut content = vec![0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+        content.extend_from_slice(&[0u8; 2]);
+        fs::write(&path, &content).unwrap();
+        let (fmt, file) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::SevenZ);
+        assert!(file.is_some());
+    }
+
+    #[test]
+    fn detect_format_case_insensitive_extension() {
+        let (_dir, path) = make_ext_file("test.ZIP");
+        let (fmt, _) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::Zip);
+
+        let (_dir, path) = make_ext_file("test.TAR.GZ");
+        let (fmt, _) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarGz);
+
+        let (_dir, path) = make_ext_file("test.7Z");
+        let (fmt, _) = detect_format(&path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::SevenZ);
+    }
+
+    #[test]
+    fn detect_format_path_without_filename_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(detect_format(root).is_err());
+    }
+
+    // Regression: plain `.tar` has no magic at offset 0, so `detect_format`
+    // returns the handle through the fallback branch. Before the fix the cursor
+    // was left at byte 8 (after `read_exact`), so `extract_tar` -> BufReader read
+    // a truncated, corrupt stream. This drives the full create -> extract round
+    // trip and verifies the extracted contents match byte-for-byte.
+    #[test]
+    fn detect_format_plain_tar_roundtrip_preserves_contents() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        let work = tempfile::tempdir().unwrap();
+        let src_dir = work.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        let f1 = src_dir.join("hello.txt");
+        let f2 = src_dir.join("data.bin");
+        let f1_content = b"hello plain tar world";
+        let f2_content: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&f1, f1_content).unwrap();
+        fs::write(&f2, &f2_content).unwrap();
+
+        let archive_path = work.path().join("out.tar");
+        let (tx, _rx) = mpsc::channel();
+        crate::ops::archive::create::create_archive(
+            &[f1, f2],
+            &archive_path,
+            ArchiveFormat::Tar,
+            &tx,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        // Sanity: plain tar must be detected and the handle rewound to start.
+        let (fmt, _file) = detect_format(&archive_path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::Tar);
+
+        let dest = work.path().join("extract");
+        fs::create_dir(&dest).unwrap();
+        let (tx2, _rx2) = mpsc::channel();
+        crate::ops::archive::extract::extract_archive(
+            &archive_path,
+            &dest,
+            &tx2,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
+        assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);
     }
 }

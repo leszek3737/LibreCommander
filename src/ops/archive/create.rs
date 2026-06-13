@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -17,10 +16,10 @@ pub fn create_archive(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    let valid_sources: Vec<PathBuf> = sources
+    let non_symlink_sources: Vec<PathBuf> = sources
         .iter()
         .filter(|s| {
-            if fs::symlink_metadata(s).is_ok_and(|m| m.is_symlink()) {
+            if super::is_symlink_source(s) {
                 debug_log!("create_archive: skipping symlink {}", s.display());
                 false
             } else {
@@ -30,19 +29,17 @@ pub fn create_archive(
         .cloned()
         .collect();
 
-    if valid_sources.is_empty() {
-        return Err(ArchiveError::InvalidArchive(
-            "no valid sources (all were symlinks)".into(),
-        ));
+    if non_symlink_sources.is_empty() {
+        return Err(ArchiveError::NoValidSources);
     }
 
     match format {
-        ArchiveFormat::Zip => create_zip(&valid_sources, dest, progress, cancel),
+        ArchiveFormat::Zip => create_zip(&non_symlink_sources, dest, progress, cancel),
         ArchiveFormat::Tar
         | ArchiveFormat::TarGz
         | ArchiveFormat::TarBz2
         | ArchiveFormat::TarXz
-        | ArchiveFormat::TarZst => create_tar(&valid_sources, dest, format, progress, cancel),
-        ArchiveFormat::SevenZ => create_7z(&valid_sources, dest, progress, cancel),
+        | ArchiveFormat::TarZst => create_tar(&non_symlink_sources, dest, format, progress, cancel),
+        ArchiveFormat::SevenZ => create_7z(&non_symlink_sources, dest, progress, cancel),
     }
 }
