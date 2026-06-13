@@ -1,3 +1,4 @@
+use crate::debug_log;
 use crate::ops::chunk_copy;
 use crate::ops::helpers::{cleanup_file, lexical_path_starts_with};
 
@@ -7,6 +8,8 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
+#[cfg(test)]
+use super::common::MSG_DEST_EXISTS;
 use super::common::{
     MAX_RECURSION_DEPTH, canonicalize_existing_path, canonicalize_with_nearest_existing_parent,
     check_canceled, ensure_destination_absent, reject_same_file, validate_copy_targets,
@@ -50,7 +53,7 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
                 cleanup_file(&temp);
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    format!("destination already exists: {}", dest.display()),
+                    format!("{MSG_DEST_EXISTS}: {}", dest.display()),
                 ));
             }
             Err(_) => {}
@@ -63,6 +66,11 @@ pub fn copy_file(src: &Path, dest: &Path, overwrite: bool) -> io::Result<u64> {
     Ok(bytes)
 }
 
+/// Copies a file with progress reporting.
+///
+/// Validation strategy: performs same-file rejection and destination existence
+/// checks inline. Does not call `validate_copy_targets` (which is directory-specific:
+/// parent/child path containment checks don't apply to single files).
 pub fn copy_file_with_progress(
     src: &Path,
     dest: &Path,
@@ -101,6 +109,9 @@ pub fn copy_dir_recursive_with_progress(
         overwrite,
     };
     let mut guard = reserve_temp_dir_for(dest)?;
+    // Note: fs::metadata(src) is also fetched inside _inner at depth=0.
+    // fs::Metadata doesn't impl Clone, so passing it down isn't straightforward.
+    // The redundant syscall is one stat() per top-level dir copy — negligible.
     let src_perms = fs::metadata(src)?.permissions();
     let src_root = canonicalize_existing_path(src)?;
     let result = copy_dir_recursive_with_progress_inner(src, guard.path(), &ctx, 0);
@@ -117,6 +128,12 @@ pub fn copy_dir_recursive_with_progress(
                 ));
             }
             publish_temp_dir(guard.path(), dest, overwrite, src_perms)?;
+            if let Err(e) = preserve_timestamps(dest, &fs::metadata(src)?) {
+                debug_log!(
+                    "warning: failed to preserve timestamps for {}: {e}",
+                    dest.display()
+                );
+            }
             guard.commit();
             Ok(bytes)
         }

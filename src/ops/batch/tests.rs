@@ -3,6 +3,8 @@ use crate::app::types::{PendingAction, TransferAction};
 use std::fs;
 use std::sync::atomic::Ordering;
 
+const EXPECTED_DUP_MSG: &str = "duplicate destination";
+
 fn make_file(dir: &Path, name: &str, content: &[u8]) -> PathBuf {
     let p = dir.join(name);
     fs::write(&p, content).unwrap();
@@ -52,7 +54,28 @@ fn batch_copy_duplicate_dest_reports_error() {
     assert_eq!(report.success_count, 1);
     assert_eq!(report.errors.len(), 1);
     assert!(!report.canceled);
-    assert!(report.errors[0].contains("duplicate destination"));
+    assert!(report.errors[0].contains(EXPECTED_DUP_MSG));
+}
+
+#[test]
+fn batch_copy_overwrite_true_replaces_existing() {
+    let src = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+
+    let f1 = make_file(src.path(), "a.txt", b"new content");
+    make_file(dest.path(), "a.txt", b"old content");
+
+    let action = PendingAction::Copy(TransferAction {
+        sources: vec![f1],
+        dest: dest.path().to_path_buf(),
+        overwrite: true,
+    });
+
+    let report = execute_batch(action);
+
+    assert_eq!(report.success_count, 1);
+    assert!(report.errors.is_empty());
+    assert_eq!(fs::read(dest.path().join("a.txt")).unwrap(), b"new content");
 }
 
 #[test]
@@ -103,12 +126,7 @@ fn batch_delete_files() {
 #[test]
 fn batch_delete_nonexistent_reports_error() {
     let action = PendingAction::Delete {
-        paths: vec![
-            tempfile::tempdir()
-                .unwrap()
-                .path()
-                .join("lc_nonexistent_test_file_xyz"),
-        ],
+        paths: vec![PathBuf::from("lc_nonexistent_delete_test_xyz")],
     };
 
     let report = execute_batch(action);
@@ -320,12 +338,7 @@ fn empty_sources_batch_move_returns_empty() {
 fn batch_copy_nonexistent_source_reports_error() {
     let dest_dir = tempfile::tempdir().unwrap();
     let action = PendingAction::Copy(TransferAction {
-        sources: vec![
-            tempfile::tempdir()
-                .unwrap()
-                .path()
-                .join("lc_nonexistent_copy_test_xyz"),
-        ],
+        sources: vec![PathBuf::from("lc_nonexistent_copy_test_xyz")],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
     });
@@ -339,12 +352,7 @@ fn batch_copy_nonexistent_source_reports_error() {
 fn batch_move_nonexistent_source_reports_error() {
     let dest_dir = tempfile::tempdir().unwrap();
     let action = PendingAction::Move(TransferAction {
-        sources: vec![
-            tempfile::tempdir()
-                .unwrap()
-                .path()
-                .join("lc_nonexistent_move_test_xyz"),
-        ],
+        sources: vec![PathBuf::from("lc_nonexistent_move_test_xyz")],
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
     });
@@ -691,4 +699,80 @@ fn batch_delete_symlink_preserves_target() {
     assert!(!link.exists());
     assert!(target.exists());
     assert_eq!(fs::read(&target).unwrap(), b"keep me");
+}
+
+#[test]
+fn format_summary_canceled_with_errors() {
+    let report = BatchReport {
+        errors: vec!["x: permission denied".into()],
+        success_count: 2,
+        canceled: true,
+        action_label: "Copy",
+    };
+    // Canceled takes priority — errors not included in summary.
+    assert_eq!(report.format_summary(), "Copied canceled after 2 file(s)");
+}
+
+#[test]
+fn format_summary_canceled_all_errors() {
+    let report = BatchReport {
+        errors: vec!["a: fail".into(), "b: fail".into()],
+        success_count: 0,
+        canceled: true,
+        action_label: "Delete",
+    };
+    // Canceled with zero progress — errors not included.
+    assert_eq!(report.format_summary(), "Deleted canceled");
+}
+
+#[test]
+fn batch_move_cancel_reports_canceled() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+
+    make_file(src_dir.path(), "a.txt", b"content");
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let mut progress = |_p: BatchProgress| {
+        cancel.store(true, Ordering::Relaxed);
+    };
+    let sources = vec![src_dir.path().join("a.txt")];
+    let _sizes = helpers::path_sizes(&sources);
+    let action_label = "Move";
+
+    let report = execute_batch_generic(
+        &sources,
+        dest_dir.path(),
+        |src, dest, on_progress| move_entry(src, dest, &cancel, on_progress, false),
+        &mut progress,
+        &Some(Arc::clone(&cancel)),
+        action_label,
+    );
+
+    assert!(report.canceled);
+}
+
+#[test]
+fn batch_copy_error_has_expected_kind() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+
+    let nonexistent = src_dir.path().join("no_such_file.txt");
+
+    let action = PendingAction::Copy(TransferAction {
+        sources: vec![nonexistent],
+        dest: dest_dir.path().to_path_buf(),
+        overwrite: false,
+    });
+
+    let report = execute_batch(action);
+    assert_eq!(report.success_count, 0);
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+        report.errors[0].contains("entity not found")
+            || report.errors[0].contains("No such file")
+            || report.errors[0].contains("Not Found"),
+        "expected not-found error, got: {}",
+        report.errors[0]
+    );
 }

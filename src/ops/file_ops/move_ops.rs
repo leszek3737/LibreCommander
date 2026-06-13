@@ -4,8 +4,6 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 
-use crate::debug_log;
-
 use super::common::{
     check_canceled, ensure_destination_absent, path_contains, remove_any, same_inode,
 };
@@ -52,28 +50,20 @@ impl MoveKind {
                 copy_symlink(src, dest, overwrite)
             }
             MoveKind::Directory => {
+                // Byte count discarded — move operations track progress via
+                // the `progress_tx` channel only, not via the return value.
                 copy_dir_recursive_with_progress(src, dest, progress_tx, cancel, overwrite)
-                    .map(|_| ())
+                    .map(|_bytes| ())
             }
             MoveKind::File => {
-                copy_file_with_progress(src, dest, progress_tx, cancel, overwrite).map(|_| ())
+                copy_file_with_progress(src, dest, progress_tx, cancel, overwrite).map(|_bytes| ())
             }
         }
     }
 
     fn remove_src(self, src: &Path, cancel: &AtomicBool) -> io::Result<()> {
         match self {
-            MoveKind::Symlink => {
-                if let Ok(meta) = fs::symlink_metadata(src) {
-                    if meta.is_dir() {
-                        fs::remove_dir(src)
-                    } else {
-                        fs::remove_file(src)
-                    }
-                } else {
-                    fs::remove_file(src)
-                }
-            }
+            MoveKind::Symlink => remove_any(src),
             MoveKind::File => fs::remove_file(src),
             MoveKind::Directory => delete_dir_recursive_cancelable(src, cancel),
         }
@@ -137,12 +127,12 @@ fn move_entry_impl(
         if src_meta.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "source and destination are the same inode (e.g. case-only rename on a case-insensitive filesystem)",
+                "source and destination are the same symlink",
             ));
         }
         return fs::rename(src, dest);
     }
-    if src.is_dir() && path_contains(src, dest)? {
+    if src_meta.file_type().is_dir() && path_contains(src, dest)? {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cannot move directory into its descendant",
@@ -180,18 +170,17 @@ fn copy_then_remove_src(
     rollback_fn: impl FnOnce() -> io::Result<()>,
     entry_kind: &str,
 ) -> io::Result<()> {
-    // Edge case: if the copy succeeds but the cancel check fires and
-    // rollback also fails, `dest` is left on disk (dangling partial copy).
-    // We log the rollback failure and propagate the cancel error; the
-    // caller must notice the leftover `dest`.
     copy_fn()?;
     if let Err(err) = check_canceled(cancel) {
         if let Err(rollback_err) = rollback_fn() {
-            debug_log!(
-                "cross-device move canceled after copy: failed to rollback (remove dest) '{}': {}",
+            return Err(io::Error::other(format!(
+                "cross-device move canceled after copy, rollback also failed: \
+                 dest '{}' left on disk ({}): {}, rollback: {}",
                 dest.display(),
-                rollback_err
-            );
+                entry_kind,
+                err,
+                rollback_err,
+            )));
         }
         return Err(err);
     }

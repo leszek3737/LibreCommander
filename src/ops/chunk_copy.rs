@@ -8,8 +8,17 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// 256 KiB — balances syscall overhead against memory use. Above 512 KiB
+/// yields diminishing returns on modern SSDs; below 64 KiB incurs excessive
+/// `read()`/`write()` pairs.
 const BUFFER_SIZE: usize = 256 * 1024;
+/// 50 ms throttle prevents flooding the progress channel with updates faster
+/// than the UI can render (200 ms spinner tick). Below 25 ms spams the channel;
+/// above 100 ms makes the progress bar feel unresponsive.
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(50);
+/// 64 KiB — minimum accumulated bytes before checking the throttle timer.
+/// Avoids calling `Instant::now()` on every small `write()` chunk while
+/// keeping the granularity fine enough for responsive progress display.
 const PROGRESS_CHECK_BYTES: usize = 64 * 1024;
 
 pub fn copy_with_progress(
@@ -79,16 +88,8 @@ fn copy_to_temp(
     let mut pending_delta = 0_u64;
     let mut last_progress = Instant::now() - PROGRESS_THROTTLE;
     let mut bytes_since_progress_check = 0_usize;
-    let mut receiver_alive = true;
 
     loop {
-        if !receiver_alive {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "receiver disconnected",
-            ));
-        }
-
         let bytes_read = reader.read(&mut buf)?;
         if bytes_read == 0 {
             break;
@@ -101,14 +102,14 @@ fn copy_to_temp(
         bytes_since_progress_check += bytes_read;
 
         if bytes_since_progress_check >= PROGRESS_CHECK_BYTES {
-            // Reset the accumulator so the next throttle check starts from zero.
-            // This is correct despite appearances — we must not carry leftover
-            // bytes from a skipped throttle window into the next cycle.
             bytes_since_progress_check = 0;
             let now = Instant::now();
             if now.duration_since(last_progress) >= PROGRESS_THROTTLE {
                 if progress_tx.send(pending_delta).is_err() {
-                    receiver_alive = false;
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "receiver disconnected",
+                    ));
                 }
                 pending_delta = 0;
                 last_progress = now;

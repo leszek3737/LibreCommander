@@ -59,7 +59,7 @@ mod tests {
             id,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos()
         ));
         let _ = std::fs::remove_dir_all(&path);
@@ -834,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_dir_recursive_with_progress_cancel_mid_copy() {
+    fn test_copy_dir_recursive_with_progress_cancel_before_start_via_thread() {
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
         std::fs::create_dir(&src).unwrap();
@@ -862,20 +862,14 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_dir_recursive_rejects_critical_dir() {
-        if std::fs::symlink_metadata("/etc").is_ok_and(|m| !m.permissions().readonly()) {
-            return;
-        }
-        let err = delete_dir_recursive(std::path::Path::new("/etc")).unwrap_err();
+    fn test_delete_dir_recursive_rejects_root_directory() {
+        let err = delete_dir_recursive(std::path::Path::new("/")).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]
     fn test_delete_dir_recursive_rejects_critical_dir_prefix() {
-        if std::fs::symlink_metadata("/etc").is_ok_and(|m| !m.permissions().readonly()) {
-            return;
-        }
-        let err = delete_dir_recursive(std::path::Path::new("/etc/hosts")).unwrap_err();
+        let err = delete_dir_recursive(std::path::Path::new("/usr/local/share")).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 

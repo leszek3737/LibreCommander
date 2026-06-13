@@ -474,3 +474,74 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
         })
     ));
 }
+
+#[test]
+fn check_overwrite_pending_action_none_returns_none() {
+    let state = AppState {
+        pending_action: None,
+        ..Default::default()
+    };
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
+
+#[test]
+fn check_overwrite_copy_overwrite_true_no_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dest = tmp.path().join("dest");
+    setup_src_dest(&src, &dest, &["file.txt"]);
+    setup_dest_files(&dest, &["file.txt"]);
+
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![src.join("file.txt")],
+            dest,
+            overwrite: true,
+        })),
+        ..Default::default()
+    };
+
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
+
+#[test]
+fn check_overwrite_copy_duplicate_sources_different_dirs_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src_a = tmp.path().join("a");
+    let src_b = tmp.path().join("b");
+    let dest = tmp.path().join("dest");
+    setup_src_dest(&src_a, &dest, &["same.txt"]);
+    setup_src_dest(&src_b, &dest, &["same.txt"]);
+    setup_dest_files(&dest, &["same.txt"]);
+
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![src_a.join("same.txt"), src_b.join("same.txt")],
+            dest,
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+
+    let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
+    assert_eq!(conflicts, vec!["same.txt", "same.txt"]);
+}
+
+#[test]
+fn check_overwrite_copy_nonexistent_dest_no_panic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let nonexistent_dest = tmp.path().join("nonexistent");
+    setup_src_dest(&src, &nonexistent_dest, &["file.txt"]);
+
+    let state = AppState {
+        pending_action: Some(PendingAction::Copy(TransferAction {
+            sources: vec![src.join("file.txt")],
+            dest: nonexistent_dest,
+            overwrite: false,
+        })),
+        ..Default::default()
+    };
+
+    assert!(dialogs::check_overwrite_conflict(&state).is_none());
+}
