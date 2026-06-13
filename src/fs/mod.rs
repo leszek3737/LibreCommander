@@ -3,8 +3,8 @@
 //! This crate module provides all low-level filesystem access needed by the
 //! TUI panels and background jobs:
 //!
-//! - **Directory reading** ([`reader`]) — parallel directory listings via
-//!   **rayon** with uid/gid name resolution and sorted [`FileEntry`] results.
+//! - **Directory reading** ([`reader`]) — sequential directory listings with
+//!   uid/gid name resolution and sorted [`FileEntry`] results.
 //! - **Filesystem watching** ([`watcher`]) — real-time change notifications
 //!   powered by the **notify** crate (debounced, cross-platform, with macOS
 //!   `FSEvents` / Linux `inotify` backends).
@@ -12,8 +12,16 @@
 //!   `.`/`..` normalization, and path-component helpers.
 //! - **Cha metadata** ([`cha`]) — compact file attribute struct (permissions,
 //!   size, timestamps, symlink target) abstracting Unix vs non-Unix `Metadata`.
+//!   "Cha" is an opaque short name (no acronym expansion is defined in this
+//!   codebase) for a small snapshot of a file's metadata/characteristics.
 
 pub mod cha;
 pub mod path;
 pub mod reader;
 pub mod watcher;
+
+// Convenience re-exports of each submodule's primary type. Additive only — the
+// `pub mod` declarations above stay so existing fully-qualified paths still work.
+pub use cha::Cha;
+pub use reader::FileEntry;
+pub use watcher::WatchEvent;

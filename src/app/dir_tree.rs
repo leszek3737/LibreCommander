@@ -3,27 +3,35 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
 
+/// Stable per-file identity used for symlink-cycle detection.
+///
+/// Returns `None` when the platform cannot provide reliable identifiers, so
+/// callers MUST then skip cycle detection rather than substitute a colliding
+/// sentinel (a shared sentinel would make two distinct directories look like the
+/// same node and trigger false-positive cycle suppression).
 #[cfg(unix)]
-fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
+fn file_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    (metadata.dev(), metadata.ino())
+    Some((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn file_key(metadata: &std::fs::Metadata) -> (u64, u64) {
+fn file_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     use std::os::windows::fs::MetadataExt;
     // Called once per entry during the symlink-loop walk — keep it allocation-
-    // and lock-free. Missing fields fall back to 0 silently (debug_log would
-    // take a blocking mutex + file I/O on this hot path).
-    (
-        metadata.volume_serial_number().map(u64::from).unwrap_or(0),
-        metadata.file_index().unwrap_or(0),
-    )
+    // and lock-free (debug_log would take a blocking mutex + file I/O on this
+    // hot path). When either identifier is unavailable we return `None` so the
+    // caller skips cycle detection; a `(0, 0)` fallback would collide and make
+    // distinct directories falsely register as a cycle.
+    let volume = metadata.volume_serial_number()?;
+    let index = metadata.file_index()?;
+    Some((u64::from(volume), index))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn file_key(_metadata: &std::fs::Metadata) -> (u64, u64) {
-    (0, 0)
+fn file_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    // No stable identifiers on this platform: skip cycle detection entirely.
+    None
 }
 
 use crate::ops::sorting::cmp_ignore_case;
@@ -92,8 +100,10 @@ pub fn build_tree_with_diagnostics(
 }
 
 fn insert_root_key(root: &Path, visited: &mut HashSet<(u64, u64)>) {
-    if let Ok(meta) = root.metadata() {
-        let _ = visited.insert(file_key(&meta));
+    if let Ok(meta) = root.metadata()
+        && let Some(key) = file_key(&meta)
+    {
+        let _ = visited.insert(key);
     }
 }
 
@@ -118,8 +128,13 @@ fn build_tree_recursive(
         }
     };
 
-    let mut children: Vec<TreeEntry> = Vec::with_capacity(16);
-    for entry in read_dir {
+    // Collect the raw entries first so `children` can be sized from the actual
+    // entry count instead of a fixed guess (the old `with_capacity(16)` caused
+    // ~7 reallocations at ~1000 entries). The intermediate Vec holds cheap
+    // `DirEntry` results; the costly `TreeEntry` Vec is then allocated once.
+    let raw_entries: Vec<_> = read_dir.collect();
+    let mut children: Vec<TreeEntry> = Vec::with_capacity(raw_entries.len());
+    for entry in raw_entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
@@ -141,20 +156,8 @@ fn build_tree_recursive(
             continue;
         }
 
-        // Prefer entry.file_type() which is already cached from read_dir on
-        // most platforms, avoiding a syscall. Only for symlinks or when
-        // file_type() fails do we fall back to path metadata.
-        let is_dir = match entry.file_type() {
-            Ok(ft) if !ft.is_symlink() => ft.is_dir(),
-            Ok(_) => path.metadata().is_ok_and(|m| m.is_dir()),
-            Err(err) => {
-                diagnostics.push(TreeDiagnostic {
-                    path,
-                    message: format!("Failed to read metadata: {err}"),
-                    kind: TreeDiagnosticKind::ReadMetadata,
-                });
-                continue;
-            }
+        let Some(is_dir) = classify_is_dir(&entry, &path, diagnostics) else {
+            continue;
         };
         let expanded = is_dir && current_depth < max_expand_depth;
         let name_width = UnicodeWidthStr::width(name.as_str());
@@ -171,35 +174,145 @@ fn build_tree_recursive(
     }
 
     sort_entries(&mut children);
+    recurse_children(
+        children,
+        current_depth,
+        max_expand_depth,
+        show_hidden,
+        out,
+        diagnostics,
+        visited,
+    );
+}
 
-    for child in children {
-        let should_recurse = child.is_dir && child.expanded;
+/// Classify whether `entry` is a directory, recording a diagnostic and
+/// returning `None` when the type cannot be determined.
+///
+/// `entry.file_type()` is the *un-followed* type (lstat-equivalent — the same
+/// view as `symlink_metadata`), already cached by `read_dir` on most platforms,
+/// so the common non-symlink case costs no extra syscall. For a symlink we
+/// deliberately follow it via `path.metadata()` (stat-equivalent) so a
+/// symlink-to-directory shows up as an expandable directory, while a broken
+/// symlink — whose `metadata()` fails — stays classified as a plain file.
+fn classify_is_dir(
+    entry: &std::fs::DirEntry,
+    path: &Path,
+    diagnostics: &mut Vec<TreeDiagnostic>,
+) -> Option<bool> {
+    match entry.file_type() {
+        Ok(ft) if !ft.is_symlink() => Some(ft.is_dir()),
+        Ok(_) => Some(path.metadata().is_ok_and(|m| m.is_dir())),
+        Err(err) => {
+            diagnostics.push(TreeDiagnostic {
+                path: path.to_path_buf(),
+                message: format!("Failed to read metadata: {err}"),
+                kind: TreeDiagnosticKind::ReadMetadata,
+            });
+            None
+        }
+    }
+}
 
-        if should_recurse {
-            let key = match child.path.metadata().ok() {
-                Some(m) => file_key(&m),
-                None => continue,
-            };
-            if visited.insert(key) {
-                // Clone the path before pushing `child` (which moves it) so
-                // we still have a reference for the recursive call.
-                let child_path = child.path.clone();
-                out.push(child);
-                build_tree_recursive(
-                    &child_path,
-                    current_depth + 1,
-                    max_expand_depth,
-                    show_hidden,
-                    out,
-                    diagnostics,
-                    visited,
-                );
-                // Remove from visited after recursion so the same directory may
-                // appear in other branches — cycle protection is per-descent-path.
-                visited.remove(&key);
-            }
-        } else {
+/// Outcome of weighing a directory's stable identity against the keys already
+/// on the current descent path.
+#[derive(Debug, PartialEq, Eq)]
+enum DescentDecision {
+    /// The key was already on the descent path: a symlink cycle. Keep the entry
+    /// but do not descend.
+    Cycle,
+    /// Descent may proceed. Carries the key to release once the subtree has been
+    /// walked, or `None` when the platform supplied no stable identifier and the
+    /// descent therefore goes untracked.
+    Descend(Option<(u64, u64)>),
+}
+
+/// Decide whether descending into a directory with the given `key` would form a
+/// symlink cycle, recording newly seen keys in `visited`.
+///
+/// A `None` key means the platform cannot identify this directory (see
+/// `file_key`); cycle detection is then SKIPPED and descent always proceeds.
+/// Substituting a shared sentinel (e.g. the old Windows `(0, 0)` fallback) for
+/// `None` would make distinct directories collide and be falsely suppressed as
+/// cycles — the bug this seam exists to guard against. Factored out of
+/// `recurse_children` so the `None`-skip branch is reachable from tests; it is
+/// otherwise dead on Unix/Windows, where real metadata always yields a key.
+fn classify_descent(key: Option<(u64, u64)>, visited: &mut HashSet<(u64, u64)>) -> DescentDecision {
+    match key {
+        Some(k) if !visited.insert(k) => DescentDecision::Cycle,
+        Some(k) => DescentDecision::Descend(Some(k)),
+        None => DescentDecision::Descend(None),
+    }
+}
+
+/// Emit sorted `children` into `out`, descending into expandable directories
+/// while guarding against symlink cycles. Every child is pushed exactly once;
+/// directories are never silently dropped.
+fn recurse_children(
+    children: Vec<TreeEntry>,
+    current_depth: usize,
+    max_expand_depth: usize,
+    show_hidden: bool,
+    out: &mut Vec<TreeEntry>,
+    diagnostics: &mut Vec<TreeDiagnostic>,
+    visited: &mut HashSet<(u64, u64)>,
+) {
+    for mut child in children {
+        if !(child.is_dir && child.expanded) {
             out.push(child);
+            continue;
+        }
+
+        // We intend to descend, so read metadata to derive a cycle key.
+        let meta = match child.path.metadata() {
+            Ok(meta) => meta,
+            Err(err) => {
+                // Metadata read failed: keep the entry visible but flag it and
+                // do not descend (its contents are unknown). Regression guard:
+                // this branch previously `continue`d and dropped the entry.
+                diagnostics.push(TreeDiagnostic {
+                    path: child.path.clone(),
+                    message: format!("Failed to read metadata: {err}"),
+                    kind: TreeDiagnosticKind::ReadMetadata,
+                });
+                child.read_error = true;
+                child.expanded = false;
+                out.push(child);
+                continue;
+            }
+        };
+
+        // `None` => no stable identifier on this platform: skip cycle detection
+        // and descend untracked. `Some(key)` already in `visited` => cycle on
+        // the current descent path: keep the entry but do not recurse (and clear
+        // `expanded`, since it has no listed children). Regression guard: a
+        // detected cycle previously dropped the entry entirely. The three-way
+        // decision lives in `classify_descent` so it can be unit-tested.
+        let tracked_key = match classify_descent(file_key(&meta), visited) {
+            DescentDecision::Cycle => {
+                child.expanded = false;
+                out.push(child);
+                continue;
+            }
+            DescentDecision::Descend(key) => key,
+        };
+
+        // Clone the path before `out.push(child)` moves the entry out of scope;
+        // the clone backs the recursive descent below.
+        let child_path = child.path.clone();
+        out.push(child);
+        build_tree_recursive(
+            &child_path,
+            current_depth + 1,
+            max_expand_depth,
+            show_hidden,
+            out,
+            diagnostics,
+            visited,
+        );
+        // Release the key after recursion so the same directory may reappear in
+        // sibling branches — cycle protection is per-descent-path only.
+        if let Some(key) = tracked_key {
+            visited.remove(&key);
         }
     }
 }
@@ -263,9 +376,14 @@ pub fn toggle_expand_with_diagnostics(
             &mut visited,
         );
 
+        // Single source of truth, decided once after the recursion has fully
+        // populated `diagnostics`: the directory itself was unreadable iff a
+        // `ReadDir` error was recorded for `path`. Child reads recurse under
+        // their own paths, so only the top-level read of `path` can match here.
         let root_read_failed = diagnostics
             .iter()
-            .any(|diag| diag.path == path && diag.kind == TreeDiagnosticKind::ReadDir);
+            .any(|diag| diag.kind == TreeDiagnosticKind::ReadDir && diag.path == path);
+
         let insert_pos = index + 1;
         entries.splice(insert_pos..insert_pos, children);
         entries[index].expanded = !root_read_failed;
@@ -491,6 +609,157 @@ mod tests {
             diagnostics[0]
                 .message
                 .starts_with("Failed to read directory:")
+        );
+    }
+
+    #[test]
+    fn recurse_children_keeps_entry_with_read_error_on_metadata_failure() {
+        // Regression (#68): a directory slated for descent whose metadata read
+        // fails used to be dropped entirely. It must instead stay in the output,
+        // flagged `read_error == true` and collapsed, with a diagnostic.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("vanished-dir");
+        let child = TreeEntry {
+            path: missing.clone(),
+            depth: 0,
+            is_dir: true,
+            expanded: true,
+            name: "vanished-dir".to_string(),
+            name_width: 12,
+            read_error: false,
+        };
+
+        let mut out = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut visited = HashSet::new();
+        recurse_children(
+            vec![child],
+            0,
+            1,
+            false,
+            &mut out,
+            &mut diagnostics,
+            &mut visited,
+        );
+
+        assert_eq!(out.len(), 1, "metadata failure must not drop the entry");
+        assert_eq!(out[0].path, missing);
+        assert!(out[0].read_error, "metadata failure must set read_error");
+        assert!(!out[0].expanded, "unreadable dir must not stay expanded");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].kind, TreeDiagnosticKind::ReadMetadata);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_tree_keeps_entry_on_symlink_cycle() {
+        // Regression (#68): a child whose descent forms a cycle used to vanish
+        // because the entry was only pushed inside the `visited.insert` branch.
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        // Symlink pointing back at its own parent directory -> descent cycle.
+        std::os::unix::fs::symlink(&sub, sub.join("self-link")).unwrap();
+
+        let result = build_tree_with_diagnostics(dir.path(), 5, false);
+        let names: Vec<&str> = result.entries.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"self-link"),
+            "cyclic entry was dropped: {names:?}"
+        );
+        let link = result
+            .entries
+            .iter()
+            .find(|e| e.name == "self-link")
+            .unwrap();
+        assert!(!link.expanded, "cyclic dir must not be marked expanded");
+        // Cycle detection must stop the walk: the entry appears exactly once.
+        assert_eq!(
+            names.iter().filter(|n| **n == "self-link").count(),
+            1,
+            "cycle was not contained: {names:?}"
+        );
+    }
+
+    #[test]
+    fn build_tree_expands_distinct_sibling_dirs_independently() {
+        // Intent documentation, NOT a regression guard on this platform: the
+        // collision class it describes (the old Windows `(0, 0)` `file_key`
+        // fallback that made two distinct directories share a key) cannot occur
+        // on Unix, where every inode is distinct, so this passes against the old
+        // code too. The portable, non-tautological guards for that fix live in
+        // `classify_descent_keeps_distinct_keys_independent` and
+        // `classify_descent_skips_cycle_check_when_key_unavailable`; this test
+        // only asserts the end-to-end happy path of distinct siblings expanding.
+        let dir = tempfile::tempdir().unwrap();
+        let d1 = dir.path().join("d1");
+        let d2 = dir.path().join("d2");
+        fs::create_dir(&d1).unwrap();
+        fs::create_dir(&d2).unwrap();
+        fs::File::create(d1.join("f1.txt")).unwrap();
+        fs::File::create(d2.join("f2.txt")).unwrap();
+
+        let entries = build_tree(dir.path(), 1, false);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(names.contains(&"f1.txt"), "d1 was suppressed: {names:?}");
+        assert!(names.contains(&"f2.txt"), "d2 was suppressed: {names:?}");
+    }
+
+    #[test]
+    fn classify_descent_skips_cycle_check_when_key_unavailable() {
+        // Real regression guard for the cycle-key collision class: a `None` key
+        // means identifiers are unavailable (the case the old Windows `(0, 0)`
+        // sentinel mishandled), so cycle detection must be SKIPPED — descent
+        // always proceeds and is never suppressed, even across repeated calls
+        // that a shared sentinel would have made collide.
+        let mut visited = HashSet::new();
+        assert_eq!(
+            classify_descent(None, &mut visited),
+            DescentDecision::Descend(None)
+        );
+        assert_eq!(
+            classify_descent(None, &mut visited),
+            DescentDecision::Descend(None),
+            "missing identifiers must never register as a cycle"
+        );
+        assert!(
+            visited.is_empty(),
+            "a None key must not be recorded in the visited set"
+        );
+    }
+
+    #[test]
+    fn classify_descent_flags_repeated_key_as_cycle() {
+        // A stable key seen twice on the same descent path IS a cycle.
+        let mut visited = HashSet::new();
+        let key = (1, 42);
+        assert_eq!(
+            classify_descent(Some(key), &mut visited),
+            DescentDecision::Descend(Some(key)),
+            "first sighting of a key must descend and track it"
+        );
+        assert_eq!(
+            classify_descent(Some(key), &mut visited),
+            DescentDecision::Cycle,
+            "second sighting of the same key on the path is a cycle"
+        );
+    }
+
+    #[test]
+    fn classify_descent_keeps_distinct_keys_independent() {
+        // The collision the fix targets: distinct directories must keep distinct
+        // keys and never suppress one another as a false cycle.
+        let mut visited = HashSet::new();
+        assert_eq!(
+            classify_descent(Some((1, 1)), &mut visited),
+            DescentDecision::Descend(Some((1, 1)))
+        );
+        assert_eq!(
+            classify_descent(Some((1, 2)), &mut visited),
+            DescentDecision::Descend(Some((1, 2))),
+            "a distinct key must not be mistaken for a cycle"
         );
     }
 }

@@ -33,9 +33,27 @@ struct NameMapCache {
 }
 
 #[cfg(unix)]
+impl NameMapCache {
+    /// Reset to a consistent empty state, dropping any partially-mutated data.
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+}
+
+#[cfg(unix)]
 struct UidCache {
     uid: NameMapCache,
     gid: NameMapCache,
+}
+
+#[cfg(unix)]
+impl UidCache {
+    /// Reset both id->name caches to a consistent empty state.
+    fn clear(&mut self) {
+        self.uid.clear();
+        self.gid.clear();
+    }
 }
 
 #[cfg(unix)]
@@ -75,19 +93,32 @@ fn get_or_insert_name(
 #[cfg(unix)]
 fn os_str_to_arc(s: &std::ffi::OsStr) -> Arc<str> {
     use std::os::unix::ffi::OsStrExt;
-    let bytes = s.as_bytes();
-    if bytes.is_ascii() {
-        // ASCII is always valid UTF-8, so this cannot fail
-        #[allow(clippy::unwrap_used)]
-        Arc::from(std::str::from_utf8(bytes).unwrap())
-    } else {
-        Arc::from(s.to_string_lossy().into_owned())
+    // Borrow-free conversion when the bytes are valid UTF-8; otherwise fall
+    // back to an explicit lossy conversion. The error is handled, not
+    // suppressed, so no clippy::unwrap_used allow is needed.
+    match std::str::from_utf8(s.as_bytes()) {
+        Ok(valid) => Arc::from(valid),
+        Err(_) => Arc::from(s.to_string_lossy().into_owned()),
     }
 }
 
 #[cfg(unix)]
 fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
-    let mut cache = UID_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = match UID_CACHE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            // A previous holder panicked mid-mutation, so map/order may be out
+            // of sync. Take ownership of the guard, dump the suspect data, and
+            // rebuild from an empty, consistent state rather than trusting it.
+            let mut guard = poisoned.into_inner();
+            guard.clear();
+            // Un-poison the lock so subsequent callers take the fast Ok path and
+            // normal caching resumes; otherwise every later lock would re-clear
+            // the (now-consistent) cache, degrading to no-cache mode forever.
+            UID_CACHE.clear_poison();
+            guard
+        }
+    };
     let owner = get_or_insert_name(&mut cache.uid, uid, |id| {
         users::get_user_by_uid(id).map(|u| os_str_to_arc(u.name()))
     });
@@ -106,16 +137,20 @@ fn is_parent_entry(entry: &FileEntry) -> bool {
     entry.name == ".."
 }
 
+/// Lossy `OsStr` -> `String` conversion shared by the entry builders.
+/// Centralizes the `to_string_lossy().into_owned()` pattern so file-name
+/// handling stays consistent across callers.
+fn os_str_to_string(s: &std::ffi::OsStr) -> String {
+    s.to_string_lossy().into_owned()
+}
+
 fn file_name_from_path(path: &Path) -> String {
-    path.file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned()
+    os_str_to_string(path.file_name().unwrap_or_default())
 }
 
 fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
     let path = entry.path();
-    let file_name = entry.file_name().to_string_lossy().into_owned();
+    let file_name = os_str_to_string(&entry.file_name());
     let metadata = entry.metadata()?;
     let is_symlink = metadata.is_symlink();
     let target_meta = if is_symlink {
@@ -484,6 +519,36 @@ mod tests {
         assert!(is_executable(0o755));
         assert!(!is_executable(0o644));
         assert!(!is_executable(0o000));
+    }
+
+    #[test]
+    fn test_os_str_to_string_helper() {
+        use std::ffi::OsStr;
+        assert_eq!(os_str_to_string(OsStr::new("file.txt")), "file.txt");
+        assert_eq!(os_str_to_string(OsStr::new("")), "");
+        // Multi-byte but valid UTF-8 round-trips unchanged.
+        assert_eq!(os_str_to_string(OsStr::new("łódź")), "łódź");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_os_str_to_arc_valid_utf8() {
+        use std::ffi::OsStr;
+        // Pure ASCII and multi-byte valid UTF-8 both take the Ok path.
+        assert_eq!(&*os_str_to_arc(OsStr::new("hello")), "hello");
+        assert_eq!(&*os_str_to_arc(OsStr::new("héllo")), "héllo");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_os_str_to_arc_invalid_utf8_falls_back_lossy() {
+        use std::os::unix::ffi::OsStrExt;
+        // 0xFF is never valid UTF-8; the Err arm must use the lossy fallback.
+        let os = std::ffi::OsStr::from_bytes(b"bad\xFFname");
+        let arc = os_str_to_arc(os);
+        assert!(arc.starts_with("bad"));
+        assert!(arc.ends_with("name"));
+        assert!(arc.contains('\u{FFFD}'));
     }
 
     #[test]

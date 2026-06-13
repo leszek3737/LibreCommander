@@ -1,12 +1,13 @@
 use crate::debug_log;
 use notify::{Config, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode};
 use notify::{Watcher as NotifyWatcher, event::RenameMode};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,14 @@ const DEBOUNCE_DURATION: Duration = Duration::from_millis(300);
 /// SMB, FUSE) where the paired "rename-to" event can arrive with significant
 /// latency, while still bounding stale entries in the pending map.
 const PENDING_FROM_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Upper bound on buffered rename-From entries per parent directory. A mass
+/// rename (e.g. `mv dir/* elsewhere/`) emits one From per file before any To
+/// arrives; without a cap the per-parent queue grows unbounded until the 2 s
+/// timeout fires. When the cap is hit we stop buffering and signal `Overflow`
+/// instead, mirroring the batch-overflow handling for the event channel — the
+/// panel does a full refresh rather than tracking individual renames.
+const PENDING_FROM_LIMIT: usize = 1024;
 
 #[derive(Clone)]
 pub enum WatchEvent {
@@ -37,6 +46,10 @@ struct PendingEntry {
 
 struct PendingFromEntry {
     path: PathBuf,
+    /// Rename-tracker cookie from the backend (Linux inotify sets equal cookies
+    /// on the From/To pair). `None` when the backend does not provide one
+    /// (macOS FSEvents), in which case pairing falls back to FIFO order.
+    cookie: Option<usize>,
     time: Instant,
 }
 
@@ -67,8 +80,9 @@ pub struct Watcher {
     // (flush_pending). Both go through lock_or_recover to handle poison.
     debounce_state: Arc<Mutex<HashMap<PathBuf, PendingEntry>>>,
     // Unpaired rename-From events awaiting a matching rename-To. Entries are
-    // bounded by PENDING_FROM_TIMEOUT — stale ones are emitted as Deleted in
-    // flush_pending(). No explicit size cap; relies on timeout cleanup.
+    // bounded by PENDING_FROM_TIMEOUT (stale ones are emitted as Deleted in
+    // flush_pending()) AND by PENDING_FROM_LIMIT per parent (overflow emits an
+    // Overflow marker so growth is capped under a mass rename).
     pending_from: Arc<Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>>,
     overflow_pending: Arc<AtomicBool>,
     // Canonical-path cache: maps original (possibly non-canonical) path to its
@@ -281,53 +295,76 @@ impl Watcher {
             self.overflow_pending.store(false, Ordering::Release);
         }
 
-        let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
-        let flushed = flush_expired(&mut debounce);
-        drop(debounce);
-        send_expired_events(&self.event_tx, &self.debounce_state, flushed);
+        // Single lock cycle: flush expired debounced events and reinsert the
+        // ones the (full) channel rejected, all under one guard.
+        {
+            let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
+            let flushed = flush_expired(&mut debounce);
+            send_expired_events(&self.event_tx, &mut debounce, flushed);
+        }
 
-        let stale_entries: Vec<(PathBuf, PathBuf, Instant)> = {
-            let pending = lock_or_recover(&self.pending_from, "pending_from");
-            pending
-                .iter()
-                .flat_map(|(parent, entries)| {
-                    entries
-                        .iter()
-                        .filter(|entry| entry.time.elapsed() >= PENDING_FROM_TIMEOUT)
-                        .map(|entry| (parent.clone(), entry.path.clone(), entry.time))
-                })
-                .collect()
-        };
+        self.flush_stale_pending_from();
+    }
 
-        if !stale_entries.is_empty() {
-            for (parent_key, path, time) in stale_entries {
-                debug_log!(
-                    "stale rename From timed out: emitting Deleted for {} (parent {})",
-                    path.display(),
-                    parent_key.display(),
-                );
-                match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
-                    SendStatus::Full(_) => {}
-                    SendStatus::Sent | SendStatus::Disconnected => {
-                        let mut pending = lock_or_recover(&self.pending_from, "pending_from");
-                        if let Some(entries) = pending.get_mut(&parent_key) {
-                            entries.retain(|e| !(e.path == path && e.time == time));
-                            if entries.is_empty() {
-                                pending.remove(&parent_key);
-                            }
-                        }
-                    }
+    /// Emit `Deleted` for rename-From entries that timed out without a matching
+    /// rename-To. Holds the `pending_from` lock for a single cycle: stale ids
+    /// are collected, then each is sent and retracted in place (sends are
+    /// non-blocking `try_send`, so holding the guard is cheap).
+    fn flush_stale_pending_from(&self) {
+        let mut pending = lock_or_recover(&self.pending_from, "pending_from");
+        let stale: Vec<(PathBuf, PathBuf, Instant)> = pending
+            .iter()
+            .flat_map(|(parent, entries)| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.time.elapsed() >= PENDING_FROM_TIMEOUT)
+                    .map(move |entry| (parent.clone(), entry.path.clone(), entry.time))
+            })
+            .collect();
+
+        if stale.is_empty() {
+            return;
+        }
+        // Aggregate log: one line for the whole batch instead of one per entry,
+        // which would flood the log on a mass-rename timeout.
+        debug_log!(
+            "emitting Deleted for {} stale rename-From entries",
+            stale.len()
+        );
+
+        for (parent_key, path, time) in stale {
+            match try_send_event(&self.event_tx, WatchEvent::Deleted(path.clone())) {
+                // Channel full: keep the entry and retry on the next flush.
+                SendStatus::Full(_) => {}
+                SendStatus::Sent | SendStatus::Disconnected => {
+                    clear_pending_from_entry(&mut pending, &parent_key, &path, time);
                 }
             }
         }
     }
 }
 
+/// Running count of consecutive events dropped because the channel was full.
+/// Reset on the next successful send. Used to rate-limit the "queue full" log so
+/// a sustained burst produces a handful of aggregated lines instead of one per
+/// dropped event. Relaxed ordering is fine — this only gates logging.
+static DROPPED_ON_FULL: AtomicU64 = AtomicU64::new(0);
+
+/// Log at the start of a full-queue burst and then every `FULL_LOG_INTERVAL`
+/// drops, so the message rate stays bounded under heavy load.
+const FULL_LOG_INTERVAL: u64 = 256;
+
 fn try_send_event(event_tx: &SyncSender<WatchEvent>, event: WatchEvent) -> SendStatus {
     match event_tx.try_send(event) {
-        Ok(()) => SendStatus::Sent,
+        Ok(()) => {
+            DROPPED_ON_FULL.store(0, Ordering::Relaxed);
+            SendStatus::Sent
+        }
         Err(TrySendError::Full(event)) => {
-            debug_log!("watcher event queue full; dropping event");
+            let dropped = DROPPED_ON_FULL.fetch_add(1, Ordering::Relaxed) + 1;
+            if dropped == 1 || dropped.is_multiple_of(FULL_LOG_INTERVAL) {
+                debug_log!("watcher event queue full; dropped {dropped} event(s) so far");
+            }
             SendStatus::Full(event)
         }
         Err(TrySendError::Disconnected(_)) => {
@@ -363,51 +400,70 @@ fn make_handler(
         };
 
         for watch_event in convert_event_with_rename_pairing(event, &pending_from) {
-            let path = match &watch_event {
-                WatchEvent::Created(p) | WatchEvent::Deleted(p) | WatchEvent::Modified(p) => {
-                    Some(p.clone())
+            match watch_event {
+                WatchEvent::Renamed { .. } => {
+                    handle_rename_event(&event_tx, &debounce_state, &overflow_pending, watch_event);
                 }
-                WatchEvent::Renamed { from, to } => {
-                    let (_, flushed) = process_debounce(
-                        &debounce_state,
-                        &[from.as_path(), to.as_path()],
-                        None,
-                        true,
-                    );
-                    send_expired_events(&event_tx, &debounce_state, flushed);
-                    if let SendStatus::Full(evt) = try_send_event(&event_tx, watch_event) {
-                        reinsert_or_overflow(&event_tx, &debounce_state, &overflow_pending, evt);
-                    }
-                    continue;
+                WatchEvent::Overflow => send_overflow_or_flag(&event_tx, &overflow_pending),
+                WatchEvent::Created(_) | WatchEvent::Deleted(_) | WatchEvent::Modified(_) => {
+                    handle_path_event(&event_tx, &debounce_state, &overflow_pending, watch_event);
                 }
-                WatchEvent::Overflow => {
-                    send_overflow_or_flag(&event_tx, &overflow_pending);
-                    continue;
-                }
-            };
-
-            let skip_debounce = matches!(&watch_event, WatchEvent::Deleted(_));
-            if let Some(path) = path {
-                let (emit, flushed) = process_debounce(
-                    &debounce_state,
-                    &[path.as_path()],
-                    if skip_debounce {
-                        None
-                    } else {
-                        Some(&watch_event)
-                    },
-                    skip_debounce,
-                );
-                send_expired_events(&event_tx, &debounce_state, flushed);
-                if !emit {
-                    continue;
-                }
-            }
-
-            if let SendStatus::Full(evt) = try_send_event(&event_tx, watch_event) {
-                reinsert_or_overflow(&event_tx, &debounce_state, &overflow_pending, evt);
             }
         }
+    }
+}
+
+/// Debounce-bump both rename paths (single lock cycle), then emit the rename.
+fn handle_rename_event(
+    event_tx: &SyncSender<WatchEvent>,
+    debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
+    overflow_pending: &AtomicBool,
+    event: WatchEvent,
+) {
+    if let WatchEvent::Renamed { from, to } = &event {
+        let mut debounce = lock_or_recover(debounce_state, "watcher");
+        let (_, flushed) =
+            process_debounce(&mut debounce, &[from.as_path(), to.as_path()], None, true);
+        send_expired_events(event_tx, &mut debounce, flushed);
+    }
+    if let SendStatus::Full(evt) = try_send_event(event_tx, event) {
+        reinsert_or_overflow(event_tx, debounce_state, overflow_pending, evt);
+    }
+}
+
+/// Debounce a single-path event (Created/Modified/Deleted) and emit it unless
+/// suppressed. Borrows the path/event from `event` so no `PathBuf` is cloned on
+/// the hot path; `event` is moved into the send only at the true fan-out point.
+fn handle_path_event(
+    event_tx: &SyncSender<WatchEvent>,
+    debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
+    overflow_pending: &AtomicBool,
+    event: WatchEvent,
+) {
+    let skip_debounce = matches!(&event, WatchEvent::Deleted(_));
+    let emit = {
+        let path = match &event {
+            WatchEvent::Created(p) | WatchEvent::Deleted(p) | WatchEvent::Modified(p) => {
+                p.as_path()
+            }
+            // Renamed/Overflow are routed elsewhere; nothing to do here.
+            _ => return,
+        };
+        let mut debounce = lock_or_recover(debounce_state, "watcher");
+        let (emit, flushed) = process_debounce(
+            &mut debounce,
+            &[path],
+            if skip_debounce { None } else { Some(&event) },
+            skip_debounce,
+        );
+        send_expired_events(event_tx, &mut debounce, flushed);
+        emit
+    };
+    if !emit {
+        return;
+    }
+    if let SendStatus::Full(evt) = try_send_event(event_tx, event) {
+        reinsert_or_overflow(event_tx, debounce_state, overflow_pending, evt);
     }
 }
 
@@ -432,30 +488,32 @@ fn flush_expired(debounce: &mut HashMap<PathBuf, PendingEntry>) -> Vec<ExpiredDe
     flushed
 }
 
+/// Send each expired debounced event; reinsert (into the already-held guard)
+/// any the full channel rejected, so they are retried on the next flush.
+/// Operates on `&mut` so the caller's lock cycle is not dropped and reacquired.
 fn send_expired_events(
     event_tx: &SyncSender<WatchEvent>,
-    debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
+    debounce: &mut HashMap<PathBuf, PendingEntry>,
     flushed: Vec<ExpiredDebouncedEvent>,
 ) {
-    let mut reinserts: Vec<(PathBuf, WatchEvent)> = Vec::new();
     for expired in flushed {
         match try_send_event(event_tx, expired.event) {
             SendStatus::Sent | SendStatus::Disconnected => {}
-            SendStatus::Full(event) => {
-                reinserts.push((expired.path, event));
-            }
+            SendStatus::Full(event) => coalesce_into(debounce, expired.path, event),
         }
     }
-    if !reinserts.is_empty() {
-        let mut debounce = lock_or_recover(debounce_state, "watcher");
-        for (path, event) in reinserts {
-            debounce
-                .entry(path)
-                .and_modify(|e| e.coalesced = Some(event.clone()))
-                .or_insert_with(|| PendingEntry {
-                    last_seen: Instant::now(),
-                    coalesced: Some(event),
-                });
+}
+
+/// Store `event` as the coalesced value for `path`, moving it in without an
+/// extra clone (the `Entry` API would otherwise need one for `and_modify`).
+fn coalesce_into(debounce: &mut HashMap<PathBuf, PendingEntry>, path: PathBuf, event: WatchEvent) {
+    match debounce.entry(path) {
+        Entry::Occupied(mut slot) => slot.get_mut().coalesced = Some(event),
+        Entry::Vacant(slot) => {
+            slot.insert(PendingEntry {
+                last_seen: Instant::now(),
+                coalesced: Some(event),
+            });
         }
     }
 }
@@ -482,26 +540,24 @@ fn reinsert_or_overflow(
         | WatchEvent::Renamed { from: p, .. } => p.clone(),
         WatchEvent::Overflow => return,
     };
-    let mut debounce = lock_or_recover(debounce_state, "watcher");
-    debounce
-        .entry(key)
-        .and_modify(|e| e.coalesced = Some(event.clone()))
-        .or_insert_with(|| PendingEntry {
-            last_seen: Instant::now(),
-            coalesced: Some(event),
-        });
-    drop(debounce);
+    {
+        let mut debounce = lock_or_recover(debounce_state, "watcher");
+        coalesce_into(&mut debounce, key, event);
+    }
     send_overflow_or_flag(event_tx, overflow_pending);
 }
 
-#[cfg(test)]
-fn clear_pending_from_if_unchanged(
-    pending_from: &Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>>,
+/// Retract the rename-From entry identified by (`path`, `time`) under
+/// `parent_key`, but only if it is still present unchanged. The `time` acts as a
+/// version tag: a newer From that reused the same path has a different `time`
+/// and is therefore left in place. Shared by `flush_stale_pending_from` and the
+/// tests so the retraction logic lives in exactly one spot.
+fn clear_pending_from_entry(
+    pending: &mut HashMap<PathBuf, VecDeque<PendingFromEntry>>,
     parent_key: &Path,
     path: &Path,
     time: Instant,
 ) {
-    let mut pending = lock_or_recover(pending_from, "pending_from");
     if let Some(entries) = pending.get_mut(parent_key) {
         entries.retain(|e| !(e.path == path && e.time == time));
         if entries.is_empty() {
@@ -510,16 +566,19 @@ fn clear_pending_from_if_unchanged(
     }
 }
 
+/// Apply debounce policy to `paths` on an already-locked debounce map. The
+/// caller owns the lock cycle (passes `&mut`) so flushing and the follow-up
+/// `send_expired_events` happen under one acquisition. Returns whether the event
+/// should be emitted now plus any entries that just expired.
 fn process_debounce(
-    debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
+    debounce: &mut HashMap<PathBuf, PendingEntry>,
     paths: &[&Path],
     event: Option<&WatchEvent>,
     skip_debounce: bool,
 ) -> (bool, Vec<ExpiredDebouncedEvent>) {
     let now = Instant::now();
-    let mut debounce = lock_or_recover(debounce_state, "watcher");
 
-    let mut flushed = flush_expired(&mut debounce);
+    let mut flushed = flush_expired(debounce);
 
     if skip_debounce {
         for p in paths {
@@ -576,20 +635,32 @@ fn process_debounce(
     (!suppressed, flushed)
 }
 
-/// Lock a `Mutex`, recovering from poison by taking the inner value.
+/// Lock a `Mutex`, rebuilding the guarded data on poison.
 ///
-/// # Poison recovery risk
+/// # Poison recovery
 ///
-/// A thread panicked while holding this lock, meaning the guarded data may be
-/// in an inconsistent state (partially updated). We recover anyway because the
-/// watcher is a background subsystem — crashing the TUI for a stale debounce
-/// entry is worse than emitting a slightly wrong event. If this starts causing
-/// issues, consider clearing the map after recovery instead of reusing it.
-fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
-    mutex.lock().unwrap_or_else(|e| {
-        debug_log!("{label} mutex poisoned, recovering: {e}");
-        e.into_inner()
-    })
+/// A thread panicked while holding this lock, so the guarded data may be
+/// partially mutated. Reusing it would let subsequent operations run on a
+/// distorted state. The watcher's guarded maps are pure ephemeral caches
+/// (debounce/rename bookkeeping rebuilt from incoming events), so on poison we
+/// discard the contents (`T::default()`) and clear the poison flag — recovering
+/// to a clean, consistent state instead of silently continuing on corrupt data.
+/// At worst a few in-flight events are lost, which is preferable to emitting
+/// wrong ones, and far preferable to crashing the TUI.
+fn lock_or_recover<'a, T: Default>(
+    mutex: &'a Mutex<T>,
+    label: &str,
+) -> std::sync::MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            debug_log!("{label} mutex poisoned; rebuilding guarded state");
+            let mut guard = poisoned.into_inner();
+            *guard = T::default();
+            mutex.clear_poison();
+            guard
+        }
+    }
 }
 
 fn convert_event_with_rename_pairing(
@@ -598,40 +669,54 @@ fn convert_event_with_rename_pairing(
 ) -> Vec<WatchEvent> {
     match &event.kind {
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)) => {
-            if let Some(path) = event.paths.into_iter().next() {
-                let parent_key = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                let mut pending = lock_or_recover(pending_from, "pending_from");
-                pending
-                    .entry(parent_key)
-                    .or_default()
-                    .push_back(PendingFromEntry {
-                        path,
-                        time: Instant::now(),
-                    });
-                Vec::new()
-            } else {
-                Vec::new()
+            let cookie = event.attrs.tracker();
+            let Some(path) = event.paths.into_iter().next() else {
+                return Vec::new();
+            };
+            let parent_key = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            let mut pending = lock_or_recover(pending_from, "pending_from");
+            let entries = pending.entry(parent_key).or_default();
+            if entries.len() >= PENDING_FROM_LIMIT {
+                // Bounded: a mass rename would grow this without limit. Stop
+                // buffering and signal Overflow (full refresh) — consistent with
+                // the channel batch-overflow handling. The unmatched To later
+                // surfaces as a plain Created, which the refresh reconciles.
+                //
+                // Clear the parent's queue before returning: the buffered Froms
+                // would otherwise flush after the 2s timeout as up to
+                // PENDING_FROM_LIMIT stale Deleted events — an event storm right
+                // after we already signalled a full refresh via Overflow. The
+                // Overflow-driven refresh reconciles the final state on its own,
+                // so dropping the buffered Froms is safe (any still-unmatched To
+                // simply surfaces as a Created).
+                let dropped = entries.len();
+                entries.clear();
+                debug_log!(
+                    "pending_from limit hit for {}; clearing {} buffered From(s) and emitting Overflow",
+                    path.display(),
+                    dropped
+                );
+                return vec![WatchEvent::Overflow];
             }
+            entries.push_back(PendingFromEntry {
+                path,
+                cookie,
+                time: Instant::now(),
+            });
+            Vec::new()
         }
         EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)) => {
+            let to_cookie = event.attrs.tracker();
             let to_path = event.paths.into_iter().next();
             let parent_key = to_path
                 .as_ref()
                 .and_then(|p| p.parent())
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
-            let mut pending = lock_or_recover(pending_from, "pending_from");
-            let (from_entry, should_remove) = match pending.get_mut(&parent_key) {
-                Some(entries) => {
-                    let entry = entries.pop_front();
-                    (entry, entries.is_empty())
-                }
-                None => (None, false),
+            let from_entry = {
+                let mut pending = lock_or_recover(pending_from, "pending_from");
+                take_paired_from(&mut pending, &parent_key, to_cookie)
             };
-            if should_remove {
-                pending.remove(&parent_key);
-            }
-            drop(pending);
             match (from_entry, to_path) {
                 (Some(entry), Some(to)) => vec![WatchEvent::Renamed {
                     from: entry.path,
@@ -643,6 +728,33 @@ fn convert_event_with_rename_pairing(
         }
         _ => convert_event(event),
     }
+}
+
+/// Pick the buffered rename-From that pairs with an incoming rename-To.
+///
+/// Backends that provide a rename-tracker cookie (Linux inotify) let us pair
+/// deterministically even when several renames interleave in one directory:
+/// match on the cookie. When the To carries no cookie (macOS FSEvents) or none
+/// of the buffered Froms match it, fall back to FIFO order — the best heuristic
+/// available without rename tracking. Removes the chosen entry and prunes the
+/// parent bucket when it empties, all under the caller's single lock.
+fn take_paired_from(
+    pending: &mut HashMap<PathBuf, VecDeque<PendingFromEntry>>,
+    parent_key: &Path,
+    to_cookie: Option<usize>,
+) -> Option<PendingFromEntry> {
+    let entries = pending.get_mut(parent_key)?;
+    let taken = match to_cookie {
+        Some(cookie) => match entries.iter().position(|e| e.cookie == Some(cookie)) {
+            Some(idx) => entries.remove(idx),
+            None => entries.pop_front(),
+        },
+        None => entries.pop_front(),
+    };
+    if entries.is_empty() {
+        pending.remove(parent_key);
+    }
+    taken
 }
 
 fn convert_event(event: notify::Event) -> Vec<WatchEvent> {
@@ -673,19 +785,43 @@ fn map_paths(paths: Vec<PathBuf>, map: impl Fn(PathBuf) -> WatchEvent) -> Vec<Wa
 /// Returns true if the unwatch error indicates the watch is already gone.
 ///
 /// - `WatchNotFound`: the watcher's internal map no longer tracks this path.
-/// - `Io(EINVAL)` on Linux (inotify): the OS auto-removed the watch when the
-///   directory was deleted, so `inotify_rm_watch` returns EINVAL.
-/// - `Io(ENOENT)` on macOS (kqueue): `kevent` `EV_DELETE` fails because the
-///   file is already gone.
+/// - `Io(...)`: the backend reports the watch/file is already gone. The exact
+///   error differs per platform, so the classification is `cfg`-split below.
 fn is_watch_already_gone_error(e: &notify::Error) -> bool {
     match &e.kind {
         notify::ErrorKind::WatchNotFound => true,
-        notify::ErrorKind::Io(io_err) => {
-            io_err.raw_os_error() == Some(libc::EINVAL)
-                || io_err.raw_os_error() == Some(libc::ENOENT)
-        }
+        notify::ErrorKind::Io(io_err) => is_already_gone_io(io_err),
         _ => false,
     }
+}
+
+/// Non-Windows (Linux/macOS): the OS already dropped the watch / the file is
+/// gone.
+///
+/// - Linux inotify: `inotify_rm_watch` returns `EINVAL` (the kernel auto-removed
+///   the watch on directory deletion) — std maps `EINVAL` to `InvalidInput`.
+/// - macOS kqueue: `EV_DELETE` fails with `ENOENT` — std maps it to `NotFound`.
+///
+/// Matching on `io::ErrorKind` keeps this portable instead of hardcoding raw
+/// errno values.
+#[cfg(not(windows))]
+fn is_already_gone_io(io_err: &io::Error) -> bool {
+    matches!(
+        io_err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+    )
+}
+
+/// Windows: `ReadDirectoryChangesW` reports the watch is already gone. The
+/// canonical code is `ERROR_NOT_FOUND` (1168), which has no dedicated
+/// `io::ErrorKind`, so match its raw value as well as the `NotFound` kind that
+/// covers `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND`. (Hardcoding
+/// `EINVAL`/`ENOENT` here was the bug — those errno values do not match the
+/// Win32 codes, so normal unwatch was reported as an error.)
+#[cfg(windows)]
+fn is_already_gone_io(io_err: &io::Error) -> bool {
+    const ERROR_NOT_FOUND: i32 = 1168;
+    io_err.kind() == io::ErrorKind::NotFound || io_err.raw_os_error() == Some(ERROR_NOT_FOUND)
 }
 
 fn notify_to_io(err: &notify::Error) -> io::Error {

@@ -121,11 +121,18 @@ enum DirEvent {
 
 fn drain_events(receiver: &Receiver<WatchEvent>) -> Vec<WatchEvent> {
     const MAX_WATCHER_EVENTS_PER_POLL: usize = 256;
-    let mut events = Vec::with_capacity(MAX_WATCHER_EVENTS_PER_POLL);
+    // Typical batches are tiny (1-5 events) and most polls are empty, so start
+    // unallocated and only reserve a small buffer once the first event arrives,
+    // instead of allocating the 256-slot cap on every poll.
+    const TYPICAL_BATCH: usize = 8;
+    let mut events: Vec<WatchEvent> = Vec::new();
     for _ in 0..MAX_WATCHER_EVENTS_PER_POLL {
         let Ok(event) = receiver.try_recv() else {
             break;
         };
+        if events.is_empty() {
+            events.reserve(TYPICAL_BATCH);
+        }
         events.push(event);
     }
     events
@@ -146,10 +153,12 @@ fn accumulate_changes(
     for event in events {
         match event {
             WatchEvent::Created(path) | WatchEvent::Modified(path) => {
-                if event_is_panel_dir_cached(&path, left_cache) {
+                // Compute clean_path(path) at most once and reuse for both caches.
+                let mut clean = None;
+                if event_is_panel_dir_cached(&path, &mut clean, left_cache) {
                     changes.left_dir_event = Some(DirEvent::Touch);
                 }
-                if event_is_panel_dir_cached(&path, right_cache) {
+                if event_is_panel_dir_cached(&path, &mut clean, right_cache) {
                     changes.right_dir_event = Some(DirEvent::Touch);
                 }
                 if path.file_name().is_some() {
@@ -157,10 +166,11 @@ fn accumulate_changes(
                 }
             }
             WatchEvent::Deleted(path) => {
-                if event_is_panel_dir_cached(&path, left_cache) {
+                let mut clean = None;
+                if event_is_panel_dir_cached(&path, &mut clean, left_cache) {
                     changes.left_dir_event = Some(DirEvent::Delete);
                 }
-                if event_is_panel_dir_cached(&path, right_cache) {
+                if event_is_panel_dir_cached(&path, &mut clean, right_cache) {
                     changes.right_dir_event = Some(DirEvent::Delete);
                 }
                 if path.file_name().is_some() {
@@ -168,16 +178,21 @@ fn accumulate_changes(
                 }
             }
             WatchEvent::Renamed { from, to } => {
-                if event_is_panel_dir_cached(&from, left_cache) {
+                let mut from_clean = None;
+                if event_is_panel_dir_cached(&from, &mut from_clean, left_cache) {
                     changes.left_dir_event = Some(DirEvent::Rename { to: to.clone() });
                 }
-                if event_is_panel_dir_cached(&from, right_cache) {
+                if event_is_panel_dir_cached(&from, &mut from_clean, right_cache) {
                     changes.right_dir_event = Some(DirEvent::Rename { to: to.clone() });
                 }
-                if event_is_panel_dir_cached(&to, left_cache) && changes.left_dir_event.is_none() {
+                let mut to_clean = None;
+                if event_is_panel_dir_cached(&to, &mut to_clean, left_cache)
+                    && changes.left_dir_event.is_none()
+                {
                     changes.left_dir_event = Some(DirEvent::Touch);
                 }
-                if event_is_panel_dir_cached(&to, right_cache) && changes.right_dir_event.is_none()
+                if event_is_panel_dir_cached(&to, &mut to_clean, right_cache)
+                    && changes.right_dir_event.is_none()
                 {
                     changes.right_dir_event = Some(DirEvent::Touch);
                 }
@@ -279,31 +294,29 @@ fn apply_file_events(
     let mut dirty = false;
     for (path, kind) in file_events {
         dirty |= match kind {
-            DedupKind::Upsert => apply_upsert_cached(panel, path, cache),
-            DedupKind::Remove => apply_remove_cached(panel, path, cache),
+            DedupKind::Upsert => apply_cached(panel, path, cache, apply_watcher_upsert),
+            DedupKind::Remove => apply_cached(panel, path, cache, apply_watcher_remove),
         };
     }
     dirty
 }
 
-fn apply_upsert_cached(panel: &mut PanelState, path: &Path, cache: &PanelCache) -> bool {
+/// Apply a watcher action to a child of `path` if its parent matches `cache`.
+/// `apply` is the concrete leaf action (upsert/remove); using a generic keeps
+/// this zero-cost (statically dispatched, no allocation).
+fn apply_cached(
+    panel: &mut PanelState,
+    path: &Path,
+    cache: &PanelCache,
+    apply: impl FnOnce(&mut PanelState, &Path) -> bool,
+) -> bool {
     if !path_parent_matches_cached(path, cache) {
         return false;
     }
     let Some(path) = panel_event_path(panel, path) else {
         return false;
     };
-    apply_watcher_upsert(panel, &path)
-}
-
-fn apply_remove_cached(panel: &mut PanelState, path: &Path, cache: &PanelCache) -> bool {
-    if !path_parent_matches_cached(path, cache) {
-        return false;
-    }
-    let Some(path) = panel_event_path(panel, path) else {
-        return false;
-    };
-    apply_watcher_remove(panel, &path)
+    apply(panel, &path)
 }
 
 fn full_refresh_panels(
@@ -339,6 +352,19 @@ fn apply_shared_read_result(
     entries: &[crate::app::types::FileEntry],
     errors: &[std::io::Error],
 ) {
+    // NOTE: clone needed because entries is &[FileEntry] shared with the other panel.
+    apply_successful_read(panel, entries.to_vec(), errors);
+}
+
+/// Apply a successful directory read to `panel`, preserving the cursor's entry
+/// name and any selected paths. Shared by the cross-panel refresh and the
+/// single-panel `refresh_panel_from_disk`; takes ownership of `entries` so the
+/// owning caller avoids a redundant clone.
+fn apply_successful_read(
+    panel: &mut PanelState,
+    entries: Vec<crate::app::types::FileEntry>,
+    errors: &[std::io::Error],
+) {
     let current_name = panel
         .listing
         .entries
@@ -352,8 +378,7 @@ fn apply_shared_read_result(
         .collect();
 
     update_panel_read_errors(panel, errors);
-    // NOTE: clone needed because entries is &[FileEntry] shared with the other panel.
-    panel.listing.set_unfiltered(entries.to_vec());
+    panel.listing.set_unfiltered(entries);
     panel.set_canonical_path(panel.path().canonicalize().ok());
     for entry in &mut panel.listing.unfiltered_entries {
         entry.selected = saved.contains(&entry.path);
@@ -382,25 +407,22 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
 }
 
 pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, panel) {
-        return false;
-    }
-
-    let Some(path) = panel_event_path(panel, path) else {
-        return false;
-    };
-    apply_watcher_upsert(panel, &path)
+    apply_watcher_if_matches(panel, path, apply_watcher_upsert)
 }
 
 pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
-    if !path_parent_matches(path, panel) {
-        return false;
-    }
+    apply_watcher_if_matches(panel, path, apply_watcher_remove)
+}
 
-    let Some(path) = panel_event_path(panel, path) else {
-        return false;
-    };
-    apply_watcher_remove(panel, &path)
+/// Shared body for the public `apply_watcher_*_if_matches` entry points: builds
+/// the panel cache on demand and defers to `apply_cached`.
+fn apply_watcher_if_matches(
+    panel: &mut PanelState,
+    path: &Path,
+    apply: impl FnOnce(&mut PanelState, &Path) -> bool,
+) -> bool {
+    let cache = PanelCache::from_panel(panel);
+    apply_cached(panel, path, &cache, apply)
 }
 
 fn panel_event_path(panel: &PanelState, path: &Path) -> Option<PathBuf> {
@@ -411,7 +433,13 @@ fn path_matches_any(candidate: &Path, cache: &PanelCache) -> bool {
     if candidate == cache.path {
         return true;
     }
-    let candidate_clean = crate::fs::path::clean_path(candidate);
+    path_matches_any_clean(&crate::fs::path::clean_path(candidate), cache)
+}
+
+/// Match a candidate that has already been passed through `clean_path` against
+/// the panel's cleaned/canonical forms. Split out so a single `clean_path`
+/// result can be reused across both panel caches within one watcher poll.
+fn path_matches_any_clean(candidate_clean: &Path, cache: &PanelCache) -> bool {
     if candidate_clean == cache.clean {
         return true;
     }
@@ -428,11 +456,19 @@ fn path_matches_any(candidate: &Path, cache: &PanelCache) -> bool {
     false
 }
 
-fn event_is_panel_dir_cached(path: &Path, cache: &PanelCache) -> bool {
+fn event_is_panel_dir_cached(
+    path: &Path,
+    candidate_clean: &mut Option<PathBuf>,
+    cache: &PanelCache,
+) -> bool {
     if path.parent() == Some(cache.path.as_path()) {
         return false;
     }
-    path_matches_any(path, cache)
+    if path == cache.path {
+        return true;
+    }
+    let clean = candidate_clean.get_or_insert_with(|| crate::fs::path::clean_path(path));
+    path_matches_any_clean(clean, cache)
 }
 
 fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {
@@ -443,11 +479,6 @@ fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {
         return false;
     };
     path_matches_any(parent, cache)
-}
-
-fn path_parent_matches(path: &Path, panel: &PanelState) -> bool {
-    let cache = PanelCache::from_panel(panel);
-    path_parent_matches_cached(path, &cache)
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
@@ -489,35 +520,9 @@ fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
 }
 
 pub(crate) fn refresh_panel_from_disk(panel: &mut PanelState) {
-    let current_name = panel
-        .listing
-        .entries
-        .get(panel.cursor)
-        .filter(|entry| entry.name != "..")
-        .map(|entry| entry.name.clone());
-    let saved: HashSet<PathBuf> = panel
-        .selected_entries()
-        .into_iter()
-        .map(|e| e.path.clone())
-        .collect();
-
     match reader::read_directory(panel.path()) {
-        Ok((entries, errors)) => {
-            update_panel_read_errors(panel, &errors);
-            panel.listing.set_unfiltered(entries);
-            panel.set_canonical_path(panel.path().canonicalize().ok());
-            for entry in &mut panel.listing.unfiltered_entries {
-                entry.selected = saved.contains(&entry.path);
-            }
-            rebuild_visible_entries(panel, current_name.as_deref());
-        }
-        Err(err) => {
-            panel.listing.clear();
-            panel.cursor = 0;
-            panel.scroll_offset = 0;
-            panel.set_last_error(Some(err.to_string()));
-            panel.recalculate_selection_stats();
-        }
+        Ok((entries, errors)) => apply_successful_read(panel, entries, &errors),
+        Err(err) => apply_read_error(panel, &err),
     }
 }
 

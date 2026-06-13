@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 
 // Max expansion ratio ($HOME → full path, variable name ≤ half of expanded).
@@ -78,12 +79,24 @@ pub fn expand_path(input: &str) -> PathBuf {
         && let Some(home) = dirs::home_dir()
     {
         let expanded_rest = expand_env_vars(rest);
-        let raw = home.join(expanded_rest.trim_start_matches('/'));
+        // Strip ALL leading separators (platform-aware), not just '/'. Without
+        // this, on Windows a `${VAR}` expanding to `\absolute\path` would be
+        // treated as absolute by `Path::join` and silently discard `home`.
+        let raw = home.join(strip_leading_separators(&expanded_rest));
         return clean_path(&raw);
     }
 
     let expanded = expand_env_vars(trimmed);
-    clean_path(&PathBuf::from(expanded))
+    clean_path(Path::new(&*expanded))
+}
+
+/// Strips leading path separators from `s`.
+///
+/// Always strips `/`; on Windows also strips `\` (a valid separator there).
+/// On Unix `\` is a legal filename character and is preserved. Relies on
+/// [`std::path::is_separator`], which is platform-aware.
+fn strip_leading_separators(s: &str) -> &str {
+    s.trim_start_matches(std::path::is_separator)
 }
 
 fn stripped_tilde(s: &str) -> Option<&str> {
@@ -116,16 +129,17 @@ pub fn resolve_user_path(base: &Path, input: &str) -> PathBuf {
 /// Dollar signs not followed by a valid variable name are passed through
 /// as literal `$`. Returns the expanded string; the caller is responsible
 /// for converting to a path.
-fn expand_env_vars(input: &str) -> String {
+fn expand_env_vars(input: &str) -> Cow<'_, str> {
     if !input.contains('$') {
-        return input.to_string();
+        // Nothing to substitute: borrow the input, avoid allocating.
+        return Cow::Borrowed(input);
     }
     let mut result = String::with_capacity(input.len().saturating_mul(ENV_VAR_EXPANSION_FACTOR));
     let mut rest = input;
 
     while let Some(pos) = rest.find('$') {
         result.push_str(&rest[..pos]);
-        // Safe: '$' is ASCII (1 byte), pos + 1 is a valid char boundary.
+        // '$' is ASCII (1 byte), so pos + 1 is a valid char boundary.
         let after = &rest[pos + 1..];
 
         if let Some((consumed, replacement)) = expand_brace_var(after) {
@@ -141,28 +155,31 @@ fn expand_env_vars(input: &str) -> String {
     }
 
     result.push_str(rest);
-    result
+    Cow::Owned(result)
 }
 
 fn expand_brace_var(after_dollar: &str) -> Option<(usize, String)> {
-    if !after_dollar.starts_with('{') {
-        return None;
-    }
-    let inner = &after_dollar[1..];
+    let inner = after_dollar.strip_prefix('{')?;
     let close = find_brace_close(inner)?;
-    // 1 (open paren) + close (inner parse) + 1 (close paren).
+    // 1 (open brace) + close (inner length up to '}') + 1 (close brace).
     let consumed_bytes = 1 + close + 1;
     let var_name = &inner[..close];
-    let Some(first_char) = var_name.chars().next() else {
-        return Some((consumed_bytes, "${}".to_string()));
+    // Empty or non-identifier-start names pass through verbatim; a valid name
+    // resolves via the environment, falling back to the literal `${name}` form.
+    let replacement = match var_name.chars().next() {
+        Some(first) if is_env_name_start(first) => {
+            env_var(var_name).unwrap_or_else(|| literal_brace(var_name))
+        }
+        _ => literal_brace(var_name),
     };
-    if !is_env_name_start(first_char) {
-        return Some((consumed_bytes, format!("${{{var_name}}}")));
-    }
-    if let Some(val) = env_var(var_name) {
-        return Some((consumed_bytes, val));
-    }
-    Some((consumed_bytes, format!("${{{var_name}}}")))
+    Some((consumed_bytes, replacement))
+}
+
+/// Renders the literal `${var_name}` form used when a brace expression is left
+/// unexpanded (empty, invalid, or unknown variable). An empty `var_name`
+/// yields `${}`.
+fn literal_brace(var_name: &str) -> String {
+    format!("${{{var_name}}}")
 }
 
 fn expand_dollar_var(after_dollar: &str) -> Option<(usize, String)> {
@@ -212,10 +229,10 @@ fn is_env_name_char(c: char) -> bool {
 }
 
 fn env_var(name: &str) -> Option<String> {
-    let val = std::env::var_os(name)?;
-    match val.to_str() {
-        Some(s) => Some(s.to_string()),
-        None => {
+    match std::env::var(name) {
+        Ok(val) => Some(val),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
             crate::debug_log!("env var '{name}' has non-UTF-8 value, skipping");
             None
         }
@@ -485,5 +502,35 @@ mod tests {
         if let Ok(home) = std::env::var("HOME") {
             assert_eq!(result, format!("{home}/日本語"));
         }
+    }
+
+    #[test]
+    fn strip_leading_forward_slash() {
+        // Forward slash is stripped on every platform.
+        assert_eq!(strip_leading_separators("///foo/bar"), "foo/bar");
+        assert_eq!(strip_leading_separators("foo"), "foo");
+        assert_eq!(strip_leading_separators(""), "");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn strip_leading_backslash_windows() {
+        // On Windows '\' is a separator and is stripped alongside '/'.
+        assert_eq!(strip_leading_separators(r"\\foo\bar"), r"foo\bar");
+        assert_eq!(strip_leading_separators(r"/\foo"), "foo");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn strip_leading_backslash_preserved_unix() {
+        // On Unix '\' is a legal filename char, not a separator: keep it.
+        assert_eq!(strip_leading_separators(r"\foo"), r"\foo");
+        assert_eq!(strip_leading_separators("/\\foo"), "\\foo");
+    }
+
+    #[test]
+    fn literal_brace_roundtrip() {
+        assert_eq!(literal_brace("FOO"), "${FOO}");
+        assert_eq!(literal_brace(""), "${}");
     }
 }
