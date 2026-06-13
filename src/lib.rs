@@ -14,6 +14,8 @@ pub use app::types::{
 };
 pub use menu::MenuAction;
 pub use ops::compare::{CompareReport, apply_compare_to_panels, compare_entries};
-pub use ops::file_ops::{chmod, create_directory, rename_entry};
+#[cfg(unix)]
+pub use ops::file_ops::chmod;
+pub use ops::file_ops::{create_directory, rename_entry};
 pub use ops::search::{FileSearch, SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
 pub use ops::sorting::{cycle_sort_mode, sort_entries};

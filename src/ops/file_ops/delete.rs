@@ -3,7 +3,9 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
-use super::common::{MAX_RECURSION_DEPTH, check_optional_canceled};
+#[cfg(windows)]
+use super::common::is_dir_meta;
+use super::common::{MAX_RECURSION_DEPTH, MSG_CRITICAL_DIR, check_optional_canceled};
 
 #[cfg(not(windows))]
 fn remove_symlink(path: &Path) -> io::Result<()> {
@@ -12,41 +14,69 @@ fn remove_symlink(path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn remove_symlink(path: &Path) -> io::Result<()> {
-    let target_is_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
-    if target_is_dir {
+    let meta = fs::symlink_metadata(path)?;
+    if is_dir_meta(&meta) {
         fs::remove_dir(path)
     } else {
         fs::remove_file(path)
     }
 }
 
-macro_rules! define_critical_lists {
-    (
-        common: [$($common:literal),* $(,)?],
-        macos_dirs_extra: [$($md:literal),* $(,)?],
-        linux_dirs_extra: [$($ld:literal),* $(,)?],
-        macos_prefixes_extra: [$($mp:literal),* $(,)?],
-        linux_prefixes_extra: [$($lp:literal),* $(,)?],
-    ) => {
-        #[cfg(target_os = "macos")]
-        const CRITICAL_DIRS: &[&str] = &["/", $($common),*, $($md),*];
-        #[cfg(not(target_os = "macos"))]
-        const CRITICAL_DIRS: &[&str] = &["/", $($common),*, $($ld),*];
-        #[cfg(target_os = "macos")]
-        const CRITICAL_DIR_PREFIXES: &[&str] = &[$($common),*, $($mp),*];
-        #[cfg(not(target_os = "macos"))]
-        const CRITICAL_DIR_PREFIXES: &[&str] = &[$($common),*, $($lp),*];
-    };
-}
+#[cfg(target_os = "macos")]
+const CRITICAL_DIRS: &[&str] = &[
+    "/",
+    "/System",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/nix",
+    "/proc",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+    "/Applications",
+    "/private",
+    "/private/etc",
+    "/private/tmp",
+    "/private/var",
+];
 
-define_critical_lists! {
-    common: ["/System", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/nix",
-             "/proc", "/sbin", "/sys", "/usr", "/var"],
-    macos_dirs_extra: ["/Applications", "/private", "/private/etc", "/private/tmp", "/private/var"],
-    linux_dirs_extra: ["/flatpak", "/gnu", "/snap"],
-    macos_prefixes_extra: ["/Applications", "/private/etc", "/private/tmp", "/private/var"],
-    linux_prefixes_extra: ["/flatpak", "/gnu", "/snap"],
-}
+#[cfg(not(target_os = "macos"))]
+const CRITICAL_DIRS: &[&str] = &[
+    "/", "/System", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/nix", "/proc", "/sbin",
+    "/sys", "/tmp", "/usr", "/var", "/flatpak", "/gnu", "/snap",
+];
+
+#[cfg(target_os = "macos")]
+const CRITICAL_DIR_PREFIXES: &[&str] = &[
+    "/System",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/nix",
+    "/proc",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var",
+    "/Applications",
+    "/private/etc",
+    "/private/tmp",
+    "/private/var",
+];
+
+#[cfg(not(target_os = "macos"))]
+const CRITICAL_DIR_PREFIXES: &[&str] = &[
+    "/System", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/nix", "/proc", "/sbin", "/sys",
+    "/tmp", "/usr", "/var", "/flatpak", "/gnu", "/snap",
+];
 
 pub fn delete_file(path: &Path) -> io::Result<()> {
     fs::remove_file(path)
@@ -61,6 +91,9 @@ pub fn delete_dir_recursive_cancelable(path: &Path, cancel: &AtomicBool) -> io::
 }
 
 fn validate_not_critical(canonical: &Path) -> io::Result<()> {
+    // Unix root guard: `canonicalize("/")` yields `/` whose `parent()` is `None`.
+    // On Windows, `\\?\C:\`.parent() = `Some(\\?\`)`, so this does NOT catch
+    // Windows root drives — they're caught by the CRITICAL_DIRS list below instead.
     if canonical.parent().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -71,7 +104,7 @@ fn validate_not_critical(canonical: &Path) -> io::Result<()> {
         if canonical == Path::new(*critical) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                format!("refusing to delete critical system directory: {critical}"),
+                format!("{MSG_CRITICAL_DIR}{critical}"),
             ));
         }
     }
@@ -89,7 +122,7 @@ fn validate_not_critical(canonical: &Path) -> io::Result<()> {
         if !is_under_temp && canonical.starts_with(Path::new(*critical)) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                format!("refusing to delete critical system directory: {critical}"),
+                format!("{MSG_CRITICAL_DIR}{critical}"),
             ));
         }
     }

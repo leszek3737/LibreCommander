@@ -103,6 +103,20 @@ pub(super) struct DestBackup {
     pub(super) entry: PathBuf,
 }
 
+/// Two-phase atomic directory replace.
+///
+/// Phase 1: move existing dest → backup (if `overwrite` && dest exists).
+/// Phase 2: rename temp → dest.
+/// On phase 2 failure: restore backup → dest.
+///
+/// # Crash safety
+/// Crash between phases leaves an orphan `.lc-dir-backup-*.tmp` dir.
+/// Next run self-heals — `reserve_unique_name` ignores existing backups.
+///
+/// # TOCTOU
+/// When `overwrite=false`, dest existence is re-checked right before rename
+/// to narrow the race window. Full atomicity would require `RENAME_NOREPLACE`
+/// or `renamex_np`, which are out of stdlib.
 pub(super) fn publish_temp_dir(
     temp_dest: &Path,
     dest: &Path,
@@ -114,6 +128,16 @@ pub(super) fn publish_temp_dir(
         return Err(e);
     }
     if !overwrite {
+        match fs::symlink_metadata(dest) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("destination already exists: {}", dest.display()),
+                ));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
         return fs::rename(temp_dest, dest);
     }
 
@@ -133,13 +157,13 @@ pub(super) fn publish_temp_dir(
         }
         Err(err) => {
             if let Some(backup) = backup {
-                fs::rename(&backup.entry, dest).map_err(|restore_err| {
-                    io::Error::other(format!(
-                        "failed to restore destination {} from backup {}: {restore_err}",
-                        dest.display(),
+                if let Err(restore_err) = fs::rename(&backup.entry, dest) {
+                    debug_log!(
+                        "failed to restore backup {} to {}: {restore_err}",
                         backup.entry.display(),
-                    ))
-                })?;
+                        dest.display()
+                    );
+                }
                 if let Err(e) = fs::remove_dir(&backup.container) {
                     debug_log!(
                         "warning: failed to cleanup backup container {}: {e}",
@@ -189,7 +213,7 @@ pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io
     if overwrite {
         replace_file_inner(temp, dest, "cannot replace a directory with a file")?;
     } else {
-        std::fs::rename(temp, dest)?;
+        fs::rename(temp, dest)?;
     }
     Ok(())
 }
@@ -198,7 +222,7 @@ pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io
 pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
     let (dir, name) = parent_and_filename(dest)?;
     let pid = std::process::id();
-    for counter in 0..1024 {
+    for counter in 0..TEMP_NAME_MAX_ATTEMPTS {
         let temp = dir.join(format!(
             "{}.{}.{}.tmp",
             name.to_string_lossy(),
@@ -217,7 +241,7 @@ pub(super) fn reserve_temp_file_for(dest: &Path) -> io::Result<PathBuf> {
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "could not reserve temporary file (exhausted 1024 attempts)",
+        "could not reserve temporary file (exhausted attempts)",
     ))
 }
 

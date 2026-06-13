@@ -202,6 +202,23 @@ fn is_canceled(cancel: &Option<Arc<AtomicBool>>) -> bool {
         .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
 }
 
+enum EntryKind {
+    Symlink,
+    Dir,
+    File,
+}
+
+fn classify_entry(path: &Path) -> io::Result<EntryKind> {
+    let meta = path.symlink_metadata()?;
+    if meta.file_type().is_symlink() {
+        Ok(EntryKind::Symlink)
+    } else if meta.is_dir() {
+        Ok(EntryKind::Dir)
+    } else {
+        Ok(EntryKind::File)
+    }
+}
+
 struct ProgressSnapshot<'a> {
     completed: usize,
     total: usize,
@@ -307,11 +324,9 @@ fn copy_entry(
     on_progress: &mut dyn FnMut(u64),
     overwrite: bool,
 ) -> io::Result<()> {
-    match src.symlink_metadata() {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            file_ops::copy_symlink(src, dest, overwrite).map(|_| ())
-        }
-        Ok(meta) if meta.is_dir() => {
+    match classify_entry(src)? {
+        EntryKind::Symlink => file_ops::copy_symlink(src, dest, overwrite).map(|_| ()),
+        EntryKind::Dir => {
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
             thread::scope(|scope| {
@@ -328,7 +343,7 @@ fn copy_entry(
                 wait_for_result_with_progress(&result_rx, &progress_rx, on_progress).map(|_| ())
             })
         }
-        Ok(_) => {
+        EntryKind::File => {
             let (progress_tx, progress_rx) = mpsc::channel::<u64>();
             let (result_tx, result_rx) = mpsc::channel::<io::Result<u64>>();
             thread::scope(|scope| {
@@ -345,7 +360,6 @@ fn copy_entry(
                 wait_for_result_with_progress(&result_rx, &progress_rx, on_progress).map(|_| ())
             })
         }
-        Err(e) => Err(e),
     }
 }
 
@@ -482,13 +496,15 @@ where
 
         process_batch_entry(idx, src, &ctx, cancel, &mut action, progress, &mut state);
 
-        if is_canceled(cancel) {
-            state.canceled = true;
-        }
-
         if state.canceled {
             break;
         }
+    }
+
+    // Final check: catch cancel set during progress callback on the last item
+    // (the top-of-loop check won't run when there are no more items).
+    if !state.canceled && is_canceled(cancel) {
+        state.canceled = true;
     }
 
     BatchReport {
@@ -740,13 +756,13 @@ fn batch_delete(
                 start_time,
             },
         );
-        let result = match path.symlink_metadata() {
-            Ok(meta) if meta.file_type().is_symlink() => file_ops::delete_file(path),
-            Ok(meta) if meta.is_dir() => match cancel.as_deref() {
+        let result = match classify_entry(path) {
+            Ok(EntryKind::Symlink) => file_ops::delete_file(path),
+            Ok(EntryKind::Dir) => match cancel.as_deref() {
                 Some(cancel) => file_ops::delete_dir_recursive_cancelable(path, cancel),
                 None => file_ops::delete_dir_recursive(path),
             },
-            Ok(_) => file_ops::delete_file(path),
+            Ok(EntryKind::File) => file_ops::delete_file(path),
             Err(e) => Err(e),
         };
         if let Err(e) = result {
@@ -771,9 +787,6 @@ fn batch_delete(
                 start_time,
             },
         );
-        if is_canceled(cancel) {
-            canceled = true;
-        }
         if canceled {
             break;
         }

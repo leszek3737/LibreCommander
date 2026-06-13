@@ -1,3 +1,4 @@
+use crate::debug_log;
 use crate::ops::helpers::lexical_path_starts_with;
 
 use std::fs;
@@ -28,10 +29,37 @@ pub(super) fn same_inode(_a: &fs::Metadata, _b: &fs::Metadata) -> bool {
     false
 }
 
-pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
-    check_optional_canceled(Some(cancel))
+#[cfg(not(windows))]
+pub(super) fn is_dir_meta(meta: &fs::Metadata) -> bool {
+    meta.is_dir()
 }
 
+#[cfg(windows)]
+pub(super) fn is_dir_meta(meta: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
+}
+
+/// Returns true for directory-like reparse points (junctions, dir symlinks).
+/// On non-Windows, delegates to `meta.is_dir()`.
+#[allow(dead_code)]
+pub(super) fn is_dir_reparse(meta: &fs::Metadata) -> bool {
+    is_dir_meta(meta)
+}
+
+/// Mandatory cancel check for callers with a required cancel token.
+pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "operation canceled",
+        ));
+    }
+    Ok(())
+}
+
+/// Optional cancel check — used by functions that may or may not have a cancel token.
 pub(super) fn check_optional_canceled(cancel: Option<&AtomicBool>) -> io::Result<()> {
     if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
         return Err(io::Error::new(
@@ -42,17 +70,24 @@ pub(super) fn check_optional_canceled(cancel: Option<&AtomicBool>) -> io::Result
     Ok(())
 }
 
+pub const MSG_DEST_EXISTS: &str = "destination already exists";
+
 pub(super) fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
     match fs::symlink_metadata(dest) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "destination already exists",
+            format!("{MSG_DEST_EXISTS}: {}", dest.display()),
         )),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
 }
 
+/// Checks if `child` is lexically contained within `parent` after canonicalization.
+///
+/// Note: errors are wrapped via `format!` which drops the `Error::source()` chain.
+/// This is an accepted limitation of the `io::Result` error model used throughout
+/// the project; a custom error type would be needed to preserve the full chain.
 pub(super) fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
     let canonical_parent = canonicalize_existing_path(parent).map_err(|e| {
         io::Error::new(
@@ -91,11 +126,18 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
 
 #[cfg(not(any(unix, windows)))]
 pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
-    let same = match (src.canonicalize().ok(), dest.canonicalize().ok()) {
-        (Some(s), Some(d)) => s == d,
-        _ => src == dest,
-    };
-    if same {
+    fs::symlink_metadata(src)?;
+    match fs::symlink_metadata(dest) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    let literal_match = src == dest;
+    let canon_match = src
+        .canonicalize()
+        .and_then(|s| dest.canonicalize().map(|d| (s, d)))
+        .is_ok_and(|(s, d)| s == d);
+    if literal_match || canon_match {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "source and destination are the same file",
@@ -125,6 +167,8 @@ pub(super) fn validate_copy_targets(src: &Path, dest: &Path, overwrite: bool) ->
     Ok(())
 }
 
+/// Canonicalizes a path that is expected to already exist.
+/// Serves as a named entry point for potential future validation (e.g., symlink policy).
 pub(super) fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
     path.canonicalize()
 }
@@ -134,9 +178,17 @@ pub(super) fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Resu
 
     loop {
         if let Ok(canonical_ancestor) = ancestor.canonicalize() {
-            let suffix = path
-                .strip_prefix(ancestor)
-                .unwrap_or_else(|_| Path::new(""));
+            let suffix = path.strip_prefix(ancestor).unwrap_or_else(|_| {
+                // Ancestor was derived by walking up `path`'s parents, so
+                // `strip_prefix` should always succeed. If it fails, the
+                // canonical suffix is unknowable — fall back to relative path.
+                debug_log!(
+                    "BUG: strip_prefix failed on ancestor-anchored path walk: {} vs {}",
+                    path.display(),
+                    ancestor.display()
+                );
+                Path::new("")
+            });
             return normalize_suffix(canonical_ancestor, suffix);
         }
 
@@ -168,11 +220,83 @@ pub(super) fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<P
     Ok(base)
 }
 
+pub const MSG_CRITICAL_DIR: &str = "refusing to delete critical system directory: ";
+pub const MSG_SYMLINK_CHMOD: &str = "cannot chmod a symlink, refuse to follow symlinks";
+
+/// Removes a filesystem entry by dispatching on file type.
+///
+/// Uses `symlink_metadata` for the initial stat to avoid dereferencing
+/// symlinks. Branches: directory → `remove_dir_all`, directory symlink
+/// → `remove_dir`, file/symlink-to-file → `remove_file`.
+///
+/// # Non-adversarial contract
+///
+/// This function assumes a non-adversarial filesystem — no concurrent
+/// process is actively replacing the entry or its parent directory during
+/// the operation. The single `symlink_metadata` call at the top
+/// determines the dispatch target; a TOCTOU substitution after the stat
+/// could cause the wrong removal function to be called (e.g., removing
+/// a file that replaced a directory). Full TOCTOU hardening would require
+/// platform-specific `openat`+`unlinkat` patterns which are gated behind
+/// `forbid(unsafe_code)`.
 pub(super) fn remove_any(path: &Path) -> io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::IsADirectory => std::fs::remove_dir_all(path),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if meta.is_dir() {
+        return fs::remove_dir_all(path);
+    }
+    if meta.is_symlink() && is_dir_meta(&meta) {
+        return fs::remove_dir(path);
+    }
+    fs::remove_file(path)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn normalize_suffix_simple() {
+        let base = Path::new("/home/user").to_path_buf();
+        let suffix = Path::new("docs");
+        let result = normalize_suffix(base, suffix).unwrap();
+        assert_eq!(result, Path::new("/home/user/docs"));
+    }
+
+    #[test]
+    fn normalize_suffix_parent_dir() {
+        let base = Path::new("/home/user").to_path_buf();
+        let suffix = Path::new("../other");
+        let result = normalize_suffix(base, suffix).unwrap();
+        assert_eq!(result, Path::new("/home/other"));
+    }
+
+    #[test]
+    fn normalize_suffix_parent_dir_above_root() {
+        let base = Path::new("/home").to_path_buf();
+        let suffix = Path::new("../../etc");
+        let err = normalize_suffix(base, suffix).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn normalize_suffix_absolute_path_uses_root() {
+        let base = Path::new("/anything").to_path_buf();
+        let suffix = Path::new("/usr/local/bin");
+        let result = normalize_suffix(base, suffix).unwrap();
+        assert_eq!(result, Path::new("/usr/local/bin"));
+    }
+
+    #[test]
+    fn normalize_suffix_current_dir_ignored() {
+        let base = Path::new("/dir").to_path_buf();
+        let suffix = Path::new("./sub");
+        let result = normalize_suffix(base, suffix).unwrap();
+        assert_eq!(result, Path::new("/dir/sub"));
     }
 }
