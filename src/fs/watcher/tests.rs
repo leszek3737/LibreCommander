@@ -9,8 +9,37 @@ fn expired_instant() -> Instant {
     Instant::now() - DEBOUNCE_DURATION - Duration::from_millis(1)
 }
 
+/// A zero-capacity (rendezvous) channel with no waiting receiver: every
+/// `try_send` fails with `Full`. We deliberately use a bounded `sync_channel`
+/// here rather than the unbounded `mpsc::channel()` *because* an unbounded
+/// channel can never report `Full`, so it could not exercise the queue-full
+/// backpressure paths (event drop, reinsert, overflow flagging) these tests
+/// assert on.
 fn full_channel() -> (mpsc::SyncSender<WatchEvent>, mpsc::Receiver<WatchEvent>) {
     mpsc::sync_channel(0)
+}
+
+/// Standard fixture: a watcher wired to a bounded channel large enough not to
+/// apply backpressure in common-case tests. Returns the receiver so callers can
+/// assert on emitted events (or bind it to `_rx` to keep the channel open).
+fn test_watcher() -> (Watcher, mpsc::Receiver<WatchEvent>) {
+    let (tx, rx) = mpsc::sync_channel(2048);
+    let watcher = Watcher::new(Arc::new(tx)).expect("Watcher::new should succeed");
+    (watcher, rx)
+}
+
+/// Insert one rename-From entry (no tracker cookie) under `parent`, so stale /
+/// pairing behaviour can be exercised without locking the map by hand.
+fn insert_pending_from(watcher: &Watcher, parent: &Path, path: &Path, time: Instant) {
+    let mut pending = watcher.pending_from.lock().unwrap();
+    pending
+        .entry(parent.to_path_buf())
+        .or_default()
+        .push_back(PendingFromEntry {
+            path: path.to_path_buf(),
+            cookie: None,
+            time,
+        });
 }
 
 fn insert_expired_modified(watcher: &Watcher, path: &Path) {
@@ -26,8 +55,7 @@ fn insert_expired_modified(watcher: &Watcher, path: &Path) {
 
 fn watch_unwatch_lifecycle(remove_before_unwatch: bool) -> TestResult {
     let tempdir = tempfile::tempdir()?;
-    let (event_tx, _event_rx) = mpsc::sync_channel(2048);
-    let mut watcher = Watcher::new(Arc::new(event_tx))?;
+    let (mut watcher, _rx) = test_watcher();
     let watched_path = tempdir.path().to_path_buf();
     let canonical = watched_path.canonicalize()?;
 
@@ -67,8 +95,7 @@ fn watcher_unwatch_cleans_state_when_symlink_target_vanished() -> TestResult {
     std::fs::create_dir(&target)?;
     std::os::unix::fs::symlink(&target, &link)?;
 
-    let (event_tx, _event_rx) = mpsc::sync_channel(2048);
-    let mut watcher = Watcher::new(Arc::new(event_tx))?;
+    let (mut watcher, _rx) = test_watcher();
     watcher.watch(&link)?;
     std::fs::remove_dir_all(&target)?;
 
@@ -81,8 +108,7 @@ fn watcher_unwatch_cleans_state_when_symlink_target_vanished() -> TestResult {
 
 #[test]
 fn watcher_pause_and_resume_do_not_panic() -> TestResult {
-    let (event_tx, _event_rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(event_tx))?;
+    let (watcher, _rx) = test_watcher();
 
     watcher.pause();
     watcher.resume();
@@ -128,8 +154,7 @@ fn convert_event_maps_split_rename_events() {
 
 #[test]
 fn watcher_created_with_primary_only_no_fallback() -> TestResult {
-    let (event_tx, _event_rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(event_tx))?;
+    let (watcher, _rx) = test_watcher();
     assert!(watcher.fallback.is_none());
     assert!(watcher.watchers.is_empty());
     Ok(())
@@ -137,8 +162,7 @@ fn watcher_created_with_primary_only_no_fallback() -> TestResult {
 
 #[test]
 fn flush_pending_emits_coalesced_event_after_debounce_window() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
+    let (watcher, rx) = test_watcher();
 
     let path = PathBuf::from("/tmp/test_file.txt");
     insert_expired_modified(&watcher, &path);
@@ -152,8 +176,7 @@ fn flush_pending_emits_coalesced_event_after_debounce_window() -> TestResult {
 
 #[test]
 fn flush_pending_does_not_emit_while_paused() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
+    let (watcher, rx) = test_watcher();
 
     watcher.pause();
 
@@ -246,16 +269,12 @@ fn flush_pending_keeps_stale_from_when_queue_is_full() -> TestResult {
     let stale = PathBuf::from("/tmp/stale_file.txt");
     let parent_key = PathBuf::new();
 
-    {
-        let mut pending = watcher.pending_from.lock().unwrap();
-        pending.insert(
-            parent_key.clone(),
-            VecDeque::from([PendingFromEntry {
-                path: stale.clone(),
-                time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            }]),
-        );
-    }
+    insert_pending_from(
+        &watcher,
+        &parent_key,
+        &stale,
+        Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
+    );
 
     watcher.flush_pending();
 
@@ -273,53 +292,44 @@ fn flush_pending_keeps_stale_from_when_queue_is_full() -> TestResult {
 
 #[test]
 fn process_debounce_coalesces_suppressed_event() {
-    let debounce_state: Mutex<HashMap<PathBuf, PendingEntry>> = Mutex::new(HashMap::new());
+    let mut debounce: HashMap<PathBuf, PendingEntry> = HashMap::new();
     let path = PathBuf::from("/tmp/coalesce.txt");
     let event = WatchEvent::Modified(path.clone());
 
-    let (emit1, flushed1) =
-        process_debounce(&debounce_state, &[path.as_path()], Some(&event), false);
+    let (emit1, flushed1) = process_debounce(&mut debounce, &[path.as_path()], Some(&event), false);
     assert!(emit1);
     assert!(flushed1.is_empty());
 
-    let (emit2, flushed2) =
-        process_debounce(&debounce_state, &[path.as_path()], Some(&event), false);
+    let (emit2, flushed2) = process_debounce(&mut debounce, &[path.as_path()], Some(&event), false);
     assert!(!emit2);
     assert!(flushed2.is_empty());
 
-    let map = debounce_state.lock().unwrap();
-    let entry = map.get(&path).unwrap();
+    let entry = debounce.get(&path).unwrap();
     assert!(entry.coalesced.is_some());
 }
 
 #[test]
 fn process_debounce_with_skip_debounce_true_never_suppresses() {
-    let debounce_state: Mutex<HashMap<PathBuf, PendingEntry>> = Mutex::new(HashMap::new());
+    let mut debounce: HashMap<PathBuf, PendingEntry> = HashMap::new();
     let path = PathBuf::from("/tmp/skip.txt");
     let event = WatchEvent::Modified(path.clone());
 
     // First call with no prior entry: emits immediately, nothing to flush.
-    let (emit1, flushed1) =
-        process_debounce(&debounce_state, &[path.as_path()], Some(&event), true);
+    let (emit1, flushed1) = process_debounce(&mut debounce, &[path.as_path()], Some(&event), true);
     assert!(emit1);
     assert!(flushed1.is_empty());
 
     // Seed a coalesced entry as if a prior debounced event had been suppressed.
-    {
-        let mut map = debounce_state.lock().unwrap();
-        map.get_mut(&path).unwrap().coalesced = Some(WatchEvent::Modified(path.clone()));
-    }
+    debounce.get_mut(&path).unwrap().coalesced = Some(WatchEvent::Modified(path.clone()));
 
     // Second call within the debounce window: skip_debounce still emits and
     // flushes the prior coalesced event instead of suppressing it.
-    let (emit2, flushed2) =
-        process_debounce(&debounce_state, &[path.as_path()], Some(&event), true);
+    let (emit2, flushed2) = process_debounce(&mut debounce, &[path.as_path()], Some(&event), true);
     assert!(emit2, "skip_debounce=true should never suppress");
     assert_eq!(flushed2.len(), 1);
     assert!(matches!(&flushed2[0].event, WatchEvent::Modified(p) if p == &path));
 
-    let map = debounce_state.lock().unwrap();
-    let entry = map.get(&path).unwrap();
+    let entry = debounce.get(&path).unwrap();
     assert!(
         entry.coalesced.is_none(),
         "skip_debounce=true should leave no coalesced event"
@@ -327,8 +337,10 @@ fn process_debounce_with_skip_debounce_true_never_suppresses() {
 }
 
 #[test]
-// Known limitation: FIFO pairing lacks semantic matching. Pairing depends on
-// emission order from notify, which may cause incorrect pairs with concurrent renames.
+// FIFO fallback: these events carry no tracker cookie (Default attrs), so
+// pairing falls back to emission order. When the backend supplies cookies the
+// pairing is exact regardless of order — see
+// `rename_pairing_matches_by_cookie_not_fifo`.
 fn multiple_from_same_dir_buffered_and_paired_fifo() {
     let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
 
@@ -376,20 +388,59 @@ fn multiple_from_same_dir_buffered_and_paired_fifo() {
 }
 
 #[test]
-fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
+fn rename_pairing_matches_by_cookie_not_fifo() {
+    use notify::event::ModifyKind;
 
-    {
-        let mut pending = watcher.pending_from.lock().unwrap();
-        pending.insert(
-            PathBuf::new(),
-            VecDeque::from([PendingFromEntry {
-                path: PathBuf::from("/tmp/stale_file.txt"),
-                time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            }]),
-        );
-    }
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let dir = PathBuf::from("/d");
+
+    // Two concurrent renames in one directory. The From events arrive first,
+    // then the To events arrive in the OPPOSITE order. FIFO pairing would
+    // mismatch (To(b) with From(a)); cookie pairing must keep each pair intact.
+    let from_a = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::From)))
+        .add_path(dir.join("a_old"))
+        .set_tracker(1);
+    let from_b = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::From)))
+        .add_path(dir.join("b_old"))
+        .set_tracker(2);
+    let to_b = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To)))
+        .add_path(dir.join("b_new"))
+        .set_tracker(2);
+    let to_a = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To)))
+        .add_path(dir.join("a_new"))
+        .set_tracker(1);
+
+    assert!(convert_event_with_rename_pairing(from_a, &pending).is_empty());
+    assert!(convert_event_with_rename_pairing(from_b, &pending).is_empty());
+
+    let ev_b = convert_event_with_rename_pairing(to_b, &pending);
+    assert!(
+        matches!(ev_b.as_slice(), [WatchEvent::Renamed { from, to }]
+            if from == &dir.join("b_old") && to == &dir.join("b_new")),
+        "To(b) must pair with From(b) by cookie, not the FIFO-head From(a)"
+    );
+
+    let ev_a = convert_event_with_rename_pairing(to_a, &pending);
+    assert!(
+        matches!(ev_a.as_slice(), [WatchEvent::Renamed { from, to }]
+            if from == &dir.join("a_old") && to == &dir.join("a_new")),
+        "To(a) must pair with the remaining From(a)"
+    );
+
+    // Both buckets fully drained once paired.
+    assert!(pending.lock().unwrap().is_empty());
+}
+
+#[test]
+fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
+    let (watcher, rx) = test_watcher();
+
+    insert_pending_from(
+        &watcher,
+        &PathBuf::new(),
+        Path::new("/tmp/stale_file.txt"),
+        Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
+    );
 
     watcher.flush_pending();
 
@@ -405,46 +456,40 @@ fn flush_pending_emits_deleted_for_stale_from() -> TestResult {
 #[test]
 fn clear_pending_from_keeps_new_from_for_same_path() {
     let parent_key = PathBuf::new();
-    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let mut pending: HashMap<PathBuf, VecDeque<PendingFromEntry>> = HashMap::new();
     let new_time = Instant::now();
-    {
-        let mut map = pending.lock().unwrap();
-        map.insert(
-            parent_key.clone(),
-            VecDeque::from([PendingFromEntry {
-                path: PathBuf::from("/tmp/rename.txt"),
-                time: new_time,
-            }]),
-        );
-    }
+    pending.insert(
+        parent_key.clone(),
+        VecDeque::from([PendingFromEntry {
+            path: PathBuf::from("/tmp/rename.txt"),
+            cookie: None,
+            time: new_time,
+        }]),
+    );
 
+    // Retraction keyed on an *older* time must not remove the newer entry that
+    // reused the same path.
     let old_time = Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1);
-    clear_pending_from_if_unchanged(
-        &pending,
+    clear_pending_from_entry(
+        &mut pending,
         &parent_key,
         Path::new("/tmp/rename.txt"),
         old_time,
     );
 
-    let map = pending.lock().unwrap();
-    assert!(map.contains_key(&parent_key));
+    assert!(pending.contains_key(&parent_key));
 }
 
 #[test]
 fn flush_pending_keeps_fresh_from() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
+    let (watcher, rx) = test_watcher();
 
-    {
-        let mut pending = watcher.pending_from.lock().unwrap();
-        pending.insert(
-            PathBuf::new(),
-            VecDeque::from([PendingFromEntry {
-                path: PathBuf::from("/tmp/fresh_file.txt"),
-                time: Instant::now(),
-            }]),
-        );
-    }
+    insert_pending_from(
+        &watcher,
+        &PathBuf::new(),
+        Path::new("/tmp/fresh_file.txt"),
+        Instant::now(),
+    );
 
     watcher.flush_pending();
 
@@ -539,23 +584,18 @@ fn multiple_from_same_parent_both_buffered() {
 
 #[test]
 fn pause_clears_all_state() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
+    let (watcher, rx) = test_watcher();
 
     // Seed debounce_state with an expired entry.
     insert_expired_modified(&watcher, Path::new("/tmp/test_pause_clear.txt"));
 
     // Seed pending_from with a fresh entry.
-    {
-        let mut pending = watcher.pending_from.lock().unwrap();
-        pending.insert(
-            PathBuf::from("/some/dir"),
-            VecDeque::from([PendingFromEntry {
-                path: PathBuf::from("/some/dir/old.txt"),
-                time: Instant::now(),
-            }]),
-        );
-    }
+    insert_pending_from(
+        &watcher,
+        Path::new("/some/dir"),
+        Path::new("/some/dir/old.txt"),
+        Instant::now(),
+    );
 
     watcher.pause();
 
@@ -621,29 +661,18 @@ fn reinsert_or_overflow_sets_pending_flag_on_full_queue() -> TestResult {
 
 #[test]
 fn stale_from_per_parent_times_out_independently() -> TestResult {
-    let (tx, rx) = mpsc::sync_channel(2048);
-    let watcher = Watcher::new(Arc::new(tx))?;
+    let (watcher, rx) = test_watcher();
 
     let dir_a = PathBuf::from("/dir_a");
     let dir_b = PathBuf::from("/dir_b");
 
-    {
-        let mut pending = watcher.pending_from.lock().unwrap();
-        pending.insert(
-            dir_a.clone(),
-            VecDeque::from([PendingFromEntry {
-                path: dir_a.join("old_a.txt"),
-                time: Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
-            }]),
-        );
-        pending.insert(
-            dir_b.clone(),
-            VecDeque::from([PendingFromEntry {
-                path: dir_b.join("fresh_b.txt"),
-                time: Instant::now(),
-            }]),
-        );
-    }
+    insert_pending_from(
+        &watcher,
+        &dir_a,
+        &dir_a.join("old_a.txt"),
+        Instant::now() - PENDING_FROM_TIMEOUT - Duration::from_millis(1),
+    );
+    insert_pending_from(&watcher, &dir_b, &dir_b.join("fresh_b.txt"), Instant::now());
 
     watcher.flush_pending();
 
@@ -659,4 +688,53 @@ fn stale_from_per_parent_times_out_independently() -> TestResult {
     assert!(pending.contains_key(&dir_b));
     assert!(!pending.contains_key(&dir_a));
     Ok(())
+}
+
+#[test]
+fn from_beyond_pending_from_limit_emits_overflow() {
+    let (watcher, _rx) = test_watcher();
+    let parent = PathBuf::from("/massrename");
+    let now = Instant::now();
+
+    // Fill one parent's pending_from queue up to the cap via the helper, which
+    // seeds entries directly (bypassing the bound) — no real filesystem events
+    // needed. After this the queue holds exactly PENDING_FROM_LIMIT Froms.
+    for i in 0..super::PENDING_FROM_LIMIT {
+        insert_pending_from(
+            &watcher,
+            &parent,
+            &parent.join(format!("file_{i}.txt")),
+            now,
+        );
+    }
+
+    // One more rename-From for the same parent goes through the production path,
+    // which enforces the cap: instead of buffering an unbounded number of Froms
+    // it must signal Overflow (full-refresh fallback), mirroring batch-overflow.
+    let from = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+        paths: vec![parent.join("overflow_trigger.txt")],
+        attrs: Default::default(),
+    };
+    let events = convert_event_with_rename_pairing(from, &watcher.pending_from);
+
+    assert!(
+        matches!(events.as_slice(), [WatchEvent::Overflow]),
+        "a From past PENDING_FROM_LIMIT must emit Overflow, not buffer unboundedly"
+    );
+
+    // The overflowing From must not be buffered: the queue stays capped. If the
+    // bound were removed this would be PENDING_FROM_LIMIT + 1, so the assertion
+    // also guards against a tautological pass.
+    let buffered = watcher
+        .pending_from
+        .lock()
+        .unwrap()
+        .get(&parent)
+        .map_or(0, |queue| queue.len());
+    assert_eq!(
+        buffered,
+        super::PENDING_FROM_LIMIT,
+        "overflow must not append the extra From"
+    );
 }

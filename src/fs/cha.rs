@@ -125,6 +125,9 @@ impl ChaMode {
         ChaType::from_mode(self.0)
     }
 
+    // Canonical file-type predicates: the single source of truth, derived purely
+    // from the raw mode bits via `typ()`. `Cha`'s public predicates delegate here
+    // (see `Cha::is_file`/`is_dir`/`is_link`); do not reimplement this logic.
     #[inline]
     pub(crate) fn is_file(&self) -> bool {
         self.typ() == ChaType::File
@@ -180,6 +183,12 @@ pub struct Cha {
     pub kind: ChaKind,
     pub mode: ChaMode,
     pub len: u64,
+    // Time-API duality: these fields stay `pub` so existing field-readers and
+    // struct-literal constructors keep compiling, but the **canonical read API is
+    // the getters** (`mtime()`/`btime()`/`ctime()`/`atime()`), which simply
+    // return these fields. Prefer the getters for reads. Full convergence to a
+    // single access path is a cross-file follow-up (callers in `ops/sorting.rs`
+    // still read the field directly).
     pub mtime: Option<SystemTime>,
     pub btime: Option<SystemTime>,
     pub ctime: Option<SystemTime>,
@@ -272,16 +281,22 @@ impl Cha {
         }
     }
 
+    /// Delegates to [`ChaMode::is_dir`], **plus** the one legitimate divergence:
+    /// a followed symlink whose target is a directory counts as a directory. That
+    /// case needs `kind` (the resolved-target flag), which `ChaMode` cannot see
+    /// from mode bits alone — so this is intentionally *not* a bare passthrough.
     #[inline]
     pub fn is_dir(&self) -> bool {
         self.mode.is_dir() || (self.mode.is_link() && self.kind.contains(ChaKind::DIR_TARGET))
     }
 
+    /// Delegates to [`ChaMode::is_file`] (the canonical type predicate).
     #[inline]
     pub fn is_file(&self) -> bool {
         self.mode.is_file()
     }
 
+    /// Delegates to [`ChaMode::is_link`] (the canonical type predicate).
     #[inline]
     pub fn is_link(&self) -> bool {
         self.mode.is_link()
@@ -327,6 +342,9 @@ impl Cha {
         self.len == 0
     }
 
+    // Canonical read API for timestamps. These delegate to the same-named public
+    // fields; reads should go through these getters (the field is kept public only
+    // for backwards compatibility / struct-literal construction).
     #[inline]
     pub fn mtime(&self) -> Option<SystemTime> {
         self.mtime
@@ -389,25 +407,55 @@ impl Cha {
     }
 }
 
-struct PermBits {
-    read_bit: u32,
-    write_bit: u32,
-    exec_bit: u32,
+// One permission triple (owner / group / others). The r/w/x bits are the base
+// bits 0o4/0o2/0o1 shifted left by `shift` (6/3/0), so the three triples differ
+// only by `shift` plus the special bit and its glyphs. `special_bit` is the
+// setuid/setgid/sticky bit; `special_exec`/`special_noexec` are the chars shown
+// in the execute column when that special bit is set (with/without execute).
+struct PermTriple {
+    shift: u32,
     special_bit: u32,
     special_exec: char,
     special_noexec: char,
 }
 
-fn write_perm_triple(f: &mut fmt::Formatter<'_>, m: u32, bits: &PermBits) -> fmt::Result {
-    f.write_char(if m & bits.read_bit != 0 { 'r' } else { '-' })?;
-    f.write_char(if m & bits.write_bit != 0 { 'w' } else { '-' })?;
-    f.write_char(if m & bits.special_bit != 0 {
-        if m & bits.exec_bit != 0 {
-            bits.special_exec
+const PERM_TRIPLES: [PermTriple; 3] = [
+    // owner
+    PermTriple {
+        shift: 6,
+        special_bit: 0o4000,
+        special_exec: 's',
+        special_noexec: 'S',
+    },
+    // group
+    PermTriple {
+        shift: 3,
+        special_bit: 0o2000,
+        special_exec: 's',
+        special_noexec: 'S',
+    },
+    // others
+    PermTriple {
+        shift: 0,
+        special_bit: 0o1000,
+        special_exec: 't',
+        special_noexec: 'T',
+    },
+];
+
+fn write_perm_triple(f: &mut fmt::Formatter<'_>, m: u32, t: &PermTriple) -> fmt::Result {
+    let read_bit = 0o4 << t.shift;
+    let write_bit = 0o2 << t.shift;
+    let exec_bit = 0o1 << t.shift;
+    f.write_char(if m & read_bit != 0 { 'r' } else { '-' })?;
+    f.write_char(if m & write_bit != 0 { 'w' } else { '-' })?;
+    f.write_char(if m & t.special_bit != 0 {
+        if m & exec_bit != 0 {
+            t.special_exec
         } else {
-            bits.special_noexec
+            t.special_noexec
         }
-    } else if m & bits.exec_bit != 0 {
+    } else if m & exec_bit != 0 {
         'x'
     } else {
         '-'
@@ -415,39 +463,13 @@ fn write_perm_triple(f: &mut fmt::Formatter<'_>, m: u32, bits: &PermBits) -> fmt
     Ok(())
 }
 
-const OWNER_BITS: PermBits = PermBits {
-    read_bit: 0o400,
-    write_bit: 0o200,
-    exec_bit: 0o100,
-    special_bit: 0o4000,
-    special_exec: 's',
-    special_noexec: 'S',
-};
-
-const GROUP_BITS: PermBits = PermBits {
-    read_bit: 0o040,
-    write_bit: 0o020,
-    exec_bit: 0o010,
-    special_bit: 0o2000,
-    special_exec: 's',
-    special_noexec: 'S',
-};
-
-const OTHERS_BITS: PermBits = PermBits {
-    read_bit: 0o004,
-    write_bit: 0o002,
-    exec_bit: 0o001,
-    special_bit: 0o1000,
-    special_exec: 't',
-    special_noexec: 'T',
-};
-
 impl fmt::Display for ChaMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let m = self.0;
-        write_perm_triple(f, m, &OWNER_BITS)?;
-        write_perm_triple(f, m, &GROUP_BITS)?;
-        write_perm_triple(f, m, &OTHERS_BITS)
+        for triple in &PERM_TRIPLES {
+            write_perm_triple(f, m, triple)?;
+        }
+        Ok(())
     }
 }
 
