@@ -41,19 +41,19 @@ fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
+        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            if state.picker_selected >= len {
+            if state.ui.picker_selected >= len {
                 state.mode = AppMode::Normal;
                 return;
             }
             // History displays most-recent-first; reverse visual index to VecDeque position
-            let idx = len - 1 - state.picker_selected;
-            if let Some(cmd) = state.command_history.get(idx).cloned() {
-                state.command_line.set_text_at_end(cmd);
+            let idx = len - 1 - state.ui.picker_selected;
+            if let Some(cmd) = state.input.command_history.get(idx).cloned() {
+                state.input.command_line.set_text_at_end(cmd);
                 state.mode = AppMode::CommandLine;
             } else {
                 state.mode = AppMode::Normal;
@@ -68,28 +68,28 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
+        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            let idx = state.picker_selected;
+            let idx = state.ui.picker_selected;
             state.mode = AppMode::Normal;
             navigate_to_hotlist(state, idx);
         }
         KeyCode::Char('a') => {
             let cur = state.active_panel().path().to_path_buf();
             if state.hotlist().iter().any(|p| p == &cur) {
-                state.status_message = Some("Directory already in hotlist".to_string());
+                state.ui.status_message = Some("Directory already in hotlist".to_string());
             } else {
                 state.hotlist_push(cur);
-                state.status_message = Some("Added current directory to hotlist".to_string());
+                state.ui.status_message = Some("Added current directory to hotlist".to_string());
             }
         }
-        KeyCode::Char('d') if state.picker_selected < state.hotlist().len() => {
-            state.hotlist_remove(state.picker_selected);
-            if state.picker_selected > 0 && state.picker_selected >= state.hotlist().len() {
-                state.picker_selected -= 1;
+        KeyCode::Char('d') if state.ui.picker_selected < state.hotlist().len() => {
+            state.hotlist_remove(state.ui.picker_selected);
+            if state.ui.picker_selected > 0 && state.ui.picker_selected >= state.hotlist().len() {
+                state.ui.picker_selected -= 1;
             }
         }
         _ => {}
@@ -103,12 +103,12 @@ fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
+        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            let Some(&chosen) = modes.get(state.picker_selected) else {
+            let Some(&chosen) = modes.get(state.ui.picker_selected) else {
                 state.mode = AppMode::Normal;
                 return;
             };
@@ -120,19 +120,19 @@ fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
 }
 
 fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
-    let len = state.user_menu_entries.len();
+    let len = state.ui.user_menu_entries.len();
     match key {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
+        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            let idx = state.picker_selected.min(len.saturating_sub(1));
+            let idx = state.ui.picker_selected.min(len.saturating_sub(1));
             state.mode = AppMode::Normal;
-            if let Some(entry) = state.user_menu_entries.get(idx).cloned() {
+            if let Some(entry) = state.ui.user_menu_entries.get(idx).cloned() {
                 let active_dir = state.active_panel().path().to_path_buf();
                 let other_dir = state.inactive_panel().path().to_path_buf();
                 let current_file = state
@@ -143,7 +143,6 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
                 let tagged: Vec<PathBuf> = state
                     .active_panel()
                     .selected_entries()
-                    .into_iter()
                     .filter(|e| e.name != "..")
                     .map(|e| e.path.clone())
                     .collect();
@@ -156,13 +155,13 @@ fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
                 let cmd = match user_menu::apply_substitutions(&entry.command, &ctx) {
                     Ok(c) => c,
                     Err(e) => {
-                        state.status_message = Some(e);
+                        state.ui.status_message = Some(e);
                         return;
                     }
                 };
-                if state.user_menu_source == MenuSource::Local {
-                    state.pending_menu_command = Some(cmd);
-                    state.dialog_selection = 0;
+                if state.ui.user_menu_source == MenuSource::Local {
+                    state.ui.pending_menu_command = Some(cmd);
+                    state.input.dialog_selection = 0;
                     state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
                         "Trust Local Menu?",
                         "This menu comes from the current directory.\n\
@@ -185,12 +184,12 @@ fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up => move_cursor(len, &mut state.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.picker_selected, MoveDirection::End),
+        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
+        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
+        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
+        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
-            let choice = state.picker_selected;
+            let choice = state.ui.picker_selected;
             state.mode = AppMode::Normal;
             match choice {
                 0 => {
@@ -198,7 +197,7 @@ fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
                         if entry.name != ".." && file_type::is_archive(&entry.name) {
                             super::normal::show_archive_dialog(state);
                         } else {
-                            state.status_message =
+                            state.ui.status_message =
                                 Some("Cursor is not on an archive file".to_string());
                         }
                     }
@@ -206,7 +205,7 @@ fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
                 1 => {
                     let paths = super::normal::selected_or_current_paths(state);
                     if paths.is_empty() {
-                        state.status_message = Some("No files selected".to_string());
+                        state.ui.status_message = Some("No files selected".to_string());
                     } else {
                         show_create_dialog(state, paths);
                     }
@@ -235,7 +234,7 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
 
     match kind {
         PickerKind::History => {
-            handle_history_picker(state, key, state.command_history.len());
+            handle_history_picker(state, key, state.input.command_history.len());
         }
         PickerKind::Hotlist => {
             handle_hotlist_picker(state, key, state.hotlist().len());
@@ -253,11 +252,9 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
 }
 
 fn effective_entries(panel: &PanelState) -> &[FileEntry] {
-    if panel.listing.unfiltered_entries.is_empty() {
-        &panel.listing.entries
-    } else {
-        &panel.listing.unfiltered_entries
-    }
+    // Single backing store: always compare over the full set, regardless of
+    // any active filter.
+    panel.listing.unfiltered()
 }
 
 pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
@@ -267,8 +264,8 @@ pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
     ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 
     let mode_name = mode.label();
-    state.status_message = None;
-    state.dialog_selection = 0;
+    state.ui.status_message = None;
+    state.input.dialog_selection = 0;
     state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
         "Compare Results",
         &format!(
@@ -296,7 +293,10 @@ mod tests {
     fn history_picker_enter_empty_history() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::History),
-            picker_selected: 0,
+            ui: UiState {
+                picker_selected: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Enter);
@@ -307,28 +307,34 @@ mod tests {
     fn history_picker_navigate_bounds() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::History),
-            picker_selected: 0,
+            ui: UiState {
+                picker_selected: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        state.command_history.push_back("cmd1".to_string());
-        state.command_history.push_back("cmd2".to_string());
+        state.input.command_history.push_back("cmd1".to_string());
+        state.input.command_history.push_back("cmd2".to_string());
 
         handle_list_picker(&mut state, KeyCode::Up);
-        assert_eq!(state.picker_selected, 0);
+        assert_eq!(state.ui.picker_selected, 0);
 
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 1);
+        assert_eq!(state.ui.picker_selected, 1);
 
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 1);
+        assert_eq!(state.ui.picker_selected, 1);
     }
 
     #[test]
     fn hotlist_picker_empty_hotlist_enter() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::Hotlist),
-            directory_hotlist: vec![],
-            picker_selected: 0,
+            ui: UiState {
+                directory_hotlist: vec![],
+                picker_selected: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Enter);
@@ -339,34 +345,40 @@ mod tests {
     fn compare_mode_picker_navigate() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::CompareMode),
-            picker_selected: 0,
+            ui: UiState {
+                picker_selected: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 1);
+        assert_eq!(state.ui.picker_selected, 1);
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 2);
+        assert_eq!(state.ui.picker_selected, 2);
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 2);
+        assert_eq!(state.ui.picker_selected, 2);
 
         handle_list_picker(&mut state, KeyCode::Up);
-        assert_eq!(state.picker_selected, 1);
+        assert_eq!(state.ui.picker_selected, 1);
         handle_list_picker(&mut state, KeyCode::Up);
-        assert_eq!(state.picker_selected, 0);
+        assert_eq!(state.ui.picker_selected, 0);
         handle_list_picker(&mut state, KeyCode::Up);
-        assert_eq!(state.picker_selected, 0);
+        assert_eq!(state.ui.picker_selected, 0);
     }
 
     #[test]
     fn user_menu_picker_empty_list() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::UserMenu),
-            user_menu_entries: vec![],
-            picker_selected: 0,
+            ui: UiState {
+                user_menu_entries: vec![],
+                picker_selected: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Down);
-        assert_eq!(state.picker_selected, 0);
+        assert_eq!(state.ui.picker_selected, 0);
         handle_list_picker(&mut state, KeyCode::Enter);
         assert_eq!(state.mode, AppMode::Normal);
     }
@@ -375,12 +387,15 @@ mod tests {
     fn hotlist_picker_delete_empty_after_delete() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::Hotlist),
-            directory_hotlist: vec![PathBuf::from("/only")],
-            picker_selected: 0,
+            ui: UiState {
+                directory_hotlist: vec![PathBuf::from("/only")],
+                picker_selected: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Char('d'));
-        assert!(state.directory_hotlist.is_empty());
-        assert_eq!(state.picker_selected, 0);
+        assert!(state.ui.directory_hotlist.is_empty());
+        assert_eq!(state.ui.picker_selected, 0);
     }
 }

@@ -45,8 +45,14 @@ fn confirm_enter_without_pending_action_dismisses_dialog() {
         mode: AppMode::Dialog(app::types::DialogKind::Confirm(
             app::types::ConfirmDetails::simple("Info", "Nothing to run"),
         )),
-        dialog_selection: 0,
-        pending_action: None,
+        input: app::types::InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ui: app::types::UiState {
+            pending_action: None,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -70,12 +76,20 @@ fn confirm_enter_with_pending_action_starts_action() {
         mode: AppMode::Dialog(app::types::DialogKind::Confirm(
             app::types::ConfirmDetails::simple("Delete", "Delete selected?"),
         )),
-        dialog_selection: 0,
-        pending_action: Some(app::types::PendingAction::Delete { paths: vec![src] }),
+        input: app::types::InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ui: app::types::UiState {
+            pending_action: Some(app::types::PendingAction::Delete { paths: vec![src] }),
+            ..Default::default()
+        },
         active_panel: app::types::ActivePanel::Left,
         ..Default::default()
     };
-    state.left_panel.listing.entries = vec![entry("delme.txt").build()];
+    state
+        .left_panel
+        .set_entries(vec![entry("delme.txt").build()]);
     state.left_panel.cursor = 0;
 
     dialogs::handle_dialog(
@@ -100,7 +114,9 @@ fn confirm_enter_with_pending_action_starts_action() {
 #[test]
 fn confirm_file_transfer_copy_opens_dialog() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![entry("a.txt").build(), entry("b.txt").build()];
+    state
+        .left_panel
+        .set_entries(vec![entry("a.txt").build(), entry("b.txt").build()]);
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
     confirm_file_transfer(&mut state, "Copy Confirm", "Copy", |sources, dest| {
@@ -115,16 +131,18 @@ fn confirm_file_transfer_copy_opens_dialog() {
         AppMode::Dialog(DialogKind::Confirm(_))
     ));
     assert!(
-        matches!(state.pending_action, Some(PendingAction::Copy(_))),
+        matches!(state.ui.pending_action, Some(PendingAction::Copy(_))),
         "expected PendingAction::Copy, got: {:?}",
-        state.pending_action
+        state.ui.pending_action
     );
 }
 
 #[test]
 fn confirm_delete_opens_dialog() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![entry("delme.txt").build()];
+    state
+        .left_panel
+        .set_entries(vec![entry("delme.txt").build()]);
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
     confirm_delete(&mut state);
@@ -235,8 +253,11 @@ fn progress_dialog_nan_percent_handled() {
 fn menu_dropdown_renders_over_panels() {
     let state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 1,
-        menu_item_selected: 0,
+        ui: app::types::UiState {
+            menu_selected: 1,
+            menu_item_selected: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let rendered = render_and_get_text(&state);
@@ -248,10 +269,16 @@ fn menu_dropdown_renders_over_panels() {
 fn list_picker_overlay_renders_title() {
     let mut state = AppState {
         mode: AppMode::ListPicker(PickerKind::History),
-        picker_selected: 0,
+        ui: app::types::UiState {
+            picker_selected: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    state.command_history.push_back("echo hello".to_string());
+    state
+        .input
+        .command_history
+        .push_back("echo hello".to_string());
     let rendered = render_and_get_text(&state);
     assert!(rendered.contains("Command History"));
     assert!(rendered.contains("echo hello"));
@@ -299,13 +326,13 @@ fn chmod_valid_input_applies_mode_and_dismisses() {
         }),
         ..Default::default()
     };
-    state.dialog_input.set_text_at_end("755".to_string());
-    state.left_panel.listing.entries = vec![
+    state.input.dialog_input.set_text_at_end("755".to_string());
+    state.left_panel.set_entries(vec![
         TestEntry::new("chmod_target.txt")
             .path(&file)
             .file(4)
             .build(),
-    ];
+    ]);
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
 
@@ -331,8 +358,10 @@ fn chmod_invalid_input_shows_error_stays_in_dialog() {
         }),
         ..Default::default()
     };
-    state.dialog_input.set_text_at_end("bad".to_string());
-    state.left_panel.listing.entries = vec![entry("f.txt").file(4).build()];
+    state.input.dialog_input.set_text_at_end("bad".to_string());
+    state
+        .left_panel
+        .set_entries(vec![entry("f.txt").file(4).build()]);
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
 
@@ -349,7 +378,7 @@ fn chmod_invalid_input_shows_error_stays_in_dialog() {
         "expected Input dialog to remain open, got: {:?}",
         state.mode
     );
-    let msg = state.status_message.as_deref().unwrap_or("");
+    let msg = state.ui.status_message.as_deref().unwrap_or("");
     assert!(
         msg.to_lowercase().contains("invalid"),
         "expected 'Invalid' in status_message, got: {msg}"
@@ -372,13 +401,13 @@ fn chmod_esc_dismisses_without_changing_mode() {
         }),
         ..Default::default()
     };
-    state.dialog_input.set_text_at_end("777".to_string());
-    state.left_panel.listing.entries = vec![
+    state.input.dialog_input.set_text_at_end("777".to_string());
+    state.left_panel.set_entries(vec![
         TestEntry::new("chmod_target.txt")
             .path(&file)
             .file(4)
             .build(),
-    ];
+    ]);
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
 

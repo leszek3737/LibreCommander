@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use super::*;
 use crate::app::file_type::*;
 use crate::app::types::format_time;
@@ -23,6 +25,7 @@ fn entry_with(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool, size: u
         .group("group")
         .is_hidden(name.starts_with('.'))
         .build()
+        .expect("valid test entry")
 }
 
 fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
@@ -312,19 +315,19 @@ fn test_format_size_u64_max() {
 
 #[test]
 fn test_format_permissions_full() {
-    let result = format_permissions(0o755);
+    let result = FileEntry::display_permissions_raw(0o755);
     assert_eq!(result, "rwxr-xr-x");
 }
 
 #[test]
 fn test_format_permissions_readonly() {
-    let result = format_permissions(0o444);
+    let result = FileEntry::display_permissions_raw(0o444);
     assert_eq!(result, "r--r--r--");
 }
 
 #[test]
 fn test_format_permissions_no_permissions() {
-    let result = format_permissions(0o000);
+    let result = FileEntry::display_permissions_raw(0o000);
     assert_eq!(result, "---------");
 }
 
@@ -682,11 +685,11 @@ fn test_panel_status_summary_empty_panel() {
 #[test]
 fn test_panel_status_summary_first_item() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    panel.set_entries(vec![
         create_test_entry("a.txt", false, false, false),
         create_test_entry("b.txt", false, false, false),
         create_test_entry("c.txt", false, false, false),
-    ];
+    ]);
     panel.cursor = 0;
     let mut buf = String::new();
     let _ = panel_status_summary(&panel, &mut buf);
@@ -696,11 +699,11 @@ fn test_panel_status_summary_first_item() {
 #[test]
 fn test_panel_status_summary_last_item() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    panel.set_entries(vec![
         create_test_entry("a.txt", false, false, false),
         create_test_entry("b.txt", false, false, false),
         create_test_entry("c.txt", false, false, false),
-    ];
+    ]);
     panel.cursor = 2;
     let mut buf = String::new();
     let _ = panel_status_summary(&panel, &mut buf);
@@ -710,10 +713,10 @@ fn test_panel_status_summary_last_item() {
 #[test]
 fn test_panel_status_summary_with_selection() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    panel.set_entries(vec![
         create_test_entry("a.txt", false, false, false),
         create_test_entry("b.txt", false, false, false),
-    ];
+    ]);
     panel.cursor = 0;
     panel.set_selected_count(1);
     panel.set_selected_size(1024);
@@ -725,7 +728,7 @@ fn test_panel_status_summary_with_selection() {
 #[test]
 fn test_panel_status_summary_no_selection_when_zero() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![create_test_entry("a.txt", false, false, false)];
+    panel.set_entries(vec![create_test_entry("a.txt", false, false, false)]);
     panel.cursor = 0;
     panel.set_selected_count(0);
     let mut buf = String::new();
@@ -797,10 +800,10 @@ fn render_to_string(width: u16, height: u16, f: impl FnOnce(&mut ratatui::Frame<
 #[test]
 fn test_render_panel_no_panic() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    panel.set_entries(vec![
         create_test_entry("file.txt", false, false, false),
         create_test_entry("mydir", true, false, false),
-    ];
+    ]);
     let content = render_to_string(80, 24, |f| {
         render_panel(f, f.area(), &panel, true);
     });
@@ -819,7 +822,7 @@ fn test_render_panel_empty_no_panic() {
 #[test]
 fn test_render_status_bar_no_panic() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![create_test_entry("file.txt", false, false, false)];
+    panel.set_entries(vec![create_test_entry("file.txt", false, false, false)]);
     let content = render_to_string(80, 2, |f| {
         render_status_bar(f, f.area(), &panel);
     });

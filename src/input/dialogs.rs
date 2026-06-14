@@ -59,11 +59,11 @@ fn validate_path_name(input: &str) -> ValidationResult {
 
 fn reset_dialog_state(state: &mut AppState) {
     state.mode = AppMode::Normal;
-    state.pending_action = None;
-    state.pending_menu_command = None;
-    state.status_message = None;
-    state.dialog_selection = 0;
-    if let Some(panel) = state.menu_restore_panel.take() {
+    state.ui.pending_action = None;
+    state.ui.pending_menu_command = None;
+    state.ui.status_message = None;
+    state.input.dialog_selection = 0;
+    if let Some(panel) = state.ui.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
 }
@@ -73,20 +73,20 @@ fn dismiss_dialog_and_restore(state: &mut AppState) {
 }
 
 pub(crate) fn finish_confirmed_action(state: &mut AppState) {
-    state.dialog_selection = 0;
-    if state.status_message.is_some()
+    state.input.dialog_selection = 0;
+    if state.ui.status_message.is_some()
         && !matches!(state.mode, AppMode::Dialog(DialogKind::Progress { .. }))
     {
-        let msg = state.status_message.take();
+        let msg = state.ui.status_message.take();
         dismiss_dialog(state);
-        state.status_message = msg;
+        state.ui.status_message = msg;
         refresh_both(state);
     }
 }
 
 fn dispatch_with_overwrite_check(state: &mut AppState, running_job: &mut Option<RunningJob>) {
     if let Some(conflicting) = check_overwrite_conflict(state) {
-        state.dialog_selection = 0;
+        state.input.dialog_selection = 0;
         state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
             OverwriteConfirmDetails { conflicting },
         )));
@@ -121,7 +121,7 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
 }
 
 pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
-    let action = state.pending_action.as_ref()?;
+    let action = state.ui.pending_action.as_ref()?;
     match action {
         PendingAction::Copy(t) | PendingAction::Move(t) => {
             if t.overwrite {
@@ -204,13 +204,17 @@ fn confirm_dialog_key(state: &mut AppState, key: KeyCode) -> Option<bool> {
     match key {
         KeyCode::Char('y' | 'Y') => Some(true),
         KeyCode::Char('n' | 'N') => Some(false),
-        KeyCode::Enter => Some(state.dialog_selection == 0),
+        KeyCode::Enter => Some(state.input.dialog_selection == 0),
         KeyCode::Esc => {
             dismiss_dialog(state);
             None
         }
         KeyCode::Left | KeyCode::Right => {
-            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            state.input.dialog_selection = if state.input.dialog_selection == 0 {
+                1
+            } else {
+                0
+            };
             None
         }
         _ => None,
@@ -223,9 +227,9 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
     };
 
     if confirmed {
-        if state.pending_action.is_some() {
+        if state.ui.pending_action.is_some() {
             dispatch_with_overwrite_check(state, running_job);
-        } else if let Some(cmd) = state.pending_menu_command.take() {
+        } else if let Some(cmd) = state.ui.pending_menu_command.take() {
             state.mode = AppMode::Normal;
             shell::run_shell_command(state, &cmd, true, refresh_active);
         } else {
@@ -248,26 +252,26 @@ fn handle_overwrite_dialog(
             return;
         }
         KeyCode::Left => {
-            state.dialog_selection = state.dialog_selection.saturating_sub(1);
+            state.input.dialog_selection = state.input.dialog_selection.saturating_sub(1);
             return;
         }
         KeyCode::Right => {
-            state.dialog_selection = (state.dialog_selection + 1).min(1);
+            state.input.dialog_selection = (state.input.dialog_selection + 1).min(1);
             return;
         }
         KeyCode::Char('o' | 'O') => {
-            if let Some(action) = state.pending_action.as_mut() {
-                action.set_overwrite();
+            if let Some(a) = state.ui.pending_action.take() {
+                state.ui.pending_action = Some(a.with_overwrite());
             }
         }
         KeyCode::Char('c' | 'C') => {
             dismiss_dialog(state);
             return;
         }
-        KeyCode::Enter => match state.dialog_selection {
+        KeyCode::Enter => match state.input.dialog_selection {
             0 => {
-                if let Some(action) = state.pending_action.as_mut() {
-                    action.set_overwrite();
+                if let Some(a) = state.ui.pending_action.take() {
+                    state.ui.pending_action = Some(a.with_overwrite());
                 }
             }
             1 => {
@@ -300,9 +304,9 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
             state.hotlist_push(expanded);
         }
     } else if expanded.exists() {
-        state.status_message = Some(format!("Not a directory: {input}"));
+        state.ui.status_message = Some(format!("Not a directory: {input}"));
     } else {
-        state.status_message = Some(format!("Directory not found: {input}"));
+        state.ui.status_message = Some(format!("Directory not found: {input}"));
     }
 }
 
@@ -313,36 +317,36 @@ fn handle_input_action(
     action: &InputAction,
     terminal_height: u16,
 ) {
-    let input = state.dialog_input.text().to_owned();
+    let input = state.input.dialog_input.text().to_owned();
     match action {
         InputAction::ViewerSearch => {
             if let Some(vs) = viewer_state.as_mut() {
                 vs.search(&input, terminal_height.saturating_sub(3) as usize);
             }
             state.mode = AppMode::Viewing;
-            state.dialog_input.clear();
+            state.input.dialog_input.clear();
             return;
         }
         InputAction::CreateDirectory => {
             if let Err(msg) = validate_create_or_rename(&input, "Directory name") {
-                state.status_message = Some(msg);
+                state.ui.status_message = Some(msg);
                 return;
             }
             let target = fs::path::resolve_user_path(state.active_panel().path(), &input);
             if let Err(err) = ops::create_directory(&target) {
-                state.status_message = Some(format!("Create directory failed: {err}"));
+                state.ui.status_message = Some(format!("Create directory failed: {err}"));
             }
         }
         InputAction::Rename => {
             if let Err(msg) = validate_create_or_rename(&input, "New name") {
-                state.status_message = Some(msg);
+                state.ui.status_message = Some(msg);
                 return;
             }
             if let Some(entry) = state.active_panel().current_entry()
                 && input != entry.name
                 && let Err(err) = ops::rename_entry(&entry.path, &input)
             {
-                state.status_message = Some(format!("Rename failed: {err}"));
+                state.ui.status_message = Some(format!("Rename failed: {err}"));
             }
         }
         InputAction::Chmod => {
@@ -350,9 +354,9 @@ fn handle_input_action(
                 Some(m) => m,
                 None => {
                     if input.trim().is_empty() {
-                        state.status_message = Some("Octal mode cannot be empty".to_string());
+                        state.ui.status_message = Some("Octal mode cannot be empty".to_string());
                     } else {
-                        state.status_message = Some(format!("Invalid octal mode '{input}'"));
+                        state.ui.status_message = Some(format!("Invalid octal mode '{input}'"));
                     }
                     return;
                 }
@@ -360,7 +364,7 @@ fn handle_input_action(
             if let Some(entry) = state.active_panel().current_entry()
                 && let Err(err) = ops::chmod(&entry.path, mode)
             {
-                state.status_message = Some(format!("Chmod failed: {err}"));
+                state.ui.status_message = Some(format!("Chmod failed: {err}"));
             }
         }
         InputAction::Filter => {
@@ -370,7 +374,7 @@ fn handle_input_action(
             } else {
                 Some(input)
             });
-            if panel.listing.needs_full_read() || panel.listing.unfiltered_entries.is_empty() {
+            if panel.listing.needs_full_read() || panel.listing.unfiltered().is_empty() {
                 refresh_active(state);
             } else {
                 rebuild_visible_entries(panel, panel_visible_height(terminal_height));
@@ -383,11 +387,11 @@ fn handle_input_action(
         }
     }
     state.mode = AppMode::Normal;
-    state.dialog_input.clear();
+    state.input.dialog_input.clear();
     if !matches!(action, InputAction::Filter) {
         refresh_active(state);
     }
-    if let Some(panel) = state.menu_restore_panel.take() {
+    if let Some(panel) = state.ui.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
 }
@@ -401,7 +405,7 @@ fn validate_create_or_rename(input: &str, label: &str) -> Result<(), String> {
 }
 
 fn apply_text_edit(state: &mut AppState, key: KeyCode) {
-    apply_dialog_text_edit(&mut state.dialog_input, key);
+    apply_dialog_text_edit(&mut state.input.dialog_input, key);
 }
 
 fn handle_input_dialog(
@@ -422,8 +426,8 @@ fn handle_input_dialog(
             } else {
                 state.mode = AppMode::Normal;
             }
-            state.dialog_input.clear();
-            if let Some(panel) = state.menu_restore_panel.take() {
+            state.input.dialog_input.clear();
+            if let Some(panel) = state.ui.menu_restore_panel.take() {
                 set_active_panel(state, panel);
             }
         }
@@ -444,7 +448,7 @@ fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>
         && let Some(job) = running_job.as_ref()
     {
         job.cancel.store(true, Ordering::Relaxed);
-        state.status_message = Some("Cancel requested".to_string());
+        state.ui.status_message = Some("Cancel requested".to_string());
     }
 }
 
@@ -516,10 +520,14 @@ fn handle_archive_extract_dialog(
             return;
         }
         KeyCode::Left | KeyCode::Right => {
-            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            state.input.dialog_selection = if state.input.dialog_selection == 0 {
+                1
+            } else {
+                0
+            };
             return;
         }
-        KeyCode::Enter if state.dialog_selection == 1 => {
+        KeyCode::Enter if state.input.dialog_selection == 1 => {
             dismiss_dialog(state);
             return;
         }
@@ -531,11 +539,11 @@ fn handle_archive_extract_dialog(
                     return;
                 };
             if dest_text.trim().is_empty() {
-                state.status_message = Some("Destination path cannot be empty".to_string());
+                state.ui.status_message = Some("Destination path cannot be empty".to_string());
                 return;
             }
             let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
-            state.pending_action = Some(PendingAction::ExtractArchive {
+            state.ui.pending_action = Some(PendingAction::ExtractArchive {
                 source,
                 dest,
                 overwrite: false,
@@ -561,10 +569,14 @@ fn handle_archive_create_dialog(
             return;
         }
         KeyCode::Left | KeyCode::Right => {
-            state.dialog_selection = if state.dialog_selection == 0 { 1 } else { 0 };
+            state.input.dialog_selection = if state.input.dialog_selection == 0 {
+                1
+            } else {
+                0
+            };
             return;
         }
-        KeyCode::Enter if state.dialog_selection == 1 => {
+        KeyCode::Enter if state.input.dialog_selection == 1 => {
             dismiss_dialog(state);
             return;
         }
@@ -579,15 +591,15 @@ fn handle_archive_create_dialog(
                     return;
                 };
             if dest_text.trim().is_empty() {
-                state.status_message = Some("Archive path cannot be empty".to_string());
+                state.ui.status_message = Some("Archive path cannot be empty".to_string());
                 return;
             }
             let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
             let Some(format) = archive_format_from_path(&dest) else {
-                state.status_message = Some("Unsupported archive format. Use: zip, tar, tar.gz, tar.bz2, tar.xz, tar.zst, 7z".to_string());
+                state.ui.status_message = Some("Unsupported archive format. Use: zip, tar, tar.gz, tar.bz2, tar.xz, tar.zst, 7z".to_string());
                 return;
             };
-            state.pending_action = Some(PendingAction::CreateArchive {
+            state.ui.pending_action = Some(PendingAction::CreateArchive {
                 sources,
                 dest,
                 format,
@@ -619,7 +631,7 @@ fn handle_copymove_dialog(
                 dest: details.dest.clone(),
                 overwrite: false,
             };
-            if details.is_move {
+            if details.kind.is_move() {
                 PendingAction::Move(transfer)
             } else {
                 PendingAction::Copy(transfer)
@@ -627,7 +639,7 @@ fn handle_copymove_dialog(
         } else {
             return;
         };
-        state.pending_action = Some(action);
+        state.ui.pending_action = Some(action);
         dispatch_with_overwrite_check(state, running_job);
     } else {
         dismiss_dialog(state);
@@ -744,7 +756,10 @@ mod tests {
         dialog_input.set_text(text.to_string());
         dialog_input.set_cursor(cursor);
         AppState {
-            dialog_input,
+            input: InputState {
+                dialog_input,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -753,113 +768,119 @@ mod tests {
     fn text_edit_insert_char() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Char('!'));
-        assert_eq!(state.dialog_input.text(), "hello!");
-        assert_eq!(state.dialog_input.cursor(), 6);
+        assert_eq!(state.input.dialog_input.text(), "hello!");
+        assert_eq!(state.input.dialog_input.cursor(), 6);
     }
 
     #[test]
     fn text_edit_insert_middle() {
         let mut state = make_input_state("helo", 2);
         apply_text_edit(&mut state, KeyCode::Char('l'));
-        assert_eq!(state.dialog_input.text(), "hello");
-        assert_eq!(state.dialog_input.cursor(), 3);
+        assert_eq!(state.input.dialog_input.text(), "hello");
+        assert_eq!(state.input.dialog_input.cursor(), 3);
     }
 
     #[test]
     fn text_edit_backspace() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text(), "hell");
-        assert_eq!(state.dialog_input.cursor(), 4);
+        assert_eq!(state.input.dialog_input.text(), "hell");
+        assert_eq!(state.input.dialog_input.cursor(), 4);
     }
 
     #[test]
     fn text_edit_backspace_at_start() {
         let mut state = make_input_state("hello", 0);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text(), "hello");
-        assert_eq!(state.dialog_input.cursor(), 0);
+        assert_eq!(state.input.dialog_input.text(), "hello");
+        assert_eq!(state.input.dialog_input.cursor(), 0);
     }
 
     #[test]
     fn text_edit_delete() {
         let mut state = make_input_state("hello", 0);
         apply_text_edit(&mut state, KeyCode::Delete);
-        assert_eq!(state.dialog_input.text(), "ello");
-        assert_eq!(state.dialog_input.cursor(), 0);
+        assert_eq!(state.input.dialog_input.text(), "ello");
+        assert_eq!(state.input.dialog_input.cursor(), 0);
     }
 
     #[test]
     fn text_edit_delete_at_end() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Delete);
-        assert_eq!(state.dialog_input.text(), "hello");
-        assert_eq!(state.dialog_input.cursor(), 5);
+        assert_eq!(state.input.dialog_input.text(), "hello");
+        assert_eq!(state.input.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_left_right() {
         let mut state = make_input_state("hello", 3);
         apply_text_edit(&mut state, KeyCode::Left);
-        assert_eq!(state.dialog_input.cursor(), 2);
+        assert_eq!(state.input.dialog_input.cursor(), 2);
         apply_text_edit(&mut state, KeyCode::Right);
-        assert_eq!(state.dialog_input.cursor(), 3);
+        assert_eq!(state.input.dialog_input.cursor(), 3);
     }
 
     #[test]
     fn text_edit_home_end() {
         let mut state = make_input_state("hello", 3);
         apply_text_edit(&mut state, KeyCode::Home);
-        assert_eq!(state.dialog_input.cursor(), 0);
+        assert_eq!(state.input.dialog_input.cursor(), 0);
         apply_text_edit(&mut state, KeyCode::End);
-        assert_eq!(state.dialog_input.cursor(), 5);
+        assert_eq!(state.input.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_multibyte_insert() {
         let mut state = make_input_state("hello", 5);
         apply_text_edit(&mut state, KeyCode::Char('ą'));
-        assert_eq!(state.dialog_input.text(), "helloą");
-        assert_eq!(state.dialog_input.cursor(), 6);
+        assert_eq!(state.input.dialog_input.text(), "helloą");
+        assert_eq!(state.input.dialog_input.cursor(), 6);
     }
 
     #[test]
     fn text_edit_multibyte_backspace() {
         let mut state = make_input_state("helloą", 6);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text(), "hello");
-        assert_eq!(state.dialog_input.cursor(), 5);
+        assert_eq!(state.input.dialog_input.text(), "hello");
+        assert_eq!(state.input.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_emoji_insert() {
         let mut state = make_input_state("test", 4);
         apply_text_edit(&mut state, KeyCode::Char('🎉'));
-        assert_eq!(state.dialog_input.text(), "test🎉");
-        assert_eq!(state.dialog_input.cursor(), 5);
+        assert_eq!(state.input.dialog_input.text(), "test🎉");
+        assert_eq!(state.input.dialog_input.cursor(), 5);
     }
 
     #[test]
     fn text_edit_rejects_multibyte_char_past_byte_limit() {
         let mut state = make_input_state(&"a".repeat(MAX_DIALOG_INPUT_BYTES - 1), 4095);
         apply_text_edit(&mut state, KeyCode::Char('ą'));
-        assert_eq!(state.dialog_input.text().len(), MAX_DIALOG_INPUT_BYTES - 1);
-        assert_eq!(state.dialog_input.cursor(), 4095);
+        assert_eq!(
+            state.input.dialog_input.text().len(),
+            MAX_DIALOG_INPUT_BYTES - 1
+        );
+        assert_eq!(state.input.dialog_input.cursor(), 4095);
     }
 
     #[test]
     fn text_edit_allows_char_at_exact_byte_limit() {
         let mut state = make_input_state(&"a".repeat(MAX_DIALOG_INPUT_BYTES - 1), 4095);
         apply_text_edit(&mut state, KeyCode::Char('!'));
-        assert_eq!(state.dialog_input.text().len(), MAX_DIALOG_INPUT_BYTES);
-        assert_eq!(state.dialog_input.cursor(), 4096);
+        assert_eq!(
+            state.input.dialog_input.text().len(),
+            MAX_DIALOG_INPUT_BYTES
+        );
+        assert_eq!(state.input.dialog_input.cursor(), 4096);
     }
 
     #[test]
     fn text_edit_emoji_backspace() {
         let mut state = make_input_state("test🎉", 5);
         apply_text_edit(&mut state, KeyCode::Backspace);
-        assert_eq!(state.dialog_input.text(), "test");
-        assert_eq!(state.dialog_input.cursor(), 4);
+        assert_eq!(state.input.dialog_input.text(), "test");
+        assert_eq!(state.input.dialog_input.cursor(), 4);
     }
 }

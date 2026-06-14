@@ -153,9 +153,10 @@ pub fn format_size(size: u64) -> String {
     FileSize(size).to_string()
 }
 
-pub fn format_permissions(mode: u32) -> String {
-    FileEntry::display_permissions_raw(mode)
-}
+// PR-07 WS-B: the trivial free `format_permissions` wrapper was removed.
+// Callers must call `FileEntry::display_permissions_raw(mode)` directly.
+// Wave 2 migrates `ui/panels/mod.rs`, `fs/reader.rs`, and the
+// `crate::app::types::mod.rs` re-export accordingly.
 
 pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
     let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -174,6 +175,16 @@ pub fn format_time(modified: SystemTime) -> String {
 
 pub fn compute_category(cha: &Cha, name: &str) -> FileCategory {
     crate::app::file_type::category(name, cha.is_dir(), cha.is_executable(), cha.is_link())
+}
+
+/// Interns a string into an `Arc<str>`.
+///
+/// Taking `impl AsRef<str>` and building the `Arc` from the `&str` performs a
+/// single allocation here (the `Arc` buffer). Compared to a `&str` -> `String`
+/// -> `Arc` chain it avoids an intermediate owned `String`; when the caller
+/// already owns a `String`, that buffer is simply dropped after the copy.
+fn intern_str(value: impl AsRef<str>) -> Arc<str> {
+    Arc::from(value.as_ref())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +216,29 @@ pub struct FileEntryBuilder {
     mime_type: Option<String>,
 }
 
+/// Error returned by [`FileEntryBuilder::build`] when the accumulated
+/// configuration cannot produce a valid [`FileEntry`].
+///
+/// Validation is deferred to `build` so that chaining setters never panics on
+/// partially-built input; the public builder therefore reports misuse as a
+/// recoverable error instead of aborting the process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildError {
+    /// `name` was never set, or was set to an empty string. Every directory
+    /// entry must carry a non-empty file name.
+    EmptyName,
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "FileEntry name must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
 impl FileEntryBuilder {
     pub fn name(mut self, v: impl Into<String>) -> Self {
         self.name = v.into();
@@ -218,27 +252,27 @@ impl FileEntryBuilder {
         self.cha = v;
         self
     }
-    pub fn is_dir(mut self, v: bool) -> Self {
+    /// Applies file-type bits while preserving permission bits and clearing
+    /// resolved-symlink-target flags. When `enable` is false and the entry is
+    /// `currently` of this type, it is demoted back to a regular file.
+    fn set_type(mut self, enable: bool, type_bits: u32, currently: bool) -> Self {
         let perms = self.cha.mode.permissions();
-        if v {
-            self.cha.mode = ChaMode::new(MODE_DIR | perms);
+        if enable {
+            self.cha.mode = ChaMode::new(type_bits | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
-        } else if self.cha.is_dir() {
+        } else if currently {
             self.cha.mode = ChaMode::new(MODE_FILE | perms);
             self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
         }
         self
     }
-    pub fn is_symlink(mut self, v: bool) -> Self {
-        let perms = self.cha.mode.permissions();
-        if v {
-            self.cha.mode = ChaMode::new(MODE_SYMLINK | perms);
-            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
-        } else if self.cha.is_link() {
-            self.cha.mode = ChaMode::new(MODE_FILE | perms);
-            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
-        }
-        self
+    pub fn is_dir(self, v: bool) -> Self {
+        let currently = self.cha.is_dir();
+        self.set_type(v, MODE_DIR, currently)
+    }
+    pub fn is_symlink(self, v: bool) -> Self {
+        let currently = self.cha.is_link();
+        self.set_type(v, MODE_SYMLINK, currently)
     }
     pub fn is_executable(mut self, v: bool) -> Self {
         self.cha.set_executable(v);
@@ -261,12 +295,12 @@ impl FileEntryBuilder {
         self.cha.mode = ChaMode::new(file_type | (v & 0o7777));
         self
     }
-    pub fn owner(mut self, v: impl Into<String>) -> Self {
-        self.owner = Arc::from(v.into());
+    pub fn owner(mut self, v: impl AsRef<str>) -> Self {
+        self.owner = intern_str(v);
         self
     }
-    pub fn group(mut self, v: impl Into<String>) -> Self {
-        self.group = Arc::from(v.into());
+    pub fn group(mut self, v: impl AsRef<str>) -> Self {
+        self.group = intern_str(v);
         self
     }
     pub fn selected(mut self, v: bool) -> Self {
@@ -281,13 +315,20 @@ impl FileEntryBuilder {
         self.mime_type = v;
         self
     }
-    pub fn build(self) -> FileEntry {
-        assert!(!self.name.is_empty(), "FileEntry name must not be empty");
+    /// Finalizes the builder into a [`FileEntry`].
+    ///
+    /// Returns [`BuildError::EmptyName`] if `name` was never set (or set to an
+    /// empty string) instead of panicking, so callers control how invalid input
+    /// is handled.
+    pub fn build(self) -> Result<FileEntry, BuildError> {
+        if self.name.is_empty() {
+            return Err(BuildError::EmptyName);
+        }
         let (time_str, size_str, name_width, size_width, time_width) =
             FileEntry::cached_fields(&self.cha, &self.name);
         let category = compute_category(&self.cha, &self.name);
         let sanitized_name = sanitize_name(&self.name);
-        FileEntry {
+        Ok(FileEntry {
             name: self.name,
             path: self.path,
             cha: self.cha,
@@ -302,11 +343,16 @@ impl FileEntryBuilder {
             time_width,
             category,
             sanitized_name,
-        }
+        })
     }
 }
 
 impl FileEntry {
+    // SCOPE-OUT (PR-07 WS-B): the precomputed display fields below
+    // (`time_str`, `size_str`, `*_width`, `category`, `sanitized_name`) are an
+    // eagerly materialized cache stored per entry. A field-cache/storage
+    // redesign (e.g. lazy or columnar storage) is intentionally deferred to a
+    // later PR and is NOT part of this change.
     pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize, usize, usize) {
         let time_str = format_time(cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
         let size_str = if cha.is_dir() {
@@ -397,7 +443,10 @@ impl FileEntry {
     }
 
     pub fn format_size(size: u64) -> String {
-        format!("{:>6}", crate::app::types::format_size(size))
+        // Right-align to width 6. The padding must be applied to the formatted
+        // `String` (via the free `format_size`): `FileSize`'s Display impl writes
+        // its parts directly and ignores the formatter's width/fill flags.
+        format!("{:>6}", format_size(size))
     }
 
     pub fn display_permissions(&self) -> String {

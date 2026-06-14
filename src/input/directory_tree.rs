@@ -17,33 +17,34 @@ pub(crate) fn handle_directory_tree(
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
         }
-        KeyCode::Up | KeyCode::Char('k') if state.tree_selected > 0 => {
-            state.tree_selected -= 1;
+        KeyCode::Up | KeyCode::Char('k') if state.tree.selected > 0 => {
+            state.tree.selected -= 1;
         }
         KeyCode::Down | KeyCode::Char('j')
-            if !state.tree_entries.is_empty()
-                && state.tree_selected + 1 < state.tree_entries.len() =>
+            if !state.tree.entries.is_empty()
+                && state.tree.selected + 1 < state.tree.entries.len() =>
         {
-            state.tree_selected += 1;
+            state.tree.selected += 1;
         }
-        KeyCode::Home if !state.tree_entries.is_empty() => {
-            state.tree_selected = 0;
-            state.tree_scroll = 0;
+        KeyCode::Home if !state.tree.entries.is_empty() => {
+            state.tree.selected = 0;
+            state.tree.scroll = 0;
         }
-        KeyCode::End if !state.tree_entries.is_empty() => {
-            state.tree_selected = state.tree_entries.len() - 1;
+        KeyCode::End if !state.tree.entries.is_empty() => {
+            state.tree.selected = state.tree.entries.len() - 1;
         }
         KeyCode::PageUp => {
-            state.tree_selected = state.tree_selected.saturating_sub(visible_height);
-            state.tree_scroll = state.tree_scroll.saturating_sub(visible_height);
+            state.tree.selected = state.tree.selected.saturating_sub(visible_height);
+            state.tree.scroll = state.tree.scroll.saturating_sub(visible_height);
         }
-        KeyCode::PageDown if !state.tree_entries.is_empty() => {
-            state.tree_selected =
-                (state.tree_selected + visible_height).min(state.tree_entries.len() - 1);
-            state.tree_scroll = state
-                .tree_scroll
+        KeyCode::PageDown if !state.tree.entries.is_empty() => {
+            state.tree.selected =
+                (state.tree.selected + visible_height).min(state.tree.entries.len() - 1);
+            state.tree.scroll = state
+                .tree
+                .scroll
                 .saturating_add(visible_height)
-                .min(state.tree_entries.len().saturating_sub(visible_height));
+                .min(state.tree.entries.len().saturating_sub(visible_height));
         }
         KeyCode::Enter => {
             handle_tree_enter(state, viewer_loader);
@@ -54,7 +55,7 @@ pub(crate) fn handle_directory_tree(
         _ => {}
     }
 
-    ensure_selected_visible(state.tree_selected, &mut state.tree_scroll, visible_height);
+    ensure_selected_visible(state.tree.selected, &mut state.tree.scroll, visible_height);
 }
 
 fn ensure_selected_visible(selected: usize, scroll: &mut usize, visible_height: usize) {
@@ -91,21 +92,21 @@ pub(crate) fn set_tree_diagnostic_status(
 }
 
 fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
-    let selected = state.tree_selected;
-    let is_dir = state.tree_entries.get(selected).is_some_and(|e| e.is_dir);
+    let selected = state.tree.selected;
+    let is_dir = state.tree.entries.get(selected).is_some_and(|e| e.is_dir);
 
     if is_dir {
         let show_hidden = state.active_panel().show_hidden();
         let diagnostics = dir_tree::toggle_expand_with_diagnostics(
-            &mut state.tree_entries,
+            &mut state.tree.entries,
             selected,
             show_hidden,
         );
-        set_tree_diagnostic_status(&mut state.status_message, &diagnostics);
-        if state.tree_selected >= state.tree_entries.len() && !state.tree_entries.is_empty() {
-            state.tree_selected = state.tree_entries.len() - 1;
+        set_tree_diagnostic_status(&mut state.ui.status_message, &diagnostics);
+        if state.tree.selected >= state.tree.entries.len() && !state.tree.entries.is_empty() {
+            state.tree.selected = state.tree.entries.len() - 1;
         }
-    } else if let Some(entry) = state.tree_entries.get(selected) {
+    } else if let Some(entry) = state.tree.entries.get(selected) {
         let path = entry.path.clone();
         *viewer_loader = Some(viewer::ViewerState::open_background(path));
         state.prev_mode = Some(std::mem::replace(&mut state.mode, AppMode::Viewing));
@@ -113,7 +114,7 @@ fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::Vi
 }
 
 fn handle_tree_cd(state: &mut AppState) {
-    let (entry_is_dir, entry_path) = match state.tree_entries.get(state.tree_selected) {
+    let (entry_is_dir, entry_path) = match state.tree.entries.get(state.tree.selected) {
         Some(e) => (e.is_dir, e.path.clone()),
         None => return,
     };
@@ -130,14 +131,15 @@ fn handle_tree_cd(state: &mut AppState) {
         panel.set_path(target);
         panel.cursor = 0;
         panel.scroll_offset = 0;
-        state.tree_selected = 0;
-        state.tree_scroll = 0;
+        state.tree.selected = 0;
+        state.tree.scroll = 0;
         refresh_active(state);
         state.mode = AppMode::Normal;
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -162,88 +164,71 @@ mod tests {
 
     #[test]
     fn tree_esc_returns_normal() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: make_tree_entries(10),
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = make_tree_entries(10);
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Esc, 24);
         assert_eq!(state.mode, AppMode::Normal);
     }
 
     #[test]
     fn tree_up_at_top_does_nothing() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: make_tree_entries(10),
-            tree_selected: 0,
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = make_tree_entries(10);
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Up, 24);
-        assert_eq!(state.tree_selected, 0);
+        assert_eq!(state.tree.selected, 0);
     }
 
     #[test]
     fn tree_down_moves() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: make_tree_entries(10),
-            tree_selected: 0,
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = make_tree_entries(10);
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
-        assert_eq!(state.tree_selected, 1);
+        assert_eq!(state.tree.selected, 1);
     }
 
     #[test]
     fn tree_down_at_end_does_nothing() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: make_tree_entries(5),
-            tree_selected: 4,
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = make_tree_entries(5);
+        state.tree.selected = 4;
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
-        assert_eq!(state.tree_selected, 4);
+        assert_eq!(state.tree.selected, 4);
     }
 
     #[test]
     fn tree_home_resets() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: make_tree_entries(50),
-            tree_selected: 25,
-            tree_scroll: 20,
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = make_tree_entries(50);
+        state.tree.selected = 25;
+        state.tree.scroll = 20;
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Home, 24);
-        assert_eq!(state.tree_selected, 0);
-        assert_eq!(state.tree_scroll, 0);
+        assert_eq!(state.tree.selected, 0);
+        assert_eq!(state.tree.scroll, 0);
     }
 
     #[test]
     fn tree_end_goes_to_last() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: make_tree_entries(50),
-            tree_selected: 0,
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = make_tree_entries(50);
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::End, 24);
-        assert_eq!(state.tree_selected, 49);
+        assert_eq!(state.tree.selected, 49);
     }
 
     #[test]
     fn tree_empty_entries_doesnt_panic() {
-        let mut state = AppState {
-            mode: AppMode::DirectoryTree,
-            tree_entries: vec![],
-            ..Default::default()
-        };
+        let mut state = AppState::default();
+        state.mode = AppMode::DirectoryTree;
+        state.tree.entries = vec![];
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
-        assert_eq!(state.tree_selected, 0);
+        assert_eq!(state.tree.selected, 0);
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::End, 24);
-        assert_eq!(state.tree_selected, 0);
+        assert_eq!(state.tree.selected, 0);
         handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Enter, 24);
     }
 

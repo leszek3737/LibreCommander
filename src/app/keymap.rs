@@ -17,661 +17,674 @@ pub struct KeyBinding {
     pub description: &'static str,
 }
 
+/// Canonical mode-name labels shared by the keymap table, the help output,
+/// and (eventually) other modules. Defining them here keeps each string in
+/// exactly one place instead of duplicating literals across call sites.
+pub const MODE_NORMAL: &str = "Normal";
+pub const MODE_VIEWING: &str = "Viewing";
+pub const MODE_COMMAND_LINE: &str = "CommandLine";
+pub const MODE_SEARCH: &str = "Search";
+pub const MODE_MENU: &str = "Menu";
+pub const MODE_LIST_PICKER: &str = "ListPicker";
+pub const MODE_DIRECTORY_TREE: &str = "DirectoryTree";
+pub const MODE_DIALOG_CONFIRM: &str = "Dialog/Confirm";
+pub const MODE_DIALOG_INPUT: &str = "Dialog/Input";
+
 /// Static table covering all mc-compatible shortcuts.
 pub static KEYBINDINGS: &[KeyBinding] = &[
     // ── Normal ───────────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F1",
         action: "Help",
         description: "Show help dialog",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F2",
         action: "UserMenu",
         description: "Open user menu",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F3",
         action: "View",
         description: "View file in internal viewer",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F4",
         action: "Edit",
         description: "Edit file in external editor",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F5",
         action: "Copy",
         description: "Copy selected files",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F6",
         action: "Move",
         description: "Move/rename selected files",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F7",
         action: "Mkdir/ArchiveExtract",
         description: "Create directory or extract archive",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F8",
         action: "Delete",
         description: "Delete selected files",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F9",
         action: "Menu",
         description: "Open left bottom menu",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F10",
         action: "Quit",
         description: "Quit the application",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F11",
         action: "Rename",
         description: "Rename file or directory",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Tab",
         action: "SwitchPanel",
         description: "Switch active panel",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Insert",
         action: "ToggleSelect",
         description: "Toggle selection and move down",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Up",
         action: "CursorUp",
         description: "Move cursor up",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Down",
         action: "CursorDown",
         description: "Move cursor down",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "k",
         action: "CursorUp",
         description: "Move cursor up (vi)",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "j",
         action: "CursorDown",
         description: "Move cursor down (vi)",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Home",
         action: "Top",
         description: "Go to first entry",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "End",
         action: "Bottom",
         description: "Go to last entry",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "PageUp",
         action: "PageUp",
         description: "Page up",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "PageDown",
         action: "PageDown",
         description: "Page down",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Shift+Up",
         action: "ExtendSelection",
         description: "Extend selection upward",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Shift+Down",
         action: "ExtendSelection",
         description: "Extend selection downward",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Enter",
         action: "OpenDir",
         description: "Open directory",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Alt+Enter",
         action: "Properties",
         description: "Show file properties",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Ctrl+U",
         action: "SwapPanels",
         description: "Swap left and right panels",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Alt+1..9",
         action: "Hotlist",
         description: "Navigate to hotlist directory",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Alt+Backspace",
         action: "GoBack",
         description: "Previous directory in history",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Alt+C",
         action: "QuickCd",
         description: "Quick change directory",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Ctrl+S",
         action: "Search",
         description: "Start incremental search/filter",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Ctrl+H",
         action: "ToggleHidden",
         description: "Toggle hidden files visibility",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Ctrl+R",
         action: "Refresh",
         description: "Refresh panel contents",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Ctrl+O",
         action: "ExternalView",
         description: "Toggle external panel view",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "Alt+X",
         action: "CommandLine",
         description: "Open command line",
     },
     KeyBinding {
-        mode: "Normal",
+        mode: MODE_NORMAL,
         key: "F12",
         action: "ArchiveMenu",
         description: "Archive operations menu",
     },
     // ── Viewer ───────────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "Esc",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "F3",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "F10",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "q",
         action: "Close",
         description: "Close viewer",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "Up",
         action: "ScrollUp",
         description: "Scroll up one line",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "Down",
         action: "ScrollDown",
         description: "Scroll down one line",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "k",
         action: "ScrollUp",
         description: "Scroll up one line (vi)",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "j",
         action: "ScrollDown",
         description: "Scroll down one line (vi)",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "PageUp",
         action: "PageUp",
         description: "Page up",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "PageDown",
         action: "PageDown",
         description: "Page down",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "Home",
         action: "Top",
         description: "Go to beginning of file",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "End",
         action: "Bottom",
         description: "Go to end of file",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "Left",
         action: "ScrollLeft",
         description: "Scroll left",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "Right",
         action: "ScrollRight",
         description: "Scroll right",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "l",
         action: "ToggleLineNum",
         description: "Toggle line numbers",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "w",
         action: "ToggleWrap",
         description: "Toggle line wrapping",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "h",
         action: "ToggleHex",
         description: "Toggle hex mode",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "n",
         action: "NextMatch",
         description: "Next search match",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "N",
         action: "PrevMatch",
         description: "Previous search match",
     },
     KeyBinding {
-        mode: "Viewing",
+        mode: MODE_VIEWING,
         key: "/",
         action: "Search",
         description: "Open search dialog",
     },
     // ── CommandLine ──────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Esc",
         action: "Cancel",
         description: "Cancel command line",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Enter",
         action: "Execute",
         description: "Execute shell command",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Backspace",
         action: "DeleteChar",
         description: "Delete character before cursor",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Up",
         action: "HistoryPrev",
         description: "Previous command in history",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Down",
         action: "HistoryNext",
         description: "Next command in history",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Ctrl+A",
         action: "CursorHome",
         description: "Move cursor to beginning of line",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Ctrl+E",
         action: "CursorEnd",
         description: "Move cursor to end of line",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Ctrl+U",
         action: "ClearToStart",
         description: "Clear line before cursor",
     },
     KeyBinding {
-        mode: "CommandLine",
+        mode: MODE_COMMAND_LINE,
         key: "Ctrl+W",
         action: "DeleteWordBack",
         description: "Delete word before cursor",
     },
     // ── Search ───────────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Search",
+        mode: MODE_SEARCH,
         key: "Esc",
         action: "Cancel",
         description: "Cancel search and restore",
     },
     KeyBinding {
-        mode: "Search",
+        mode: MODE_SEARCH,
         key: "Enter",
         action: "Accept",
         description: "Accept current search filter",
     },
     KeyBinding {
-        mode: "Search",
+        mode: MODE_SEARCH,
         key: "Backspace",
         action: "DeleteChar",
         description: "Delete character before cursor",
     },
     // ── Menu ─────────────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "Esc",
         action: "Close",
         description: "Close menu",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "F9",
         action: "Close",
         description: "Close menu",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "F10",
         action: "Close",
         description: "Close menu",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "Left",
         action: "PrevCategory",
         description: "Previous menu category",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "Right",
         action: "NextCategory",
         description: "Next menu category",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "Up",
         action: "PrevItem",
         description: "Select previous menu item",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "Down",
         action: "NextItem",
         description: "Select next menu item",
     },
     KeyBinding {
-        mode: "Menu",
+        mode: MODE_MENU,
         key: "Enter",
         action: "Execute",
         description: "Execute selected menu action",
     },
     // ── Dialog/Confirm ───────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "y",
         action: "Confirm",
         description: "Confirm action",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "Y",
         action: "Confirm",
         description: "Confirm action",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "n",
         action: "Cancel",
         description: "Cancel action",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "N",
         action: "Cancel",
         description: "Cancel action",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "Enter",
         action: "Confirm",
         description: "Confirm or cancel based on selection",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "Esc",
         action: "Cancel",
         description: "Cancel dialog",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "Left",
         action: "ToggleButton",
         description: "Toggle Yes/No button",
     },
     KeyBinding {
-        mode: "Dialog/Confirm",
+        mode: MODE_DIALOG_CONFIRM,
         key: "Right",
         action: "ToggleButton",
         description: "Toggle Yes/No button",
     },
     // ── Dialog/Input ─────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Enter",
         action: "Submit",
         description: "Submit input",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Esc",
         action: "Cancel",
         description: "Cancel input",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Backspace",
         action: "DeleteChar",
         description: "Delete character before cursor",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Delete",
         action: "DeleteCharFwd",
         description: "Delete character at cursor",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Left",
         action: "CursorLeft",
         description: "Move cursor left",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Right",
         action: "CursorRight",
         description: "Move cursor right",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "Home",
         action: "CursorHome",
         description: "Move cursor to start",
     },
     KeyBinding {
-        mode: "Dialog/Input",
+        mode: MODE_DIALOG_INPUT,
         key: "End",
         action: "CursorEnd",
         description: "Move cursor to end",
     },
     // ── ListPicker ───────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "ListPicker",
+        mode: MODE_LIST_PICKER,
         key: "Esc",
         action: "Cancel",
         description: "Close picker",
     },
     KeyBinding {
-        mode: "ListPicker",
+        mode: MODE_LIST_PICKER,
         key: "Up",
         action: "PrevItem",
         description: "Select previous item",
     },
     KeyBinding {
-        mode: "ListPicker",
+        mode: MODE_LIST_PICKER,
         key: "Down",
         action: "NextItem",
         description: "Select next item",
     },
     KeyBinding {
-        mode: "ListPicker",
+        mode: MODE_LIST_PICKER,
         key: "Enter",
         action: "Select",
         description: "Confirm selection",
     },
     KeyBinding {
-        mode: "ListPicker",
+        mode: MODE_LIST_PICKER,
         key: "Home",
         action: "Top",
         description: "Go to first item",
     },
     KeyBinding {
-        mode: "ListPicker",
+        mode: MODE_LIST_PICKER,
         key: "End",
         action: "Bottom",
         description: "Go to last item",
     },
     // ── DirectoryTree ────────────────────────────────────────────────────────
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "Esc",
         action: "Close",
         description: "Close directory tree",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "Up",
         action: "Prev",
         description: "Select previous entry",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "Down",
         action: "Next",
         description: "Select next entry",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "k",
         action: "Prev",
         description: "Select previous entry (vi)",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "j",
         action: "Next",
         description: "Select next entry (vi)",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "Home",
         action: "Top",
         description: "Go to first entry",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "End",
         action: "Bottom",
         description: "Go to last entry",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "PageUp",
         action: "PageUp",
         description: "Page up",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "PageDown",
         action: "PageDown",
         description: "Page down",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "Enter",
         action: "ToggleExpand",
         description: "Toggle expand dir or open file",
     },
     KeyBinding {
-        mode: "DirectoryTree",
+        mode: MODE_DIRECTORY_TREE,
         key: "c",
         action: "CdToDir",
         description: "Change to selected directory",
@@ -682,7 +695,9 @@ pub static KEYBINDINGS: &[KeyBinding] = &[
 /// within the same mode. Empty vec means no duplicates.
 #[cfg(test)]
 fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
-    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    let mut seen: HashSet<(&str, &str)> = HashSet::with_capacity(KEYBINDINGS.len());
+    // Duplicates are expected to be empty in a valid table, so leave this
+    // unsized rather than pre-allocating memory that is almost never used.
     let mut duplicates = Vec::new();
 
     for binding in KEYBINDINGS {
@@ -699,9 +714,12 @@ fn find_duplicate_keys() -> Vec<(&'static str, &'static str)> {
 pub fn build_help_message() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| {
-        // Rough capacity estimate: ~40 bytes per binding (mode header overhead,
-        // indent, padded key, description). Conservative to minimize reallocations.
-        let mut msg = String::with_capacity(KEYBINDINGS.len() * 40);
+        // Rough capacity estimate: ~45 bytes per binding. Each line is a
+        // 2-space indent, a key padded to 16 columns, a space, the description,
+        // and a newline (~20 bytes of fixed overhead plus the description),
+        // amortizing the per-mode header. Slightly over-estimates to minimize
+        // reallocations.
+        let mut msg = String::with_capacity(KEYBINDINGS.len() * 45);
         let mut current_mode = "";
         for b in KEYBINDINGS {
             if b.mode != current_mode {
@@ -722,16 +740,6 @@ pub fn build_help_message() -> &'static str {
 mod tests {
     use super::*;
     use crate::app::types::{AppMode, DialogKind, InputAction, PickerKind};
-
-    const NORMAL_MODE: &str = "Normal";
-    const VIEWING_MODE: &str = "Viewing";
-    const COMMAND_LINE_MODE: &str = "CommandLine";
-    const SEARCH_MODE: &str = "Search";
-    const MENU_MODE: &str = "Menu";
-    const LIST_PICKER_MODE: &str = "ListPicker";
-    const DIRECTORY_TREE_MODE: &str = "DirectoryTree";
-    const DIALOG_CONFIRM_MODE: &str = "Dialog/Confirm";
-    const DIALOG_INPUT_MODE: &str = "Dialog/Input";
 
     #[test]
     fn no_duplicate_keys_per_mode() {
@@ -784,9 +792,9 @@ mod tests {
         }
 
         for mode in representative_app_modes() {
-            let coverage = keymap_coverage_for_mode(&mode);
+            let keymap_mode = keymap_coverage_for_mode(&mode);
             assert!(
-                keymap_modes.contains(coverage.keymap_mode()),
+                keymap_modes.contains(keymap_mode),
                 "{mode:?} must have keymap coverage or documented fallback"
             );
         }
@@ -809,31 +817,17 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone, Copy)]
-    enum KeymapCoverage {
-        Direct(&'static str),
-        Fallback(&'static str),
-    }
-
-    impl KeymapCoverage {
-        fn keymap_mode(self) -> &'static str {
-            match self {
-                Self::Direct(mode) | Self::Fallback(mode) => mode,
-            }
-        }
-    }
-
     fn documented_keymap_modes() -> &'static [&'static str] {
         &[
-            NORMAL_MODE,
-            VIEWING_MODE,
-            COMMAND_LINE_MODE,
-            SEARCH_MODE,
-            MENU_MODE,
-            LIST_PICKER_MODE,
-            DIRECTORY_TREE_MODE,
-            DIALOG_CONFIRM_MODE,
-            DIALOG_INPUT_MODE,
+            MODE_NORMAL,
+            MODE_VIEWING,
+            MODE_COMMAND_LINE,
+            MODE_SEARCH,
+            MODE_MENU,
+            MODE_LIST_PICKER,
+            MODE_DIRECTORY_TREE,
+            MODE_DIALOG_CONFIRM,
+            MODE_DIALOG_INPUT,
         ]
     }
 
@@ -853,34 +847,38 @@ mod tests {
         ]
     }
 
-    fn keymap_coverage_for_mode(mode: &AppMode) -> KeymapCoverage {
+    /// Returns the keymap mode whose bindings drive `mode`, either directly or
+    /// via a documented fallback. The match stays exhaustive (no wildcard) so
+    /// adding a `DialogKind`/`PickerKind` variant forces a review here.
+    fn keymap_coverage_for_mode(mode: &AppMode) -> &'static str {
         match mode {
-            AppMode::Normal => KeymapCoverage::Direct(NORMAL_MODE),
-            AppMode::Viewing => KeymapCoverage::Direct(VIEWING_MODE),
-            AppMode::CommandLine => KeymapCoverage::Direct(COMMAND_LINE_MODE),
-            AppMode::Search => KeymapCoverage::Direct(SEARCH_MODE),
-            AppMode::Menu => KeymapCoverage::Direct(MENU_MODE),
-            AppMode::ListPicker(kind) => match kind {
+            AppMode::Normal => MODE_NORMAL,
+            AppMode::Viewing => MODE_VIEWING,
+            AppMode::CommandLine => MODE_COMMAND_LINE,
+            AppMode::Search => MODE_SEARCH,
+            AppMode::Menu => MODE_MENU,
+            AppMode::ListPicker(
                 PickerKind::History
                 | PickerKind::Hotlist
                 | PickerKind::CompareMode
                 | PickerKind::UserMenu
-                | PickerKind::ArchiveMenu => KeymapCoverage::Direct(LIST_PICKER_MODE),
-            },
-            AppMode::DirectoryTree => KeymapCoverage::Direct(DIRECTORY_TREE_MODE),
-            AppMode::Dialog(kind) => match kind {
-                DialogKind::Confirm(_) => KeymapCoverage::Direct(DIALOG_CONFIRM_MODE),
-                DialogKind::Input { .. } => KeymapCoverage::Direct(DIALOG_INPUT_MODE),
-                DialogKind::Error(_)
+                | PickerKind::ArchiveMenu,
+            ) => MODE_LIST_PICKER,
+            AppMode::DirectoryTree => MODE_DIRECTORY_TREE,
+            AppMode::Dialog(
+                DialogKind::Confirm(_)
+                | DialogKind::Error(_)
                 | DialogKind::Progress { .. }
                 | DialogKind::CopyMove(_)
                 | DialogKind::Properties(_)
-                | DialogKind::OverwriteConfirm(_) => KeymapCoverage::Fallback(DIALOG_CONFIRM_MODE),
-                DialogKind::Help { .. } => KeymapCoverage::Fallback(VIEWING_MODE),
-                DialogKind::ArchiveExtract(_) | DialogKind::ArchiveCreate(_) => {
-                    KeymapCoverage::Fallback(DIALOG_INPUT_MODE)
-                }
-            },
+                | DialogKind::OverwriteConfirm(_),
+            ) => MODE_DIALOG_CONFIRM,
+            AppMode::Dialog(
+                DialogKind::Input { .. }
+                | DialogKind::ArchiveExtract(_)
+                | DialogKind::ArchiveCreate(_),
+            ) => MODE_DIALOG_INPUT,
+            AppMode::Dialog(DialogKind::Help { .. }) => MODE_VIEWING,
         }
     }
 }

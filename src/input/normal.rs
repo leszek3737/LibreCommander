@@ -62,17 +62,17 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
         }
         KeyCode::F(9) => {
             state.prev_mode = Some(std::mem::replace(&mut state.mode, AppMode::Menu));
-            state.menu_item_selected = 0;
+            state.ui.menu_item_selected = 0;
         }
         KeyCode::F(10) => {
-            state.should_quit = true;
+            state.request_quit();
         }
         KeyCode::F(11) => {
             let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
             if let Some(name) = entry_name
                 && name != ".."
             {
-                state.dialog_input.set_text_at_end(name);
+                state.input.dialog_input.set_text_at_end(name);
                 state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
                     prompt: "Rename to:".to_string(),
                     action: InputAction::Rename,
@@ -96,7 +96,7 @@ fn handle_f7_key(state: &mut AppState) {
             prompt: "Create directory:".to_string(),
             action: InputAction::CreateDirectory,
         });
-        state.dialog_input.clear();
+        state.input.dialog_input.clear();
     }
 }
 
@@ -118,7 +118,7 @@ fn handle_f12_key(state: &mut AppState) {
         )));
         return;
     }
-    state.picker_selected = 0;
+    state.ui.picker_selected = 0;
     state.mode = AppMode::ListPicker(PickerKind::ArchiveMenu);
 }
 
@@ -135,7 +135,7 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
     {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         if let Err(e) = leave_tui_stdout() {
-            state.status_message = Some(format!("Terminal suspend failed: {e}"));
+            state.ui.status_message = Some(format!("Terminal suspend failed: {e}"));
             return;
         }
         if let Some(terminal_state_file) = terminal_state_file_path() {
@@ -172,7 +172,7 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
         }
         match (status, resume_result) {
             (Err(e), _) => {
-                state.status_message = Some(format!("Editor error: {e}"));
+                state.ui.status_message = Some(format!("Editor error: {e}"));
             }
             (Ok(s), Err(e)) => {
                 let mut parts = Vec::new();
@@ -180,10 +180,10 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
                     parts.push(format!("Editor exited with status: {s}"));
                 }
                 parts.push(format!("Terminal restore failed: {e}"));
-                state.status_message = Some(parts.join("; "));
+                state.ui.status_message = Some(parts.join("; "));
             }
             (Ok(s), Ok(())) if !s.success() => {
-                state.status_message = Some(format!("Editor exited with status: {s}"));
+                state.ui.status_message = Some(format!("Editor exited with status: {s}"));
             }
             (Ok(_), Ok(_)) => {}
         }
@@ -216,11 +216,11 @@ pub(crate) fn confirm_file_transfer(
             dest_dir.display()
         )
     };
-    state.dialog_selection = 0;
+    state.input.dialog_selection = 0;
     state.mode = AppMode::Dialog(lc::app::types::DialogKind::Confirm(
         lc::app::types::ConfirmDetails::with_files(label, &msg, file_names),
     ));
-    state.pending_action = Some(make_pending(paths, dest_dir));
+    state.ui.pending_action = Some(make_pending(paths, dest_dir));
 }
 
 pub(crate) fn confirm_delete(state: &mut AppState) {
@@ -235,11 +235,11 @@ pub(crate) fn confirm_delete(state: &mut AppState) {
     } else {
         format!("Delete {} entries?", paths.len())
     };
-    state.dialog_selection = 0;
+    state.input.dialog_selection = 0;
     state.mode = AppMode::Dialog(lc::app::types::DialogKind::Confirm(
         lc::app::types::ConfirmDetails::with_files("Delete Confirm", &msg, file_names),
     ));
-    state.pending_action = Some(lc::app::types::PendingAction::Delete { paths });
+    state.ui.pending_action = Some(lc::app::types::PendingAction::Delete { paths });
 }
 
 pub(crate) fn handle_navigation_keys(
@@ -251,7 +251,7 @@ pub(crate) fn handle_navigation_keys(
     match key {
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
             let panel = state.active_panel_mut();
-            if panel.listing.entries.is_empty() {
+            if panel.listing.filtered_is_empty() {
                 return;
             }
             panel.toggle_selection_at(panel.cursor);
@@ -259,7 +259,7 @@ pub(crate) fn handle_navigation_keys(
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
             let panel = state.active_panel_mut();
-            if panel.listing.entries.is_empty() {
+            if panel.listing.filtered_is_empty() {
                 return;
             }
             panel.toggle_selection_at(panel.cursor);
@@ -279,7 +279,7 @@ pub(crate) fn handle_navigation_keys(
             p.scroll_offset = 0;
         }
         KeyCode::End => {
-            let len = state.active_panel().listing.entries.len();
+            let len = state.active_panel().listing.filtered_len();
             if len > 0 {
                 let p = state.active_panel_mut();
                 p.cursor = len - 1;
@@ -292,7 +292,7 @@ pub(crate) fn handle_navigation_keys(
             p.scroll_offset = p.scroll_offset.saturating_sub(visible);
         }
         KeyCode::PageDown => {
-            let len = state.active_panel().listing.entries.len();
+            let len = state.active_panel().listing.filtered_len();
             let p = state.active_panel_mut();
             p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
             p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
@@ -300,17 +300,17 @@ pub(crate) fn handle_navigation_keys(
         KeyCode::Tab => {
             state.active_panel = state.active_panel.toggle();
             let p = state.active_panel_mut();
-            let max = p.listing.entries.len().saturating_sub(1);
+            let max = p.listing.filtered_len().saturating_sub(1);
             p.cursor = p.cursor.min(max);
             p.ensure_cursor_visible(visible);
         }
         KeyCode::Insert => {
             let panel = state.active_panel_mut();
-            if panel.listing.entries.is_empty() {
+            if panel.listing.filtered_is_empty() {
                 return;
             }
             panel.toggle_selection();
-            if panel.cursor < panel.listing.entries.len() - 1 {
+            if panel.cursor < panel.listing.filtered_len() - 1 {
                 panel.move_cursor_down(visible);
             }
         }
@@ -323,17 +323,19 @@ pub(crate) fn reposition_cursor_to_entry(
     prev_dir_name: Option<&str>,
     visible: usize,
 ) {
-    if let Some(name) = prev_dir_name
-        && let Some(idx) = state
+    if let Some(name) = prev_dir_name {
+        // Resolve the index first so the borrowing iterator is dropped before the
+        // mutable panel access below.
+        let idx = state
             .active_panel()
             .listing
-            .entries
-            .iter()
-            .position(|e| e.name == name)
-    {
-        let p = state.active_panel_mut();
-        p.cursor = idx;
-        p.ensure_cursor_visible(visible);
+            .filtered()
+            .position(|e| e.name == name);
+        if let Some(idx) = idx {
+            let p = state.active_panel_mut();
+            p.cursor = idx;
+            p.ensure_cursor_visible(visible);
+        }
     }
 }
 
@@ -377,7 +379,7 @@ pub(crate) fn show_archive_dialog(state: &mut AppState) {
     let entries = match archive::list::list_archive(&source) {
         Ok(list) => list,
         Err(e) => {
-            state.status_message = Some(format!("Failed to list archive: {e}"));
+            state.ui.status_message = Some(format!("Failed to list archive: {e}"));
             return;
         }
     };
@@ -400,13 +402,9 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_heig
             state.active_panel = state.active_panel.toggle();
         }
         KeyCode::Char('s') => {
-            let panel = state.active_panel_mut();
-            if panel.listing.unfiltered_entries.is_empty() {
-                panel.listing.set_unfiltered(panel.listing.entries.clone());
-            }
             state.mode = AppMode::Search;
-            state.search_query.clear();
-            state.search_cursor = 0;
+            state.input.search_query.clear();
+            state.input.search_cursor = 0;
         }
         KeyCode::Char('h') => {
             let visible = panel_ops::panel_visible_height(terminal_height);
@@ -421,7 +419,7 @@ pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_heig
         }
         KeyCode::Char('o') => {
             if let Err(e) = shell::toggle_external_view(state, panel_ops::refresh_both) {
-                state.status_message = Some(format!("External view error: {e}"));
+                state.ui.status_message = Some(format!("External view error: {e}"));
             }
         }
         _ => {}
@@ -442,8 +440,10 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                         permissions: entry.mode_bits(),
                         owner: entry.owner.to_string(),
                         group: entry.group.to_string(),
-                        is_dir: entry.is_dir(),
-                        is_symlink: entry.is_symlink(),
+                        kind: lc::app::types::FileKind::from_metadata_flags(
+                            entry.is_dir(),
+                            entry.is_symlink(),
+                        ),
                     },
                 )));
             }
@@ -458,7 +458,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                     panel.scroll_offset = 0;
                     panel_ops::refresh_active(state);
                     reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
-                    state.status_message = Some(format!("cd to {}", prev_path.display()));
+                    state.ui.status_message = Some(format!("cd to {}", prev_path.display()));
                 } else {
                     panel.push_history(prev_path);
                 }
@@ -473,6 +473,7 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                 action: InputAction::QuickCd,
             });
             state
+                .input
                 .dialog_input
                 .set_text_at_end(state.active_panel().path().display().to_string());
         }
@@ -498,7 +499,6 @@ pub(crate) fn selected_or_current_paths(state: &AppState) -> Vec<PathBuf> {
 
     let selected: Vec<PathBuf> = panel
         .selected_entries()
-        .into_iter()
         .filter(|entry| is_not_parent_dir(entry))
         .map(|entry| entry.path.clone())
         .collect();

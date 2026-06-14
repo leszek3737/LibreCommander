@@ -32,8 +32,8 @@ fn menu_toggle_hidden_files() {
         state.left_panel.set_path(temp_dir.path().to_path_buf());
         state.left_panel.set_show_hidden(initial);
         state.mode = AppMode::Menu;
-        state.menu_selected = 3;
-        state.menu_item_selected = 0;
+        state.ui.menu_selected = 3;
+        state.ui.menu_item_selected = 0;
 
         dispatch_menu(&mut state, KeyCode::Enter);
 
@@ -45,18 +45,18 @@ fn menu_toggle_hidden_files() {
 fn menu_rename_opens_input_dialog_with_current_name() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState::default();
-    state.left_panel.listing.entries.push(
+    state.left_panel.set_entries(vec![
         TestEntry::new("old.txt")
             .path(tmp.path().join("old.txt"))
             .build(),
-    );
+    ]);
     state.mode = AppMode::Menu;
-    state.menu_selected = 1;
-    state.menu_item_selected = 7;
+    state.ui.menu_selected = 1;
+    state.ui.menu_item_selected = 7;
 
     dispatch_menu(&mut state, KeyCode::Enter);
 
-    assert_eq!(state.dialog_input.text(), "old.txt");
+    assert_eq!(state.input.dialog_input.text(), "old.txt");
     assert!(matches!(
         state.mode,
         AppMode::Dialog(app::types::DialogKind::Input {
@@ -72,13 +72,14 @@ fn menu_rename_confirms_and_renames_file() {
     let old_path = dir.path().join("old.txt");
     std::fs::write(&old_path, "content").unwrap();
     let mut state = AppState::default();
-    state.left_panel.listing.entries =
-        vec![TestEntry::new("old.txt").path(&old_path).file(1).build()];
+    state.left_panel.set_entries(vec![
+        TestEntry::new("old.txt").path(&old_path).file(1).build(),
+    ]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     state.mode = AppMode::Menu;
-    state.menu_selected = 1;
-    state.menu_item_selected = 7;
+    state.ui.menu_selected = 1;
+    state.ui.menu_item_selected = 7;
 
     dispatch_menu(&mut state, KeyCode::Enter);
 
@@ -89,7 +90,10 @@ fn menu_rename_confirms_and_renames_file() {
             ..
         })
     ));
-    state.dialog_input.set_text_at_end("new.txt".to_string());
+    state
+        .input
+        .dialog_input
+        .set_text_at_end("new.txt".to_string());
 
     crate::input::dialogs::handle_dialog(
         &mut state,
@@ -112,16 +116,19 @@ fn menu_rename_confirms_and_renames_file() {
 fn menu_history_opens_picker() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 2,
-        menu_item_selected: 5,
+        ui: lc::app::types::UiState {
+            menu_selected: 2,
+            menu_item_selected: 5,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    state.command_history.push_back("ls -la".to_string());
+    state.input.command_history.push_back("ls -la".to_string());
 
     dispatch_menu(&mut state, KeyCode::Enter);
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::History));
-    assert_eq!(state.picker_selected, 0);
+    assert_eq!(state.ui.picker_selected, 0);
 }
 
 #[test]
@@ -129,8 +136,11 @@ fn menu_hotlist_opens_picker() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 2,
-        menu_item_selected: 6,
+        ui: lc::app::types::UiState {
+            menu_selected: 2,
+            menu_item_selected: 6,
+            ..Default::default()
+        },
         ..Default::default()
     };
     state.hotlist_push(tmp.path().to_path_buf());
@@ -138,19 +148,23 @@ fn menu_hotlist_opens_picker() {
     dispatch_menu(&mut state, KeyCode::Enter);
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
-    assert_eq!(state.picker_selected, 0);
+    assert_eq!(state.ui.picker_selected, 0);
 }
 
 #[test]
 fn menu_sort_preserves_current_entry_focus() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 0,
-        menu_item_selected: 1,
+        ui: lc::app::types::UiState {
+            menu_selected: 0,
+            menu_item_selected: 1,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    state.left_panel.listing.entries = vec![entry("zeta.txt").build(), entry("alpha.txt").build()];
-    state.left_panel.listing.unfiltered_entries = state.left_panel.listing.entries.clone();
+    state
+        .left_panel
+        .set_entries(vec![entry("zeta.txt").build(), entry("alpha.txt").build()]);
     state.left_panel.cursor = 0;
     state
         .left_panel
@@ -168,8 +182,24 @@ fn menu_sort_preserves_current_entry_focus() {
             lc::app::types::Direction::Asc,
         )
     );
-    assert_eq!(state.left_panel.listing.entries[0].name, "alpha.txt");
-    assert_eq!(state.left_panel.listing.entries[1].name, "zeta.txt");
+    assert_eq!(
+        state
+            .left_panel
+            .listing
+            .filtered_get(0)
+            .expect("entry 0")
+            .name,
+        "alpha.txt"
+    );
+    assert_eq!(
+        state
+            .left_panel
+            .listing
+            .filtered_get(1)
+            .expect("entry 1")
+            .name,
+        "zeta.txt"
+    );
     assert_eq!(
         state
             .left_panel
@@ -183,13 +213,20 @@ fn menu_sort_preserves_current_entry_focus() {
 fn menu_reset_filter_preserves_current_entry_focus() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 0,
-        menu_item_selected: 4,
+        ui: lc::app::types::UiState {
+            menu_selected: 0,
+            menu_item_selected: 4,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    state.left_panel.listing.entries = vec![entry("beta.txt").build()];
-    state.left_panel.listing.unfiltered_entries =
-        vec![entry("alpha.txt").build(), entry("beta.txt").build()];
+    state
+        .left_panel
+        .set_entries(vec![entry("alpha.txt").build(), entry("beta.txt").build()]);
+    state
+        .left_panel
+        .listing
+        .set_filtered(&[entry("beta.txt").build()]);
     state.left_panel.set_filter(Some("beta".to_string()));
 
     run_menu_action(&mut state);
@@ -207,7 +244,10 @@ fn menu_reset_filter_preserves_current_entry_focus() {
 fn run_selected_menu_action_fallback_to_normal() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_item_selected: 99,
+        ui: lc::app::types::UiState {
+            menu_item_selected: 99,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -221,8 +261,11 @@ fn menu_command_line_clears_stale_prev_mode() {
     let mut state = AppState {
         mode: AppMode::Menu,
         prev_mode: Some(AppMode::Search),
-        menu_selected: 2,
-        menu_item_selected: 7,
+        ui: lc::app::types::UiState {
+            menu_selected: 2,
+            menu_item_selected: 7,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -236,8 +279,11 @@ fn menu_command_line_clears_stale_prev_mode() {
 fn menu_right_panel_sort_changes_right_panel() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 4,
-        menu_item_selected: 1,
+        ui: lc::app::types::UiState {
+            menu_selected: 4,
+            menu_item_selected: 1,
+            ..Default::default()
+        },
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
@@ -265,8 +311,11 @@ fn menu_right_panel_sort_changes_right_panel() {
 fn menu_right_panel_filter_applies_to_right_panel() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 4,
-        menu_item_selected: 2,
+        ui: lc::app::types::UiState {
+            menu_selected: 4,
+            menu_item_selected: 2,
+            ..Default::default()
+        },
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
@@ -286,8 +335,11 @@ fn menu_right_panel_filter_applies_to_right_panel() {
 fn menu_right_panel_listing_mode_toggles_right() {
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 4,
-        menu_item_selected: 0,
+        ui: lc::app::types::UiState {
+            menu_selected: 4,
+            menu_item_selected: 0,
+            ..Default::default()
+        },
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
@@ -303,8 +355,11 @@ fn menu_right_panel_refresh_refreshes_right() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut state = AppState {
         mode: AppMode::Menu,
-        menu_selected: 4,
-        menu_item_selected: 3,
+        ui: lc::app::types::UiState {
+            menu_selected: 4,
+            menu_item_selected: 3,
+            ..Default::default()
+        },
         active_panel: ActivePanel::Left,
         ..Default::default()
     };
@@ -317,8 +372,7 @@ fn menu_right_panel_refresh_refreshes_right() {
         state
             .right_panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .any(|e| e.name == "test.txt")
     );
 }
@@ -328,8 +382,11 @@ fn menu_cancel_from_search_restores_search_mode() {
     let mut state = AppState {
         mode: AppMode::Menu,
         prev_mode: Some(AppMode::Search),
-        menu_selected: 1,
-        menu_item_selected: 0,
+        ui: lc::app::types::UiState {
+            menu_selected: 1,
+            menu_item_selected: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -344,8 +401,11 @@ fn menu_cancel_from_normal_returns_to_normal() {
     let mut state = AppState {
         mode: AppMode::Menu,
         prev_mode: Some(AppMode::Normal),
-        menu_selected: 1,
-        menu_item_selected: 0,
+        ui: lc::app::types::UiState {
+            menu_selected: 1,
+            menu_item_selected: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -360,8 +420,11 @@ fn menu_cancel_with_no_prev_mode_defaults_to_normal() {
     let mut state = AppState {
         mode: AppMode::Menu,
         prev_mode: None,
-        menu_selected: 1,
-        menu_item_selected: 0,
+        ui: lc::app::types::UiState {
+            menu_selected: 1,
+            menu_item_selected: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -376,8 +439,11 @@ fn menu_cancel_with_f9_restores_prev_mode() {
     let mut state = AppState {
         mode: AppMode::Menu,
         prev_mode: Some(AppMode::Viewing),
-        menu_selected: 1,
-        menu_item_selected: 0,
+        ui: lc::app::types::UiState {
+            menu_selected: 1,
+            menu_item_selected: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -396,22 +462,23 @@ fn menu_rename_collision_shows_error_message() {
     std::fs::write(&existing_path, "existing content").unwrap();
 
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![
+    state.left_panel.set_entries(vec![
         TestEntry::new("old.txt").path(&old_path).file(1).build(),
         TestEntry::new("existing.txt")
             .path(&existing_path)
             .file(1)
             .build(),
-    ];
+    ]);
     state.left_panel.cursor = 0;
     state.active_panel = ActivePanel::Left;
     state.mode = AppMode::Menu;
-    state.menu_selected = 1;
-    state.menu_item_selected = 7;
+    state.ui.menu_selected = 1;
+    state.ui.menu_item_selected = 7;
 
     dispatch_menu(&mut state, KeyCode::Enter);
 
     state
+        .input
         .dialog_input
         .set_text_at_end("existing.txt".to_string());
 
@@ -423,7 +490,7 @@ fn menu_rename_collision_shows_error_message() {
         ratatui::layout::Size::new(80, TEST_HEIGHT),
     );
 
-    assert!(state.status_message.is_some());
+    assert!(state.ui.status_message.is_some());
     assert_eq!(state.mode, AppMode::Normal);
     assert!(old_path.exists());
     assert!(existing_path.exists());

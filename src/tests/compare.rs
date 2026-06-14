@@ -9,8 +9,8 @@ fn state_with_panels(
     right: Vec<crate::app::types::FileEntry>,
 ) -> AppState {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = left;
-    state.right_panel.listing.entries = right;
+    state.left_panel.set_entries(left);
+    state.right_panel.set_entries(right);
     state
 }
 
@@ -57,8 +57,7 @@ fn compare_directories_reports_summary() {
         state
             .left_panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .any(|e| e.name == "a.txt" && e.selected),
         "left panel should mark 'a.txt' as selected after compare"
     );
@@ -66,8 +65,7 @@ fn compare_directories_reports_summary() {
         state
             .right_panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .any(|e| e.name == "b.txt" && e.selected),
         "right panel should mark 'b.txt' as selected after compare"
     );
@@ -83,19 +81,39 @@ fn compare_directories_marks_unique_entries_selected() {
     pickers::compare_directories(&mut state, CompareMode::Quick);
 
     assert!(
-        !state.left_panel.listing.entries[0].selected,
+        !state
+            .left_panel
+            .listing
+            .filtered_get(0)
+            .expect("left entry 0")
+            .selected,
         "'same.txt' on left should not be selected"
     );
     assert!(
-        state.left_panel.listing.entries[1].selected,
+        state
+            .left_panel
+            .listing
+            .filtered_get(1)
+            .expect("left entry 1")
+            .selected,
         "'left.txt' on left should be selected"
     );
     assert!(
-        !state.right_panel.listing.entries[0].selected,
+        !state
+            .right_panel
+            .listing
+            .filtered_get(0)
+            .expect("right entry 0")
+            .selected,
         "'same.txt' on right should not be selected"
     );
     assert!(
-        state.right_panel.listing.entries[1].selected,
+        state
+            .right_panel
+            .listing
+            .filtered_get(1)
+            .expect("right entry 1")
+            .selected,
         "'right.txt' on right should be selected"
     );
 }
@@ -113,8 +131,7 @@ fn compare_directories_size_mode_reports_mismatches() {
         state
             .left_panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .any(|e| e.name == "file.txt" && e.selected),
         "left panel 'file.txt' should be selected (size mismatch)"
     );
@@ -122,8 +139,7 @@ fn compare_directories_size_mode_reports_mismatches() {
         state
             .right_panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .any(|e| e.name == "file.txt" && e.selected),
         "right panel 'file.txt' should be selected (size mismatch)"
     );
@@ -140,7 +156,7 @@ fn compare_directories_quick_empty_dirs() {
     );
     assert_summary_counts(&state, 0, 0, 0);
     assert_eq!(
-        state.dialog_selection, 0,
+        state.input.dialog_selection, 0,
         "dialog_selection should default to 0"
     );
 }
@@ -148,12 +164,12 @@ fn compare_directories_quick_empty_dirs() {
 #[test]
 fn compare_mode_picker_maps_index_to_mode() {
     let mut state = AppState::default();
-    state.left_panel.listing.entries = vec![entry("a.txt").build()];
+    state.left_panel.set_entries(vec![entry("a.txt").build()]);
 
     for (idx, mode) in CompareMode::ALL.iter().enumerate() {
         // Reset to picker mode for each iteration — simulates fresh picker invocation
         state.mode = AppMode::ListPicker(app::types::PickerKind::CompareMode);
-        state.picker_selected = idx;
+        state.ui.picker_selected = idx;
         pickers::handle_list_picker(&mut state, KeyCode::Enter);
 
         let label = mode.label();
@@ -175,7 +191,10 @@ fn compare_mode_picker_maps_index_to_mode() {
 fn compare_mode_picker_esc_cancels() {
     let mut state = AppState {
         mode: AppMode::ListPicker(app::types::PickerKind::CompareMode),
-        picker_selected: 1,
+        ui: app::types::UiState {
+            picker_selected: 1,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -203,16 +222,11 @@ fn compare_directories_identical_content_mixed_types_symlinks() {
 
     assert_summary_counts(&state, 0, 0, 0);
     assert!(
-        state.left_panel.listing.entries.iter().all(|e| !e.selected),
+        state.left_panel.listing.filtered().all(|e| !e.selected),
         "no left entries should be selected when panels are identical"
     );
     assert!(
-        state
-            .right_panel
-            .listing
-            .entries
-            .iter()
-            .all(|e| !e.selected),
+        state.right_panel.listing.filtered().all(|e| !e.selected),
         "no right entries should be selected when panels are identical"
     );
 }

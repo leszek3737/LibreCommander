@@ -9,10 +9,8 @@ const OVERFLOW_EVENT_COUNT: usize = WATCHER_CHANNEL_CAPACITY + 1;
 
 fn test_panel(path: &Path) -> PanelState {
     let mut panel = PanelState::new(path.to_path_buf());
-    panel.listing.unfiltered_entries = vec![parent_entry(path)];
-    panel.listing.entries = panel.listing.unfiltered_entries.clone();
+    panel.set_entries(vec![parent_entry(path)]);
     panel.listing.force_state(ListingState::Clean);
-    panel.recalculate_selection_stats();
     panel
 }
 
@@ -24,6 +22,7 @@ fn parent_entry(path: &Path) -> reader::FileEntry {
         .is_executable(true)
         .permissions(0o755)
         .build()
+        .expect("valid test entry")
 }
 
 fn select_entry_by_name(entries: &mut [reader::FileEntry], name: &str) {
@@ -46,12 +45,7 @@ fn build_panel_with_files(dir: &Path, files: &[(&str, &[u8])]) -> PanelState {
 }
 
 fn assert_entry_names_eq(panel: &PanelState, expected: &[&str]) {
-    let names: Vec<_> = panel
-        .listing
-        .entries
-        .iter()
-        .map(|e| e.name.as_str())
-        .collect();
+    let names: Vec<_> = panel.listing.filtered().map(|e| e.name.as_str()).collect();
     assert_eq!(names, expected);
 }
 
@@ -69,10 +63,24 @@ fn assert_no_entry(entries: &[reader::FileEntry], name: &str) {
     );
 }
 
+fn assert_visible_has_entry(panel: &PanelState, name: &str) {
+    assert!(
+        panel.listing.filtered().any(|e| e.name == name),
+        "expected visible entry `{name}`"
+    );
+}
+
+fn assert_visible_no_entry(panel: &PanelState, name: &str) {
+    assert!(
+        !panel.listing.filtered().any(|e| e.name == name),
+        "did not expect visible entry `{name}`"
+    );
+}
+
 fn assert_entry_counts(panel: &PanelState, visible: usize, unfiltered: usize) {
-    assert_eq!(panel.listing.entries.len(), visible, "visible entry count");
+    assert_eq!(panel.listing.filtered_len(), visible, "visible entry count");
     assert_eq!(
-        panel.listing.unfiltered_entries.len(),
+        panel.listing.unfiltered().len(),
         unfiltered,
         "unfiltered entry count"
     );
@@ -174,19 +182,18 @@ fn watcher_upsert_respects_filter_and_preserves_selection() {
     panel.set_filter(Some("*.txt".to_string()));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
     rebuild(&mut panel);
-    select_entry_by_name(&mut panel.listing.entries, "keep.txt");
-    panel.sync_unfiltered_selection();
+    select_entry_by_name(panel.listing.unfiltered_mut(), "keep.txt");
+    panel.recalculate_selection_stats();
 
     fs::write(&keep, b"updated").unwrap();
     assert!(apply_watcher_upsert_if_matches(&mut panel, &keep));
     assert!(apply_watcher_upsert_if_matches(&mut panel, &drop));
     rebuild(&mut panel);
 
-    assert_eq!(panel.listing.entries.len(), 2);
+    assert_eq!(panel.listing.filtered_len(), 2);
     let keep_entry = panel
         .listing
-        .entries
-        .iter()
+        .filtered()
         .find(|e| e.name == "keep.txt")
         .unwrap();
     assert!(keep_entry.selected);
@@ -303,7 +310,7 @@ fn watcher_upsert_uses_panel_sort_mode() {
 fn watcher_skips_update_when_metadata_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let mut panel = build_panel_with_files(dir.path(), &[("same.txt", b"content")]);
-    assert_eq!(panel.listing.entries.len(), 2);
+    assert_eq!(panel.listing.filtered_len(), 2);
 
     let file = dir.path().join("same.txt");
     assert!(!apply_watcher_upsert_if_matches(&mut panel, &file));
@@ -323,7 +330,7 @@ fn watcher_updates_when_metadata_changes() {
     assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
     rebuild(&mut panel);
 
-    assert_eq!(panel.listing.entries.len(), 2);
+    assert_eq!(panel.listing.filtered_len(), 2);
     assert_eq!(panel.total_size(), 18);
 }
 
@@ -343,7 +350,7 @@ fn poll_watcher_events_processes_at_most_256_events() {
 
     assert!(poll_watcher_events(&mut state, &rx));
 
-    let entries = &state.left_panel.listing.unfiltered_entries;
+    let entries = state.left_panel.listing.unfiltered();
     assert_eq!(entries.len(), OVERFLOW_EVENT_COUNT);
     assert_has_entry(entries, "..");
     assert_has_entry(entries, "file0.txt");
@@ -355,8 +362,8 @@ fn poll_watcher_events_processes_at_most_256_events() {
 fn full_refresh_preserves_selected_entries() {
     let dir = tempfile::tempdir().unwrap();
     let mut panel = build_panel_with_files(dir.path(), &[("selected.txt", b"selected")]);
-    select_entry_by_name(&mut panel.listing.entries, "selected.txt");
-    panel.sync_unfiltered_selection();
+    select_entry_by_name(panel.listing.unfiltered_mut(), "selected.txt");
+    panel.recalculate_selection_stats();
 
     let selected = dir.path().join("selected.txt");
     refresh_panel_from_disk(&mut panel);
@@ -364,7 +371,7 @@ fn full_refresh_preserves_selected_entries() {
     assert!(
         panel
             .listing
-            .unfiltered_entries
+            .unfiltered()
             .iter()
             .any(|entry| entry.path == selected && entry.selected)
     );
@@ -384,11 +391,11 @@ fn overflow_event_triggers_full_refresh_on_both_panels() {
     harness.poll();
 
     assert_has_entry(
-        &harness.state.left_panel.listing.unfiltered_entries,
+        harness.state.left_panel.listing.unfiltered(),
         "existing.txt",
     );
     assert_has_entry(
-        &harness.state.right_panel.listing.unfiltered_entries,
+        harness.state.right_panel.listing.unfiltered(),
         "existing.txt",
     );
 }
@@ -427,12 +434,7 @@ fn deleted_panel_dir_navigates_to_parent_and_refreshes() {
         parent.path().canonicalize().ok()
     );
     assert!(
-        !harness
-            .state
-            .left_panel
-            .listing
-            .unfiltered_entries
-            .is_empty(),
+        !harness.state.left_panel.listing.unfiltered().is_empty(),
         "panel should have refreshed entries from parent"
     );
 }
@@ -462,10 +464,7 @@ fn renamed_panel_dir_updates_path_and_refreshes() {
     let dirty = harness.poll();
     assert!(dirty);
     assert_eq!(harness.state.left_panel.path(), new_name);
-    assert_has_entry(
-        &harness.state.left_panel.listing.unfiltered_entries,
-        "marker.txt",
-    );
+    assert_has_entry(harness.state.left_panel.listing.unfiltered(), "marker.txt");
 }
 
 #[test]
@@ -476,7 +475,7 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     fs::write(&file, b"data").unwrap();
     assert!(apply_watcher_upsert_if_matches(&mut panel, &file));
     rebuild(&mut panel);
-    assert!(panel.listing.entries.len() > 1);
+    assert!(panel.listing.filtered_len() > 1);
 
     let gone = tempfile::tempdir().unwrap();
     let gone_path = gone.path().to_path_buf();
@@ -484,9 +483,8 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     panel.set_path(gone_path);
     refresh_panel_from_disk(&mut panel);
 
-    assert!(panel.listing.entries.is_empty());
-    assert!(panel.listing.unfiltered_entries.is_empty());
-    assert!(panel.listing.path_index.is_empty());
+    assert!(panel.listing.filtered_is_empty());
+    assert!(panel.listing.unfiltered().is_empty());
     assert_eq!(panel.listing.state(), ListingState::NeedsFullRead);
     assert_eq!(panel.cursor, 0);
     assert_eq!(panel.scroll_offset, 0);
@@ -508,20 +506,20 @@ fn full_refresh_recovers_after_error() {
     drop(gone);
     panel.set_path(gone_path);
     refresh_panel_from_disk(&mut panel);
-    assert!(panel.listing.entries.is_empty());
+    assert!(panel.listing.filtered_is_empty());
 
     panel.set_path(dir.path().to_path_buf());
     refresh_panel_from_disk(&mut panel);
 
     assert!(
-        !panel.listing.entries.is_empty(),
+        !panel.listing.filtered_is_empty(),
         "should have entries after recovery"
     );
     assert!(
         panel.last_error().is_none(),
         "last_error should be cleared on success"
     );
-    assert_has_entry(&panel.listing.unfiltered_entries, "recovery.txt");
+    assert_has_entry(panel.listing.unfiltered(), "recovery.txt");
 }
 
 #[test]
@@ -593,14 +591,14 @@ fn deleted_child_file_removes_from_panel() {
         &file
     ));
     rebuild(&mut harness.state.left_panel);
-    assert_has_entry(&harness.state.left_panel.listing.entries, "to_delete.txt");
+    assert_visible_has_entry(&harness.state.left_panel, "to_delete.txt");
 
     fs::remove_file(&file).unwrap();
     harness.send(WatchEvent::Deleted(file.clone()));
 
     let dirty = harness.poll();
     assert!(dirty);
-    assert_no_entry(&harness.state.left_panel.listing.entries, "to_delete.txt");
+    assert_visible_no_entry(&harness.state.left_panel, "to_delete.txt");
 }
 
 #[test]
@@ -615,7 +613,7 @@ fn created_child_file_appears_in_panel() {
 
     let dirty = harness.poll();
     assert!(dirty);
-    assert_has_entry(&harness.state.left_panel.listing.entries, "new_file.txt");
+    assert_visible_has_entry(&harness.state.left_panel, "new_file.txt");
 }
 
 #[test]
@@ -728,14 +726,14 @@ fn symlink_target_change_detected() {
     let mut panel = test_panel(dir.path());
     assert!(apply_watcher_upsert_if_matches(&mut panel, &link));
     rebuild(&mut panel);
-    assert_has_entry(&panel.listing.entries, "link.txt");
+    assert_visible_has_entry(&panel, "link.txt");
 
     fs::remove_file(&link).unwrap();
     symlink(&target_b, &link).unwrap();
     apply_watcher_upsert_if_matches(&mut panel, &link);
     rebuild(&mut panel);
 
-    assert_has_entry(&panel.listing.entries, "link.txt");
+    assert_visible_has_entry(&panel, "link.txt");
 }
 
 #[cfg(unix)]
@@ -751,7 +749,7 @@ fn broken_symlink_handled_gracefully() {
     assert!(apply_watcher_upsert_if_matches(&mut panel, &dangling));
     rebuild(&mut panel);
 
-    assert_has_entry(&panel.listing.entries, "dangling.txt");
+    assert_visible_has_entry(&panel, "dangling.txt");
 }
 
 #[test]
@@ -773,6 +771,6 @@ fn stale_events_ignored_after_path_change() {
     state.right_panel.set_path(dir_b.path().to_path_buf());
 
     poll_watcher_events(&mut state, &rx);
-    assert_no_entry(&state.left_panel.listing.entries, "stale.txt");
-    assert_no_entry(&state.right_panel.listing.entries, "stale.txt");
+    assert_visible_no_entry(&state.left_panel, "stale.txt");
+    assert_visible_no_entry(&state.right_panel, "stale.txt");
 }

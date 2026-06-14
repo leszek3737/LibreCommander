@@ -133,9 +133,8 @@ pub fn compare_entries(
 
 /// Apply a [`CompareReport`] to both panels, selecting the marked entries.
 ///
-/// Marks are applied to both the visible `entries` and the `unfiltered_entries`
-/// cache so the selection survives a filter toggle, then each panel's selection
-/// stats are recomputed.
+/// Marks are applied to each panel's single entry store so the selection
+/// survives a filter toggle, then each panel's selection stats are recomputed.
 pub fn apply_compare_to_panels(
     left_panel: &mut PanelState,
     right_panel: &mut PanelState,
@@ -149,16 +148,13 @@ pub fn apply_compare_to_panels(
 }
 
 fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
-    let apply = |entries: &mut [FileEntry]| {
-        for entry in entries {
-            entry.selected = entry.name != PARENT_DIR && marks.contains(&entry.name);
-        }
-    };
-    apply(&mut panel.listing.entries);
-    apply(&mut panel.listing.unfiltered_entries);
+    for entry in panel.listing.unfiltered_mut() {
+        entry.selected = entry.name != PARENT_DIR && marks.contains(&entry.name);
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::app::types::FileEntry;
@@ -170,6 +166,7 @@ mod tests {
             .path(format!("/tmp/{name}"))
             .size(size)
             .build()
+            .expect("valid test entry")
     }
 
     fn dir_entry(name: &str) -> FileEntry {
@@ -179,11 +176,12 @@ mod tests {
             .is_dir(true)
             .permissions(0o755)
             .build()
+            .expect("valid test entry")
     }
 
     fn panel_with_entries(entries: Vec<FileEntry>) -> PanelState {
         let mut panel = PanelState::new(PathBuf::from("/tmp"));
-        panel.listing.entries = entries;
+        panel.set_entries(entries);
         panel
     }
 
@@ -224,7 +222,8 @@ mod tests {
                 .size(100)
                 .modified(t)
                 .created(std::time::SystemTime::UNIX_EPOCH)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
         let right = vec![
             FileEntry::builder()
@@ -233,7 +232,8 @@ mod tests {
                 .size(100)
                 .modified(t + std::time::Duration::from_secs(3))
                 .created(std::time::SystemTime::UNIX_EPOCH)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -249,7 +249,8 @@ mod tests {
                 .path("/tmp/..")
                 .is_dir(true)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
         let right = vec![];
 
@@ -281,7 +282,8 @@ mod tests {
                 .is_dir(true)
                 .size(4096)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
         let right = vec![
             FileEntry::builder()
@@ -290,7 +292,8 @@ mod tests {
                 .is_dir(true)
                 .size(8192)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Size);
@@ -309,7 +312,8 @@ mod tests {
                 .is_dir(true)
                 .size(4096)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
         let right = vec![
             FileEntry::builder()
@@ -318,7 +322,8 @@ mod tests {
                 .is_dir(true)
                 .size(4096)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Size);
@@ -339,7 +344,8 @@ mod tests {
                 .size(4096)
                 .modified(t)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
         let right = vec![
             FileEntry::builder()
@@ -349,7 +355,8 @@ mod tests {
                 .size(8192)
                 .modified(t + std::time::Duration::from_secs(60))
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -370,7 +377,8 @@ mod tests {
                 .size(4096)
                 .modified(t)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
         let right = vec![
             FileEntry::builder()
@@ -380,7 +388,8 @@ mod tests {
                 .size(4096)
                 .modified(t)
                 .permissions(0o755)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -413,7 +422,8 @@ mod tests {
                 .size(100)
                 .modified(t)
                 .created(std::time::SystemTime::UNIX_EPOCH)
-                .build(),
+                .build()
+                .expect("valid test entry"),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -434,6 +444,7 @@ mod tests {
                 .modified(t + std::time::Duration::from_secs(delta))
                 .created(std::time::SystemTime::UNIX_EPOCH)
                 .build()
+                .expect("valid test entry")
         };
         let left = vec![make(0)];
         let right = vec![make(2)];
@@ -455,6 +466,7 @@ mod tests {
                 .modified(t + std::time::Duration::from_secs(delta))
                 .created(std::time::SystemTime::UNIX_EPOCH)
                 .build()
+                .expect("valid test entry")
         };
         let left = vec![make(0)];
         let right = vec![make(3)];
@@ -533,8 +545,26 @@ mod tests {
 
         apply_compare_to_panels(&mut left_panel, &mut right_panel, &report);
 
-        assert!(!left_panel.listing.entries[0].selected);
-        assert!(left_panel.listing.entries[1].selected);
-        assert!(!right_panel.listing.entries[0].selected);
+        assert!(
+            !left_panel
+                .listing
+                .filtered_get(0)
+                .expect("entry 0")
+                .selected
+        );
+        assert!(
+            left_panel
+                .listing
+                .filtered_get(1)
+                .expect("entry 1")
+                .selected
+        );
+        assert!(
+            !right_panel
+                .listing
+                .filtered_get(0)
+                .expect("entry 0")
+                .selected
+        );
     }
 }

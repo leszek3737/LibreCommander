@@ -11,7 +11,7 @@ use super::directory_tree::set_tree_diagnostic_status;
 use crate::app::panel_ops::{current_visible_height, rebuild_visible_entries, with_menu_panel};
 
 pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifiers, bool)> {
-    let action = menu_action_at(state.menu_selected, state.menu_item_selected)?;
+    let action = menu_action_at(state.ui.menu_selected, state.ui.menu_item_selected)?;
     match action {
         MenuAction::ToggleListingMode
         | MenuAction::CycleSortOrder
@@ -51,22 +51,22 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
                 {
                     state.hotlist_push(state.active_panel().path().to_path_buf());
                 }
-                state.status_message =
+                state.ui.status_message =
                     Some("Path added to hotlist (run Save Setup to persist)".to_string());
             });
             None
         }
         MenuAction::Quit => {
-            state.should_quit = true;
+            state.request_quit();
             None
         }
         MenuAction::SaveSetup => {
             match config::save_setup(state) {
                 Ok(path) => {
-                    state.status_message = Some(format!("Setup saved to {}", path.display()));
+                    state.ui.status_message = Some(format!("Setup saved to {}", path.display()));
                 }
                 Err(err) => {
-                    state.status_message = Some(format!("Save setup failed: {err}"));
+                    state.ui.status_message = Some(format!("Save setup failed: {err}"));
                 }
             }
             None
@@ -96,7 +96,7 @@ fn execute_panel_config_action(
                     ListingMode::Long => "Long",
                     ListingMode::Brief => "Brief",
                 };
-                state.status_message = Some(format!("Layout changed to {label}"));
+                state.ui.status_message = Some(format!("Layout changed to {label}"));
             });
             None
         }
@@ -110,7 +110,7 @@ fn execute_panel_config_action(
         }
         MenuAction::OpenFilter => {
             with_menu_panel(state, |state| {
-                state.dialog_input.set_text_at_end(
+                state.input.dialog_input.set_text_at_end(
                     state
                         .active_panel()
                         .filter()
@@ -129,7 +129,7 @@ fn execute_panel_config_action(
                 let panel = state.active_panel_mut();
                 panel.set_filter(None);
                 rebuild_visible_entries(panel, current_visible_height());
-                state.status_message = Some("Panel filter reset".to_string());
+                state.ui.status_message = Some("Panel filter reset".to_string());
             });
             None
         }
@@ -138,7 +138,7 @@ fn execute_panel_config_action(
                 let panel = state.active_panel_mut();
                 let show = !panel.show_permissions();
                 panel.set_show_permissions(show);
-                state.status_message =
+                state.ui.status_message =
                     Some(format!("Permissions: {}", if show { "ON" } else { "OFF" }));
             });
             None
@@ -161,17 +161,17 @@ fn execute_nav_action(
                     TREE_INITIAL_EXPAND_DEPTH,
                     show_hidden,
                 );
-                state.tree_root = path;
-                state.tree_entries = tree.entries;
-                state.tree_selected = 0;
-                state.tree_scroll = 0;
+                state.tree.root = path;
+                state.tree.entries = tree.entries;
+                state.tree.selected = 0;
+                state.tree.scroll = 0;
                 state.mode = AppMode::DirectoryTree;
-                set_tree_diagnostic_status(&mut state.status_message, &tree.diagnostics);
+                set_tree_diagnostic_status(&mut state.ui.status_message, &tree.diagnostics);
             });
             None
         }
         MenuAction::FindFile => {
-            state.dialog_input.clear();
+            state.input.dialog_input.clear();
             state.mode = AppMode::Dialog(DialogKind::Input {
                 prompt: "Find file:".to_string(),
                 action: InputAction::FindFile,
@@ -179,17 +179,17 @@ fn execute_nav_action(
             None
         }
         MenuAction::CompareDirs => {
-            state.picker_selected = 0;
+            state.ui.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::CompareMode);
             None
         }
         MenuAction::History => {
-            state.picker_selected = 0;
+            state.ui.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::History);
             None
         }
         MenuAction::DirectoryHotlist => {
-            state.picker_selected = 0;
+            state.ui.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::Hotlist);
             None
         }
@@ -212,7 +212,7 @@ fn execute_dialog_action(
                 if let Some(name) = entry_name
                     && name != ".."
                 {
-                    state.dialog_input.set_text_at_end(name);
+                    state.input.dialog_input.set_text_at_end(name);
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Rename to:".to_string(),
                         action: InputAction::Rename,
@@ -231,6 +231,7 @@ fn execute_dialog_action(
                     && name != ".."
                 {
                     state
+                        .input
                         .dialog_input
                         .set_text_at_end(format!("{:o}", permissions & 0o7777));
                     state.mode = AppMode::Dialog(DialogKind::Input {
@@ -279,11 +280,11 @@ pub fn open_user_menu(state: &mut AppState) {
                 parts.push("Local .mc.menu loaded — commands require confirmation".to_string());
             }
             if !parts.is_empty() {
-                state.status_message = Some(parts.join(" | "));
+                state.ui.status_message = Some(parts.join(" | "));
             }
-            state.user_menu_source = loaded.source;
+            state.ui.user_menu_source = loaded.source;
             state.user_menu_set(loaded.entries);
-            state.picker_selected = 0;
+            state.ui.picker_selected = 0;
             state.mode = AppMode::ListPicker(PickerKind::UserMenu);
         }
         Err(msg) => {

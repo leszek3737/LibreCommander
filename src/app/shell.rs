@@ -18,6 +18,21 @@ use crate::debug_log;
 const EVENT_POLL_TIMEOUT_MS: u64 = 100;
 pub const MAX_HISTORY: usize = 100;
 
+/// User-facing prompts shown while the TUI is suspended for an external command.
+const MSG_COMMAND_SUCCEEDED: &str = "\n[Command succeeded. Press Enter to return]";
+const PRESS_ENTER_TO_RETURN: &str = "Press Enter to return]";
+const MSG_EXTERNAL_VIEW_ACTIVE: &str =
+    "External view active. Press Enter/Esc/Ctrl+O/Ctrl+C to return to Libre Commander.";
+
+/// Reads a shell path from environment variable `var`, falling back to
+/// `default` when the variable is unset or empty.
+fn get_shell_from_env(var: &str, default: &str) -> String {
+    std::env::var(var)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 fn enter_tui_stdout() -> io::Result<()> {
     enable_raw_mode()?;
     if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, Hide) {
@@ -71,10 +86,7 @@ impl Drop for TerminalRestoreGuard {
 fn get_shell(_for_menu: bool) -> &'static (String, &'static str) {
     static SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
     SHELL.get_or_init(|| {
-        let shell = std::env::var("COMSPEC")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("cmd.exe".to_string());
+        let shell = get_shell_from_env("COMSPEC", "cmd.exe");
         (shell, "/C")
     })
 }
@@ -94,10 +106,7 @@ fn get_shell(for_menu: bool) -> &'static (String, &'static str) {
         MENU_SHELL.get_or_init(|| ("sh".to_string(), "-c"))
     } else {
         INTERACTIVE_SHELL.get_or_init(|| {
-            let shell = std::env::var("SHELL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("sh".to_string());
+            let shell = get_shell_from_env("SHELL", "sh");
             (shell, "-c")
         })
     }
@@ -108,13 +117,36 @@ pub fn push_history(state: &mut AppState, cmd: &str) {
         return;
     }
     // O(n) dedup scan; acceptable because MAX_HISTORY == 100
-    state.command_history.retain(|entry| entry != cmd);
-    state.command_history.push_back(cmd.to_string());
-    if state.command_history.len() > MAX_HISTORY {
-        state.command_history.pop_front();
+    state.input.command_history.retain(|entry| entry != cmd);
+    state.input.command_history.push_back(cmd.to_string());
+    if state.input.command_history.len() > MAX_HISTORY {
+        state.input.command_history.pop_front();
     }
 }
 
+/// Runs `cmd` through a shell (`$SHELL -c` for interactive commands, `sh -c`
+/// for menu commands) with the active panel directory as cwd.
+///
+/// # Threat model (shell injection is by design)
+///
+/// `cmd` is handed verbatim to `sh -c` / `$SHELL -c`, so the shell performs
+/// full word-splitting, globbing and command substitution. This is intentional:
+/// this is a shell-command runner, exactly like the command line and the user
+/// menu in `mc`.
+///
+/// Sources of `cmd`:
+/// * Interactive command line (`for_menu == false`): typed by the user — no
+///   trust boundary, the user is executing their own commands.
+/// * Global user menu (`for_menu == true`, `MenuSource::Global`): read from the
+///   user's own config — trusted to the same degree as their dotfiles.
+/// * Local directory menu (`for_menu == true`, `MenuSource::Local`):
+///   ATTACKER-CONTROLLED. The menu file ships inside the browsed directory, so a
+///   hostile archive/repo can plant arbitrary commands. The only defense is the
+///   "Trust Local Menu?" confirm dialog raised in `input/pickers.rs` before this
+///   function is ever reached. There is no sandboxing beyond that prompt; if the
+///   user confirms, the command runs with their full privileges. This matches
+///   the accepted threat model for a file manager, but the confirm gate MUST
+///   remain the sole entry point for local-menu execution.
 pub fn run_shell_command(
     state: &mut AppState,
     cmd: &str,
@@ -126,7 +158,7 @@ pub fn run_shell_command(
     }
 
     if leave_tui_stdout().is_err() {
-        state.status_message = Some("Terminal suspend failed".into());
+        state.ui.status_message = Some("Terminal suspend failed".into());
         return;
     }
 
@@ -146,9 +178,9 @@ pub fn run_shell_command(
     // Intentional stdout: TUI is suspended, user must see the prompt.
     #[allow(clippy::print_stdout)]
     match status {
-        Ok(s) if s.success() => println!("\n[Command succeeded. Press Enter to return]"),
-        Ok(s) => println!("\n[Command exited with status: {s}. Press Enter to return]"),
-        Err(e) => println!("\n[Command failed: {e}. Press Enter to return]"),
+        Ok(s) if s.success() => println!("{MSG_COMMAND_SUCCEEDED}"),
+        Ok(s) => println!("\n[Command exited with status: {s}. {PRESS_ENTER_TO_RETURN}"),
+        Err(e) => println!("\n[Command failed: {e}. {PRESS_ENTER_TO_RETURN}"),
     }
     let mut buf = String::new();
     // Intentionally ignoring read_line error: if stdin is unavailable there's nothing to wait for.
@@ -156,10 +188,29 @@ pub fn run_shell_command(
     match enter_tui_stdout() {
         Ok(()) => restore_guard.already_restored = true,
         Err(e) => {
-            state.status_message = Some(format!("Terminal restore failed: {e}"));
+            state.ui.status_message = Some(format!("Terminal restore failed: {e}"));
         }
     }
     refresh_active(state);
+}
+
+/// Blocks until the user leaves the external view by pressing Enter, Esc, or
+/// Ctrl+O / Ctrl+C. Assumes raw mode is already enabled by the caller.
+fn wait_for_external_view_exit() -> io::Result<()> {
+    loop {
+        if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
+            && let Event::Key(key) = event::read()?
+        {
+            match (key.code, key.modifiers) {
+                (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => break,
+                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => break,
+                (KeyCode::Enter, _) => break,
+                (KeyCode::Esc, _) => break,
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Toggle external panel view (Ctrl+O / Ctrl+C) - hide panels to see terminal output.
@@ -175,26 +226,11 @@ pub fn toggle_external_view(
     };
 
     // Show message to user.
-    println!("External view active. Press Enter/Esc/Ctrl+O/Ctrl+C to return to Libre Commander.");
+    println!("{MSG_EXTERNAL_VIEW_ACTIVE}");
 
     // Wait for Ctrl+O or any key.
     enable_raw_mode()?;
-    let wait_result = (|| -> io::Result<()> {
-        loop {
-            if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))?
-                && let Event::Key(key) = event::read()?
-            {
-                match (key.code, key.modifiers) {
-                    (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => break,
-                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => break,
-                    (KeyCode::Enter, _) => break,
-                    (KeyCode::Esc, _) => break,
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
-    })();
+    let wait_result = wait_for_external_view_exit();
     let raw_result = disable_raw_mode();
 
     let resume_result = enter_tui_stdout();

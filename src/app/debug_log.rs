@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -45,11 +46,33 @@ fn log_path() -> std::path::PathBuf {
 static CHECK_COUNTER: AtomicU32 = AtomicU32::new(0);
 const CHECK_INTERVAL: u32 = 256;
 
+/// Flush the `BufWriter` every N entries instead of after each write, so the
+/// buffer can actually batch syscalls. Kept small to bound how many entries a
+/// crash can lose, while still amortizing the vast majority of writes.
+const FLUSH_INTERVAL: u32 = 16;
+
+/// Shared tag for failures to open/reopen the log file. Deduplicated so both
+/// the initial-open and post-truncate-reopen paths report consistently.
+const OPEN_ERROR_TAG: &str = "open_error";
+
+thread_local! {
+    /// Caches the formatted timestamp for the current whole second. The log
+    /// timestamp has 1s resolution, so reformat only when the second changes.
+    /// Thread-local avoids an extra lock: `log()` already serializes on the
+    /// `LOG_FILE` mutex, so cross-thread sharing buys nothing here.
+    static TS_CACHE: RefCell<(i64, String)> = const { RefCell::new((i64::MIN, String::new())) };
+}
+
 fn ensure_log_file() -> std::io::Result<BufWriter<std::fs::File>> {
     let path = log_path();
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
+        // Double-noise note: when mkdir fails, the open() below almost always
+        // fails too, emitting a second `open_error` line on stderr. We keep
+        // both deliberately — the mkdir error names the more specific cause
+        // (e.g. EACCES on the parent), while open_error confirms the file is
+        // unusable.
         report_error("mkdir_error", &e);
     }
     OpenOptions::new()
@@ -88,7 +111,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         match ensure_log_file() {
             Ok(file) => *guard = Some(file),
             Err(e) => {
-                report_error("open_error", &e);
+                report_error(OPEN_ERROR_TAG, &e);
                 return;
             }
         }
@@ -109,19 +132,31 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         match OpenOptions::new().write(true).truncate(true).open(&path) {
             Ok(f) => *guard = Some(BufWriter::new(f)),
             Err(e) => {
-                report_error("open_error", &e);
+                report_error(OPEN_ERROR_TAG, &e);
                 return;
             }
         }
     }
     if let Some(bw) = guard.as_mut() {
-        // Timestamp formatting per call — not cached. Acceptable for a debug
-        // logger; chrono's Local::now() + format is ~microsecond-scale.
-        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-        if let Err(e) = writeln!(bw, "[{timestamp}] {args}") {
-            report_error("write_error", &e);
+        let now = Local::now();
+        let secs = now.timestamp();
+        TS_CACHE.with_borrow_mut(|(cached_secs, cached_str)| {
+            if *cached_secs != secs {
+                use std::fmt::Write as _;
+                *cached_secs = secs;
+                cached_str.clear();
+                let _ = write!(cached_str, "{}", now.format("%Y-%m-%d %H:%M:%S"));
+            }
+            if let Err(e) = writeln!(bw, "[{cached_str}] {args}") {
+                report_error("write_error", &e);
+            }
+        });
+        // Batch flush: let the BufWriter coalesce writes and flush only every
+        // FLUSH_INTERVAL entries (and right after open). This is the main win —
+        // the previous per-entry flush defeated the BufWriter entirely.
+        if freshly_opened || count.is_multiple_of(FLUSH_INTERVAL) {
+            let _ = bw.flush();
         }
-        let _ = bw.flush();
     }
 }
 

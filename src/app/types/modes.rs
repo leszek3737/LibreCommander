@@ -31,8 +31,24 @@ pub enum ViewMode {
     Image,
 }
 
+/// Copy/move payload shared by [`PendingAction::Copy`] and
+/// [`PendingAction::Move`].
+///
+/// NOTE (overwrite unification): the `overwrite` flag is intentionally a bare
+/// `bool` here and is mirrored in [`PendingAction::ExtractArchive`] /
+/// [`PendingAction::CreateArchive`]. The duplication is centralized behind the
+/// [`PendingAction::with_overwrite`] builder and the [`PendingAction::overwrite`]
+/// reader so call sites never poke individual variants. An `Overwrite` newtype
+/// was considered but deferred: the flag is consumed as a plain `bool` by ~40
+/// `ops::` functions (copy/move/archive), so a newtype would cascade `.0`
+/// conversions far outside this module. Follow-up: introduce `Overwrite` once
+/// the `ops` boundary takes it natively.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransferAction {
+    // NOTE (NonEmpty): `sources` must be non-empty for the action to be valid,
+    // but is typed as `Vec<PathBuf>` because no `NonEmpty`/`nonempty` crate is
+    // in the dependency tree. Follow-up: model emptiness out once a suitable
+    // type is available (do not add a dependency just for this).
     pub sources: Vec<PathBuf>,
     pub dest: PathBuf,
     pub overwrite: bool,
@@ -59,6 +75,10 @@ pub enum PendingAction {
 }
 
 impl CompareMode {
+    // NOTE: `ALL` is hand-maintained and MUST stay in sync with the variants
+    // above. The idiomatic fix is `#[derive(strum::EnumIter)]`, but `strum` is
+    // not a dependency of this crate. Follow-up: switch to `EnumIter` if/when
+    // `strum` is added (do not add the dependency solely for this).
     pub const ALL: [Self; 3] = [Self::Quick, Self::Size, Self::Thorough];
 
     pub fn label(self) -> &'static str {
@@ -71,14 +91,31 @@ impl CompareMode {
 }
 
 impl PendingAction {
-    pub fn set_overwrite(&mut self) {
-        match self {
-            Self::Copy(t) | Self::Move(t) => {
-                t.overwrite = true;
-            }
+    /// Builder that marks the action as "overwrite existing targets".
+    ///
+    /// Replaces the former `set_overwrite(&mut self)` mutator. Unifies the
+    /// duplicated `overwrite` flag across every variant in one place. `Delete`
+    /// has no destination to overwrite, so it is a no-op.
+    #[must_use]
+    pub fn with_overwrite(mut self) -> Self {
+        match &mut self {
+            Self::Copy(t) | Self::Move(t) => t.overwrite = true,
             Self::Delete { .. } => {}
             Self::ExtractArchive { overwrite, .. } | Self::CreateArchive { overwrite, .. } => {
                 *overwrite = true;
+            }
+        }
+        self
+    }
+
+    /// Unified reader for the (duplicated) `overwrite` flag. `Delete` never
+    /// overwrites and always reports `false`.
+    pub fn overwrite(&self) -> bool {
+        match self {
+            Self::Copy(t) | Self::Move(t) => t.overwrite,
+            Self::Delete { .. } => false,
+            Self::ExtractArchive { overwrite, .. } | Self::CreateArchive { overwrite, .. } => {
+                *overwrite
             }
         }
     }

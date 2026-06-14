@@ -21,14 +21,14 @@ pub(super) fn to_ui_dialog<'a>(
         app::types::DialogKind::Confirm(cd) => dialogs::DialogKind::Confirm {
             title: Cow::Borrowed(&cd.title),
             message: Cow::Borrowed(&cd.message),
-            selection: state.dialog_selection,
+            selection: state.input.dialog_selection,
             files: Cow::Borrowed(cd.files.as_deref().unwrap_or(&[])),
         },
         app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
             title: Cow::Borrowed(TITLE_INPUT),
             prompt: Cow::Borrowed(prompt),
-            value: Cow::Borrowed(state.dialog_input.text()),
-            cursor_pos: state.dialog_input.cursor(),
+            value: Cow::Borrowed(state.input.dialog_input.text()),
+            cursor_pos: state.input.dialog_input.cursor(),
         },
         app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
             title: Cow::Borrowed(TITLE_ERROR),
@@ -53,7 +53,11 @@ pub(super) fn to_ui_dialog<'a>(
             cancellable: *cancellable,
         },
         app::types::DialogKind::CopyMove(details) => {
-            let action = if details.is_move { "Move" } else { "Copy" };
+            let action = if details.kind.is_move() {
+                "Move"
+            } else {
+                "Copy"
+            };
             // Per-frame alloc. Not cacheable to Cow::Borrowed: the message is
             // synthesized from counts + PathBuf displays (no borrowable source).
             // A real cache would need persistent state keyed on the dialog data,
@@ -70,20 +74,20 @@ pub(super) fn to_ui_dialog<'a>(
                 details.dest.display(),
             );
             dialogs::DialogKind::Confirm {
-                title: Cow::Borrowed(if details.is_move {
+                title: Cow::Borrowed(if details.kind.is_move() {
                     "Move Confirm"
                 } else {
                     "Copy Confirm"
                 }),
                 message: Cow::Owned(msg),
-                selection: state.dialog_selection,
-                files: Cow::Borrowed(&details.source_display),
+                selection: state.input.dialog_selection,
+                files: Cow::Owned(details.source_display()),
             }
         }
         app::types::DialogKind::Properties(details) => properties_to_ui_dialog(details),
         app::types::DialogKind::OverwriteConfirm(details) => {
             dialogs::DialogKind::OverwriteConfirm {
-                selection: state.dialog_selection,
+                selection: state.input.dialog_selection,
                 files: Cow::Borrowed(&details.conflicting),
             }
         }
@@ -100,26 +104,20 @@ pub(super) fn to_ui_dialog<'a>(
                 info: Cow::Owned(info),
                 dest_value: Cow::Borrowed(details.dest_input.text()),
                 dest_cursor: details.dest_input.cursor(),
-                selection: state.dialog_selection,
+                selection: state.input.dialog_selection,
             }
         }
         app::types::DialogKind::ArchiveCreate(details) => dialogs::DialogKind::ArchiveCreate {
             source_count: details.sources.len(),
             dest_value: Cow::Borrowed(details.dest_input.text()),
             dest_cursor: details.dest_input.cursor(),
-            selection: state.dialog_selection,
+            selection: state.input.dialog_selection,
         },
     }
 }
 
 fn properties_to_ui_dialog(details: &app::types::PropertiesDetails) -> dialogs::DialogKind<'_> {
-    let file_type = if details.is_symlink {
-        "Symlink"
-    } else if details.is_dir {
-        "Directory"
-    } else {
-        "File"
-    };
+    let file_type = details.kind.label();
     let mtime_str: Cow<'static, str> =
         if let Ok(duration) = details.mtime.duration_since(std::time::UNIX_EPOCH) {
             // Per-frame alloc; low cost for short strings.

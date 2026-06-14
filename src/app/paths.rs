@@ -59,10 +59,20 @@ impl EnvProvider for MapEnv {
     }
 }
 
-#[must_use]
-pub fn config_file_path() -> Option<PathBuf> {
-    config_file_path_with_env(&ProcessEnv)
+/// Generate a zero-arg public accessor that delegates to its `*_with_env`
+/// counterpart using the real process environment.
+macro_rules! process_env_accessor {
+    ($(#[$meta:meta])* $vis:vis fn $name:ident -> $with_env:ident) => {
+        $(#[$meta])*
+        $vis fn $name() -> Option<PathBuf> {
+            $with_env(&ProcessEnv)
+        }
+    };
 }
+
+process_env_accessor!(#[must_use] pub fn config_file_path -> config_file_path_with_env);
+process_env_accessor!(#[must_use] pub fn user_menu_path -> user_menu_path_with_env);
+process_env_accessor!(#[must_use] pub fn terminal_state_file_path -> terminal_state_file_path_with_env);
 
 #[must_use]
 pub fn config_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
@@ -70,18 +80,8 @@ pub fn config_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn user_menu_path() -> Option<PathBuf> {
-    user_menu_path_with_env(&ProcessEnv)
-}
-
-#[must_use]
 pub fn user_menu_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
     config_home(env).map(|dir| dir.join("menu"))
-}
-
-#[must_use]
-pub fn terminal_state_file_path() -> Option<PathBuf> {
-    terminal_state_file_path_with_env(&ProcessEnv)
 }
 
 #[must_use]
@@ -119,27 +119,26 @@ pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
     xdg_dir(env, "XDG_CACHE_HOME", ".cache", platform_cache_home)
 }
 
-/// On Windows, HOME/XDG are often unset; fall back to platform dirs.
-/// On other platforms, HOME is always available, so this returns `None`.
-#[cfg(windows)]
-fn platform_config_home() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(APP_NAME))
+/// Generate a platform fallback for an app directory.
+///
+/// On Windows, HOME/XDG are often unset, so fall back to the OS-specific dir.
+/// On other platforms HOME is always available, so this returns `None`.
+macro_rules! platform_home {
+    ($name:ident, $dirs_fn:path) => {
+        #[cfg(windows)]
+        fn $name() -> Option<PathBuf> {
+            $dirs_fn().map(|dir| dir.join(APP_NAME))
+        }
+
+        #[cfg(not(windows))]
+        fn $name() -> Option<PathBuf> {
+            None
+        }
+    };
 }
 
-#[cfg(not(windows))]
-fn platform_config_home() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(windows)]
-fn platform_cache_home() -> Option<PathBuf> {
-    dirs::cache_dir().map(|dir| dir.join(APP_NAME))
-}
-
-#[cfg(not(windows))]
-fn platform_cache_home() -> Option<PathBuf> {
-    None
-}
+platform_home!(platform_config_home, dirs::config_dir);
+platform_home!(platform_cache_home, dirs::cache_dir);
 
 #[cfg(test)]
 mod tests {

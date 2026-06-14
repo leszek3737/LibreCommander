@@ -10,6 +10,31 @@ use crate::ops;
 
 use super::types::{ActivePanel, AppMode, AppState, DialogKind, FileEntry};
 
+/// Status shown when an action is requested while another job is in flight.
+const ANOTHER_JOB_RUNNING: &str = "Another job is already running";
+
+/// Max time the last-resort reaper waits for a worker to finish before
+/// detaching it. See `RunningJob`'s `Drop` impl for the rationale.
+const REAPER_JOIN_DEADLINE: Duration = Duration::from_secs(5);
+/// Poll cadence while the reaper waits for the worker to finish.
+const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Joins a finished (or finishing) worker thread, swallowing and logging any
+/// panic payload tagged with `context`.
+///
+/// Returns `true` if the worker exited cleanly, `false` if it panicked. Every
+/// job-teardown path funnels its `join()` through here so a worker panic is
+/// contained (logged) instead of propagating into the event loop.
+fn handle_worker_result(handle: JoinHandle<()>, context: &str) -> bool {
+    match handle.join() {
+        Ok(()) => true,
+        Err(panic_payload) => {
+            debug_log!("{context}: {:?}", panic_payload);
+            false
+        }
+    }
+}
+
 enum JobMessage {
     Progress(ops::batch::BatchProgress),
     Finished {
@@ -45,6 +70,17 @@ impl RunningJob {
 // last-resort safety net when a job is dropped during panic unwinding, where a
 // failed spawn or a worker holding a lock just means we log and detach rather
 // than block teardown.
+//
+// Cancellation-granularity trade-off (`REAPER_JOIN_DEADLINE`):
+// `cancel` is cooperative — the worker only observes it between its own cancel
+// checks (in `ops::batch`). A single long syscall (e.g. copying one huge file)
+// can run well past the 5 s deadline without ever re-checking `cancel`, so the
+// reaper detaches it. Detaching is acceptable here because this path only runs
+// during panic unwinding: the process is already heading for exit, and the OS
+// reclaims the worker's file descriptors at process teardown. Finer-grained
+// cancellation would have to live in the worker (`ops::batch`, outside this
+// module); blocking teardown on a chunked copy instead would risk hanging a
+// panicking process, so we keep the bounded wait + detach.
 impl Drop for RunningJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -55,11 +91,9 @@ impl Drop for RunningJob {
             let result = std::thread::Builder::new()
                 .name("job-reaper".into())
                 .spawn(move || {
-                    let deadline = Duration::from_secs(5);
-                    let poll_interval = Duration::from_millis(50);
                     let start = std::time::Instant::now();
-                    while !handle.is_finished() && start.elapsed() < deadline {
-                        std::thread::sleep(poll_interval);
+                    while !handle.is_finished() && start.elapsed() < REAPER_JOIN_DEADLINE {
+                        std::thread::sleep(REAPER_POLL_INTERVAL);
                     }
                     if handle.is_finished() {
                         if let Err(e) = handle.join() {
@@ -82,10 +116,10 @@ impl Drop for RunningJob {
 
 pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<RunningJob>) {
     if running_job.is_some() {
-        state.status_message = Some("Another job is already running".to_string());
+        state.ui.status_message = Some(ANOTHER_JOB_RUNNING.to_string());
         return;
     }
-    let action = match state.pending_action.take() {
+    let action = match state.ui.pending_action.take() {
         Some(a) => a,
         None => return,
     };
@@ -108,7 +142,7 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     });
 
     state.active_panel_mut().clear_selection();
-    state.status_message = None;
+    state.ui.status_message = None;
     state.mode = AppMode::Dialog(DialogKind::progress(
         format!("{action_label} starting..."),
         0.0,
@@ -124,7 +158,7 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
 
 pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJob>, pattern: &str) {
     if running_job.is_some() {
-        state.status_message = Some("Another job is already running".to_string());
+        state.ui.status_message = Some(ANOTHER_JOB_RUNNING.to_string());
         return;
     }
     let dir = state.active_panel().path().to_path_buf();
@@ -148,13 +182,13 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
     });
 
     let search_origin = state.active_panel;
-    state.status_message = None;
+    state.ui.status_message = None;
     state.mode = AppMode::Dialog(DialogKind::progress(
         format!("Searching for '{}'...", pattern),
         0.0,
         true,
     ));
-    state.dialog_input.clear();
+    state.input.dialog_input.clear();
     *running_job = Some(RunningJob {
         receiver,
         cancel,
@@ -220,54 +254,41 @@ pub fn poll_running_job(
     if let Some(report) = finished {
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
-            && let Err(panic_payload) = handle.join()
         {
-            debug_log!("worker thread panicked after Finished: {:?}", panic_payload);
+            handle_worker_result(handle, "worker thread panicked after Finished");
         }
         finish_running_job(state, &report, refresh_both);
         dirty = true;
     } else if let Some((outcome, pattern)) = finished_search {
+        // Capture `search_origin` in a local before `take()` consumes the job.
         let search_origin = running_job.as_ref().and_then(|j| j.search_origin);
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
-            && let Err(panic_payload) = handle.join()
         {
-            debug_log!(
-                "search worker panicked after SearchFinished: {:?}",
-                panic_payload
-            );
+            handle_worker_result(handle, "search worker panicked after SearchFinished");
         }
         finish_search_job(state, &outcome, &pattern, search_origin, refresh_both);
         dirty = true;
     } else if let Some(job) = running_job.as_mut() {
         let worker_finished = job.handle.as_ref().is_some_and(JoinHandle::is_finished);
         if worker_finished && let Some(handle) = job.handle.take() {
-            match handle.join() {
-                Err(panic_payload) => {
-                    debug_log!("worker thread panicked (no Finished): {:?}", panic_payload);
-                    let _ = running_job.take();
-                    state.mode = AppMode::Normal;
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        state.active_panel = panel;
-                    }
-                    state.status_message =
-                        Some("Operation failed: worker thread panicked".to_string());
-                    refresh_both(state);
-                    dirty = true;
-                }
-                Ok(()) => {
-                    debug_log!("worker exited normally without sending Finished — cleaning up");
-                    let _ = running_job.take();
-                    state.mode = AppMode::Normal;
-                    if let Some(panel) = state.menu_restore_panel.take() {
-                        state.active_panel = panel;
-                    }
-                    state.status_message =
-                        Some("Operation completed (worker finished without report)".to_string());
-                    refresh_both(state);
-                    dirty = true;
-                }
+            let exited_cleanly =
+                handle_worker_result(handle, "worker thread panicked (no Finished)");
+            if exited_cleanly {
+                debug_log!("worker exited normally without sending Finished — cleaning up");
             }
+            let _ = running_job.take();
+            state.mode = AppMode::Normal;
+            if let Some(panel) = state.ui.menu_restore_panel.take() {
+                state.active_panel = panel;
+            }
+            state.ui.status_message = Some(if exited_cleanly {
+                "Operation completed (worker finished without report)".to_string()
+            } else {
+                "Operation failed: worker thread panicked".to_string()
+            });
+            refresh_both(state);
+            dirty = true;
         }
     }
 
@@ -322,9 +343,9 @@ fn finish_running_job(
     report: &ops::batch::BatchReport,
     refresh_both: fn(&mut AppState),
 ) {
-    state.status_message = Some(report.format_summary());
+    state.ui.status_message = Some(report.format_summary());
     state.mode = AppMode::Normal;
-    if let Some(panel) = state.menu_restore_panel.take() {
+    if let Some(panel) = state.ui.menu_restore_panel.take() {
         state.active_panel = panel;
     }
     refresh_both(state);
@@ -348,12 +369,10 @@ fn finish_search_job(
         refresh_both(state);
 
         let panel = state.panel_or_active_mut(search_origin);
-        if let Some(pos) = panel
-            .listing
-            .entries
-            .iter()
-            .position(|e| e.path == first.path)
-        {
+        // Resolve the index first so the borrowing iterator is dropped before the
+        // mutable cursor update below.
+        let pos = panel.listing.filtered().position(|e| e.path == first.path);
+        if let Some(pos) = pos {
             panel.cursor = pos;
             panel.ensure_cursor_visible(crate::app::panel_ops::current_visible_height());
         }
@@ -379,9 +398,9 @@ fn finish_search_job(
         };
         msg.push_str(&format!(", truncated ({label})"));
     }
-    state.status_message = Some(msg);
+    state.ui.status_message = Some(msg);
     state.mode = AppMode::Normal;
-    if let Some(panel) = state.menu_restore_panel.take() {
+    if let Some(panel) = state.ui.menu_restore_panel.take() {
         state.active_panel = panel;
     }
 }

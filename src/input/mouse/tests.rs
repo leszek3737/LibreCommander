@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::app::types::{
-    ArchiveCreateDetails, ArchiveExtractDetails, ConfirmDetails, DialogKind, InputAction,
-    OverwriteConfirmDetails, PendingAction, PropertiesDetails, TextInput, TransferAction,
+    ArchiveCreateDetails, ArchiveExtractDetails, ConfirmDetails, DialogKind, FileKind, InputAction,
+    InputState, InteractionState, OverwriteConfirmDetails, PendingAction, PropertiesDetails,
+    TextInput, TransferAction, UiState,
 };
 
 fn mp(col: u16, row: u16, width: u16, height: u16) -> MousePosition {
@@ -96,11 +97,14 @@ fn mouse_input_dialog_outside_preserves_text() {
             prompt: "Name:".to_string(),
             action: InputAction::CreateDirectory,
         }),
-        dialog_input: {
-            let mut ti = TextInput::new();
-            ti.set_text("draft".to_string());
-            ti.set_cursor(5);
-            ti
+        input: InputState {
+            dialog_input: {
+                let mut ti = TextInput::new();
+                ti.set_text("draft".to_string());
+                ti.set_cursor(5);
+                ti
+            },
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -111,8 +115,8 @@ fn mouse_input_dialog_outside_preserves_text() {
         state.mode,
         AppMode::Dialog(DialogKind::Input { .. })
     ));
-    assert_eq!(state.dialog_input.text(), "draft");
-    assert_eq!(state.dialog_input.cursor(), 5);
+    assert_eq!(state.input.dialog_input.text(), "draft");
+    assert_eq!(state.input.dialog_input.cursor(), 5);
 }
 
 #[test]
@@ -122,10 +126,13 @@ fn mouse_input_dialog_inside_consumes_click() {
             prompt: "Name:".to_string(),
             action: InputAction::CreateDirectory,
         }),
-        dialog_input: {
-            let mut ti = TextInput::new();
-            ti.set_text("draft".to_string());
-            ti
+        input: InputState {
+            dialog_input: {
+                let mut ti = TextInput::new();
+                ti.set_text("draft".to_string());
+                ti
+            },
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -136,7 +143,7 @@ fn mouse_input_dialog_inside_consumes_click() {
         state.mode,
         AppMode::Dialog(DialogKind::Input { .. })
     ));
-    assert_eq!(state.dialog_input.text(), "draft");
+    assert_eq!(state.input.dialog_input.text(), "draft");
 }
 
 #[test]
@@ -235,8 +242,7 @@ fn mouse_properties_dialog_click_does_not_dismiss() {
             permissions: 0o644,
             owner: String::new(),
             group: String::new(),
-            is_dir: false,
-            is_symlink: false,
+            kind: FileKind::from_metadata_flags(false, false),
         }))),
         ..Default::default()
     };
@@ -273,7 +279,10 @@ fn mouse_confirm_dialog_keeps_existing_behavior() {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Confirm", "Run?",
         ))),
-        dialog_selection: 1,
+        input: InputState {
+            dialog_selection: 1,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -293,7 +302,10 @@ fn mouse_overwrite_confirm_dialog_handled() {
                 conflicting: vec![],
             },
         ))),
-        dialog_selection: 0,
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -351,13 +363,16 @@ fn mouse_scroll_handles_help_dialog() {
 #[test]
 fn mouse_up_clears_drag_anchor() {
     let mut state = AppState {
-        drag_anchor_index: Some(5),
+        interaction: InteractionState {
+            drag_anchor_index: Some(5),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     handle_mouse_up(&mut state);
 
-    assert!(state.drag_anchor_index.is_none());
+    assert!(state.interaction.drag_anchor_index.is_none());
 }
 
 #[test]
@@ -370,26 +385,23 @@ fn drag_select_range() {
         mk_entry("e"),
     ];
     let mut left_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
-    left_panel.listing.entries = entries.clone();
+    left_panel.set_entries(entries.clone());
     let mut right_panel = crate::app::types::PanelState::new(std::path::PathBuf::from("/"));
-    right_panel.listing.entries = entries;
+    right_panel.set_entries(entries);
     let mut state = AppState {
         left_panel,
         right_panel,
-        drag_anchor_index: Some(0),
+        interaction: InteractionState {
+            drag_anchor_index: Some(0),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     handle_mouse_drag(&mut state, &mp(1, 5, 80, 24));
 
-    let selected: Vec<_> = state
-        .left_panel
-        .listing
-        .entries
-        .iter()
-        .filter(|e| e.selected)
-        .collect();
-    assert_eq!(selected.len(), 4);
+    let selected_count = state.left_panel.selected_entries().count();
+    assert_eq!(selected_count, 4);
 }
 
 #[test]
@@ -478,12 +490,18 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Copy", "Proceed?",
         ))),
-        dialog_selection: 0,
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![dirs.src.join("clash.txt")],
-            dest: dirs.dest,
-            overwrite: false,
-        })),
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![dirs.src.join("clash.txt")],
+                dest: dirs.dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -503,7 +521,7 @@ fn mouse_confirm_click_with_overwrite_conflict_shows_overwrite_dialog() {
         state.mode,
         AppMode::Dialog(DialogKind::OverwriteConfirm(..))
     ));
-    assert!(state.pending_action.is_some());
+    assert!(state.ui.pending_action.is_some());
 }
 
 #[test]
@@ -515,12 +533,18 @@ fn mouse_confirm_click_without_conflict_starts_action() {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Copy", "Proceed?",
         ))),
-        dialog_selection: 0,
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![dirs.src.join("unique.txt")],
-            dest: dirs.dest,
-            overwrite: false,
-        })),
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![dirs.src.join("unique.txt")],
+                dest: dirs.dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -551,13 +575,19 @@ fn mouse_confirm_click_preserves_status_message() {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Copy", "Proceed?",
         ))),
-        dialog_selection: 0,
-        status_message: Some("Queued".to_string()),
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![dirs.src.join("unique.txt")],
-            dest: dirs.dest,
-            overwrite: false,
-        })),
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ui: UiState {
+            status_message: Some("Queued".to_string()),
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![dirs.src.join("unique.txt")],
+                dest: dirs.dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -573,7 +603,7 @@ fn mouse_confirm_click_preserves_status_message() {
     );
     assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
-    assert_eq!(state.status_message.as_deref(), Some("Queued"));
+    assert_eq!(state.ui.status_message.as_deref(), Some("Queued"));
     assert!(matches!(
         state.mode,
         AppMode::Dialog(DialogKind::Progress { .. })
@@ -596,12 +626,18 @@ fn mouse_confirm_click_keeps_new_status_message() {
         mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Copy", "Proceed?",
         ))),
-        dialog_selection: 0,
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![first_src_dir.join("first.txt")],
-            dest: dest_dir.clone(),
-            overwrite: false,
-        })),
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![first_src_dir.join("first.txt")],
+                dest: dest_dir.clone(),
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -620,8 +656,8 @@ fn mouse_confirm_click_keeps_new_status_message() {
     state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
         "Copy", "Proceed?",
     )));
-    state.status_message = Some("Queued".to_string());
-    state.pending_action = Some(PendingAction::Copy(TransferAction {
+    state.ui.status_message = Some("Queued".to_string());
+    state.ui.pending_action = Some(PendingAction::Copy(TransferAction {
         sources: vec![second_src_dir.join("second.txt")],
         dest: dest_dir,
         overwrite: false,
@@ -635,7 +671,7 @@ fn mouse_confirm_click_keeps_new_status_message() {
     assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
 
     assert_eq!(
-        state.status_message.as_deref(),
+        state.ui.status_message.as_deref(),
         Some("Another job is already running")
     );
 }
