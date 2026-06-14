@@ -38,6 +38,14 @@ fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
     }
 }
 
+fn entry_to_meta(entry: &FileEntry) -> EntryMeta {
+    EntryMeta {
+        is_dir: entry.is_dir(),
+        size: entry.size(),
+        mtime: entry.cha.mtime(),
+    }
+}
+
 fn mtime_matches(left: std::time::SystemTime, right: std::time::SystemTime) -> bool {
     // `duration_since` fails when the argument is in the future relative
     // to `self`.  The `left > right` / `right > left` guards above make
@@ -65,6 +73,12 @@ pub struct CompareReport {
     pub differing: usize,
 }
 
+/// Compare two directory listings by file name and report the differences.
+///
+/// Entries are matched by name (the `..` pseudo-entry is ignored). For names
+/// present on both sides, [`meta_matches`] decides whether they differ under the
+/// given [`CompareMode`]. The returned [`CompareReport`] carries the names to
+/// mark on each side plus the unique/differing counts.
 pub fn compare_entries(
     left: &[FileEntry],
     right: &[FileEntry],
@@ -72,14 +86,7 @@ pub fn compare_entries(
 ) -> CompareReport {
     let mut right_meta: HashMap<&str, EntryMeta> = HashMap::with_capacity(right.len());
     for entry in right.iter().filter(|e| e.name != PARENT_DIR) {
-        right_meta.insert(
-            entry.name.as_str(),
-            EntryMeta {
-                is_dir: entry.is_dir(),
-                size: entry.size(),
-                mtime: entry.cha.mtime(),
-            },
-        );
+        right_meta.insert(entry.name.as_str(), entry_to_meta(entry));
     }
 
     let mut unique_left: usize = 0;
@@ -97,11 +104,7 @@ pub fn compare_entries(
                 left_to_mark.insert(name.to_string());
             }
             Some(right_m) => {
-                let left_m = EntryMeta {
-                    is_dir: entry.is_dir(),
-                    size: entry.size(),
-                    mtime: entry.cha.mtime(),
-                };
+                let left_m = entry_to_meta(entry);
                 seen_right.insert(name);
                 if !meta_matches(left_m, *right_m, mode) {
                     differing += 1;
@@ -128,6 +131,11 @@ pub fn compare_entries(
     }
 }
 
+/// Apply a [`CompareReport`] to both panels, selecting the marked entries.
+///
+/// Marks are applied to both the visible `entries` and the `unfiltered_entries`
+/// cache so the selection survives a filter toggle, then each panel's selection
+/// stats are recomputed.
 pub fn apply_compare_to_panels(
     left_panel: &mut PanelState,
     right_panel: &mut PanelState,
@@ -153,7 +161,7 @@ fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::types::{FileEntry, PanelListing};
+    use crate::app::types::FileEntry;
     use std::path::PathBuf;
 
     fn entry(name: &str, size: u64) -> FileEntry {
@@ -171,6 +179,12 @@ mod tests {
             .is_dir(true)
             .permissions(0o755)
             .build()
+    }
+
+    fn panel_with_entries(entries: Vec<FileEntry>) -> PanelState {
+        let mut panel = PanelState::new(PathBuf::from("/tmp"));
+        panel.listing.entries = entries;
+        panel
     }
 
     #[test]
@@ -477,6 +491,20 @@ mod tests {
     }
 
     #[test]
+    fn size_mode_equal_size_files_match() {
+        let left = vec![entry("data.bin", 1024)];
+        let right = vec![entry("data.bin", 1024)];
+
+        let report = compare_entries(&left, &right, CompareMode::Size);
+
+        assert_eq!(report.differing, 0);
+        assert_eq!(report.unique_left, 0);
+        assert_eq!(report.unique_right, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
     fn mixed_same_name_different_size_counts_differing() {
         let left = vec![entry("data.bin", 512)];
         let right = vec![entry("data.bin", 1024)];
@@ -492,56 +520,8 @@ mod tests {
 
     #[test]
     fn apply_marks_selected_flags() {
-        let mut left_panel = PanelState {
-            path: PathBuf::from("/tmp"),
-            canonical_path: None,
-            listing: {
-                let mut listing = PanelListing::new();
-                listing.entries = vec![entry("a.txt", 10), entry("b.txt", 20)];
-                listing
-            },
-            cursor: 0,
-            scroll_offset: 0,
-            sort_mode: crate::app::types::SortMode::new(
-                crate::app::types::SortField::Name,
-                crate::app::types::Direction::Asc,
-            ),
-            listing_mode: crate::app::types::ListingMode::Long,
-            show_hidden: false,
-            show_permissions: false,
-            filter: None,
-            sort_options: crate::app::types::SortOptions::default(),
-            selected_count: 0,
-            selected_size: 0,
-            total_size: 0,
-            last_error: None,
-            history: vec![],
-        };
-        let mut right_panel = PanelState {
-            path: PathBuf::from("/tmp"),
-            canonical_path: None,
-            listing: {
-                let mut listing = PanelListing::new();
-                listing.entries = vec![entry("a.txt", 10)];
-                listing
-            },
-            cursor: 0,
-            scroll_offset: 0,
-            sort_mode: crate::app::types::SortMode::new(
-                crate::app::types::SortField::Name,
-                crate::app::types::Direction::Asc,
-            ),
-            listing_mode: crate::app::types::ListingMode::Long,
-            show_hidden: false,
-            show_permissions: false,
-            filter: None,
-            sort_options: crate::app::types::SortOptions::default(),
-            selected_count: 0,
-            selected_size: 0,
-            total_size: 0,
-            last_error: None,
-            history: vec![],
-        };
+        let mut left_panel = panel_with_entries(vec![entry("a.txt", 10), entry("b.txt", 20)]);
+        let mut right_panel = panel_with_entries(vec![entry("a.txt", 10)]);
 
         let report = CompareReport {
             left_marks: vec!["b.txt".to_string()].into_iter().collect(),

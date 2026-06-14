@@ -134,7 +134,7 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
     let cancel_clone = Arc::clone(&cancel);
 
     let handle = thread::spawn(move || {
-        let outcome = ops::FileSearch::search_files_with_diagnostics_cancellable(
+        let outcome = ops::search_files_with_diagnostics_cancellable(
             &dir,
             &pattern_owned,
             true,

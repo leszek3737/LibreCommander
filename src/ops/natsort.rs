@@ -8,6 +8,16 @@
 
 use std::cmp::Ordering;
 
+use smallvec::SmallVec;
+
+/// Inline capacity for a name's natsort segments. Most names split into only a
+/// few alternating text/number runs (e.g. `file10.txt` → `file`, `10`, `.txt`),
+/// so they stay on the stack; longer names spill to the heap.
+const NATKEY_SEGMENTS_INLINE: usize = 4;
+
+/// Natural-sort key: a name decomposed into alternating text / number segments.
+pub type NatKey = SmallVec<[NatKeySegment; NATKEY_SEGMENTS_INLINE]>;
+
 const INLINE_CAP: usize = 24;
 const _: () = assert!(INLINE_CAP <= u8::MAX as usize);
 
@@ -19,12 +29,27 @@ pub enum SegData {
 
 impl SegData {
     fn from_slice(s: &[u8]) -> Self {
+        Self::build(s, false)
+    }
+
+    /// Build a segment, optionally ASCII-case-folding the bytes (used for the
+    /// case-insensitive text segments). Single source of truth for the
+    /// inline/heap split and the `len <= INLINE_CAP` invariant — `natsort_key`
+    /// routes through here instead of constructing `SegData::Inline` directly.
+    fn build(s: &[u8], fold_ascii: bool) -> Self {
         if s.len() <= INLINE_CAP {
             let mut buf = [0u8; INLINE_CAP];
             buf[..s.len()].copy_from_slice(s);
+            if fold_ascii {
+                buf[..s.len()].make_ascii_lowercase();
+            }
             SegData::Inline(buf, s.len() as u8)
         } else {
-            SegData::Heap(s.to_vec().into_boxed_slice())
+            let mut owned = s.to_vec();
+            if fold_ascii {
+                owned.make_ascii_lowercase();
+            }
+            SegData::Heap(owned.into_boxed_slice())
         }
     }
 
@@ -75,15 +100,26 @@ impl Ord for NatKeySegment {
             (NatKeySegment::Num(a), NatKeySegment::Num(b)) => {
                 let as_ = a.as_slice();
                 let bs = b.as_slice();
+                // If either side has a leading zero (e.g. "007"), compare the
+                // raw digit strings bytewise. This keeps zero-padded runs
+                // grouped by their textual form: "002" vs "2" then differ by
+                // length, and "2" > "002" (Greater) even though they have the
+                // same numeric value — a deterministic tiebreak so equal-value
+                // strings still get a stable, total order.
                 let has_leading_zero = as_.first() == Some(&b'0') || bs.first() == Some(&b'0');
                 if has_leading_zero {
                     as_.cmp(bs)
                 } else {
+                    // No leading zeros: shorter (after stripping) means smaller
+                    // magnitude, so compare length first, then lexically. This
+                    // makes "9" < "10" < "100" without parsing into integers
+                    // (so arbitrarily long numbers never overflow).
                     let sa = strip_leading_zeros(as_);
                     let sb = strip_leading_zeros(bs);
                     sa.len().cmp(&sb.len()).then(sa.cmp(sb))
                 }
             }
+            // Text sorts before Num so "file" precedes "file1"-style numeric runs.
             (NatKeySegment::Text(_), NatKeySegment::Num(_)) => Ordering::Less,
             (NatKeySegment::Num(_), NatKeySegment::Text(_)) => Ordering::Greater,
         }
@@ -96,8 +132,8 @@ impl PartialOrd for NatKeySegment {
     }
 }
 
-pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
-    let mut segments = Vec::with_capacity(16);
+pub fn natsort_key(name: &[u8], insensitive: bool) -> NatKey {
+    let mut segments = NatKey::new();
     let mut i = 0;
 
     while i < name.len() {
@@ -112,23 +148,10 @@ pub fn natsort_key(name: &[u8], insensitive: bool) -> Vec<NatKeySegment> {
             while i < name.len() && !name[i].is_ascii_digit() {
                 i += 1;
             }
-            let slice = &name[start..i];
-            let seg = if slice.len() <= INLINE_CAP {
-                debug_assert!(slice.len() <= u8::MAX as usize);
-                let mut buf = [0u8; INLINE_CAP];
-                buf[..slice.len()].copy_from_slice(slice);
-                if insensitive {
-                    buf[..slice.len()].make_ascii_lowercase();
-                }
-                SegData::Inline(buf, slice.len() as u8)
-            } else {
-                let mut buf = slice.to_vec();
-                if insensitive {
-                    buf.make_ascii_lowercase();
-                }
-                SegData::Heap(buf.into_boxed_slice())
-            };
-            segments.push(NatKeySegment::Text(seg));
+            segments.push(NatKeySegment::Text(SegData::build(
+                &name[start..i],
+                insensitive,
+            )));
         }
     }
 

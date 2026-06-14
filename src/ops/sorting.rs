@@ -16,8 +16,14 @@ pub use crate::app::types::SortOptions;
 
 use crate::ops::natsort;
 
+// Listing groups, ordered by the `u8` value (ascending) so they always sort in
+// this order regardless of the chosen direction:
+/// The `..` parent entry — always sorts first.
 const GROUP_UP: u8 = 0;
+/// Directories when `dir_first` is set; also every non-parent entry when it is
+/// not (in which case dirs and files share this group and interleave by key).
 const GROUP_DIR: u8 = 1;
+/// Files when `dir_first` is set (never used otherwise).
 const GROUP_FILE: u8 = 2;
 
 /// Pre-computed sort key for name comparisons.
@@ -26,7 +32,10 @@ const GROUP_FILE: u8 = 2;
 struct NameSortKey {
     primary: Box<str>,
     has_upper: bool,
-    tiebreaker: Box<str>,
+    /// Original-case name, used only to order case-insensitive ties (e.g.
+    /// `apple` vs `Apple`). `None` in case-sensitive mode, where `primary`
+    /// already carries the original name and no tiebreak is needed.
+    tiebreaker: Option<Box<str>>,
 }
 
 impl NameSortKey {
@@ -35,7 +44,7 @@ impl NameSortKey {
             NameSortKey {
                 primary: name.into(),
                 has_upper: false,
-                tiebreaker: String::new().into_boxed_str(),
+                tiebreaker: None,
             }
         } else {
             let lower = name.to_lowercase();
@@ -43,7 +52,7 @@ impl NameSortKey {
             NameSortKey {
                 primary: lower.into_boxed_str(),
                 has_upper,
-                tiebreaker: name.into(),
+                tiebreaker: Some(name.into()),
             }
         }
     }
@@ -56,7 +65,7 @@ impl Ord for NameSortKey {
             .as_ref()
             .cmp(other.primary.as_ref())
             .then_with(|| self.has_upper.cmp(&other.has_upper))
-            .then_with(|| self.tiebreaker.as_ref().cmp(other.tiebreaker.as_ref()))
+            .then_with(|| self.tiebreaker.cmp(&other.tiebreaker))
     }
 }
 
@@ -66,6 +75,55 @@ impl PartialOrd for NameSortKey {
         Some(self.cmp(other))
     }
 }
+
+/// A sort key whose ordering flips with the chosen direction.
+///
+/// Only the listing **group** is guaranteed to stay ascending (it is kept
+/// outside this wrapper). The name tiebreaker stays ascending only for the
+/// fields that place it outside `directional` (size/mtime/btime/extension); for
+/// name/natural sorts the tiebreaker is wrapped together with the field and so
+/// reverses in descending order — matching the original `Reverse(..)` behavior.
+///
+/// `Eq`/`Ord` deliberately ignore `ascending` (every key in a single sort
+/// shares the same flag): comparing two values with the same value but
+/// different flags is `Equal`, and `Eq` must agree with that to uphold the
+/// `cmp == Equal ⟺ eq` contract.
+#[derive(Clone)]
+struct Directional<T> {
+    value: T,
+    ascending: bool,
+}
+
+#[inline]
+fn directional<T>(value: T, ascending: bool) -> Directional<T> {
+    Directional { value, ascending }
+}
+
+impl<T: Ord> Ord for Directional<T> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ord = self.value.cmp(&other.value);
+        if self.ascending { ord } else { ord.reverse() }
+    }
+}
+
+impl<T: Ord> PartialOrd for Directional<T> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: Ord> PartialEq for Directional<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        // Consistent with `cmp`: equal iff the values are equal, regardless of
+        // the direction flag.
+        self.value == other.value
+    }
+}
+
+impl<T: Ord> Eq for Directional<T> {}
 
 pub fn cmp_ignore_case(a: &str, b: &str) -> Ordering {
     let mut ai = a.chars().flat_map(|c| c.to_lowercase());
@@ -118,157 +176,95 @@ pub fn sort_entries(entries: &mut [FileEntry], mode: SortMode, options: SortOpti
     }
 }
 
+/// Sort `entries` by a cached key built from `key_fn`, which receives `asc` so
+/// it can wrap the direction-sensitive part in [`directional`]. Centralizes the
+/// `sort_by_cached_key` call shared by every field.
+#[inline]
+fn sort_with_direction<K, F>(entries: &mut [FileEntry], asc: bool, key_fn: F)
+where
+    K: Ord,
+    F: Fn(&FileEntry, bool) -> K,
+{
+    entries.sort_by_cached_key(|e| key_fn(e, asc));
+}
+
 fn sort_by_name(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
-    if asc {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    } else {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                Reverse(NameSortKey::new(&e.name, sensitive)),
-            )
-        })
-    }
+    sort_with_direction(entries, asc, |e, asc| {
+        (
+            entry_group(e, dir_first),
+            directional(NameSortKey::new(&e.name, sensitive), asc),
+        )
+    });
 }
 
 fn sort_by_extension(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
-    if asc {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                NameSortKey::new(get_extension(&e.name), sensitive),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    } else {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                Reverse(NameSortKey::new(get_extension(&e.name), sensitive)),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    }
+    sort_with_direction(entries, asc, |e, asc| {
+        (
+            entry_group(e, dir_first),
+            directional(NameSortKey::new(get_extension(&e.name), sensitive), asc),
+            NameSortKey::new(&e.name, sensitive),
+        )
+    });
 }
 
 fn sort_by_size(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
-    if asc {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                e.size(),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    } else {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                Reverse(e.size()),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    }
+    sort_with_direction(entries, asc, |e, asc| {
+        (
+            entry_group(e, dir_first),
+            directional(e.size(), asc),
+            NameSortKey::new(&e.name, sensitive),
+        )
+    });
 }
 
 fn sort_by_mod_time(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
-    if asc {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                e.mtime(),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    } else {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                Reverse(e.mtime()),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    }
+    sort_with_direction(entries, asc, |e, asc| {
+        (
+            entry_group(e, dir_first),
+            directional(e.mtime(), asc),
+            NameSortKey::new(&e.name, sensitive),
+        )
+    });
 }
 
 fn sort_by_btime(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
-    if asc {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                e.cha.btime.is_none() as u8,
-                e.cha.btime,
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    } else {
-        entries.sort_by_cached_key(|e| {
-            (
-                entry_group(e, dir_first),
-                e.cha.btime.is_none() as u8,
-                e.cha.btime.map(Reverse),
-                NameSortKey::new(&e.name, sensitive),
-            )
-        })
-    }
+    sort_with_direction(entries, asc, |e, asc| {
+        (
+            entry_group(e, dir_first),
+            // Present btimes first, missing ones last — in both directions.
+            // `Reverse(is_some())` makes `Some` (true) rank ahead of `None`.
+            Reverse(e.cha.btime.is_some()),
+            directional(e.cha.btime, asc),
+            NameSortKey::new(&e.name, sensitive),
+        )
+    });
 }
 
 fn sort_by_natural_name(entries: &mut [FileEntry], dir_first: bool, sensitive: bool, asc: bool) {
-    if asc {
-        entries.sort_by_cached_key(|e| natural_sort_key(e, dir_first, sensitive))
-    } else {
-        entries.sort_by_cached_key(|e| {
-            let key = natural_sort_key(e, dir_first, sensitive);
-            (key.group, Reverse((key.segments, key.tiebreaker)))
-        })
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct NaturalSortKey {
-    group: u8,
-    segments: Vec<natsort::NatKeySegment>,
-    tiebreaker: NameSortKey,
-}
-
-impl Ord for NaturalSortKey {
-    #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.group
-            .cmp(&other.group)
-            .then_with(|| self.segments.cmp(&other.segments))
-            .then_with(|| self.tiebreaker.cmp(&other.tiebreaker))
-    }
-}
-
-impl PartialOrd for NaturalSortKey {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[inline]
-fn natural_sort_key(entry: &FileEntry, dir_first: bool, sensitive: bool) -> NaturalSortKey {
-    NaturalSortKey {
-        group: entry_group(entry, dir_first),
-        segments: natsort::natsort_key(entry.name.as_bytes(), !sensitive),
-        tiebreaker: NameSortKey::new(&entry.name, sensitive),
-    }
+    sort_with_direction(entries, asc, |e, asc| {
+        (
+            entry_group(e, dir_first),
+            directional(
+                (
+                    natsort::natsort_key(e.name.as_bytes(), !sensitive),
+                    NameSortKey::new(&e.name, sensitive),
+                ),
+                asc,
+            ),
+        )
+    });
 }
 
 #[inline]
 fn entry_group(entry: &FileEntry, dir_first: bool) -> u8 {
-    match (entry.name.as_str(), dir_first, entry.is_dir()) {
-        ("..", _, _) => GROUP_UP,
-        (_, true, true) => GROUP_DIR,
-        (_, true, false) => GROUP_FILE,
-        (_, false, _) => GROUP_DIR,
+    if entry.name == ".." {
+        GROUP_UP
+    } else if dir_first && !entry.is_dir() {
+        GROUP_FILE
+    } else {
+        // `dir_first` directories, and *every* non-parent entry when
+        // `!dir_first` (dirs and files are not separated then).
+        GROUP_DIR
     }
 }
 

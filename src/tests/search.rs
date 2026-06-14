@@ -9,6 +9,13 @@ fn entry(name: &str) -> TestEntry {
     TestEntry::new(name).path(test_path(name))
 }
 
+/// Seed the left panel with `entries` as both the visible and unfiltered
+/// listing — the common `entries = X.clone(); unfiltered_entries = X` setup.
+fn setup_entries(state: &mut AppState, entries: Vec<lc::app::types::FileEntry>) {
+    state.left_panel.listing.entries = entries.clone();
+    state.left_panel.listing.unfiltered_entries = entries;
+}
+
 fn setup_temp_files(names: &[&str]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     for name in names {
@@ -147,7 +154,7 @@ fn search_mode_with_empty_panel_handles_enter_gracefully() {
     state.left_panel.listing.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
-    handle_search_mode(&mut state, KeyCode::Enter, 20);
+    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
     assert_eq!(state.mode, AppMode::Normal);
 }
 
@@ -159,7 +166,7 @@ fn search_mode_with_empty_panel_handles_esc_gracefully() {
     state.left_panel.listing.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
-    handle_search_mode(&mut state, KeyCode::Esc, 20);
+    handle_search_mode(&mut state, KeyCode::Esc, TERMINAL_HEIGHT);
     assert_eq!(state.mode, AppMode::Normal);
 }
 
@@ -171,7 +178,7 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
     state.left_panel.listing.entries = vec![];
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
-    handle_search_mode(&mut state, KeyCode::Char('x'), 20);
+    handle_search_mode(&mut state, KeyCode::Char('x'), TERMINAL_HEIGHT);
     assert_eq!(state.search_query, "x");
 }
 
@@ -179,8 +186,7 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
 fn apply_search_filter_exact_match() {
     let mut state = AppState::default();
     let entries = vec![entry("foo").build(), entry("bar").build()];
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state.left_panel.set_filter(Some("foo".to_string()));
     apply_search_filter(&mut state.left_panel);
     assert!(
@@ -197,8 +203,7 @@ fn apply_search_filter_exact_match() {
 fn apply_search_filter_no_match_clears_entries() {
     let mut state = AppState::default();
     let entries = vec![entry("a").build(), entry("b").build()];
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state.left_panel.set_filter(Some("xyz".to_string()));
     apply_search_filter(&mut state.left_panel);
     assert!(state.left_panel.listing.entries.is_empty());
@@ -209,8 +214,7 @@ fn apply_search_filter_empty_pattern_shows_all() {
     let mut state = AppState::default();
     let entries = vec![entry("a").build(), entry("b").build()];
     let count = entries.len();
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state.left_panel.set_filter(None);
     apply_search_filter(&mut state.left_panel);
     assert_eq!(state.left_panel.listing.entries.len(), count);
@@ -224,11 +228,21 @@ fn apply_search_filter_partial_match() {
         entry("baz").build(),
         entry("foo").build(),
     ];
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state.left_panel.set_filter(Some("ba".to_string()));
     apply_search_filter(&mut state.left_panel);
-    assert_eq!(state.left_panel.listing.entries.len(), 2);
+    let names: Vec<&str> = state
+        .left_panel
+        .listing
+        .entries
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["bar", "baz"],
+        "only the 'ba'-prefixed entries match"
+    );
 }
 
 #[test]
@@ -239,8 +253,7 @@ fn apply_search_filter_unicode_cjk() {
         entry("テスト.txt").build(),
         entry("alpha.txt").build(),
     ];
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state.left_panel.set_filter(Some("文件".to_string()));
     apply_search_filter(&mut state.left_panel);
     assert_eq!(state.left_panel.listing.entries.len(), 1);
@@ -255,8 +268,7 @@ fn apply_search_filter_unicode_emoji() {
         entry("📁folder").build(),
         entry("normal.txt").build(),
     ];
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state.left_panel.set_filter(Some("🎉".to_string()));
     apply_search_filter(&mut state.left_panel);
     assert_eq!(state.left_panel.listing.entries.len(), 1);
@@ -269,8 +281,7 @@ fn apply_search_filter_unicode_combining_chars() {
     let decomposed = "cafe\u{0301}.txt";
     let precomposed = "caf\u{00E9}.txt";
     let entries = vec![entry(decomposed).build(), entry(precomposed).build()];
-    state.left_panel.listing.entries = entries.clone();
-    state.left_panel.listing.unfiltered_entries = entries;
+    setup_entries(&mut state, entries);
     state
         .left_panel
         .set_filter(Some("cafe\u{0301}".to_string()));
@@ -294,13 +305,118 @@ fn search_esc_restores_entries_documents_cursor() {
     state.left_panel.listing.set_unfiltered(entries.clone());
     state.left_panel.cursor = 0;
     state.left_panel.set_filter(Some("beta".to_string()));
+    state.search_query = "beta".to_string();
+    state.search_cursor = 4;
     state.mode = AppMode::Search;
 
     handle_search_mode(&mut state, KeyCode::Esc, TERMINAL_HEIGHT);
 
     assert_eq!(state.mode, AppMode::Normal);
     assert!(state.left_panel.filter().is_none());
+    assert!(
+        state.search_query.is_empty(),
+        "Esc must clear the search query"
+    );
+    assert_eq!(state.search_cursor, 0, "Esc must reset the search cursor");
     assert_eq!(state.left_panel.listing.entries.len(), entries.len());
     assert_eq!(state.left_panel.listing.entries[1].name, "beta.txt");
     assert_eq!(state.left_panel.cursor, 1);
+}
+
+#[test]
+fn search_backspace_shortens_query_and_cursor() {
+    let temp_dir = setup_temp_files(&["alpha.txt", "beta.txt"]);
+    let mut state = AppState {
+        mode: AppMode::Search,
+        search_query: "alp".to_string(),
+        search_cursor: 3,
+        ..Default::default()
+    };
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
+    setup_entries(
+        &mut state,
+        vec![
+            entry("alpha.txt").file(1).build(),
+            entry("beta.txt").file(1).build(),
+        ],
+    );
+    state.left_panel.set_filter(Some("alp".to_string()));
+
+    handle_search_mode(&mut state, KeyCode::Backspace, TERMINAL_HEIGHT);
+
+    assert_eq!(state.search_query, "al");
+    assert_eq!(state.search_cursor, 2, "cursor follows the shortened query");
+    assert_eq!(
+        state.mode,
+        AppMode::Search,
+        "non-empty query stays in search"
+    );
+    assert_eq!(
+        state.left_panel.filter().map(str::to_owned),
+        Some("al".to_string())
+    );
+}
+
+#[test]
+fn search_backspace_to_empty_clears_search() {
+    let temp_dir = setup_temp_files(&["alpha.txt"]);
+    let mut state = AppState {
+        mode: AppMode::Search,
+        search_query: "a".to_string(),
+        search_cursor: 1,
+        ..Default::default()
+    };
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
+    setup_entries(&mut state, vec![entry("alpha.txt").file(1).build()]);
+    state.left_panel.set_filter(Some("a".to_string()));
+
+    handle_search_mode(&mut state, KeyCode::Backspace, TERMINAL_HEIGHT);
+
+    assert_eq!(
+        state.mode,
+        AppMode::Normal,
+        "emptying the query exits search"
+    );
+    assert!(state.search_query.is_empty());
+    assert_eq!(state.search_cursor, 0);
+    assert!(state.left_panel.filter().is_none());
+}
+
+#[test]
+fn search_clear_resets_scroll_offset() {
+    let temp_dir = setup_temp_files(&["a.txt", "b.txt", "c.txt"]);
+    let mut state = AppState {
+        mode: AppMode::Search,
+        search_query: "a".to_string(),
+        ..Default::default()
+    };
+    state.left_panel.set_path(temp_dir.path().to_path_buf());
+    setup_entries(
+        &mut state,
+        vec![
+            entry("a.txt").file(1).build(),
+            entry("b.txt").file(1).build(),
+            entry("c.txt").file(1).build(),
+        ],
+    );
+    state.left_panel.scroll_offset = 10;
+    state.left_panel.set_filter(Some("a".to_string()));
+
+    handle_search_mode(&mut state, KeyCode::Esc, TERMINAL_HEIGHT);
+
+    // The pre-clear scroll (10) was past the end; clearing must pull it back
+    // into bounds and never leave it ahead of the cursor.
+    let panel = &state.left_panel;
+    assert!(
+        panel.scroll_offset < panel.listing.entries.len(),
+        "scroll_offset {} must be within the {}-entry listing",
+        panel.scroll_offset,
+        panel.listing.entries.len()
+    );
+    assert!(
+        panel.scroll_offset <= panel.cursor,
+        "scroll_offset {} must not run ahead of cursor {}",
+        panel.scroll_offset,
+        panel.cursor
+    );
 }

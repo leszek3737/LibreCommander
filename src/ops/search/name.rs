@@ -1,68 +1,70 @@
 use std::collections::HashSet;
+use std::fs::Metadata;
+use std::io;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use crate::app::types::FileEntry;
-use crate::fs::reader::get_file_info;
-use crate::ops::helpers::get_inode_key;
-use crate::ops::search::pattern::CompiledPattern;
+use crate::fs::reader::{file_info_from_metadata, get_file_info};
+use crate::ops::search::pattern::{CompiledPattern, MatchScratch};
 use crate::ops::search::walk::{
-    FileSearchContext, SearchContext, prepare_dir_scan, seed_visited_dir,
+    FileSearchContext, SearchContext, item_limit_reached, prepare_dir_scan, seed_visited_dir,
+    should_recurse, with_fresh_cancel,
 };
 use crate::ops::search::{
-    FileSearch, MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
-    TruncationReason,
+    MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
 };
 
 /// Initial capacity for the visited inode set. Most directories contain well under
 /// 256 entries; this avoids reallocations for typical workloads while staying small.
 const VISITED_INODE_CAP: usize = 256;
 
-impl FileSearch {
-    pub fn search_files(
-        path: &Path,
-        pattern: &str,
-        recursive: bool,
-        case_sensitive: bool,
-    ) -> Vec<FileEntry> {
-        Self::search_files_with_diagnostics(path, pattern, recursive, case_sensitive).matches
-    }
+pub fn search_files(
+    path: &Path,
+    pattern: &str,
+    recursive: bool,
+    case_sensitive: bool,
+) -> Vec<FileEntry> {
+    search_files_with_diagnostics(path, pattern, recursive, case_sensitive).matches
+}
 
-    pub fn search_files_with_diagnostics(
-        path: &Path,
-        pattern: &str,
-        recursive: bool,
-        case_sensitive: bool,
-    ) -> SearchOutcome<FileEntry, SearchError> {
-        let cancel = AtomicBool::new(false);
-        Self::search_files_with_diagnostics_cancellable(
-            path,
-            pattern,
-            recursive,
-            case_sensitive,
-            &cancel,
-        )
-    }
+pub fn search_files_with_diagnostics(
+    path: &Path,
+    pattern: &str,
+    recursive: bool,
+    case_sensitive: bool,
+) -> SearchOutcome<FileEntry, SearchError> {
+    with_fresh_cancel(|cancel| {
+        search_files_with_diagnostics_cancellable(path, pattern, recursive, case_sensitive, cancel)
+    })
+}
 
-    pub fn search_files_with_diagnostics_cancellable(
-        path: &Path,
-        pattern: &str,
-        recursive: bool,
-        case_sensitive: bool,
-        cancel: &AtomicBool,
-    ) -> SearchOutcome<FileEntry, SearchError> {
-        let mut outcome = SearchOutcome::default();
-        let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
-        let mut visited = HashSet::with_capacity(VISITED_INODE_CAP);
-        seed_visited_dir(path, &mut visited);
-        let mut ctx = FileSearchContext {
-            outcome: &mut outcome,
-            visited: &mut visited,
-            cancel: Some(cancel),
-        };
-        search_files_recursive(path, &compiled_pattern, recursive, 0, &mut ctx);
-        outcome
-    }
+pub fn search_files_with_diagnostics_cancellable(
+    path: &Path,
+    pattern: &str,
+    recursive: bool,
+    case_sensitive: bool,
+    cancel: &AtomicBool,
+) -> SearchOutcome<FileEntry, SearchError> {
+    let mut outcome = SearchOutcome::default();
+    let compiled_pattern = CompiledPattern::new(pattern, case_sensitive);
+    let mut visited = HashSet::with_capacity(VISITED_INODE_CAP);
+    seed_visited_dir(path, &mut visited);
+    let mut scratch = MatchScratch::default();
+    let mut ctx = FileSearchContext {
+        outcome: &mut outcome,
+        visited: &mut visited,
+        cancel: Some(cancel),
+    };
+    search_files_recursive(
+        path,
+        &compiled_pattern,
+        recursive,
+        0,
+        &mut ctx,
+        &mut scratch,
+    );
+    outcome
 }
 
 fn search_files_recursive(
@@ -71,19 +73,14 @@ fn search_files_recursive(
     recursive: bool,
     depth: usize,
     ctx: &mut FileSearchContext<'_>,
+    scratch: &mut MatchScratch,
 ) {
     if ctx.is_cancelled() {
         return;
     }
-    let Some(entries) = prepare_dir_scan(
-        path,
-        depth,
-        MAX_SEARCH_DEPTH,
-        MAX_SEARCH_ITEMS,
-        ctx.outcome,
-        |_| true,
-        TruncationReason::ItemLimit,
-    ) else {
+    let Some(entries) =
+        prepare_dir_scan(path, depth, MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, ctx.outcome)
+    else {
         return;
     };
 
@@ -91,10 +88,7 @@ fn search_files_recursive(
         if ctx.is_cancelled() {
             return;
         }
-        if ctx.outcome.items_scanned >= MAX_SEARCH_ITEMS {
-            ctx.outcome
-                .truncated
-                .get_or_insert(TruncationReason::ItemLimit);
+        if item_limit_reached(ctx.outcome, MAX_SEARCH_ITEMS) {
             return;
         }
 
@@ -110,11 +104,6 @@ fn search_files_recursive(
             }
         };
         let entry_path = entry.path();
-        // file_type() may issue a stat call if the platform's read_dir
-        // does not populate d_type. When the entry is a directory both
-        // file_type() + get_file_info() + metadata() are called below;
-        // this can be optimized to a single metadata() call shared
-        // between matching, inode tracking, and recursion.
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
@@ -130,9 +119,21 @@ fn search_files_recursive(
         ctx.outcome.items_scanned += 1;
 
         let name = entry.file_name();
-        let name_lossy = name.to_string_lossy();
-        if pattern.matches(&name_lossy) {
-            match get_file_info(&entry_path) {
+        let matched = pattern.matches_os(&name, scratch);
+
+        // `entry.metadata()` is an `lstat`. Fetch it once for a non-symlink
+        // directory we may recurse into and reuse it for both the matched
+        // FileEntry and cycle detection — a matched directory then stats once,
+        // not twice (build + inode).
+        let dir_meta: Option<io::Result<Metadata>> =
+            (recursive && file_type.is_dir() && !file_type.is_symlink()).then(|| entry.metadata());
+
+        if matched {
+            let built = match &dir_meta {
+                Some(Ok(meta)) => Ok(file_info_from_metadata(entry_path.clone(), meta)),
+                _ => get_file_info(&entry_path),
+            };
+            match built {
                 Ok(file_entry) => ctx.outcome.matches.push(file_entry),
                 Err(err) => ctx.outcome.errors.push(SearchError {
                     path: Some(entry_path.clone()),
@@ -149,18 +150,10 @@ fn search_files_recursive(
             continue;
         }
 
-        if recursive && file_type.is_dir() {
-            // entry.metadata() here is a separate syscall from file_type()
-            // and get_file_info() above. Combining them into a single
-            // metadata() call that feeds file_type, inode tracking, and
-            // get_file_info would reduce syscalls for matched directories.
-            if let Ok(meta) = entry.metadata()
-                && let Some(key) = get_inode_key(&meta)
-                && !ctx.visited.insert(key)
-            {
-                continue;
-            }
-            search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx);
+        if let Some(meta) = dir_meta
+            && should_recurse(meta, ctx.visited)
+        {
+            search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
         }
     }
 }
@@ -172,6 +165,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::ops::search::TruncationReason;
 
     #[test]
     fn test_file_search_search_files() {
@@ -199,12 +193,12 @@ mod tests {
             drop(f3);
         }
 
-        let results = FileSearch::search_files(dir_path, "*.txt", true, false);
+        let results = search_files(dir_path, "*.txt", true, false);
         assert_eq!(results.len(), 2, "Expected 2 results, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
         assert!(results.iter().any(|e| e.name == "test3.txt"));
 
-        let results = FileSearch::search_files(dir_path, "*.txt", false, false);
+        let results = search_files(dir_path, "*.txt", false, false);
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
 
@@ -224,7 +218,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("target.txt"), "metadata").unwrap();
 
-        let results = FileSearch::search_files(&dir, "target.txt", false, false);
+        let results = search_files(&dir, "target.txt", false, false);
 
         assert_eq!(results.len(), 1);
         assert!(!results[0].owner.is_empty());
@@ -243,7 +237,7 @@ mod tests {
             std::env::temp_dir().join(format!("lc_search_missing_{}_{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&dir);
 
-        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", true, false);
+        let outcome = search_files_with_diagnostics(&dir, "*.txt", true, false);
 
         assert!(outcome.matches.is_empty());
         assert!(!outcome.errors.is_empty());
@@ -265,7 +259,7 @@ mod tests {
             File::create(dir.join(format!("file_{i}.txt"))).unwrap();
         }
 
-        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", false, false);
+        let outcome = search_files_with_diagnostics(&dir, "*.txt", false, false);
 
         assert_eq!(outcome.matches.len(), MAX_SEARCH_ITEMS);
         assert_eq!(outcome.truncated, Some(TruncationReason::ItemLimit));
@@ -293,7 +287,7 @@ mod tests {
         fs::write(dir.join("outside/target.txt"), "x").unwrap();
         symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
 
-        let results = FileSearch::search_files(&dir.join("root"), "target.txt", true, false);
+        let results = search_files(&dir.join("root"), "target.txt", true, false);
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -321,7 +315,7 @@ mod tests {
         fs::write(dir.join("real.txt"), "x").unwrap();
         symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let results = FileSearch::search_files(&dir, "*.txt", false, false);
+        let results = search_files(&dir, "*.txt", false, false);
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"real.txt"));
@@ -341,7 +335,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", true, false);
+        let outcome = search_files_with_diagnostics(&dir, "*.txt", true, false);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.truncated, None);

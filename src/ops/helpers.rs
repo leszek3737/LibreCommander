@@ -55,6 +55,13 @@ pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)>
     None
 }
 
+/// Seed the cycle-detection set with the scan root's inode before recursing.
+///
+/// `dir_size_rec` only records inodes of subdirectories it descends into, so a
+/// symlink inside the tree pointing back at the root would otherwise go
+/// undetected. Inserting the root key up front closes that one-level gap.
+/// `symlink_metadata` (not `metadata`) is used so the root itself is never
+/// followed through a symlink.
 fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -165,40 +172,35 @@ pub(crate) fn path_size(path: &Path) -> io::Result<u64> {
     }
 }
 
-/// Best-effort size computation for multiple paths.
-///
-/// Individual failures are logged and reported as 0 so that batch progress
-/// can still proceed.
-#[cfg(feature = "parallel")]
-pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    use rayon::prelude::*;
-
-    paths
-        .par_iter()
-        .map(|p| {
-            path_size(p).unwrap_or_else(|e| {
-                debug_log!("path_sizes: using 0 for {}: {e}", p.display());
-                0
-            })
-        })
-        .collect()
+/// Size of a single path, logging and returning 0 on failure so a batch can
+/// keep making progress past one unreadable entry.
+#[inline]
+fn path_size_or_zero(path: &Path) -> u64 {
+    path_size(path).unwrap_or_else(|e| {
+        debug_log!("path_sizes: using 0 for {}: {e}", path.display());
+        0
+    })
 }
 
 /// Best-effort size computation for multiple paths.
 ///
 /// Individual failures are logged and reported as 0 so that batch progress
-/// can still proceed.
+/// can still proceed. The parallel and sequential variants differ only in the
+/// iterator used; the per-path logic lives in [`path_size_or_zero`].
+#[cfg(feature = "parallel")]
+pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
+    use rayon::prelude::*;
+
+    paths.par_iter().map(|p| path_size_or_zero(p)).collect()
+}
+
+/// Best-effort size computation for multiple paths.
+///
+/// See the `parallel` variant; this sequential build maps with [`Iterator`]
+/// instead of rayon. Shared per-path logic lives in [`path_size_or_zero`].
 #[cfg(not(feature = "parallel"))]
 pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    paths
-        .iter()
-        .map(|p| {
-            path_size(p).unwrap_or_else(|e| {
-                debug_log!("path_sizes: using 0 for {}: {e}", p.display());
-                0
-            })
-        })
-        .collect()
+    paths.iter().map(|p| path_size_or_zero(p)).collect()
 }
 
 pub(crate) fn sum_sizes(sizes: &[u64]) -> u64 {

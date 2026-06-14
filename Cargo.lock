@@ -1027,6 +1027,7 @@ dependencies = [
  "serde",
  "sevenz-rust",
  "shlex 2.0.1",
+ "smallvec",
  "tar",
  "tempfile",
  "toml",

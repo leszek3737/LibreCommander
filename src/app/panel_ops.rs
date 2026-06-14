@@ -120,7 +120,7 @@ pub fn filtered_sorted_entries(
     sort_options: SortOptions,
     show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
-    let compiled = filter.map(|f| ops::search::CompiledPattern::new(f, false));
+    let compiled = filter.map(|f| ops::CompiledPattern::new(f, false));
     let mut sort_entries: Vec<reader::FileEntry> = entries
         .iter()
         .filter(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden))
@@ -148,7 +148,7 @@ pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
 
 pub(crate) fn entry_matches_panel(
     entry: &reader::FileEntry,
-    compiled_filter: Option<&ops::search::CompiledPattern>,
+    compiled_filter: Option<&ops::CompiledPattern>,
     show_hidden: bool,
 ) -> bool {
     entry.name == ".."
