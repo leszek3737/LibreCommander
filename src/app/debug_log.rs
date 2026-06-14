@@ -15,7 +15,7 @@ const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
 ///
 /// Usage: `debug_log!("message: {}", value)` — same syntax as eprintln!
 ///
-/// For pre-TUI and post-TUI output, use eprintln!/println! with #[allow] instead.
+/// For pre-TUI and post-TUI output, use eprintln!/println! with `#[allow]` instead.
 ///
 /// **Blocking behavior:** The internal mutex uses a blocking `std::sync::Mutex`.
 /// On a stalled filesystem (network mount, writeback pressure) the lock

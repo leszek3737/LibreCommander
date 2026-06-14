@@ -66,8 +66,9 @@ impl PanelListing {
     }
 
     /// Replace the backing store. Rebuilds `path_index` and invalidates the
-    /// filtered view (rebuild it afterwards via [`set_filtered`] or
-    /// [`set_filtered_all`]).
+    /// filtered view (rebuild it afterwards via
+    /// [`set_filtered`](Self::set_filtered) or
+    /// [`set_filtered_all`](Self::set_filtered_all)).
     pub fn set_unfiltered(&mut self, entries: Vec<FileEntry>) {
         self.path_index.clear();
         self.path_index.reserve(entries.len());
@@ -139,7 +140,8 @@ impl PanelListing {
     }
 
     /// Mutable access to the backing store for in-place edits (e.g. restoring
-    /// selection by path). Cannot resize — use [`upsert`]/[`remove`] for that.
+    /// selection by path). Cannot resize — use [`upsert`](Self::upsert) or
+    /// [`remove`](Self::remove) for that.
     pub fn unfiltered_mut(&mut self) -> &mut [FileEntry] {
         &mut self.unfiltered_entries
     }

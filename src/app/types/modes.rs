@@ -37,7 +37,7 @@ pub enum ViewMode {
 /// NOTE (overwrite unification): the `overwrite` flag is intentionally a bare
 /// `bool` here and is mirrored in [`PendingAction::ExtractArchive`] /
 /// [`PendingAction::CreateArchive`]. The duplication is centralized behind the
-/// [`PendingAction::with_overwrite`] builder and the [`PendingAction::overwrite`]
+/// [`PendingAction::set_overwrite`] mutator and the [`PendingAction::overwrite`]
 /// reader so call sites never poke individual variants. An `Overwrite` newtype
 /// was considered but deferred: the flag is consumed as a plain `bool` by ~40
 /// `ops::` functions (copy/move/archive), so a newtype would cascade `.0`
@@ -91,21 +91,20 @@ impl CompareMode {
 }
 
 impl PendingAction {
-    /// Builder that marks the action as "overwrite existing targets".
+    /// Marks the action as "overwrite existing targets".
     ///
-    /// Replaces the former `set_overwrite(&mut self)` mutator. Unifies the
-    /// duplicated `overwrite` flag across every variant in one place. `Delete`
-    /// has no destination to overwrite, so it is a no-op.
-    #[must_use]
-    pub fn with_overwrite(mut self) -> Self {
-        match &mut self {
+    /// Unifies the duplicated `overwrite` flag across every variant in one place.
+    /// In-place (`&mut self`) so callers can mutate the action directly inside
+    /// `Option` without a `take()`/re-insert dance. `Delete` has no destination
+    /// to overwrite, so it is a no-op.
+    pub fn set_overwrite(&mut self) {
+        match self {
             Self::Copy(t) | Self::Move(t) => t.overwrite = true,
             Self::Delete { .. } => {}
             Self::ExtractArchive { overwrite, .. } | Self::CreateArchive { overwrite, .. } => {
                 *overwrite = true;
             }
         }
-        self
     }
 
     /// Unified reader for the (duplicated) `overwrite` flag. `Delete` never

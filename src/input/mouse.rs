@@ -406,8 +406,8 @@ fn handle_overwrite_click(
         if state.input.dialog_selection == new_sel {
             match new_sel {
                 0 => {
-                    if let Some(a) = state.ui.pending_action.take() {
-                        state.ui.pending_action = Some(a.with_overwrite());
+                    if let Some(a) = &mut state.ui.pending_action {
+                        a.set_overwrite();
                     }
                     start_confirmed_action(state, running_job);
                     finish_confirmed_action(state);

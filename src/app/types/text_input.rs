@@ -95,11 +95,14 @@ impl TextInput {
             .graphemes(true)
             .map(UnicodeWidthStr::width)
             .collect();
-        // When the cursor's (last) grapheme is wider than `visible_width`, no
-        // boundary's cumulative offset reaches `raw_scroll`, so `position`
-        // yields `None`. Fall back to the last grapheme boundary — i.e. scroll
-        // as far right as possible — so the cursor stays visible on the right
-        // edge instead of snapping back to the start.
+        // The scan yields the offset *before* each grapheme, so its largest
+        // value is the start of the last grapheme — never the trailing end
+        // offset. `position` therefore returns `None` exactly when the cursor
+        // sits at the very end and the last grapheme is wider than
+        // `visible_width`. Fall back to `widths.len()` so the offset becomes the
+        // full text width, scrolling past the wide grapheme and keeping the
+        // end-of-line cursor visible (rather than the start of that grapheme,
+        // which would push the cursor off the right edge).
         let start_idx = widths
             .iter()
             .scan(0usize, |cum, &w| {
@@ -108,7 +111,7 @@ impl TextInput {
                 Some(c)
             })
             .position(|cum| cum >= raw_scroll)
-            .unwrap_or(widths.len().saturating_sub(1));
+            .unwrap_or(widths.len());
         widths[..start_idx].iter().sum()
     }
 
@@ -257,5 +260,33 @@ impl TextInput {
         self.text.drain(..pos);
         self.cursor = 0;
         self.grapheme_count -= removed;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: with the cursor at end-of-line and the last grapheme wider
+    // than the viewport, the scroll offset must scroll far enough right to keep
+    // the cursor visible, not snap to the start of that grapheme (which left the
+    // cursor off the right edge).
+    #[test]
+    fn scroll_keeps_end_cursor_visible_past_wide_grapheme() {
+        let mut ti = TextInput::new();
+        ti.set_visible_width(1);
+        // Widths: 'a'=1, 'b'=1, '世'=2 -> cursor display column 4 at end of line.
+        ti.set_text_at_end("ab世".to_string());
+        // The window (width 1) must start at column 4 so the cursor is visible at
+        // its left edge. The old fallback produced 2 (start of the wide grapheme).
+        assert_eq!(ti.scroll_offset(), 4);
+    }
+
+    #[test]
+    fn scroll_offset_zero_when_text_fits() {
+        let mut ti = TextInput::new();
+        ti.set_visible_width(10);
+        ti.set_text_at_end("hello".to_string());
+        assert_eq!(ti.scroll_offset(), 0);
     }
 }

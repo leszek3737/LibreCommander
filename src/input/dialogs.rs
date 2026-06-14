@@ -260,8 +260,8 @@ fn handle_overwrite_dialog(
             return;
         }
         KeyCode::Char('o' | 'O') => {
-            if let Some(a) = state.ui.pending_action.take() {
-                state.ui.pending_action = Some(a.with_overwrite());
+            if let Some(a) = &mut state.ui.pending_action {
+                a.set_overwrite();
             }
         }
         KeyCode::Char('c' | 'C') => {
@@ -270,8 +270,8 @@ fn handle_overwrite_dialog(
         }
         KeyCode::Enter => match state.input.dialog_selection {
             0 => {
-                if let Some(a) = state.ui.pending_action.take() {
-                    state.ui.pending_action = Some(a.with_overwrite());
+                if let Some(a) = &mut state.ui.pending_action {
+                    a.set_overwrite();
                 }
             }
             1 => {

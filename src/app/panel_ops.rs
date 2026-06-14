@@ -216,7 +216,7 @@ pub fn refresh_both(state: &mut AppState) {
 }
 
 pub fn set_active_panel(state: &mut AppState, panel: ActivePanel) {
-    state.active_panel = panel;
+    state.set_active_panel(panel);
 }
 
 // Indices into the top menu bar (`crate::menu::MENUS`):

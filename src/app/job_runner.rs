@@ -29,7 +29,14 @@ fn handle_worker_result(handle: JoinHandle<()>, context: &str) -> bool {
     match handle.join() {
         Ok(()) => true,
         Err(panic_payload) => {
-            debug_log!("{context}: {:?}", panic_payload);
+            // `join()` yields `Box<dyn Any>`; `{:?}` on it only prints "Any".
+            // Downcast to the common panic payload types to log the real message.
+            let msg = panic_payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic payload");
+            debug_log!("{context}: {msg}");
             false
         }
     }
