@@ -6,12 +6,14 @@ pub(crate) mod move_ops;
 mod temp;
 
 pub(crate) use copy::preserve_timestamps;
-pub use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
-pub use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
+// copy/delete/move are only consumed inside `ops::batch` (and the file_ops
+// submodules); they are not part of the public `ops` facade. Kept crate-visible.
+pub(crate) use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
+pub(crate) use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
 #[cfg(unix)]
 pub use entry_ops::chmod;
 pub use entry_ops::{create_directory, rename_entry};
-pub use move_ops::move_entry_with_progress;
+pub(crate) use move_ops::move_entry_with_progress;
 
 pub(super) use temp::replace_file_with_temp;
 

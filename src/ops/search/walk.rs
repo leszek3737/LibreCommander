@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::types::FileEntry;
@@ -31,7 +32,7 @@ pub(super) struct ContentSearchContext<'a> {
     pub(super) case_sensitive: bool,
     pub(super) pattern_bytes: &'a [u8],
     pub(super) recursive: bool,
-    pub(super) outcome: &'a mut SearchOutcome<(std::path::PathBuf, usize, String), SearchError>,
+    pub(super) outcome: &'a mut SearchOutcome<(Arc<Path>, usize, String), SearchError>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
     pub(super) cancel: Option<&'a AtomicBool>,
 }
@@ -40,6 +41,15 @@ impl SearchContext for ContentSearchContext<'_> {
     fn cancel(&self) -> Option<&AtomicBool> {
         self.cancel
     }
+}
+
+/// Run `f` with a fresh, never-cancelled flag.
+///
+/// Collapses the `*_with_diagnostics` → `*_with_diagnostics_cancellable`
+/// boilerplate shared by the name and content searches into one place.
+pub(super) fn with_fresh_cancel<T>(f: impl FnOnce(&AtomicBool) -> T) -> T {
+    let cancel = AtomicBool::new(false);
+    f(&cancel)
 }
 
 pub(super) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
@@ -51,27 +61,35 @@ pub(super) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
     }
 }
 
+/// Single source of truth for the per-scan item cap. Records the `ItemLimit`
+/// truncation (first reason wins) and returns whether the cap is reached. Shared
+/// by `prepare_dir_scan` and the per-entry loops in `name.rs` / `content.rs`.
+pub(super) fn item_limit_reached<T>(
+    outcome: &mut SearchOutcome<T, SearchError>,
+    max_items: usize,
+) -> bool {
+    if outcome.items_scanned >= max_items {
+        outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
+        true
+    } else {
+        false
+    }
+}
+
 pub(super) fn prepare_dir_scan<T>(
     path: &Path,
     depth: usize,
     max_depth: usize,
     max_items: usize,
     outcome: &mut SearchOutcome<T, SearchError>,
-    extra_guard: impl Fn(&SearchOutcome<T, SearchError>) -> bool,
-    guard_reason: TruncationReason,
 ) -> Option<std::fs::ReadDir> {
-    if !extra_guard(outcome) {
-        outcome.truncated.get_or_insert(guard_reason);
-        return None;
-    }
     if depth >= max_depth {
         outcome
             .truncated
             .get_or_insert(TruncationReason::DepthLimit);
         return None;
     }
-    if outcome.items_scanned >= max_items {
-        outcome.truncated.get_or_insert(TruncationReason::ItemLimit);
+    if item_limit_reached(outcome, max_items) {
         return None;
     }
     match std::fs::read_dir(path) {
@@ -87,6 +105,26 @@ pub(super) fn prepare_dir_scan<T>(
     }
 }
 
+/// Content-search variant of [`prepare_dir_scan`]: additionally stops once the
+/// content-result cap is reached. The name search has no such guard, so the
+/// base `prepare_dir_scan` takes no guard parameter.
+pub(super) fn prepare_content_dir_scan<T>(
+    path: &Path,
+    depth: usize,
+    max_depth: usize,
+    max_items: usize,
+    max_results: usize,
+    outcome: &mut SearchOutcome<T, SearchError>,
+) -> Option<std::fs::ReadDir> {
+    if outcome.matches.len() >= max_results {
+        outcome
+            .truncated
+            .get_or_insert(TruncationReason::ContentResultLimit);
+        return None;
+    }
+    prepare_dir_scan(path, depth, max_depth, max_items, outcome)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -95,7 +133,7 @@ mod tests {
     use std::fs;
 
     use crate::ops::helpers::get_inode_key;
-    use crate::ops::search::FileSearch;
+    use crate::ops::search::{search_content_with_diagnostics, search_files_with_diagnostics};
 
     #[cfg(unix)]
     #[test]
@@ -137,7 +175,7 @@ mod tests {
         }
         fs::write(deep.join("deep.txt"), "found").unwrap();
 
-        let outcome = FileSearch::search_files_with_diagnostics(&dir, "*.txt", true, false);
+        let outcome = search_files_with_diagnostics(&dir, "*.txt", true, false);
         assert!(!outcome.matches.iter().any(|e| e.name == "deep.txt"));
         assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
 
@@ -165,7 +203,7 @@ mod tests {
         }
         fs::write(deep.join("deep.txt"), "needle\n").unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", true, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", true, false);
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
 

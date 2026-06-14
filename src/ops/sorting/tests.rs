@@ -36,24 +36,40 @@ fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) ->
     make_entry(name, is_dir, size, modified_secs, None)
 }
 
-macro_rules! sort_options_test {
-    ($fn_name:ident, $mode:expr, $dir_first:literal, $sensitive:literal,
-     $entries:expr, $expected_names:expr) => {
-        #[test]
-        fn $fn_name() {
-            let mut entries = $entries;
-            sort_entries(
-                &mut entries,
-                $mode,
-                SortOptions {
-                    dir_first: $dir_first,
-                    sensitive: $sensitive,
-                },
-            );
-            let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-            assert_eq!(names, $expected_names);
-        }
-    };
+/// Sort `entries` and assert the resulting name order.
+///
+/// A plain function (not a macro) so a failed assertion points at the calling
+/// test's line rather than a macro expansion span.
+fn assert_sort_order(
+    mut entries: Vec<FileEntry>,
+    mode: SortMode,
+    dir_first: bool,
+    sensitive: bool,
+    expected: &[&str],
+) {
+    sort_entries(
+        &mut entries,
+        mode,
+        SortOptions {
+            dir_first,
+            sensitive,
+        },
+    );
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, expected);
+}
+
+/// Assert `..` sorts first under `mode` regardless of direction or field.
+fn assert_ellipsis_first(mode: SortMode) {
+    let mut entries = vec![
+        create_test_entry("z10", false, 100, 100),
+        create_test_entry("..", true, 0, 0),
+        create_test_entry("subdir", true, 0, 2000),
+        create_test_entry("a2", false, 100, 100),
+        create_test_entry("a1", false, 100, 100),
+    ];
+    sort_entries(&mut entries, mode, SortOptions::default());
+    assert_eq!(entries[0].name, "..", "{mode:?} must keep '..' first");
 }
 
 #[test]
@@ -135,20 +151,6 @@ fn test_cycle_sort_mode() {
         cycle_sort_mode(sort_mode!(Extension, Desc)),
         sort_mode!(Name, Asc)
     );
-}
-
-#[test]
-fn test_sort_ellipsis_at_top() {
-    let mut entries = vec![
-        create_test_entry("file.txt", false, 100, 1000),
-        create_test_entry("..", true, 0, 0),
-        create_test_entry("subdir", true, 0, 2000),
-        create_test_entry("another.txt", false, 200, 1500),
-    ];
-
-    sort_entries(&mut entries, sort_mode!(Name, Asc), SortOptions::default());
-
-    assert_eq!(entries[0].name, "..");
 }
 
 #[test]
@@ -270,85 +272,95 @@ fn test_sort_name_desc() {
 }
 
 #[test]
-fn test_sort_by_size() {
-    let mut entries = vec![
-        create_test_entry("small.txt", false, 100, 1000),
-        create_test_entry("large.txt", false, 10000, 1500),
-        create_test_entry("medium.txt", false, 1000, 1200),
-    ];
-
-    sort_entries(&mut entries, sort_mode!(Size, Asc), SortOptions::default());
-
-    assert_eq!(entries[0].name, "small.txt");
-    assert_eq!(entries[1].name, "medium.txt");
-    assert_eq!(entries[2].name, "large.txt");
-
-    sort_entries(&mut entries, sort_mode!(Size, Desc), SortOptions::default());
-
-    assert_eq!(entries[0].name, "large.txt");
-    assert_eq!(entries[1].name, "medium.txt");
-    assert_eq!(entries[2].name, "small.txt");
+fn test_sort_by_size_asc() {
+    assert_sort_order(
+        vec![
+            create_test_entry("small.txt", false, 100, 1000),
+            create_test_entry("large.txt", false, 10000, 1500),
+            create_test_entry("medium.txt", false, 1000, 1200),
+        ],
+        sort_mode!(Size, Asc),
+        true,
+        false,
+        &["small.txt", "medium.txt", "large.txt"],
+    );
 }
 
 #[test]
-fn test_sort_by_mod_time() {
-    let mut entries = vec![
-        create_test_entry("old.txt", false, 100, 1000),
-        create_test_entry("new.txt", false, 200, 2000),
-        create_test_entry("middle.txt", false, 150, 1500),
-    ];
+fn test_sort_by_size_desc() {
+    assert_sort_order(
+        vec![
+            create_test_entry("small.txt", false, 100, 1000),
+            create_test_entry("large.txt", false, 10000, 1500),
+            create_test_entry("medium.txt", false, 1000, 1200),
+        ],
+        sort_mode!(Size, Desc),
+        true,
+        false,
+        &["large.txt", "medium.txt", "small.txt"],
+    );
+}
 
-    sort_entries(
-        &mut entries,
+#[test]
+fn test_sort_by_mod_time_asc() {
+    assert_sort_order(
+        vec![
+            create_test_entry("old.txt", false, 100, 1000),
+            create_test_entry("new.txt", false, 200, 2000),
+            create_test_entry("middle.txt", false, 150, 1500),
+        ],
         sort_mode!(ModTime, Asc),
-        SortOptions::default(),
+        true,
+        false,
+        &["old.txt", "middle.txt", "new.txt"],
     );
-
-    assert_eq!(entries[0].name, "old.txt");
-    assert_eq!(entries[1].name, "middle.txt");
-    assert_eq!(entries[2].name, "new.txt");
-
-    sort_entries(
-        &mut entries,
-        sort_mode!(ModTime, Desc),
-        SortOptions::default(),
-    );
-
-    assert_eq!(entries[0].name, "new.txt");
-    assert_eq!(entries[1].name, "middle.txt");
-    assert_eq!(entries[2].name, "old.txt");
 }
 
 #[test]
-fn test_sort_by_extension() {
-    let mut entries = vec![
-        create_test_entry("file.txt", false, 100, 1000),
-        create_test_entry("image.png", false, 200, 1500),
-        create_test_entry("archive.zip", false, 150, 1200),
-        create_test_entry("script.sh", false, 50, 1100),
-    ];
+fn test_sort_by_mod_time_desc() {
+    assert_sort_order(
+        vec![
+            create_test_entry("old.txt", false, 100, 1000),
+            create_test_entry("new.txt", false, 200, 2000),
+            create_test_entry("middle.txt", false, 150, 1500),
+        ],
+        sort_mode!(ModTime, Desc),
+        true,
+        false,
+        &["new.txt", "middle.txt", "old.txt"],
+    );
+}
 
-    sort_entries(
-        &mut entries,
+#[test]
+fn test_sort_by_extension_asc() {
+    assert_sort_order(
+        vec![
+            create_test_entry("file.txt", false, 100, 1000),
+            create_test_entry("image.png", false, 200, 1500),
+            create_test_entry("archive.zip", false, 150, 1200),
+            create_test_entry("script.sh", false, 50, 1100),
+        ],
         sort_mode!(Extension, Asc),
-        SortOptions::default(),
+        true,
+        false,
+        &["image.png", "script.sh", "file.txt", "archive.zip"],
     );
+}
 
-    assert_eq!(entries[0].name, "image.png");
-    assert_eq!(entries[1].name, "script.sh");
-    assert_eq!(entries[2].name, "file.txt");
-    assert_eq!(entries[3].name, "archive.zip");
-
-    sort_entries(
-        &mut entries,
+#[test]
+fn test_sort_by_extension_desc() {
+    assert_sort_order(
+        vec![
+            create_test_entry("file.txt", false, 100, 1000),
+            create_test_entry("image.png", false, 200, 1500),
+            create_test_entry("archive.zip", false, 150, 1200),
+            create_test_entry("script.sh", false, 50, 1100),
+        ],
         sort_mode!(Extension, Desc),
-        SortOptions::default(),
+        true,
+        false,
+        &["archive.zip", "file.txt", "script.sh", "image.png"],
     );
-
-    assert_eq!(entries[0].name, "archive.zip");
-    assert_eq!(entries[1].name, "file.txt");
-    assert_eq!(entries[2].name, "script.sh");
-    assert_eq!(entries[3].name, "image.png");
 }
 
 #[test]
@@ -428,24 +440,6 @@ fn test_sort_natural_with_directories_first() {
     assert_eq!(entries[1].name, "dir10");
     assert_eq!(entries[2].name, "file2");
     assert_eq!(entries[3].name, "file10");
-}
-
-#[test]
-fn test_sort_natural_ellipsis_first() {
-    let mut entries = vec![
-        create_test_entry("..", true, 0, 0),
-        create_test_entry("z10", false, 100, 100),
-        create_test_entry("a2", false, 100, 100),
-        create_test_entry("a1", false, 100, 100),
-    ];
-
-    sort_entries(
-        &mut entries,
-        sort_mode!(NaturalName, Asc),
-        SortOptions::default(),
-    );
-
-    assert_eq!(entries[0].name, "..");
 }
 
 #[test]
@@ -568,101 +562,247 @@ fn test_cmp_ignore_case_turkish_dotted_i() {
     assert_eq!(right, Ordering::Less);
 }
 
-// ── SortOptions parameterized tests ──
+// ── SortOptions combinations (via assert_sort_order) ──
 
-sort_options_test!(
-    test_sort_dir_first_false,
-    sort_mode!(Name, Asc),
-    false,
-    false,
-    vec![
-        create_test_entry("file.txt", false, 100, 1000),
-        create_test_entry("subdir", true, 0, 2000),
-    ],
-    ["file.txt", "subdir"]
-);
+#[test]
+fn test_sort_dir_first_false() {
+    assert_sort_order(
+        vec![
+            create_test_entry("file.txt", false, 100, 1000),
+            create_test_entry("subdir", true, 0, 2000),
+        ],
+        sort_mode!(Name, Asc),
+        false,
+        false,
+        &["file.txt", "subdir"],
+    );
+}
 
-sort_options_test!(
-    test_sort_sensitive_true,
-    sort_mode!(Name, Asc),
-    true,
-    true,
-    vec![
-        create_test_entry("banana", false, 100, 1000),
-        create_test_entry("Apple", false, 200, 1000),
-        create_test_entry("cherry", false, 150, 1000),
-    ],
-    ["Apple", "banana", "cherry"]
-);
+#[test]
+fn test_sort_sensitive_true() {
+    assert_sort_order(
+        vec![
+            create_test_entry("banana", false, 100, 1000),
+            create_test_entry("Apple", false, 200, 1000),
+            create_test_entry("cherry", false, 150, 1000),
+        ],
+        sort_mode!(Name, Asc),
+        true,
+        true,
+        &["Apple", "banana", "cherry"],
+    );
+}
 
-sort_options_test!(
-    test_sort_extension_asc_sensitive_true,
-    sort_mode!(Extension, Asc),
-    true,
-    true,
-    vec![
-        create_test_entry("b.TXT", false, 100, 1000),
-        create_test_entry("a.txt", false, 200, 1500),
-        create_test_entry("c.txt", false, 150, 1200),
-    ],
-    ["b.TXT", "a.txt", "c.txt"]
-);
+#[test]
+fn test_sort_extension_asc_sensitive_true() {
+    assert_sort_order(
+        vec![
+            create_test_entry("b.TXT", false, 100, 1000),
+            create_test_entry("a.txt", false, 200, 1500),
+            create_test_entry("c.txt", false, 150, 1200),
+        ],
+        sort_mode!(Extension, Asc),
+        true,
+        true,
+        &["b.TXT", "a.txt", "c.txt"],
+    );
+}
 
-sort_options_test!(
-    test_sort_size_asc_dir_first_false,
-    sort_mode!(Size, Asc),
-    false,
-    false,
-    vec![
-        create_test_entry("medium.txt", false, 500, 1000),
-        create_test_entry("subdir", true, 0, 2000),
-        create_test_entry("large.bin", false, 1000, 1500),
-        create_test_entry("tiny", false, 10, 1200),
-    ],
-    ["subdir", "tiny", "medium.txt", "large.bin"]
-);
+#[test]
+fn test_sort_size_asc_dir_first_false() {
+    assert_sort_order(
+        vec![
+            create_test_entry("medium.txt", false, 500, 1000),
+            create_test_entry("subdir", true, 0, 2000),
+            create_test_entry("large.bin", false, 1000, 1500),
+            create_test_entry("tiny", false, 10, 1200),
+        ],
+        sort_mode!(Size, Asc),
+        false,
+        false,
+        &["subdir", "tiny", "medium.txt", "large.bin"],
+    );
+}
 
-sort_options_test!(
-    test_sort_natural_name_desc_dir_first_false,
-    sort_mode!(NaturalName, Desc),
-    false,
-    false,
-    vec![
-        create_test_entry("a10.txt", false, 100, 100),
-        create_test_entry("a2.txt", false, 100, 100),
-        create_test_entry("a1.txt", false, 100, 100),
-    ],
-    ["a10.txt", "a2.txt", "a1.txt"]
-);
+#[test]
+fn test_sort_natural_name_desc_dir_first_false() {
+    assert_sort_order(
+        vec![
+            create_test_entry("a10.txt", false, 100, 100),
+            create_test_entry("a2.txt", false, 100, 100),
+            create_test_entry("a1.txt", false, 100, 100),
+        ],
+        sort_mode!(NaturalName, Desc),
+        false,
+        false,
+        &["a10.txt", "a2.txt", "a1.txt"],
+    );
+}
 
-sort_options_test!(
-    test_sort_ellipsis_first_even_with_dir_first_false,
-    sort_mode!(Name, Asc),
-    false,
-    false,
-    vec![
-        create_test_entry("file.txt", false, 100, 1000),
-        create_test_entry("subdir", true, 0, 2000),
-        create_test_entry("..", true, 0, 0),
-    ],
-    ["..", "file.txt", "subdir"]
-);
+#[test]
+fn test_sort_ellipsis_first_even_with_dir_first_false() {
+    assert_sort_order(
+        vec![
+            create_test_entry("file.txt", false, 100, 1000),
+            create_test_entry("subdir", true, 0, 2000),
+            create_test_entry("..", true, 0, 0),
+        ],
+        sort_mode!(Name, Asc),
+        false,
+        false,
+        &["..", "file.txt", "subdir"],
+    );
+}
+
+// ── '..' stays first across every field and direction ──
+
+#[test]
+fn test_ellipsis_first_all_modes() {
+    for mode in [
+        sort_mode!(Name, Asc),
+        sort_mode!(Name, Desc),
+        sort_mode!(NaturalName, Asc),
+        sort_mode!(NaturalName, Desc),
+        sort_mode!(Size, Asc),
+        sort_mode!(Size, Desc),
+        sort_mode!(ModTime, Desc),
+        sort_mode!(Btime, Desc),
+        sort_mode!(Extension, Desc),
+    ] {
+        assert_ellipsis_first(mode);
+    }
+}
 
 // ── Previously missing combinations ──
 
-sort_options_test!(
-    test_sort_dir_first_false_sensitive_true,
-    sort_mode!(Name, Asc),
-    false,
-    true,
-    vec![
-        create_test_entry("zebra.txt", false, 100, 1000),
-        create_test_entry("subdir", true, 0, 2000),
-        create_test_entry("Apple.txt", false, 200, 1500),
-        create_test_entry("banana.txt", false, 150, 1200),
-    ],
-    ["Apple.txt", "banana.txt", "subdir", "zebra.txt"]
-);
+#[test]
+fn test_sort_dir_first_false_sensitive_true() {
+    assert_sort_order(
+        vec![
+            create_test_entry("zebra.txt", false, 100, 1000),
+            create_test_entry("subdir", true, 0, 2000),
+            create_test_entry("Apple.txt", false, 200, 1500),
+            create_test_entry("banana.txt", false, 150, 1200),
+        ],
+        sort_mode!(Name, Asc),
+        false,
+        true,
+        &["Apple.txt", "banana.txt", "subdir", "zebra.txt"],
+    );
+}
+
+// ── Sensitive=true tiebreak coverage (Size / ModTime / Btime / NaturalName) ──
+
+#[test]
+fn test_sort_size_sensitive_tiebreak() {
+    // Equal size → case-sensitive name tiebreak: uppercase before lowercase.
+    assert_sort_order(
+        vec![
+            make_entry("banana", false, 100, 0, None),
+            make_entry("Apple", false, 100, 0, None),
+            make_entry("apple", false, 100, 0, None),
+        ],
+        sort_mode!(Size, Asc),
+        true,
+        true,
+        &["Apple", "apple", "banana"],
+    );
+}
+
+#[test]
+fn test_sort_mod_time_sensitive_tiebreak() {
+    assert_sort_order(
+        vec![
+            make_entry("banana", false, 10, 1000, None),
+            make_entry("Apple", false, 20, 1000, None),
+            make_entry("apple", false, 30, 1000, None),
+        ],
+        sort_mode!(ModTime, Asc),
+        true,
+        true,
+        &["Apple", "apple", "banana"],
+    );
+}
+
+#[test]
+fn test_sort_btime_sensitive_tiebreak() {
+    assert_sort_order(
+        vec![
+            make_entry("banana", false, 10, 0, Some(1000)),
+            make_entry("Apple", false, 20, 0, Some(1000)),
+            make_entry("apple", false, 30, 0, Some(1000)),
+        ],
+        sort_mode!(Btime, Asc),
+        true,
+        true,
+        &["Apple", "apple", "banana"],
+    );
+}
+
+#[test]
+fn test_sort_natural_name_sensitive_tiebreak() {
+    // Same natural key "alpha2" → case-sensitive tiebreak orders by raw bytes.
+    assert_sort_order(
+        vec![
+            create_test_entry("alpha2", false, 100, 100),
+            create_test_entry("Alpha2", false, 100, 100),
+            create_test_entry("ALPHA2", false, 100, 100),
+        ],
+        sort_mode!(NaturalName, Asc),
+        true,
+        true,
+        &["ALPHA2", "Alpha2", "alpha2"],
+    );
+}
+
+// ── dir_first=false coverage (ModTime / Btime / Extension) ──
+
+#[test]
+fn test_sort_mod_time_dir_first_false() {
+    // Without dir_first, the directory interleaves with files by mtime.
+    assert_sort_order(
+        vec![
+            create_test_entry("old.txt", false, 10, 1000),
+            create_test_entry("mid_dir", true, 0, 1500),
+            create_test_entry("new.txt", false, 10, 2000),
+        ],
+        sort_mode!(ModTime, Asc),
+        false,
+        false,
+        &["old.txt", "mid_dir", "new.txt"],
+    );
+}
+
+#[test]
+fn test_sort_btime_dir_first_false() {
+    assert_sort_order(
+        vec![
+            make_entry("old.txt", false, 10, 0, Some(1000)),
+            make_entry("mid_dir", true, 0, 0, Some(1500)),
+            make_entry("new.txt", false, 10, 0, Some(2000)),
+        ],
+        sort_mode!(Btime, Asc),
+        false,
+        false,
+        &["old.txt", "mid_dir", "new.txt"],
+    );
+}
+
+#[test]
+fn test_sort_extension_dir_first_false() {
+    // Directories have no extension, so they sort with the empty-extension group.
+    assert_sort_order(
+        vec![
+            create_test_entry("image.png", false, 100, 1000),
+            create_test_entry("subdir", true, 0, 2000),
+            create_test_entry("archive.zip", false, 150, 1200),
+        ],
+        sort_mode!(Extension, Asc),
+        false,
+        false,
+        &["subdir", "image.png", "archive.zip"],
+    );
+}
 
 // ── Stability (tiebreaker) tests for untested sort modes ──
 

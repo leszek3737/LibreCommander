@@ -13,10 +13,12 @@ mod pattern;
 #[path = "search/walk.rs"]
 mod walk;
 
+pub use content::{search_content_with_diagnostics, search_content_with_diagnostics_cancellable};
 pub use model::{
     MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS, MAX_SEARCH_DEPTH,
     MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
 };
-pub use pattern::CompiledPattern;
-
-pub struct FileSearch;
+pub use name::{
+    search_files, search_files_with_diagnostics, search_files_with_diagnostics_cancellable,
+};
+pub use pattern::{CompiledPattern, matches_pattern};

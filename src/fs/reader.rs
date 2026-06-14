@@ -314,6 +314,18 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
     ))
 }
 
+/// Build a [`FileEntry`] from already-fetched, non-symlink metadata.
+///
+/// Lets callers that have just `stat`ed a path (e.g. the recursive name search,
+/// which `lstat`s directories for cycle detection) avoid a second `stat` inside
+/// [`get_file_info`]. `metadata` must be the entry's own (`lstat`) metadata and
+/// the entry must not be a symlink — symlinks need their target metadata, which
+/// this fast path does not resolve.
+pub fn file_info_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> FileEntry {
+    let file_name = file_name_from_path(&path);
+    build_file_entry_from_metadata(path, file_name, metadata, None)
+}
+
 pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
     if is_parent_entry(&entry) {
         return;

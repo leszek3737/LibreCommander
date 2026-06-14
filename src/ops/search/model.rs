@@ -38,6 +38,8 @@ impl std::fmt::Display for SearchError {
     }
 }
 
+impl std::error::Error for SearchError {}
+
 // NOTE: Deriving Clone forces T: Clone + E: Clone bounds on SearchOutcome<T, E>.
 // NOTE: Default cannot be derived because it requires T: Default;
 // FileEntry does not implement Default, so we provide a manual impl.

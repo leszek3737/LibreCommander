@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::{memchr, memmem};
@@ -9,60 +10,64 @@ use memchr::{memchr, memmem};
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::pattern::contains_case_insensitive;
 use crate::ops::search::walk::{
-    ContentSearchContext, SearchContext, prepare_dir_scan, seed_visited_dir,
+    ContentSearchContext, SearchContext, item_limit_reached, prepare_content_dir_scan,
+    seed_visited_dir, with_fresh_cancel,
 };
 use crate::ops::search::{
-    FileSearch, MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS,
-    MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
-    TruncationReason,
+    MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS, MAX_SEARCH_DEPTH,
+    MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
 };
 
-impl FileSearch {
-    #[cfg(test)]
-    fn search_content(
-        path: &Path,
-        pattern: &str,
-        recursive: bool,
-        case_sensitive: bool,
-    ) -> Vec<(PathBuf, usize, String)> {
-        Self::search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
-    }
+/// A content-search hit: the file it was found in, the 1-based line number, and
+/// the matched line text. The path is an [`Arc`] so a file with many matches
+/// shares one allocation instead of cloning a `PathBuf` per hit.
+type ContentMatch = (Arc<Path>, usize, String);
 
-    pub fn search_content_with_diagnostics(
-        path: &Path,
-        pattern: &str,
-        recursive: bool,
-        case_sensitive: bool,
-    ) -> SearchOutcome<(PathBuf, usize, String), SearchError> {
-        let cancel = AtomicBool::new(false);
-        Self::search_content_with_diagnostics_cancellable(
+#[cfg(test)]
+fn search_content(
+    path: &Path,
+    pattern: &str,
+    recursive: bool,
+    case_sensitive: bool,
+) -> Vec<ContentMatch> {
+    search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
+}
+
+pub fn search_content_with_diagnostics(
+    path: &Path,
+    pattern: &str,
+    recursive: bool,
+    case_sensitive: bool,
+) -> SearchOutcome<ContentMatch, SearchError> {
+    with_fresh_cancel(|cancel| {
+        search_content_with_diagnostics_cancellable(
             path,
             pattern,
             recursive,
             case_sensitive,
-            &cancel,
+            cancel,
         )
-    }
+    })
+}
 
-    pub fn search_content_with_diagnostics_cancellable(
-        path: &Path,
-        pattern: &str,
-        recursive: bool,
-        case_sensitive: bool,
-        cancel: &AtomicBool,
-    ) -> SearchOutcome<(PathBuf, usize, String), SearchError> {
-        let mut outcome = SearchOutcome::default();
-        search_content_recursive(
-            path,
-            pattern,
-            recursive,
-            case_sensitive,
-            0,
-            &mut outcome,
-            Some(cancel),
-        );
-        outcome
-    }
+pub fn search_content_with_diagnostics_cancellable(
+    path: &Path,
+    pattern: &str,
+    recursive: bool,
+    case_sensitive: bool,
+    cancel: &AtomicBool,
+) -> SearchOutcome<ContentMatch, SearchError> {
+    let mut outcome = SearchOutcome::default();
+    search_content_recursive(
+        path,
+        pattern,
+        recursive,
+        case_sensitive,
+        0,
+        &mut outcome,
+        Some(cancel),
+    );
+    outcome
 }
 
 fn search_content_recursive(
@@ -71,7 +76,7 @@ fn search_content_recursive(
     recursive: bool,
     case_sensitive: bool,
     depth: usize,
-    outcome: &mut SearchOutcome<(PathBuf, usize, String), SearchError>,
+    outcome: &mut SearchOutcome<ContentMatch, SearchError>,
     cancel: Option<&AtomicBool>,
 ) {
     let pattern_bytes: Vec<u8> = if !case_sensitive {
@@ -101,14 +106,13 @@ fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSe
     if !path.is_dir() {
         return;
     }
-    let Some(entries) = prepare_dir_scan(
+    let Some(entries) = prepare_content_dir_scan(
         path,
         depth,
         MAX_SEARCH_DEPTH,
         MAX_SEARCH_ITEMS,
+        MAX_CONTENT_RESULTS,
         ctx.outcome,
-        |o| o.matches.len() < MAX_CONTENT_RESULTS,
-        TruncationReason::ContentResultLimit,
     ) else {
         return;
     };
@@ -132,16 +136,15 @@ fn process_content_entry(
     if ctx.is_cancelled() {
         return true;
     }
-    if ctx.outcome.items_scanned >= MAX_SEARCH_ITEMS
-        || ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS
-    {
+    // Content-result cap takes precedence (first reason wins via get_or_insert);
+    // the item cap is shared with the name search via item_limit_reached.
+    if ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS {
         ctx.outcome
             .truncated
-            .get_or_insert(if ctx.outcome.matches.len() >= MAX_CONTENT_RESULTS {
-                TruncationReason::ContentResultLimit
-            } else {
-                TruncationReason::ItemLimit
-            });
+            .get_or_insert(TruncationReason::ContentResultLimit);
+        return true;
+    }
+    if item_limit_reached(ctx.outcome, MAX_SEARCH_ITEMS) {
         return true;
     }
     let entry = match entry {
@@ -222,7 +225,7 @@ fn search_in_file(
     case_sensitive: bool,
     pattern_bytes: &[u8],
     file_len: u64,
-    outcome: &mut SearchOutcome<(PathBuf, usize, String), SearchError>,
+    outcome: &mut SearchOutcome<ContentMatch, SearchError>,
     cancel: Option<&AtomicBool>,
 ) {
     if pattern.is_empty() {
@@ -272,23 +275,57 @@ struct ScanContext<'a> {
 
 struct ScanBuffers {
     line_buf: Vec<u8>,
-    ci_buf: Vec<u8>,
+    ci_buf: String,
 }
 
 impl ScanBuffers {
     fn new() -> Self {
         Self {
             line_buf: Vec::new(),
-            ci_buf: Vec::with_capacity(1024),
+            ci_buf: String::with_capacity(1024),
         }
+    }
+}
+
+/// Does `finder`'s needle occur in this line? Case-sensitive matching searches
+/// the raw `line` bytes (`text` is `None`, so non-matching lines skip UTF-8
+/// decoding); case-insensitive passes the decoded `text`, folded into `buf`.
+fn line_contains_needle(
+    finder: &memmem::Finder<'_>,
+    line: &[u8],
+    text: Option<&str>,
+    buf: &mut String,
+) -> bool {
+    match text {
+        None => finder.find(line).is_some(),
+        Some(text) => contains_case_insensitive(text, finder, buf),
+    }
+}
+
+/// Consume the remainder of an over-long line (past `MAX_CONTENT_LINE_BYTES`)
+/// up to and including the next newline, leaving `buf` empty for the next line.
+fn skip_rest_of_long_line(reader: &mut BufReader<File>, buf: &mut Vec<u8>) {
+    buf.clear();
+    while reader
+        .by_ref()
+        .take(MAX_CONTENT_LINE_BYTES as u64)
+        .read_until(b'\n', buf)
+        .is_ok()
+    {
+        if buf.last() == Some(&b'\n') || buf.is_empty() {
+            break;
+        }
+        buf.clear();
     }
 }
 
 fn scan_lines(
     ctx: &mut ScanContext<'_>,
     reader: &mut BufReader<File>,
-    outcome: &mut SearchOutcome<(PathBuf, usize, String), SearchError>,
+    outcome: &mut SearchOutcome<ContentMatch, SearchError>,
 ) {
+    // One Arc per file, shared by every match in it (paths are not re-cloned).
+    let file_path: Arc<Path> = Arc::from(ctx.path);
     let mut line_no = 0_usize;
     let mut non_utf8_lines = 0usize;
     loop {
@@ -309,19 +346,7 @@ fn scan_lines(
                     if outcome.truncated.is_none() {
                         outcome.truncated = Some(TruncationReason::LineTooLong);
                     }
-                    ctx.bufs.line_buf.clear();
-                    while reader
-                        .by_ref()
-                        .take(MAX_CONTENT_LINE_BYTES as u64)
-                        .read_until(b'\n', &mut ctx.bufs.line_buf)
-                        .is_ok()
-                    {
-                        if ctx.bufs.line_buf.last() == Some(&b'\n') || ctx.bufs.line_buf.is_empty()
-                        {
-                            break;
-                        }
-                        ctx.bufs.line_buf.clear();
-                    }
+                    skip_rest_of_long_line(reader, &mut ctx.bufs.line_buf);
                     continue;
                 }
                 let line = if found_newline {
@@ -342,7 +367,11 @@ fn scan_lines(
                     return;
                 }
 
-                if ctx.case_sensitive && ctx.finder.find(line).is_none() {
+                // Case-sensitive prefilter on raw bytes: skip non-matching lines
+                // before paying for UTF-8 validation.
+                if ctx.case_sensitive
+                    && !line_contains_needle(&ctx.finder, line, None, &mut ctx.bufs.ci_buf)
+                {
                     continue;
                 }
 
@@ -362,14 +391,19 @@ fn scan_lines(
                 };
 
                 if !ctx.case_sensitive
-                    && !contains_case_insensitive(line_text, &ctx.finder, &mut ctx.bufs.ci_buf)
+                    && !line_contains_needle(
+                        &ctx.finder,
+                        line,
+                        Some(line_text),
+                        &mut ctx.bufs.ci_buf,
+                    )
                 {
                     continue;
                 }
 
                 outcome
                     .matches
-                    .push((ctx.path.to_path_buf(), line_no, line_text.to_owned()));
+                    .push((Arc::clone(&file_path), line_no, line_text.to_owned()));
             }
             Err(err) => {
                 outcome.errors.push(SearchError {
@@ -421,7 +455,7 @@ mod tests {
         writeln!(file2, "This is a test too").unwrap();
         drop(file2);
 
-        let results = FileSearch::search_content(&dir, "test", true, false);
+        let results = search_content(&dir, "test", true, false);
         assert_eq!(results.len(), 2);
 
         let _ = fs::remove_dir_all(dir);
@@ -432,7 +466,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc_test_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
-        let results = FileSearch::search_content(&dir, "", true, false);
+        let results = search_content(&dir, "", true, false);
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -455,7 +489,7 @@ mod tests {
         let content = std::iter::repeat_n("needle\n", MAX_CONTENT_RESULTS + 1).collect::<String>();
         fs::write(dir.join("many.txt"), content).unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert_eq!(outcome.matches.len(), MAX_CONTENT_RESULTS);
         assert_eq!(
@@ -484,7 +518,7 @@ mod tests {
         let file = File::create(dir.join("large.txt")).unwrap();
         file.set_len(MAX_CONTENT_FILE_BYTES + 1).unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::FileTooLarge));
@@ -509,7 +543,7 @@ mod tests {
 
         fs::write(dir.join("binary.bin"), b"needle\0needle\n").unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::BinaryFile));
@@ -533,7 +567,7 @@ mod tests {
         content.extend_from_slice(b"\nneedle\n");
         fs::write(dir.join("long_line.txt"), content).unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 2);
@@ -555,7 +589,7 @@ mod tests {
 
         fs::write(dir.join("crlf.txt"), b"hello world\r\nfoo bar\r\n").unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "world", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "world", false, false);
 
         assert_eq!(outcome.matches.len(), 1);
         assert!(!outcome.matches[0].2.contains('\r'));
@@ -584,7 +618,7 @@ mod tests {
 
         fs::write(dir.join("bbb_binary.bin"), b"needle\0needle\n").unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert!(outcome.matches.is_empty());
         let reason = outcome.truncated.unwrap();
@@ -615,7 +649,7 @@ mod tests {
             fs::write(dir.join(format!("bbb_match_{i}.txt")), "needle\n").unwrap();
         }
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
 
         assert!(outcome.truncated.is_some());
         assert_ne!(
@@ -646,7 +680,7 @@ mod tests {
         fs::write(dir.join("outside/target.txt"), "needle").unwrap();
         symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
 
-        let results = FileSearch::search_content(&dir.join("root"), "needle", true, false);
+        let results = search_content(&dir.join("root"), "needle", true, false);
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -668,16 +702,16 @@ mod tests {
 
         fs::write(dir.join("hello.txt"), "Hello World\naŻółć gęślą\n").unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "hello", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "hello", false, false);
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 1);
         assert!(outcome.errors.is_empty());
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, true);
+        let outcome = search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, true);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, false);
+        let outcome = search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, false);
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 2);
         assert!(outcome.errors.is_empty());
@@ -701,7 +735,7 @@ mod tests {
 
         fs::write(dir.join("hello.txt"), "Hello World\n").unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "hello", false, true);
+        let outcome = search_content_with_diagnostics(&dir, "hello", false, true);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
 
@@ -727,7 +761,7 @@ mod tests {
         fs::write(dir.join("real.txt"), "needle\n").unwrap();
         symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let results = FileSearch::search_content(&dir, "needle", false, false);
+        let results = search_content(&dir, "needle", false, false);
         assert_eq!(results.len(), 1);
         assert!(results[0].0.ends_with("real.txt"));
 
@@ -748,7 +782,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let outcome = FileSearch::search_content_with_diagnostics(&dir, "needle", true, false);
+        let outcome = search_content_with_diagnostics(&dir, "needle", true, false);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.truncated, None);

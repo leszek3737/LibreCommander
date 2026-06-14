@@ -15,8 +15,12 @@ pub(crate) mod natsort;
 pub mod search;
 pub(crate) mod sorting;
 
-pub use archive::{ArchiveEntry, ArchiveError, ArchiveFormat};
+pub use archive::{ArchiveEntry, ArchiveError, ArchiveFormat, detect_format};
 pub use compare::{CompareReport, apply_compare_to_panels, compare_entries};
 pub use file_ops::{chmod, create_directory, rename_entry};
-pub use search::{FileSearch, SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
+pub use search::{
+    CompiledPattern, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
+    search_content_with_diagnostics, search_content_with_diagnostics_cancellable, search_files,
+    search_files_with_diagnostics, search_files_with_diagnostics_cancellable,
+};
 pub use sorting::{cmp_ignore_case, cycle_sort_mode, sort_entries};
