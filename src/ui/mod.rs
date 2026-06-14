@@ -5,6 +5,11 @@ pub mod panels;
 pub mod theme;
 pub mod viewer;
 
+// Top-level re-exports of the cross-cutting theming API, mirroring the way
+// `dialogs::mod` re-exports its public surface, so callers can reach the common
+// types via `ui::Theme` / `ui::ColorCtx` rather than the full module path.
+pub use theme::{ColorCtx, ColorPalette, IconTheme, Theme};
+
 /// Number of rows reserved for UI elements outside the main panels.
 /// Accounts for: top menu bar (1), status bar (1), command line (1),
 /// function key bar (1), and borders (2). Used to calculate available

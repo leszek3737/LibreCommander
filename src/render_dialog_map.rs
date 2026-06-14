@@ -6,6 +6,13 @@ use lc::{app, ui};
 use app::types::AppState;
 use ui::dialogs;
 
+// Dialog titles. Kept local to this module per the current wave's scope (no new
+// shared title module yet).
+const TITLE_INPUT: &str = "Input";
+const TITLE_ERROR: &str = "Error";
+const TITLE_HELP: &str = "Help";
+const TITLE_PROGRESS: &str = "Progress";
+
 pub(super) fn to_ui_dialog<'a>(
     dialog_kind: &'a app::types::DialogKind,
     state: &'a AppState,
@@ -18,20 +25,20 @@ pub(super) fn to_ui_dialog<'a>(
             files: Cow::Borrowed(cd.files.as_deref().unwrap_or(&[])),
         },
         app::types::DialogKind::Input { prompt, .. } => dialogs::DialogKind::Input {
-            title: Cow::Borrowed("Input"),
+            title: Cow::Borrowed(TITLE_INPUT),
             prompt: Cow::Borrowed(prompt),
             value: Cow::Borrowed(state.dialog_input.text()),
             cursor_pos: state.dialog_input.cursor(),
         },
         app::types::DialogKind::Error(msg) => dialogs::DialogKind::Error {
-            title: Cow::Borrowed("Error"),
+            title: Cow::Borrowed(TITLE_ERROR),
             message: Cow::Borrowed(msg),
         },
         app::types::DialogKind::Help {
             message,
             scroll_offset,
         } => dialogs::DialogKind::Help {
-            title: Cow::Borrowed("Help"),
+            title: Cow::Borrowed(TITLE_HELP),
             message: Cow::Borrowed(message),
             scroll_offset: *scroll_offset,
         },
@@ -40,14 +47,17 @@ pub(super) fn to_ui_dialog<'a>(
             progress_fraction,
             cancellable,
         } => dialogs::DialogKind::Progress {
-            title: Cow::Borrowed("Progress"),
+            title: Cow::Borrowed(TITLE_PROGRESS),
             message: Cow::Borrowed(message),
             percent: progress_fraction.clamp(0.0, 1.0) * 100.0,
             cancellable: *cancellable,
         },
         app::types::DialogKind::CopyMove(details) => {
             let action = if details.is_move { "Move" } else { "Copy" };
-            // Per-frame alloc; low cost for short strings.
+            // Per-frame alloc. Not cacheable to Cow::Borrowed: the message is
+            // synthesized from counts + PathBuf displays (no borrowable source).
+            // A real cache would need persistent state keyed on the dialog data,
+            // which this wave forbids (render must stay AppState-pure).
             let msg = format!(
                 "{} {} item(s)\nfrom: {}\n  to: {}",
                 action,
@@ -78,7 +88,9 @@ pub(super) fn to_ui_dialog<'a>(
             }
         }
         app::types::DialogKind::ArchiveExtract(details) => {
-            // Per-frame alloc; low cost for short strings.
+            // Per-frame alloc. Not cacheable to Cow::Borrowed: composed from a
+            // PathBuf display + entry count. A correct cache would need
+            // persistent state keyed on the dialog data (forbidden this wave).
             let info = format!(
                 "{}\n{} entries",
                 details.source.display(),
@@ -108,22 +120,25 @@ fn properties_to_ui_dialog(details: &app::types::PropertiesDetails) -> dialogs::
     } else {
         "File"
     };
-    let mtime_str = if let Ok(duration) = details.mtime.duration_since(std::time::UNIX_EPOCH) {
-        chrono::Local
-            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-            .single()
-            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
-            .format("%Y-%m-%d %H:%M:%S")
+    let mtime_str: Cow<'static, str> =
+        if let Ok(duration) = details.mtime.duration_since(std::time::UNIX_EPOCH) {
             // Per-frame alloc; low cost for short strings.
-            .to_string()
-    } else {
-        "Unknown".to_string()
-    };
+            Cow::Owned(
+                chrono::Local
+                    .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
+                    .single()
+                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            )
+        } else {
+            Cow::Borrowed("Unknown")
+        };
     dialogs::DialogKind::Properties {
         info: dialogs::PropertiesInfo {
             name: Cow::Borrowed(details.name.as_str()),
             size: Cow::Owned(app::types::FileEntry::format_size(details.size)), // Per-frame alloc; low cost for short strings.
-            mtime: Cow::Owned(mtime_str),
+            mtime: mtime_str,
             permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(
                 details.permissions,
             )), // Per-frame alloc; low cost for short strings.

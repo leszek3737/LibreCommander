@@ -6,7 +6,6 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
 
@@ -27,11 +26,34 @@ fn indent_for_depth(depth: usize) -> &'static str {
     &INDENT_BUF[..needed.min(INDENT_BUF.len())]
 }
 
-fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
+/// Maximum indentation depth `INDENT_BUF` can represent (2 spaces per level).
+const MAX_INDENT_DEPTH: usize = INDENT_BUF.len() / 2;
+
+/// Precomputed visual width of `indent_for_depth(depth)` for each depth.
+/// All indent characters are spaces, so width == byte count == `depth * 2`
+/// (clamped at `INDENT_BUF` length). Avoids a `UnicodeWidthStr::width` scan
+/// per visible entry, per frame.
+const INDENT_WIDTHS: [usize; MAX_INDENT_DEPTH + 1] = {
+    let mut widths = [0usize; MAX_INDENT_DEPTH + 1];
+    let mut depth = 0;
+    while depth <= MAX_INDENT_DEPTH {
+        widths[depth] = depth * 2;
+        depth += 1;
+    }
+    widths
+};
+
+fn indent_width_for_depth(depth: usize) -> usize {
+    INDENT_WIDTHS[depth.min(MAX_INDENT_DEPTH)]
+}
+
+/// Truncates `name` to `max_width` columns, appending `…` if it does not fit.
+/// `name_width` is the caller-known display width of `name`; passing it avoids
+/// recomputing it on the hot per-entry render path.
+fn truncate_name_to_width(name: &str, name_width: usize, max_width: usize) -> Cow<'_, str> {
     if max_width == 0 {
         return Cow::Borrowed("");
     }
-    let name_width = UnicodeWidthStr::width(name);
     if name_width <= max_width {
         return Cow::Borrowed(name);
     }
@@ -48,6 +70,13 @@ fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     }
     result.push('…');
     Cow::Owned(result)
+}
+
+/// Convenience wrapper for callers that do not already know the display width
+/// (e.g. static help text). Hot paths should call `truncate_name_to_width`
+/// directly with a precomputed width.
+fn truncate_name(name: &str, max_width: usize) -> Cow<'_, str> {
+    truncate_name_to_width(name, UnicodeWidthStr::width(name), max_width)
 }
 
 fn render_tree_scrollbar(
@@ -79,20 +108,15 @@ fn render_tree_scrollbar(
         0
     };
 
-    let mut scrollbar = String::with_capacity(height * 4);
-    for i in 0..height {
-        let is_last = i == height - 1;
-        let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
-        if in_thumb {
-            scrollbar.push_str(if is_last { "█" } else { "█\n" });
-        } else {
-            scrollbar.push_str(if is_last { "│" } else { "│\n" });
-        }
-    }
-
     let style = Style::default().fg(colors.scrollbar_active);
-    let paragraph = Paragraph::new(scrollbar).style(style);
-    f.render_widget(paragraph, area);
+    // Write glyphs straight into the frame buffer; avoids a per-frame `String`
+    // allocation (the scrollbar is a single column, one glyph per row).
+    let buf = f.buffer_mut();
+    for i in 0..height {
+        let in_thumb = i >= thumb_pos && i < thumb_pos + thumb_height && total_entries > height;
+        let glyph = if in_thumb { "█" } else { "│" };
+        buf.set_stringn(area.x, area.y + i as u16, glyph, 1, style);
+    }
 }
 
 pub fn render_directory_tree(
@@ -122,12 +146,14 @@ fn render_tree_entries(
     colors: &ColorPalette,
 ) {
     let row_start = row_range.start;
+    let max_x = inner.x.saturating_add(content_width);
+    let buf = f.buffer_mut();
     for (offset, entry) in entries[row_range].iter().enumerate() {
         let row = row_start + offset;
         let y = inner.y + offset as u16;
 
         let indent = indent_for_depth(entry.depth);
-        let indent_width = UnicodeWidthStr::width(indent);
+        let indent_width = indent_width_for_depth(entry.depth);
         let prefix = if entry.is_dir && entry.read_error {
             "! "
         } else if entry.is_dir {
@@ -140,13 +166,7 @@ fn render_tree_entries(
         let available = (content_width as usize)
             .saturating_sub(indent_width)
             .saturating_sub(prefix_width);
-        let display_name = if available == 0 {
-            Cow::Borrowed("")
-        } else if entry.name_width <= available {
-            Cow::Borrowed(entry.name.as_str())
-        } else {
-            truncate_name(entry.name.as_str(), available)
-        };
+        let display_name = truncate_name_to_width(entry.name.as_str(), entry.name_width, available);
 
         let line_style = if row == selected {
             Theme::highlight_with_colors(colors)
@@ -156,14 +176,23 @@ fn render_tree_entries(
             Theme::panel_file_with_colors(colors.regular_file, colors)
         };
 
-        let line = Line::from(vec![
-            Span::styled(indent, line_style),
-            Span::styled(prefix, line_style),
-            Span::styled(display_name, line_style),
-        ]);
-        let para = Paragraph::new(line);
-        let row_area = Rect::new(inner.x, y, content_width, 1);
-        f.render_widget(para, row_area);
+        // Write the three segments (all sharing `line_style`) directly into the
+        // buffer, clipped to `content_width`. Avoids a per-entry `Vec<Span>` +
+        // `Paragraph` allocation. `set_stringn` returns the next x position.
+        let mut x = inner.x;
+        x = buf
+            .set_stringn(x, y, indent, max_x.saturating_sub(x) as usize, line_style)
+            .0;
+        x = buf
+            .set_stringn(x, y, prefix, max_x.saturating_sub(x) as usize, line_style)
+            .0;
+        buf.set_stringn(
+            x,
+            y,
+            display_name.as_ref(),
+            max_x.saturating_sub(x) as usize,
+            line_style,
+        );
     }
 }
 
@@ -414,5 +443,46 @@ mod tests {
             .map(|x| buffer[(x as u16, bottom_y)].symbol())
             .collect();
         assert!(content.contains("Enter"));
+    }
+
+    #[test]
+    fn indent_widths_table_matches_unicode_width() {
+        for depth in [0usize, 1, 2, 5, 10, MAX_INDENT_DEPTH] {
+            let expected = UnicodeWidthStr::width(indent_for_depth(depth));
+            assert_eq!(indent_width_for_depth(depth), expected, "depth {depth}");
+        }
+    }
+
+    #[test]
+    fn indent_width_clamps_beyond_max_depth() {
+        let beyond = MAX_INDENT_DEPTH + 25;
+        assert_eq!(
+            indent_width_for_depth(beyond),
+            UnicodeWidthStr::width(indent_for_depth(beyond)),
+        );
+        assert_eq!(indent_width_for_depth(beyond), MAX_INDENT_DEPTH * 2);
+    }
+
+    #[test]
+    fn truncate_provided_width_matches_recomputed() {
+        let names = ["foo", "hello world", "zażółć", "日本語ファイル", "a🍕b"];
+        for name in names {
+            let w = UnicodeWidthStr::width(name);
+            for max in 0..=(w + 2) {
+                let provided = truncate_name_to_width(name, w, max);
+                let recomputed = truncate_name(name, max);
+                assert_eq!(provided, recomputed, "name={name:?} max={max}");
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_wide_cjk_respects_column_width() {
+        // Each CJK glyph is 2 columns wide; "日本語" is 6 columns.
+        assert_eq!(truncate_name("日本語", 6), "日本語");
+        // max_width 5 -> keep within 4 columns then "…": only "日本" (4) + "…" fits.
+        assert_eq!(truncate_name("日本語", 5), "日本…");
+        // A 2-column glyph cannot fit in a single remaining column before "…".
+        assert_eq!(truncate_name("日本語", 2), "…");
     }
 }

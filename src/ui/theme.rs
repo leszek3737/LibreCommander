@@ -21,6 +21,24 @@ impl IconTheme {
             _ => None,
         }
     }
+
+    /// Resolve an icon theme from a raw TOML value, falling back to the default
+    /// (`Emoji`) and logging when the value is missing/non-string or names an
+    /// unknown theme. Shared by the `Deserialize` impl and the borrowed
+    /// `[theme]` table reader so both code paths behave identically.
+    fn from_value(value: &toml::Value) -> Self {
+        let Some(s) = value.as_str() else {
+            crate::debug_log!("config: non-string value for icon_theme, using emoji");
+            return Self::Emoji;
+        };
+        match Self::from_config_str(s) {
+            Some(theme) => theme,
+            None => {
+                crate::debug_log!("config: invalid value for icon_theme, using emoji");
+                Self::Emoji
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for IconTheme {
@@ -29,15 +47,7 @@ impl<'de> Deserialize<'de> for IconTheme {
         D: serde::Deserializer<'de>,
     {
         let value = toml::Value::deserialize(deserializer)?;
-        let Some(value) = value.as_str() else {
-            crate::debug_log!("config: non-string value for icon_theme, using emoji");
-            return Ok(Self::Emoji);
-        };
-        let result = Self::from_config_str(value);
-        if result.is_none() {
-            crate::debug_log!("config: invalid value for icon_theme, using emoji");
-        }
-        Ok(result.unwrap_or(Self::Emoji))
+        Ok(Self::from_value(&value))
     }
 }
 
@@ -65,16 +75,46 @@ macro_rules! define_theme_colors {
         impl ColorPalette {
             pub fn from_config(cfg: &ThemeConfig) -> Self {
                 Self {
-                    $($field: cfg.$field
-                        .as_ref()
-                        .and_then(|s| parse_color(s))
-                        .unwrap_or(DEFAULT_COLORS.$field),)*
+                    $($field: parse_color_field(
+                        stringify!($field),
+                        cfg.$field.as_deref(),
+                        DEFAULT_COLORS.$field,
+                    ),)*
                     icon_theme: cfg.icon_theme,
                 }
             }
 
             pub fn icon_theme(&self) -> IconTheme {
                 self.icon_theme
+            }
+        }
+
+        impl ThemeConfig {
+            /// Build a `ThemeConfig` directly from a borrowed `[theme]` TOML
+            /// table, avoiding a full clone of the table just to round-trip it
+            /// back through serde. Mirrors the `Deserialize` derive: each color
+            /// key must be a string (a non-string value is rejected), and
+            /// `icon_theme` tolerates bad values by falling back to the default
+            /// (see `IconTheme::from_value`).
+            fn from_table(table: &toml::Table) -> Result<Self, String> {
+                Ok(Self {
+                    $($field: match table.get(stringify!($field)) {
+                        None => None,
+                        Some(value) => match value.as_str() {
+                            Some(s) => Some(s.to_string()),
+                            None => {
+                                return Err(format!(
+                                    "[theme].{} must be a string color value",
+                                    stringify!($field)
+                                ));
+                            }
+                        },
+                    },)*
+                    icon_theme: table
+                        .get("icon_theme")
+                        .map(IconTheme::from_value)
+                        .unwrap_or_default(),
+                })
             }
         }
 
@@ -126,6 +166,32 @@ define_theme_colors! {
     (regular_file => Color::White),
 }
 
+/// Borrowed rendering context: bundles the active [`ColorPalette`] with the
+/// [`IconTheme`] so panel render helpers can take a single argument instead of
+/// threading the palette and icon theme separately. Cheap to copy (one shared
+/// reference plus a `Copy` enum).
+#[derive(Clone, Copy)]
+pub struct ColorCtx<'a> {
+    pub colors: &'a ColorPalette,
+    pub icon_theme: IconTheme,
+}
+
+impl<'a> ColorCtx<'a> {
+    pub fn new(colors: &'a ColorPalette, icon_theme: IconTheme) -> Self {
+        Self { colors, icon_theme }
+    }
+}
+
+impl ColorCtx<'static> {
+    /// Context backed by the built-in palette and its icon theme.
+    pub fn defaults() -> Self {
+        ColorCtx {
+            colors: &DEFAULT_COLORS,
+            icon_theme: DEFAULT_COLORS.icon_theme,
+        }
+    }
+}
+
 pub struct Theme;
 
 fn parse_color(s: &str) -> Option<Color> {
@@ -159,36 +225,110 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
 }
 
 fn parse_named_color(s: &str) -> Option<Color> {
-    let lower = s.to_ascii_lowercase();
-    match lower.as_str() {
-        "black" => Some(Color::Black),
-        "red" => Some(Color::Red),
-        "green" => Some(Color::Green),
-        "yellow" => Some(Color::Yellow),
-        "blue" => Some(Color::Blue),
-        "magenta" | "fuchsia" => Some(Color::Magenta),
-        "cyan" | "aqua" => Some(Color::Cyan),
-        "gray" | "grey" => Some(Color::Gray),
-        "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Some(Color::DarkGray),
-        "lightred" | "light_red" => Some(Color::LightRed),
-        "lightgreen" | "light_green" => Some(Color::LightGreen),
-        "lightyellow" | "light_yellow" => Some(Color::LightYellow),
-        "lightblue" | "light_blue" => Some(Color::LightBlue),
-        "lightmagenta" | "light_magenta" => Some(Color::LightMagenta),
-        "lightcyan" | "light_cyan" => Some(Color::LightCyan),
-        "white" => Some(Color::White),
-        "orange" => Some(Color::Rgb(255, 165, 0)),
-        "purple" => Some(Color::Rgb(128, 0, 128)),
-        "brown" => Some(Color::Rgb(165, 42, 42)),
-        "pink" => Some(Color::Rgb(255, 192, 203)),
-        "navy" => Some(Color::Rgb(0, 0, 128)),
-        "teal" => Some(Color::Rgb(0, 128, 128)),
-        "olive" => Some(Color::Rgb(128, 128, 0)),
-        "maroon" => Some(Color::Rgb(128, 0, 0)),
-        "lime" => Some(Color::Rgb(0, 255, 0)),
-        "silver" => Some(Color::Rgb(192, 192, 192)),
-        _ => None,
+    // Case-insensitive lookup without allocating a lowercased copy per parse.
+    const NAMED: &[(&str, Color)] = &[
+        ("black", Color::Black),
+        ("red", Color::Red),
+        ("green", Color::Green),
+        ("yellow", Color::Yellow),
+        ("blue", Color::Blue),
+        ("magenta", Color::Magenta),
+        ("fuchsia", Color::Magenta),
+        ("cyan", Color::Cyan),
+        ("aqua", Color::Cyan),
+        ("gray", Color::Gray),
+        ("grey", Color::Gray),
+        ("darkgray", Color::DarkGray),
+        ("darkgrey", Color::DarkGray),
+        ("dark_gray", Color::DarkGray),
+        ("dark_grey", Color::DarkGray),
+        ("lightred", Color::LightRed),
+        ("light_red", Color::LightRed),
+        ("lightgreen", Color::LightGreen),
+        ("light_green", Color::LightGreen),
+        ("lightyellow", Color::LightYellow),
+        ("light_yellow", Color::LightYellow),
+        ("lightblue", Color::LightBlue),
+        ("light_blue", Color::LightBlue),
+        ("lightmagenta", Color::LightMagenta),
+        ("light_magenta", Color::LightMagenta),
+        ("lightcyan", Color::LightCyan),
+        ("light_cyan", Color::LightCyan),
+        ("white", Color::White),
+        ("orange", Color::Rgb(255, 165, 0)),
+        ("purple", Color::Rgb(128, 0, 128)),
+        ("brown", Color::Rgb(165, 42, 42)),
+        ("pink", Color::Rgb(255, 192, 203)),
+        ("navy", Color::Rgb(0, 0, 128)),
+        ("teal", Color::Rgb(0, 128, 128)),
+        ("olive", Color::Rgb(128, 128, 0)),
+        ("maroon", Color::Rgb(128, 0, 0)),
+        ("lime", Color::Rgb(0, 255, 0)),
+        ("silver", Color::Rgb(192, 192, 192)),
+    ];
+    NAMED
+        .iter()
+        .find(|(name, _)| s.eq_ignore_ascii_case(name))
+        .map(|&(_, color)| color)
+}
+
+/// Resolve a single palette color from its optional config string, falling back
+/// to `default` and logging (like the icon-theme path) when a value is present
+/// but cannot be parsed.
+fn parse_color_field(field: &str, value: Option<&str>, default: Color) -> Color {
+    let Some(s) = value else {
+        return default;
+    };
+    match parse_color(s) {
+        Some(color) => color,
+        None => {
+            crate::debug_log!("config: invalid color '{s}' for {field}, using default");
+            default
+        }
     }
+}
+
+/// Generates the paired `name()` / `name_with_colors(colors)` style accessors.
+/// `name()` resolves against the built-in palette; `name_with_colors` builds the
+/// style from the supplied palette. Collapses the repetitive delegation
+/// boilerplate while keeping every public method name and signature stable.
+macro_rules! theme_styles {
+    ($($name:ident, $with_colors:ident => |$c:ident| $body:expr);* $(;)?) => {
+        impl Theme {
+            $(
+                pub fn $name() -> Style {
+                    Self::$with_colors(&DEFAULT_COLORS)
+                }
+
+                pub fn $with_colors($c: &ColorPalette) -> Style {
+                    $body
+                }
+            )*
+        }
+    };
+}
+
+theme_styles! {
+    panel_bg, panel_bg_with_colors => |c| Style::default().bg(c.panel_bg);
+    panel_fg, panel_fg_with_colors => |c| Style::default().fg(c.panel_fg);
+    panel, panel_with_colors => |c| Style::default().fg(c.panel_fg).bg(c.panel_bg);
+    status_bar, status_bar_with_colors =>
+        |c| Style::default().fg(c.status_bar_fg).bg(c.status_bar_bg);
+    menu_bar, menu_bar_with_colors =>
+        |c| Style::default().fg(c.menu_bar_fg).bg(c.menu_bar_bg);
+    dialog, dialog_with_colors => |c| Style::default().fg(c.dialog_fg).bg(c.dialog_bg);
+    highlight, highlight_with_colors =>
+        |c| Style::default().fg(c.highlight_fg).bg(c.highlight_bg);
+    error_dialog, error_dialog_with_colors => |c| Style::default().fg(c.error).bg(c.dialog_bg);
+    help_dialog, help_dialog_with_colors => |c| Style::default().fg(c.info).bg(c.dialog_bg);
+    warning_dialog, warning_dialog_with_colors =>
+        |c| Style::default().fg(c.warning).bg(c.dialog_bg);
+    border_active, border_active_with_colors => |c| Style::default().fg(c.border_active);
+    border_inactive, border_inactive_with_colors => |c| Style::default().fg(c.border_inactive);
+    title, title_with_colors => |c| Style::default().fg(c.title);
+    error, error_with_colors => |c| Style::default().fg(c.error);
+    warning, warning_with_colors => |c| Style::default().fg(c.warning);
+    info, info_with_colors => |c| Style::default().fg(c.info);
 }
 
 impl Theme {
@@ -205,73 +345,18 @@ impl Theme {
         let Some(theme_val) = raw.get("theme") else {
             return Ok(());
         };
-        let cfg: ThemeConfig = ThemeConfig::deserialize(theme_val.clone())
-            .map_err(|e| format!("Failed to parse [theme] section: {e}"))?;
+        // Read directly from the borrowed table instead of cloning the whole
+        // `[theme]` value just to feed serde.
+        let Some(table) = theme_val.as_table() else {
+            return Err("Failed to parse [theme] section: expected a table".to_string());
+        };
+        let cfg = ThemeConfig::from_table(table)?;
         *colors = ColorPalette::from_config(&cfg);
         Ok(())
     }
 
-    pub fn panel_bg() -> Style {
-        Self::panel_bg_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn panel_bg_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().bg(colors.panel_bg)
-    }
-
-    pub fn panel_fg() -> Style {
-        Self::panel_fg_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn panel_fg_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.panel_fg)
-    }
-
-    pub fn panel() -> Style {
-        Self::panel_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn panel_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.panel_fg).bg(colors.panel_bg)
-    }
-
-    pub fn status_bar() -> Style {
-        Self::status_bar_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn status_bar_with_colors(colors: &ColorPalette) -> Style {
-        Style::default()
-            .fg(colors.status_bar_fg)
-            .bg(colors.status_bar_bg)
-    }
-
-    pub fn menu_bar() -> Style {
-        Self::menu_bar_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn menu_bar_with_colors(colors: &ColorPalette) -> Style {
-        Style::default()
-            .fg(colors.menu_bar_fg)
-            .bg(colors.menu_bar_bg)
-    }
-
-    pub fn dialog() -> Style {
-        Self::dialog_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn dialog_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.dialog_fg).bg(colors.dialog_bg)
-    }
-
-    pub fn highlight() -> Style {
-        Self::highlight_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn highlight_with_colors(colors: &ColorPalette) -> Style {
-        Style::default()
-            .fg(colors.highlight_fg)
-            .bg(colors.highlight_bg)
-    }
+    // Methods below take extra arguments or compose other styles, so they stay
+    // hand-written rather than going through `theme_styles!`.
 
     pub fn highlight_bold() -> Style {
         Self::highlight_bold_with_colors(&DEFAULT_COLORS)
@@ -279,30 +364,6 @@ impl Theme {
 
     pub fn highlight_bold_with_colors(colors: &ColorPalette) -> Style {
         Self::highlight_with_colors(colors).add_modifier(Modifier::BOLD)
-    }
-
-    pub fn error_dialog() -> Style {
-        Self::error_dialog_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn error_dialog_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.error).bg(colors.dialog_bg)
-    }
-
-    pub fn help_dialog() -> Style {
-        Self::help_dialog_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn help_dialog_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.info).bg(colors.dialog_bg)
-    }
-
-    pub fn warning_dialog() -> Style {
-        Self::warning_dialog_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn warning_dialog_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.warning).bg(colors.dialog_bg)
     }
 
     pub fn progress_bar() -> Style {
@@ -363,54 +424,6 @@ impl Theme {
         } else {
             style
         }
-    }
-
-    pub fn border_active() -> Style {
-        Self::border_active_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn border_active_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.border_active)
-    }
-
-    pub fn border_inactive() -> Style {
-        Self::border_inactive_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn border_inactive_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.border_inactive)
-    }
-
-    pub fn title() -> Style {
-        Self::title_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn title_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.title)
-    }
-
-    pub fn error() -> Style {
-        Self::error_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn error_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.error)
-    }
-
-    pub fn warning() -> Style {
-        Self::warning_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn warning_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.warning)
-    }
-
-    pub fn info() -> Style {
-        Self::info_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn info_with_colors(colors: &ColorPalette) -> Style {
-        Style::default().fg(colors.info)
     }
 }
 
