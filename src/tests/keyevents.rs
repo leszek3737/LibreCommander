@@ -145,6 +145,39 @@ fn key_repeat_text_edit_updates_input_dialog() {
 }
 
 #[test]
+fn create_directory_trims_surrounding_whitespace() {
+    // Leading/trailing whitespace (e.g. from a paste) must be trimmed before the
+    // directory is created, so `"  newdir  "` resolves to `newdir`, not a dir
+    // named with literal spaces.
+    let (tmp, mut state) = panel_with_files(&[]);
+    state.mode = AppMode::Dialog(DialogKind::Input {
+        prompt: "Create directory:".to_string(),
+        action: InputAction::CreateDirectory,
+    });
+    state.input.dialog_input = {
+        let mut ti = TextInput::new();
+        ti.set_text("  newdir  ".to_string());
+        ti
+    };
+    let mut terminal = test_terminal();
+    let key = KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press);
+
+    let DispatchResult { handled, .. } =
+        dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
+
+    assert_eq!(handled, Ok(true));
+    assert!(
+        tmp.path().join("newdir").is_dir(),
+        "trimmed `newdir` directory must be created"
+    );
+    assert!(
+        !tmp.path().join("  newdir  ").exists(),
+        "untrimmed directory name must NOT be created"
+    );
+    assert!(matches!(state.mode, AppMode::Normal));
+}
+
+#[test]
 fn key_repeat_destructive_is_ignored() {
     let (tmp, mut state) = panel_with_files(&["victim.txt"]);
     let victim = tmp.path().join("victim.txt");

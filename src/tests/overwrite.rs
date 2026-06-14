@@ -545,6 +545,64 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
     ));
 }
 
+// Regression: Left/Right in an archive dialog must ONLY toggle the OK/Cancel
+// selection — it must NOT also fall through to the destination text editor and
+// move the text cursor (a double action). See `ArchiveNav::Handled`.
+#[test]
+fn archive_extract_left_toggles_selection_without_moving_text_cursor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let archive = create_test_tar_gz(tmp.path(), &["file1.txt"]);
+
+    let mut dest_input = TextInput::new();
+    dest_input.set_text_at_end("abc".to_string());
+    let cursor_before = dest_input.cursor();
+    assert_eq!(
+        cursor_before, 3,
+        "precondition: cursor sits at end of \"abc\""
+    );
+
+    let mut state = AppState {
+        mode: AppMode::Dialog(DialogKind::ArchiveExtract(Box::new(
+            ArchiveExtractDetails {
+                source: archive,
+                entries: vec![],
+                dest_input,
+            },
+        ))),
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut running_job = None;
+
+    {
+        let mut viewer_state = None;
+        let mut viewer_loader = None;
+        let mut image_preview_loader = None;
+        let mut ctx = crate::input::EventContext {
+            state: &mut state,
+            viewer_state: &mut viewer_state,
+            viewer_loader: &mut viewer_loader,
+            image_preview_loader: &mut image_preview_loader,
+            running_job: &mut running_job,
+            term_size: Size::new(80, 24),
+        };
+        dialogs::handle_dialog(&mut ctx, KeyCode::Left);
+    }
+
+    // Selection toggled (0 -> 1): Left/Right was consumed as button navigation.
+    assert_eq!(state.input.dialog_selection, 1);
+
+    // The destination text editor must be untouched: same text, same cursor.
+    let AppMode::Dialog(DialogKind::ArchiveExtract(details)) = &state.mode else {
+        panic!("dialog should still be ArchiveExtract");
+    };
+    assert_eq!(details.dest_input.text(), "abc");
+    assert_eq!(details.dest_input.cursor(), cursor_before);
+}
+
 #[test]
 fn check_overwrite_pending_action_none_returns_none() {
     let state = AppState {

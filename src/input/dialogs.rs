@@ -388,17 +388,23 @@ fn handle_input_action(
     action: &InputAction,
     terminal_height: u16,
 ) {
+    // Raw input is preserved verbatim for the search actions (ViewerSearch,
+    // FindFile) where leading/trailing whitespace is meaningful (e.g. searching
+    // indented code like `    fn`). All filesystem-mutating / navigation actions
+    // trim it so pasted whitespace cannot create entries named `" foo "` and so
+    // whitespace-only input fails the non-empty validation as empty.
     let input = state.input.dialog_input.text().to_owned();
+    let trimmed = input.trim();
     let outcome = match action {
         InputAction::ViewerSearch => {
             input_action_viewer_search(state, viewer_state, &input, terminal_height)
         }
-        InputAction::CreateDirectory => input_action_create_directory(state, &input),
-        InputAction::Rename => input_action_rename(state, &input),
-        InputAction::Chmod => input_action_chmod(state, &input),
-        InputAction::Filter => input_action_filter(state, input, terminal_height),
+        InputAction::CreateDirectory => input_action_create_directory(state, trimmed),
+        InputAction::Rename => input_action_rename(state, trimmed),
+        InputAction::Chmod => input_action_chmod(state, trimmed),
+        InputAction::Filter => input_action_filter(state, trimmed.to_owned(), terminal_height),
         InputAction::QuickCd => {
-            handle_quick_cd(state, &input);
+            handle_quick_cd(state, trimmed);
             InputOutcome::ResetWithRefresh
         }
         InputAction::FindFile => {
@@ -542,7 +548,12 @@ enum ArchiveNav {
     Commit,
     /// User cancelled (Esc, Cancel button) — dialog already dismissed.
     Dismissed,
-    /// A non-committing key (toggle/no-op) was handled; fall through to text edit.
+    /// Key fully handled (e.g. OK/Cancel toggle) — do NOT fall through to text
+    /// edit. Prevents Left/Right from both toggling the button selection and
+    /// moving the destination text cursor (double action).
+    Handled,
+    /// A non-committing key (no-op for nav) was not consumed; fall through to
+    /// text edit (Char/Backspace/Delete/Home/End).
     Continue,
 }
 
@@ -559,7 +570,7 @@ fn archive_dialog_nav(state: &mut AppState, key: KeyCode) -> ArchiveNav {
             } else {
                 0
             };
-            ArchiveNav::Continue
+            ArchiveNav::Handled
         }
         KeyCode::Enter if state.input.dialog_selection == 1 => {
             dismiss_dialog(state);
@@ -648,6 +659,9 @@ fn handle_archive_dialog(
             }
             return;
         }
+        // Key already consumed by nav (OK/Cancel toggle); must NOT also run text
+        // edit, otherwise Left/Right would move the dest-path cursor too.
+        ArchiveNav::Handled => return,
         ArchiveNav::Continue => {}
     }
     if let Some(dest_input) = active_archive_dest_input(state) {
