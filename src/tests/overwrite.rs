@@ -516,13 +516,20 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
     };
     let mut running_job = None;
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut None,
-        &mut running_job,
-        KeyCode::Enter,
-        Size::new(80, 24),
-    );
+    {
+        let mut viewer_state = None;
+        let mut viewer_loader = None;
+        let mut image_preview_loader = None;
+        let mut ctx = crate::input::EventContext {
+            state: &mut state,
+            viewer_state: &mut viewer_state,
+            viewer_loader: &mut viewer_loader,
+            image_preview_loader: &mut image_preview_loader,
+            running_job: &mut running_job,
+            term_size: Size::new(80, 24),
+        };
+        dialogs::handle_dialog(&mut ctx, KeyCode::Enter);
+    }
 
     assert!(matches!(
         state.mode,

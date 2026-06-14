@@ -12,6 +12,7 @@ use crate::menu::{MENUS, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::dialogs;
 use crate::ui::viewer;
 
+use super::EventContext;
 use super::dialogs::{check_overwrite_conflict, dismiss_dialog, finish_confirmed_action};
 use crate::app::panel_ops::{refresh_active, refresh_both, refresh_panel};
 
@@ -20,6 +21,22 @@ const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
 const ARCHIVE_EXTRACT_INPUT_ROW_OFFSET: u16 = 3;
 const ARCHIVE_CREATE_INPUT_ROW_OFFSET: u16 = 4;
 
+/// Fallback dropdown width (in cells) when a menu has no items to measure.
+const DEFAULT_DROPDOWN_WIDTH: usize = 10;
+/// Chrome rows reserved by a panel's border + header before the file rows
+/// (top border, header row, bottom border, function bar). Used by
+/// [`panel_bounds`] to derive the file-row range from the terminal height.
+const PANEL_CHROME_ROWS: u16 = 4;
+/// Minimum terminal height that can host at least one panel file row. Below
+/// this, [`panel_bounds`] yields an empty range and clicks/scrolls in the panel
+/// body are no-ops (see [`in_panel_file_rows`]).
+const MIN_PANEL_HEIGHT: u16 = PANEL_CHROME_ROWS + 1;
+/// The function bar is split into 10 equal-width F-key buttons (F1..=F10).
+const FUNCTION_BAR_BUTTONS: u32 = 10;
+/// Highest selectable function-bar button index (`FUNCTION_BAR_BUTTONS - 1`).
+const FUNCTION_BAR_MAX_INDEX: u32 = FUNCTION_BAR_BUTTONS - 1;
+
+#[derive(Debug)]
 pub enum MouseOutcome {
     Consumed,
     NormalKey(KeyCode),
@@ -33,14 +50,15 @@ pub(crate) struct MousePosition {
     pub(crate) height: u16,
 }
 
-pub fn handle_mouse_event(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    running_job: &mut Option<RunningJob>,
+pub(crate) fn handle_mouse_event(
+    ctx: &mut EventContext,
     mouse_event: crossterm::event::MouseEvent,
-    terminal_size: ratatui::layout::Size,
 ) -> Option<MouseOutcome> {
+    let terminal_size = ctx.term_size;
+    let state = &mut *ctx.state;
+    let viewer_state = &mut *ctx.viewer_state;
+    let viewer_loader = &mut *ctx.viewer_loader;
+    let running_job = &mut *ctx.running_job;
     let pos = MousePosition {
         col: mouse_event.column,
         row: mouse_event.row,
@@ -108,8 +126,7 @@ fn handle_middle_down(state: &mut AppState, pos: &MousePosition) -> Option<Mouse
         if !matches!(state.mode, AppMode::Normal | AppMode::Search) {
             return Some(MouseOutcome::Consumed);
         }
-        let mid_col = pos.width / 2;
-        if pos.col < mid_col {
+        if pos.col < mid_col(pos.width) {
             state.active_panel = ActivePanel::Left;
         } else {
             state.active_panel = ActivePanel::Right;
@@ -133,8 +150,36 @@ fn handle_right_down(state: &mut AppState, pos: &MousePosition) -> Option<MouseO
     Some(MouseOutcome::Consumed)
 }
 
+/// Column splitting the two panels. The left panel owns `col < mid_col`.
+fn mid_col(width: u16) -> u16 {
+    width / 2
+}
+
+/// File-row range (`start`, `end`) for a terminal of `height`. The interior
+/// file rows are those strictly between `start` and `end` (see
+/// [`in_panel_file_rows`]).
+///
+/// On a terminal too short to host any file row (`height < MIN_PANEL_HEIGHT`)
+/// this returns an empty `(1, 1)` range so callers treat the panel body as
+/// having no rows, rather than relying on `saturating_sub` underflowing to 0
+/// and producing a malformed `(1, 0)` range.
 fn panel_bounds(height: u16) -> (u16, u16) {
-    (1u16, height.saturating_sub(4))
+    if height < MIN_PANEL_HEIGHT {
+        return (1, 1);
+    }
+    (1u16, height - PANEL_CHROME_ROWS)
+}
+
+/// Inclusive panel row span (`end - start + 1`) for the file-list area.
+fn panel_height(start: u16, end: u16) -> u16 {
+    end.saturating_sub(start) + 1
+}
+
+/// Number of visible file rows in the list area: the panel height minus the
+/// two rows of chrome (header + bottom border) that frame the scrollable body.
+/// Centralized here so the scroll and click paths cannot drift apart.
+fn visible_rows(start: u16, end: u16) -> usize {
+    panel_height(start, end).saturating_sub(2) as usize
 }
 
 fn in_panel_file_rows(pos: &MousePosition) -> bool {
@@ -192,10 +237,8 @@ fn handle_mouse_scroll(
         return;
     }
     let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
-    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
-    let visible_rows = panel_height.saturating_sub(2) as usize;
-    let mid_col = pos.width / 2;
-    if pos.col < mid_col {
+    let visible = visible_rows(panel_start_row, panel_end_row);
+    if pos.col < mid_col(pos.width) {
         state.active_panel = ActivePanel::Left;
     } else {
         state.active_panel = ActivePanel::Right;
@@ -205,7 +248,7 @@ fn handle_mouse_scroll(
     match kind {
         MouseEventKind::ScrollUp => {
             panel.cursor = panel.cursor.saturating_sub(SCROLL_LINES);
-            panel.ensure_cursor_visible(visible_rows);
+            panel.ensure_cursor_visible(visible);
         }
         MouseEventKind::ScrollDown => {
             if panel.cursor + SCROLL_LINES < len {
@@ -213,7 +256,7 @@ fn handle_mouse_scroll(
             } else {
                 panel.cursor = len.saturating_sub(1);
             }
-            panel.ensure_cursor_visible(visible_rows);
+            panel.ensure_cursor_visible(visible);
         }
         _ => {}
     }
@@ -236,45 +279,50 @@ fn handle_mouse_dialog(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
-    if let AppMode::Dialog(DialogKind::Progress { .. }) = state.mode {
-        return handle_progress_click(state, running_job, pos);
+    // Dispatch on the active dialog kind. The two archive variants mutate their
+    // boxed `details` in place, so they are handled inside this borrow of
+    // `state.mode`; the click-handler variants (Progress/Confirm/Overwrite) need
+    // a fresh `&mut AppState`, so they delegate *after* the match releases the
+    // borrow. Any other dialog swallows the click without acting on it.
+    let AppMode::Dialog(kind) = &mut state.mode else {
+        return None;
+    };
+
+    enum Delegate {
+        Progress,
+        Confirm,
+        Overwrite,
     }
 
-    if let AppMode::Dialog(DialogKind::Input { .. }) = state.mode {
-        return Some(MouseOutcome::Consumed);
-    }
+    let delegate = match kind {
+        DialogKind::ArchiveExtract(details) => {
+            position_text_input_cursor(
+                &mut details.dest_input,
+                pos,
+                archive_input_rect(pos, ARCHIVE_EXTRACT_INPUT_ROW_OFFSET),
+            );
+            return Some(MouseOutcome::Consumed);
+        }
+        DialogKind::ArchiveCreate(details) => {
+            position_text_input_cursor(
+                &mut details.dest_input,
+                pos,
+                archive_input_rect(pos, ARCHIVE_CREATE_INPUT_ROW_OFFSET),
+            );
+            return Some(MouseOutcome::Consumed);
+        }
+        DialogKind::Progress { .. } => Delegate::Progress,
+        DialogKind::Confirm(_) => Delegate::Confirm,
+        DialogKind::OverwriteConfirm(..) => Delegate::Overwrite,
+        // Input and every other dialog: consume the click, change nothing.
+        _ => return Some(MouseOutcome::Consumed),
+    };
 
-    if let AppMode::Dialog(DialogKind::ArchiveExtract(ref mut details)) = state.mode {
-        position_text_input_cursor(
-            &mut details.dest_input,
-            pos,
-            archive_input_rect(pos, ARCHIVE_EXTRACT_INPUT_ROW_OFFSET),
-        );
-        return Some(MouseOutcome::Consumed);
+    match delegate {
+        Delegate::Progress => handle_progress_click(state, running_job, pos),
+        Delegate::Confirm => handle_confirm_click(state, running_job, pos),
+        Delegate::Overwrite => handle_overwrite_click(state, running_job, pos),
     }
-
-    if let AppMode::Dialog(DialogKind::ArchiveCreate(ref mut details)) = state.mode {
-        position_text_input_cursor(
-            &mut details.dest_input,
-            pos,
-            archive_input_rect(pos, ARCHIVE_CREATE_INPUT_ROW_OFFSET),
-        );
-        return Some(MouseOutcome::Consumed);
-    }
-
-    if let AppMode::Dialog(DialogKind::Confirm(_)) = state.mode {
-        return handle_confirm_click(state, running_job, pos);
-    }
-
-    if let AppMode::Dialog(DialogKind::OverwriteConfirm(..)) = state.mode {
-        return handle_overwrite_click(state, running_job, pos);
-    }
-
-    if let AppMode::Dialog(_) = state.mode {
-        return Some(MouseOutcome::Consumed);
-    }
-
-    None
 }
 
 fn archive_input_rect(pos: &MousePosition, row_offset: u16) -> Rect {
@@ -475,7 +523,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
         .iter()
         .map(|s| UnicodeWidthStr::width(*s))
         .max()
-        .unwrap_or(10) as u16
+        .unwrap_or(DEFAULT_DROPDOWN_WIDTH) as u16
         + 4;
     let menu_bar_area = Rect::new(0, 0, pos.width, 1);
     let dropdown_x = menu_dropdown_x(menu_bar_area, state.ui.menu_selected, dropdown_width);
@@ -485,7 +533,10 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
     let inner_width = dropdown_width.saturating_sub(2);
 
     let max_visible = pos.height.saturating_sub(1);
-    let dropdown_height = ((items.len().min(u16::MAX as usize - 2)) as u16 + 2).min(max_visible);
+    // Clamp the item count so `+ 2` (the dropdown's top/bottom border) cannot
+    // overflow `u16` before the `.min(max_visible)` clamp.
+    const MAX_DROPDOWN_ITEMS: usize = u16::MAX as usize - 2;
+    let dropdown_height = ((items.len().min(MAX_DROPDOWN_ITEMS)) as u16 + 2).min(max_visible);
     let visible_items = dropdown_height.saturating_sub(2) as usize;
     let clamped_selected = state
         .ui
@@ -521,7 +572,8 @@ fn handle_mouse_function_bar(state: &mut AppState, pos: &MousePosition) -> Optio
     if pos.width == 0 {
         return Some(MouseOutcome::Consumed);
     }
-    let btn_idx = (u32::from(pos.col) * 10 / u32::from(pos.width)).min(9) as u16;
+    let btn_idx = (u32::from(pos.col) * FUNCTION_BAR_BUTTONS / u32::from(pos.width))
+        .min(FUNCTION_BAR_MAX_INDEX) as u16;
     let fkey = match btn_idx {
         0 => KeyCode::F(1),
         1 => KeyCode::F(2),
@@ -553,9 +605,8 @@ fn handle_mouse_panels(
     }
     let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
 
-    let panel_height = panel_end_row.saturating_sub(panel_start_row) + 1;
-    let mid_col = pos.width / 2;
-    let clicked_left = pos.col < mid_col;
+    let panel_rows = panel_height(panel_start_row, panel_end_row);
+    let clicked_left = pos.col < mid_col(pos.width);
 
     if clicked_left {
         state.active_panel = ActivePanel::Left;
@@ -607,7 +658,12 @@ fn handle_mouse_panels(
             panel_mut.set_path(path);
             panel_mut.cursor = 0;
             panel_mut.scroll_offset = 0;
-            refresh_panel(panel_mut, panel_height as usize);
+            // Contract: `refresh_panel` takes the *full* inclusive panel height
+            // (header + body + bottom border) because it recomputes the whole
+            // listing layout, whereas `ensure_cursor_visible` below takes only
+            // the count of scrollable body rows (`visible_rows`). The two are
+            // intentionally different units; keep them in sync via the helpers.
+            refresh_panel(panel_mut, panel_rows as usize);
         } else {
             *viewer_loader = Some(viewer::ViewerState::open_background(path));
             state.prev_mode = Some(state.mode.clone());
@@ -619,7 +675,7 @@ fn handle_mouse_panels(
 
         let panel_mut = state.active_panel_mut();
         panel_mut.cursor = clicked_index;
-        panel_mut.ensure_cursor_visible(panel_height.saturating_sub(2) as usize);
+        panel_mut.ensure_cursor_visible(visible_rows(panel_start_row, panel_end_row));
     }
 }
 
@@ -638,8 +694,7 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
         None => return,
     };
 
-    let mid_col = pos.width / 2;
-    let clicked_left = pos.col < mid_col;
+    let clicked_left = pos.col < mid_col(pos.width);
     let same_panel = clicked_left == matches!(state.active_panel, ActivePanel::Left);
     if !same_panel {
         return;
@@ -662,13 +717,29 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
     let panel_mut = state.active_panel_mut();
     let start = anchor.min(current_index);
     let end = anchor.max(current_index);
-    panel_mut.clear_selection();
-    for i in start..=end {
-        panel_mut.set_selection_at(i, true);
-    }
+    set_selection_range(panel_mut, start..=end);
     panel_mut.cursor = current_index;
-    let visible_rows = (panel_end_row - panel_start_row).saturating_sub(1) as usize;
-    panel_mut.ensure_cursor_visible(visible_rows);
+    panel_mut.ensure_cursor_visible(visible_rows(panel_start_row, panel_end_row));
+}
+
+/// Replace the panel's selection with exactly the filtered indices in `range`.
+///
+/// Clears any prior selection, then selects `range` in a single pass. Kept as a
+/// dedicated helper so the drag path has one well-named entry point and the
+/// clear-then-select sequence cannot be reordered by accident.
+///
+/// Note: it still routes each index through [`PanelState::set_selection_at`],
+/// which maps the filtered index to the backing store per call. A true
+/// single-scan batch would need a `PanelState`-side method with access to the
+/// private filtered-index table; that lives outside this module.
+fn set_selection_range(
+    panel: &mut crate::app::types::PanelState,
+    range: std::ops::RangeInclusive<usize>,
+) {
+    panel.clear_selection();
+    for i in range {
+        panel.set_selection_at(i, true);
+    }
 }
 
 fn handle_mouse_up(state: &mut AppState) {

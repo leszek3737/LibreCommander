@@ -1,6 +1,6 @@
-use crossterm::event::{KeyCode, KeyModifiers};
+use std::fmt::Write as _;
 
-const TREE_INITIAL_EXPAND_DEPTH: usize = 2;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use lc::app::user_menu::MenuSource;
 use lc::app::{config, dir_tree, types::*, user_menu};
@@ -9,6 +9,52 @@ use lc::ops;
 
 use super::directory_tree::set_tree_diagnostic_status;
 use crate::app::panel_ops::{current_visible_height, rebuild_visible_entries, with_menu_panel};
+
+const TREE_INITIAL_EXPAND_DEPTH: usize = 2;
+
+/// Mask for the permission bits (`setuid`/`setgid`/`sticky` + rwx triplets)
+/// extracted from a raw `st_mode` value when prefilling the chmod dialog.
+const PERMISSION_MASK: u32 = 0o7777;
+
+/// Status-bar labels for the two listing layouts.
+const LISTING_MODE_LONG_LABEL: &str = "Long";
+const LISTING_MODE_BRIEF_LABEL: &str = "Brief";
+
+/// Status-bar labels for a toggled boolean flag (e.g. permission column).
+const FLAG_ON_LABEL: &str = "ON";
+const FLAG_OFF_LABEL: &str = "OFF";
+
+/// Returns the listing layout that toggling `mode` switches to.
+///
+/// Models the binary `Long`/`Brief` switch as a total function over the type,
+/// so the compiler enforces exhaustiveness if a third variant is ever added.
+/// (Lives here rather than as a `ListingMode` method because that enum is owned
+/// by `app::types::sorting`; promote to an inherent method when touching it.)
+fn toggle_listing_mode(mode: ListingMode) -> ListingMode {
+    match mode {
+        ListingMode::Long => ListingMode::Brief,
+        ListingMode::Brief => ListingMode::Long,
+    }
+}
+
+/// Human-readable status-bar label for a listing layout.
+fn listing_mode_label(mode: ListingMode) -> &'static str {
+    match mode {
+        ListingMode::Long => LISTING_MODE_LONG_LABEL,
+        ListingMode::Brief => LISTING_MODE_BRIEF_LABEL,
+    }
+}
+
+/// Enters a list-picker mode with a freshly reset selection cursor.
+fn enter_picker(state: &mut AppState, kind: PickerKind) {
+    state.ui.picker_selected = 0;
+    state.mode = AppMode::ListPicker(kind);
+}
+
+/// Name of the panel's current entry, cloned if one is selected.
+fn current_entry_name(panel: &PanelState) -> Option<String> {
+    panel.current_entry().map(|e| e.name.clone())
+}
 
 pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifiers, bool)> {
     let action = menu_action_at(state.ui.menu_selected, state.ui.menu_item_selected)?;
@@ -87,15 +133,9 @@ fn execute_panel_config_action(
         MenuAction::ToggleListingMode => {
             with_menu_panel(state, |state| {
                 let panel = state.active_panel_mut();
-                let new_mode = match panel.listing_mode() {
-                    ListingMode::Long => ListingMode::Brief,
-                    ListingMode::Brief => ListingMode::Long,
-                };
+                let new_mode = toggle_listing_mode(panel.listing_mode());
                 panel.set_listing_mode(new_mode);
-                let label = match new_mode {
-                    ListingMode::Long => "Long",
-                    ListingMode::Brief => "Brief",
-                };
+                let label = listing_mode_label(new_mode);
                 state.ui.status_message = Some(format!("Layout changed to {label}"));
             });
             None
@@ -138,8 +178,8 @@ fn execute_panel_config_action(
                 let panel = state.active_panel_mut();
                 let show = !panel.show_permissions();
                 panel.set_show_permissions(show);
-                state.ui.status_message =
-                    Some(format!("Permissions: {}", if show { "ON" } else { "OFF" }));
+                let flag_label = if show { FLAG_ON_LABEL } else { FLAG_OFF_LABEL };
+                state.ui.status_message = Some(format!("Permissions: {flag_label}"));
             });
             None
         }
@@ -179,18 +219,15 @@ fn execute_nav_action(
             None
         }
         MenuAction::CompareDirs => {
-            state.ui.picker_selected = 0;
-            state.mode = AppMode::ListPicker(PickerKind::CompareMode);
+            enter_picker(state, PickerKind::CompareMode);
             None
         }
         MenuAction::History => {
-            state.ui.picker_selected = 0;
-            state.mode = AppMode::ListPicker(PickerKind::History);
+            enter_picker(state, PickerKind::History);
             None
         }
         MenuAction::DirectoryHotlist => {
-            state.ui.picker_selected = 0;
-            state.mode = AppMode::ListPicker(PickerKind::Hotlist);
+            enter_picker(state, PickerKind::Hotlist);
             None
         }
         MenuAction::CommandLine => {
@@ -208,7 +245,7 @@ fn execute_dialog_action(
     match action {
         MenuAction::Rename => {
             with_menu_panel(state, |state| {
-                let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
+                let entry_name = current_entry_name(state.active_panel());
                 if let Some(name) = entry_name
                     && name != ".."
                 {
@@ -233,7 +270,7 @@ fn execute_dialog_action(
                     state
                         .input
                         .dialog_input
-                        .set_text_at_end(format!("{:o}", permissions & 0o7777));
+                        .set_text_at_end(format!("{:o}", permissions & PERMISSION_MASK));
                     state.mode = AppMode::Dialog(DialogKind::Input {
                         prompt: "Chmod (octal):".to_string(),
                         action: InputAction::Chmod,
@@ -248,26 +285,17 @@ fn execute_dialog_action(
 
 pub fn open_user_menu(state: &mut AppState) {
     let panel_dir = state.active_panel().path().to_path_buf();
-    let current_file = state
-        .active_panel()
-        .current_entry()
-        .map(|e| e.name.clone())
-        .unwrap_or_default();
+    let current_file = current_entry_name(state.active_panel()).unwrap_or_default();
     match user_menu::load_menu_with_warnings(&panel_dir, &current_file) {
         Ok(loaded) if loaded.entries.is_empty() => {
-            let message = if loaded.warnings.is_empty() {
-                "No matching menu entries found.".to_string()
-            } else {
-                format!(
-                    "No matching menu entries found.\n{}",
-                    loaded
-                        .warnings
-                        .iter()
-                        .map(|warning| format!("Line {}: {}", warning.line, warning.message))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                )
-            };
+            let message = loaded.warnings.iter().fold(
+                "No matching menu entries found.".to_string(),
+                |mut acc, warning| {
+                    // Infallible: writing into a String never errors.
+                    let _ = write!(acc, "\nLine {}: {}", warning.line, warning.message);
+                    acc
+                },
+            );
             state.mode = AppMode::Dialog(DialogKind::Error(message));
         }
         Ok(loaded) => {

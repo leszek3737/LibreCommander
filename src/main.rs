@@ -1,5 +1,4 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -13,7 +12,9 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::prelude::*;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Size;
 
 use lc::{app, fs, menu, ui};
 
@@ -83,10 +84,6 @@ pub(crate) fn leave_tui_stdout() -> io::Result<()> {
         Show
     );
     raw_result.and(screen_result)
-}
-
-fn terminal_state_file_path() -> Option<PathBuf> {
-    paths::terminal_state_file_path()
 }
 
 fn fatal(msg: &str, err: &dyn std::fmt::Display) -> ! {
@@ -231,9 +228,9 @@ fn pre_draw(
     }
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    recover_terminal_state()?;
-
+/// Build the initial `AppState`: load config + apply theme. Any recoverable
+/// error is surfaced through `status_message` rather than aborting startup.
+fn init_app_state() -> AppState {
     let mut state = AppState::new();
     let config_raw = match app::config::load_setup(&mut state) {
         Ok(raw) => raw,
@@ -247,13 +244,20 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     {
         state.ui.status_message = Some(e);
     }
+    state
+}
 
-    let mut viewer_state: Option<viewer::ViewerState> = None;
-    let mut viewer_loader: Option<viewer::ViewerLoader> = None;
-    let mut image_preview_loader: Option<viewer::ImagePreviewLoader> = None;
-    let mut running_job: Option<RunningJob> = None;
+/// Start the filesystem watcher, returning the receiver and `Option<Watcher>`.
+/// A failed watcher is non-fatal: the app runs without live updates and the
+/// reason is appended to `status_message`.
+fn init_watcher(
+    state: &mut AppState,
+) -> (
+    Option<fs::watcher::Watcher>,
+    mpsc::Receiver<fs::watcher::WatchEvent>,
+) {
     let (watch_tx, watch_rx) = mpsc::sync_channel(WATCH_CHANNEL_CAPACITY);
-    let mut watcher = match fs::watcher::Watcher::new(Arc::new(watch_tx)) {
+    let watcher = match fs::watcher::Watcher::new(Arc::new(watch_tx)) {
         Ok(w) => Some(w),
         Err(err) => {
             let msg = format!("watcher disabled: {err}");
@@ -264,44 +268,127 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             None
         }
     };
-    let mut watcher_paused = false;
-    let mut watcher_sync_state = watcher_sync::WatcherSyncState::default();
+    (watcher, watch_rx)
+}
+
+/// Long-lived loop state that the async-poll and render seams operate on. Groups
+/// the watcher bookkeeping + the per-frame viewer/job handles so the per-iter
+/// helpers take a small parameter list instead of a dozen `&mut` locals.
+struct AppLoop {
+    viewer_state: Option<viewer::ViewerState>,
+    viewer_loader: Option<viewer::ViewerLoader>,
+    image_preview_loader: Option<viewer::ImagePreviewLoader>,
+    running_job: Option<RunningJob>,
+    watcher: Option<fs::watcher::Watcher>,
+    watcher_paused: bool,
+    watcher_sync_state: watcher_sync::WatcherSyncState,
+}
+
+/// Drain every async source feeding the UI for one loop iteration: watcher
+/// events, the running job, and the viewer/image-preview loaders. Returns
+/// `true` if anything changed and the frame must be redrawn.
+fn poll_async(
+    loop_state: &mut AppLoop,
+    state: &mut AppState,
+    watch_rx: &mpsc::Receiver<fs::watcher::WatchEvent>,
+) -> bool {
+    let mut dirty = false;
+    panel_ops::sync_watcher_job_state(
+        &loop_state.watcher,
+        loop_state.running_job.is_some(),
+        &mut loop_state.watcher_paused,
+    );
+    watcher_sync::sync_watcher_paths(
+        &mut loop_state.watcher,
+        state,
+        &mut loop_state.watcher_sync_state,
+    );
+    if watcher_sync::poll_watcher_events(state, watch_rx) {
+        if let Some(ref w) = loop_state.watcher {
+            w.flush_pending();
+        }
+        dirty = true;
+    }
+    if poll_running_job(state, &mut loop_state.running_job, panel_ops::refresh_both) {
+        panel_ops::sync_watcher_job_state(
+            &loop_state.watcher,
+            loop_state.running_job.is_some(),
+            &mut loop_state.watcher_paused,
+        );
+        dirty = true;
+    }
+    if poll_viewer_loader(
+        state,
+        &mut loop_state.viewer_state,
+        &mut loop_state.viewer_loader,
+    ) || poll_image_preview(
+        state,
+        &mut loop_state.viewer_state,
+        &mut loop_state.image_preview_loader,
+    ) {
+        dirty = true;
+    }
+    dirty
+}
+
+/// Run image-preview prep then draw a single frame. Keeps the `pre_draw` →
+/// `terminal.draw` ordering (image preview / wrap layout must be computed
+/// before the immediate-mode render reads them) in one place.
+fn render_frame(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    loop_state: &mut AppLoop,
+    state: &AppState,
+    term_size: Size,
+) -> io::Result<()> {
+    pre_draw(
+        state,
+        &mut loop_state.viewer_state,
+        &mut loop_state.image_preview_loader,
+        term_size,
+    );
+    terminal.draw(|f| {
+        render::render_ui(
+            f,
+            state,
+            loop_state.viewer_state.as_ref(),
+            loop_state.viewer_loader.as_ref(),
+        )
+    })?;
+    Ok(())
+}
+
+fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    recover_terminal_state()?;
+
+    let mut state = init_app_state();
+    let (watcher, watch_rx) = init_watcher(&mut state);
+    let mut loop_state = AppLoop {
+        viewer_state: None,
+        viewer_loader: None,
+        image_preview_loader: None,
+        running_job: None,
+        watcher,
+        watcher_paused: false,
+        watcher_sync_state: watcher_sync::WatcherSyncState::default(),
+    };
 
     panel_ops::refresh_panel(&mut state.left_panel, 0);
     panel_ops::refresh_panel(&mut state.right_panel, 0);
-    watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut watcher_sync_state);
+    watcher_sync::sync_watcher_paths(
+        &mut loop_state.watcher,
+        &state,
+        &mut loop_state.watcher_sync_state,
+    );
     let mut dirty = true;
     let mut term_size = terminal.size()?;
 
     loop {
-        panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-        watcher_sync::sync_watcher_paths(&mut watcher, &state, &mut watcher_sync_state);
-        if watcher_sync::poll_watcher_events(&mut state, &watch_rx) {
-            if let Some(ref w) = watcher {
-                w.flush_pending();
-            }
-            dirty = true;
-        }
-        if poll_running_job(&mut state, &mut running_job, panel_ops::refresh_both) {
-            panel_ops::sync_watcher_job_state(&watcher, running_job.is_some(), &mut watcher_paused);
-            dirty = true;
-        }
-        if poll_viewer_loader(&mut state, &mut viewer_state, &mut viewer_loader)
-            || poll_image_preview(&mut state, &mut viewer_state, &mut image_preview_loader)
-        {
+        if poll_async(&mut loop_state, &mut state, &watch_rx) {
             dirty = true;
         }
         if dirty {
-            pre_draw(
-                &state,
-                &mut viewer_state,
-                &mut image_preview_loader,
-                term_size,
-            );
-            if let Err(e) = terminal.draw(|f| {
-                render::render_ui(f, &state, viewer_state.as_ref(), viewer_loader.as_ref())
-            }) {
-                shutdown_job(&mut running_job);
+            if let Err(e) = render_frame(terminal, &mut loop_state, &state, term_size) {
+                shutdown_job(&mut loop_state.running_job);
                 return Err(e);
             }
             dirty = false;
@@ -310,24 +397,26 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             let key = match event::read() {
                 Ok(k) => k,
                 Err(e) => {
-                    shutdown_job(&mut running_job);
+                    shutdown_job(&mut loop_state.running_job);
                     return Err(e);
                 }
             };
-            dirty = dispatch_event(
-                &mut state,
-                &mut viewer_state,
-                &mut viewer_loader,
-                &mut image_preview_loader,
-                &mut running_job,
-                terminal,
-                &mut term_size,
-                &key,
-            )?;
+            let mut ctx = input::EventContext {
+                state: &mut state,
+                viewer_state: &mut loop_state.viewer_state,
+                viewer_loader: &mut loop_state.viewer_loader,
+                image_preview_loader: &mut loop_state.image_preview_loader,
+                running_job: &mut loop_state.running_job,
+                term_size,
+            };
+            dirty = dispatch_event(&mut ctx, terminal, &key)?;
+            // The dispatch may have processed a `Resize`, which lives only in
+            // the context; carry it back so the next render uses the new size.
+            term_size = ctx.term_size;
         }
 
         if state.should_quit() {
-            shutdown_job(&mut running_job);
+            shutdown_job(&mut loop_state.running_job);
             return Ok(());
         }
     }
@@ -340,141 +429,90 @@ fn shutdown_job(job: &mut Option<RunningJob>) {
 }
 
 fn recover_terminal_state() -> io::Result<()> {
-    let Some(terminal_state_file) = terminal_state_file_path() else {
+    let Some(terminal_state_file) = paths::terminal_state_file_path() else {
         return Ok(());
     };
     if std::fs::metadata(&terminal_state_file).is_ok() {
+        // Bounce the terminal to recover from a previous external-process exit.
+        // The `enter` result is what determines whether the terminal is usable
+        // going forward, so it is the one we propagate. A failed `leave` is
+        // logged but must NOT mask a successful `enter`: reporting an error
+        // while the terminal is actually working would abort the app needlessly.
         let leave = leave_tui_stdout();
         let enter = enter_tui_stdout();
         if let Err(e) = std::fs::remove_file(&terminal_state_file) {
             lc::debug_log!("failed to remove terminal state file: {e}");
         }
-        leave.and(enter)?;
+        if let Err(e) = leave {
+            lc::debug_log!("failed to leave terminal during recovery: {e}");
+        }
+        enter?;
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dispatch_event<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
-    running_job: &mut Option<RunningJob>,
+    ctx: &mut input::EventContext,
     terminal: &mut Terminal<B>,
-    term_size: &mut Size,
     event: &Event,
 ) -> Result<bool, B::Error> {
     match event {
-        Event::Key(key) => dispatch_key_event(
-            state,
-            viewer_state,
-            viewer_loader,
-            image_preview_loader,
-            running_job,
-            terminal,
-            *term_size,
-            key,
-        ),
-        Event::Mouse(mouse_event) => dispatch_mouse_event(
-            state,
-            viewer_state,
-            viewer_loader,
-            running_job,
-            mouse_event,
-            terminal,
-            *term_size,
-        ),
+        Event::Key(key) => dispatch_key_event(ctx, terminal, key),
+        Event::Mouse(mouse_event) => dispatch_mouse_event(ctx, terminal, mouse_event),
         Event::Resize(cols, rows) => {
-            *term_size = Size::new(*cols, *rows);
+            ctx.term_size = Size::new(*cols, *rows);
             Ok(true)
         }
         _ => Ok(false),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dispatch_key_event<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
-    running_job: &mut Option<RunningJob>,
+    ctx: &mut input::EventContext,
     terminal: &mut Terminal<B>,
-    term_size: Size,
     key: &KeyEvent,
 ) -> Result<bool, B::Error> {
     match key.kind {
         KeyEventKind::Press => {}
-        KeyEventKind::Repeat if key_repeat_allowed(&state.mode, key.code) => {}
+        KeyEventKind::Repeat if key_repeat_allowed(&ctx.state.mode, key.code) => {}
         _ => return Ok(false),
     }
-    let size = term_size;
-    match &state.mode {
+    // Per-mode dispatch: each arm forwards the shared `EventContext` (plus the
+    // terminal/key data each handler needs) to exactly one mode handler. Match
+    // on `ctx.state.mode` as a place expression with only non-binding patterns
+    // (`Dialog(_)`, `ListPicker(_)`, unit variants): this reads the discriminant
+    // without holding a borrow into the arm, so each handler is free to reborrow
+    // `ctx.state` mutably. No clone -- the previous `mode.clone()` deep-allocated
+    // `Dialog`/`ListPicker` payloads on every keypress.
+    match ctx.state.mode {
         AppMode::Normal => {
-            input::mode_dispatch::handle_normal_mode(
-                state,
-                viewer_state,
-                viewer_loader,
-                key.code,
-                key.modifiers,
-                size.height,
-                terminal,
-            );
+            input::mode_dispatch::handle_normal_mode(ctx, key.code, key.modifiers, terminal);
         }
         AppMode::Viewing => {
-            input::mode_dispatch::handle_viewer_mode(
-                state,
-                viewer_state,
-                viewer_loader,
-                image_preview_loader,
-                key.code,
-                size,
-            );
+            input::mode_dispatch::handle_viewer_mode(ctx, key.code);
         }
         AppMode::CommandLine => {
-            input::command_line::handle_command_line(state, *key);
+            input::command_line::handle_command_line(ctx.state, *key);
         }
         AppMode::Dialog(_) => {
-            input::dialogs::handle_dialog(state, viewer_state, running_job, key.code, size);
+            input::dialogs::handle_dialog(ctx, key.code);
         }
         AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
-            let visible = panel_ops::panel_visible_height(size.height);
-            input::mode_dispatch::clear_search_state(state, visible);
-            input::mode_dispatch::handle_normal_mode(
-                state,
-                viewer_state,
-                viewer_loader,
-                key.code,
-                key.modifiers,
-                size.height,
-                terminal,
-            );
+            let visible = panel_ops::panel_visible_height(ctx.term_size.height);
+            input::mode_dispatch::clear_search_state(ctx.state, visible);
+            input::mode_dispatch::handle_normal_mode(ctx, key.code, key.modifiers, terminal);
         }
         AppMode::Search => {
-            input::mode_dispatch::handle_search_mode(state, key.code, size.height);
+            input::mode_dispatch::handle_search_mode(ctx.state, key.code, ctx.term_size.height);
         }
         AppMode::Menu => {
-            input::mode_dispatch::handle_menu_mode(
-                state,
-                viewer_state,
-                viewer_loader,
-                key.code,
-                size.height,
-                terminal,
-            );
+            input::mode_dispatch::handle_menu_mode(ctx, key.code, terminal);
         }
         AppMode::ListPicker(_) => {
-            input::pickers::handle_list_picker(state, key.code);
+            input::pickers::handle_list_picker(ctx.state, key.code);
         }
         AppMode::DirectoryTree => {
-            input::directory_tree::handle_directory_tree(
-                state,
-                viewer_state,
-                viewer_loader,
-                key.code,
-                size.height,
-            );
+            input::directory_tree::handle_directory_tree(ctx, key.code);
         }
     }
     Ok(true)
@@ -514,49 +552,24 @@ fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
 }
 
 fn dispatch_mouse_event<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    running_job: &mut Option<RunningJob>,
-    mouse_event: &MouseEvent,
+    ctx: &mut input::EventContext,
     terminal: &mut Terminal<B>,
-    term_size: Size,
+    mouse_event: &MouseEvent,
 ) -> Result<bool, B::Error> {
-    let Some(outcome) = input::mouse::handle_mouse_event(
-        state,
-        viewer_state,
-        viewer_loader,
-        running_job,
-        *mouse_event,
-        term_size,
-    ) else {
+    let Some(outcome) = input::mouse::handle_mouse_event(ctx, *mouse_event) else {
         return Ok(false);
     };
     match outcome {
         input::mouse::MouseOutcome::Consumed => {}
         input::mouse::MouseOutcome::NormalKey(key) => {
-            if matches!(state.mode, AppMode::Search) {
-                let visible = panel_ops::panel_visible_height(term_size.height);
-                input::mode_dispatch::clear_search_state(state, visible);
+            if matches!(ctx.state.mode, AppMode::Search) {
+                let visible = panel_ops::panel_visible_height(ctx.term_size.height);
+                input::mode_dispatch::clear_search_state(ctx.state, visible);
             }
-            input::mode_dispatch::handle_normal_mode(
-                state,
-                viewer_state,
-                viewer_loader,
-                key,
-                KeyModifiers::NONE,
-                term_size.height,
-                terminal,
-            );
+            input::mode_dispatch::handle_normal_mode(ctx, key, KeyModifiers::NONE, terminal);
         }
         input::mouse::MouseOutcome::MenuAction => {
-            input::mode_dispatch::run_selected_menu_action(
-                state,
-                viewer_state,
-                viewer_loader,
-                term_size.height,
-                terminal,
-            );
+            input::mode_dispatch::run_selected_menu_action(ctx, terminal);
         }
     }
     Ok(true)

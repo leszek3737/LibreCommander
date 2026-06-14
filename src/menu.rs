@@ -43,21 +43,29 @@ pub struct MenuEntry {
     pub actions: &'static [MenuAction],
 }
 
+// The "Left" and "Right" top-level menus are identical apart from their title:
+// both drive the panel of the same name via `with_menu_panel`. Share a single
+// definition of the item labels and their actions so the two entries cannot
+// drift out of sync.
+const PANEL_MENU_ITEMS: &[&str] = &[
+    "Listing mode...",
+    "Sort order...",
+    "Filter...",
+    "Refresh panel",
+];
+
+const PANEL_MENU_ACTIONS: &[MenuAction] = &[
+    MenuAction::ToggleListingMode,
+    MenuAction::CycleSortOrder,
+    MenuAction::OpenFilter,
+    MenuAction::RefreshPanel,
+];
+
 pub const MENUS: [MenuEntry; 5] = [
     MenuEntry {
         title: "Left",
-        items: &[
-            "Listing mode...",
-            "Sort order...",
-            "Filter...",
-            "Refresh panel",
-        ],
-        actions: &[
-            MenuAction::ToggleListingMode,
-            MenuAction::CycleSortOrder,
-            MenuAction::OpenFilter,
-            MenuAction::RefreshPanel,
-        ],
+        items: PANEL_MENU_ITEMS,
+        actions: PANEL_MENU_ACTIONS,
     },
     MenuEntry {
         title: "File",
@@ -128,21 +136,16 @@ pub const MENUS: [MenuEntry; 5] = [
     },
     MenuEntry {
         title: "Right",
-        items: &[
-            "Listing mode...",
-            "Sort order...",
-            "Filter...",
-            "Refresh panel",
-        ],
-        actions: &[
-            MenuAction::ToggleListingMode,
-            MenuAction::CycleSortOrder,
-            MenuAction::OpenFilter,
-            MenuAction::RefreshPanel,
-        ],
+        items: PANEL_MENU_ITEMS,
+        actions: PANEL_MENU_ACTIONS,
     },
 ];
 
+// Compile-time guard: every menu must have exactly as many actions as labels,
+// so `menu_action_at` can index `actions` with a validated `items` position.
+// NOTE: this only checks the *lengths* line up — it cannot verify that each
+// label is semantically paired with the right action; that mapping is the
+// author's responsibility and is covered by the unit tests below.
 const _: () = const {
     let mut i = 0;
     while i < MENUS.len() {
@@ -162,32 +165,81 @@ pub fn menu_item_count(menu: usize) -> usize {
     MENUS.get(menu).map_or(0, |entry| entry.items.len())
 }
 
-pub fn menu_bar_text_width() -> u16 {
+/// Display width of one rendered title cell: the title plus its padding.
+///
+/// `const fn`, so `MENU_BAR_TEXT_WIDTH` below and the per-index prefix sums can
+/// be folded at compile time instead of re-walking `MENUS` on every frame.
+/// Menu titles are ASCII (enforced by `_TITLES_ARE_ASCII`), so byte length
+/// equals the unicode display width here.
+const fn const_title_width(title: &str) -> u16 {
+    (title.len() as u16).saturating_add(MENU_TITLE_PADDING as u16)
+}
+
+/// Total rendered width of the whole menu bar (all titles + the separators
+/// between them). Precomputed once at compile time from `MENUS`; this is the
+/// single source of truth shared by `menu_bar_start_x` and `menu_title_x`.
+const MENU_BAR_TEXT_WIDTH: u16 = {
     let mut total: u16 = 0;
-    for (i, entry) in MENUS.iter().enumerate() {
+    let mut i = 0;
+    while i < MENUS.len() {
         if i > 0 {
             total = total.saturating_add(MENU_TITLE_SEPARATOR as u16);
         }
-        total = total.saturating_add(menu_title_width(entry.title));
+        total = total.saturating_add(const_title_width(MENUS[i].title));
+        i += 1;
     }
     total
+};
+
+// Guard the ASCII assumption baked into `const_title_width`: if a non-ASCII
+// title is ever added, byte length would diverge from the unicode display
+// width and the precomputed offsets would be wrong, so fail the build instead.
+const _TITLES_ARE_ASCII: () = const {
+    let mut i = 0;
+    while i < MENUS.len() {
+        assert!(MENUS[i].title.is_ascii(), "menu titles must be ASCII");
+        i += 1;
+    }
+};
+
+pub fn menu_bar_text_width() -> u16 {
+    MENU_BAR_TEXT_WIDTH
 }
 
 pub fn menu_bar_start_x(width: u16) -> u16 {
-    width.saturating_sub(menu_bar_text_width()) / 2
+    width.saturating_sub(MENU_BAR_TEXT_WIDTH) / 2
 }
 
 pub fn menu_title_width(title: &str) -> u16 {
-    let title_w: u16 = UnicodeWidthStr::width(title).try_into().unwrap_or(0);
+    let title_w: u16 = match u16::try_from(UnicodeWidthStr::width(title)) {
+        Ok(w) => w,
+        Err(_) => {
+            // A title wider than u16::MAX columns cannot really happen (titles
+            // are short ASCII labels), but if it ever did, silently clamping to
+            // 0 used to collapse the title to zero width and mis-position every
+            // following menu with no trace. Saturate to the visible maximum and
+            // leave a breadcrumb instead.
+            crate::debug_log!("menu_title_width: title width overflowed u16, clamping: {title:?}");
+            u16::MAX
+        }
+    };
     title_w.saturating_add(MENU_TITLE_PADDING as u16)
 }
 
-pub fn menu_title_x(width: u16, index: usize) -> u16 {
-    let mut x = menu_bar_start_x(width);
+/// Horizontal offset of menu `index`'s title relative to `menu_bar_start_x`:
+/// the summed width of every preceding title plus the separators between them.
+fn menu_prefix_width(index: usize) -> u16 {
+    let mut prefix: u16 = 0;
     for entry in MENUS.iter().take(index) {
-        x = x.saturating_add(menu_title_width(entry.title) + MENU_TITLE_SEPARATOR as u16);
+        prefix = prefix
+            .saturating_add(menu_title_width(entry.title))
+            .saturating_add(MENU_TITLE_SEPARATOR as u16);
     }
-    x
+    prefix
+}
+
+pub fn menu_title_x(width: u16, index: usize) -> u16 {
+    menu_bar_start_x(width).saturating_add(menu_prefix_width(index))
 }
 
 pub fn menu_dropdown_x(menu_bar_area: Rect, selected_menu: usize, dropdown_width: u16) -> u16 {

@@ -10,6 +10,12 @@ use lc::app::types::{ActivePanel, AppMode, AppState, DialogKind, InputAction};
 use ratatui::{Terminal, backend::TestBackend};
 use std::path::PathBuf;
 
+/// Terminal height used by the directory-tree paging tests.
+const TREE_TERM_HEIGHT: u16 = 12;
+/// Visible tree rows for `TREE_TERM_HEIGHT` (height minus the tree chrome
+/// overhead). One PageDown/PageUp moves the selection by this many rows.
+const TREE_PAGE_STEP: usize = (TREE_TERM_HEIGHT - lc::ui::DIR_TREE_OVERHEAD_ROWS) as usize;
+
 fn setup_ctrl_test() -> (Terminal<TestBackend>, AppState) {
     (test_terminal(), AppState::default())
 }
@@ -375,28 +381,59 @@ fn directory_tree_page_down_uses_terminal_height() {
         ..Default::default()
     };
 
-    directory_tree::handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::PageDown, 12);
+    {
+        let mut no_viewer = None;
+        let mut no_loader = None;
+        let mut no_image = None;
+        let mut no_job = None;
+        let mut ctx = crate::input::EventContext {
+            state: &mut state,
+            viewer_state: &mut no_viewer,
+            viewer_loader: &mut no_loader,
+            image_preview_loader: &mut no_image,
+            running_job: &mut no_job,
+            term_size: ratatui::layout::Size::new(80, TREE_TERM_HEIGHT),
+        };
+        directory_tree::handle_directory_tree(&mut ctx, KeyCode::PageDown);
+    }
 
-    assert_eq!(state.tree.selected, 9);
-    assert_eq!(state.tree.scroll, 9);
+    // From the top, one PageDown advances by a full visible page.
+    assert_eq!(state.tree.selected, TREE_PAGE_STEP);
+    assert_eq!(state.tree.scroll, TREE_PAGE_STEP);
 }
 
 #[test]
 fn directory_tree_page_up_uses_terminal_height() {
+    const START: usize = 25;
     let mut state = AppState {
         tree: app::types::TreeState {
             entries: dummy_tree_entries(50),
-            selected: 25,
-            scroll: 25,
+            selected: START,
+            scroll: START,
             ..Default::default()
         },
         ..Default::default()
     };
 
-    directory_tree::handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::PageUp, 12);
+    {
+        let mut no_viewer = None;
+        let mut no_loader = None;
+        let mut no_image = None;
+        let mut no_job = None;
+        let mut ctx = crate::input::EventContext {
+            state: &mut state,
+            viewer_state: &mut no_viewer,
+            viewer_loader: &mut no_loader,
+            image_preview_loader: &mut no_image,
+            running_job: &mut no_job,
+            term_size: ratatui::layout::Size::new(80, TREE_TERM_HEIGHT),
+        };
+        directory_tree::handle_directory_tree(&mut ctx, KeyCode::PageUp);
+    }
 
-    assert_eq!(state.tree.selected, 16);
-    assert_eq!(state.tree.scroll, 16);
+    // One PageUp retreats by a full visible page.
+    assert_eq!(state.tree.selected, START - TREE_PAGE_STEP);
+    assert_eq!(state.tree.scroll, START - TREE_PAGE_STEP);
 }
 
 #[test]
@@ -410,4 +447,136 @@ fn command_line_up_loads_last_history_entry() {
     command_line::handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
     assert_eq!(state.input.command_line.text(), "git status");
+}
+
+#[test]
+fn f4_no_current_entry_does_not_launch() {
+    let mut state = AppState::default();
+    let mut viewer = None;
+    let mut terminal = test_terminal();
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(4), &mut terminal);
+    assert!(matches!(state.mode, AppMode::Normal));
+}
+
+#[test]
+fn f5_opens_copy_confirm_dialog() {
+    let mut state = AppState::default();
+    state
+        .left_panel
+        .set_entries(vec![entry("file.txt").file(10).build()]);
+    state.left_panel.cursor = 0;
+    state.active_panel = ActivePanel::Left;
+    state.right_panel.set_path(PathBuf::from("/tmp/dest"));
+    let mut viewer = None;
+    let mut terminal = test_terminal();
+
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(5), &mut terminal);
+
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(app::types::DialogKind::Confirm(_))
+    ));
+    assert!(matches!(
+        state.ui.pending_action,
+        Some(app::types::PendingAction::Copy(_))
+    ));
+}
+
+#[test]
+fn f6_opens_move_confirm_dialog() {
+    let mut state = AppState::default();
+    state
+        .left_panel
+        .set_entries(vec![entry("file.txt").file(10).build()]);
+    state.left_panel.cursor = 0;
+    state.active_panel = ActivePanel::Left;
+    state.right_panel.set_path(PathBuf::from("/tmp/dest"));
+    let mut viewer = None;
+    let mut terminal = test_terminal();
+
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(6), &mut terminal);
+
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(app::types::DialogKind::Confirm(_))
+    ));
+    assert!(matches!(
+        state.ui.pending_action,
+        Some(app::types::PendingAction::Move(_))
+    ));
+}
+
+#[test]
+fn f5_with_empty_panel_does_nothing() {
+    let mut state = AppState {
+        active_panel: ActivePanel::Left,
+        ..Default::default()
+    };
+    state.right_panel.set_path(PathBuf::from("/tmp/dest"));
+    let mut viewer = None;
+    let mut terminal = test_terminal();
+
+    handle_function_keys(&mut state, &mut viewer, KeyCode::F(5), &mut terminal);
+
+    assert!(matches!(state.mode, AppMode::Normal));
+    assert!(state.ui.pending_action.is_none());
+}
+
+#[test]
+fn ctrl_down_arrow_falls_through_to_navigation() {
+    // Navigation ignores Ctrl on arrow keys: Ctrl+Down behaves like a plain
+    // Down and advances the cursor.
+    let mut state = AppState::default();
+    state
+        .left_panel
+        .set_entries(vec![entry("a").build(), entry("b").build()]);
+    state.active_panel = ActivePanel::Left;
+    state.left_panel.cursor = 0;
+
+    handle_navigation_keys(
+        &mut state,
+        KeyCode::Down,
+        KeyModifiers::CONTROL,
+        VISIBLE_HEIGHT,
+    );
+
+    assert_eq!(state.left_panel.cursor, 1);
+}
+
+#[test]
+fn alt_up_arrow_falls_through_to_navigation() {
+    // Navigation ignores Alt on arrow keys: Alt+Up behaves like a plain Up.
+    let mut state = AppState::default();
+    state
+        .left_panel
+        .set_entries(vec![entry("a").build(), entry("b").build()]);
+    state.active_panel = ActivePanel::Left;
+    state.left_panel.cursor = 1;
+
+    handle_navigation_keys(&mut state, KeyCode::Up, KeyModifiers::ALT, VISIBLE_HEIGHT);
+
+    assert_eq!(state.left_panel.cursor, 0);
+}
+
+#[test]
+fn page_down_clamps_to_last_entry() {
+    // A panel shorter than one page must clamp the cursor at the final entry
+    // rather than overshoot past the end.
+    let mut state = AppState::default();
+    state.left_panel.set_entries(vec![
+        entry("a").build(),
+        entry("b").build(),
+        entry("c").build(),
+    ]);
+    state.active_panel = ActivePanel::Left;
+    state.left_panel.cursor = 0;
+
+    handle_navigation_keys(
+        &mut state,
+        KeyCode::PageDown,
+        KeyModifiers::NONE,
+        VISIBLE_HEIGHT,
+    );
+
+    assert_eq!(state.left_panel.cursor, 2);
 }

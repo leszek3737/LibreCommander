@@ -36,42 +36,61 @@ fn move_cursor(entries_len: usize, selected: &mut usize, direction: MoveDirectio
     }
 }
 
-fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
-    match key {
+/// Result of the shared picker key dispatch.
+enum NavOutcome {
+    /// The key was fully handled here (Esc closed the picker, or the cursor
+    /// moved). The caller should stop processing.
+    Handled,
+    /// Not a shared navigation key; the caller handles it (e.g. Enter, hotkeys).
+    Passthrough,
+}
+
+/// Handle the navigation keys common to every list picker: `Esc` closes the
+/// picker, and Up/Down/Home/End move the shared `picker_selected` cursor.
+///
+/// Centralizing these arms keeps the per-picker handlers focused on their own
+/// `Enter`/hotkey behaviour instead of repeating five identical match arms.
+fn handle_nav_key(state: &mut AppState, key: KeyCode, len: usize) -> NavOutcome {
+    let direction = match key {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
+            return NavOutcome::Handled;
         }
-        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
-        KeyCode::Enter => {
-            if state.ui.picker_selected >= len {
-                state.mode = AppMode::Normal;
-                return;
-            }
-            // History displays most-recent-first; reverse visual index to VecDeque position
-            let idx = len - 1 - state.ui.picker_selected;
-            if let Some(cmd) = state.input.command_history.get(idx).cloned() {
-                state.input.command_line.set_text_at_end(cmd);
-                state.mode = AppMode::CommandLine;
-            } else {
-                state.mode = AppMode::Normal;
-            }
+        KeyCode::Up => MoveDirection::Up,
+        KeyCode::Down => MoveDirection::Down,
+        KeyCode::Home => MoveDirection::Home,
+        KeyCode::End => MoveDirection::End,
+        _ => return NavOutcome::Passthrough,
+    };
+    move_cursor(len, &mut state.ui.picker_selected, direction);
+    NavOutcome::Handled
+}
+
+fn handle_history_picker(state: &mut AppState, key: KeyCode, len: usize) {
+    if let NavOutcome::Handled = handle_nav_key(state, key, len) {
+        return;
+    }
+    if key == KeyCode::Enter {
+        if state.ui.picker_selected >= len {
+            state.mode = AppMode::Normal;
+            return;
         }
-        _ => {}
+        // History displays most-recent-first; reverse visual index to VecDeque position
+        let idx = len - 1 - state.ui.picker_selected;
+        if let Some(cmd) = state.input.command_history.get(idx).cloned() {
+            state.input.command_line.set_text_at_end(cmd);
+            state.mode = AppMode::CommandLine;
+        } else {
+            state.mode = AppMode::Normal;
+        }
     }
 }
 
 fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
+    if let NavOutcome::Handled = handle_nav_key(state, key, len) {
+        return;
+    }
     match key {
-        KeyCode::Esc => {
-            state.mode = AppMode::Normal;
-        }
-        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
         KeyCode::Enter => {
             let idx = state.ui.picker_selected;
             state.mode = AppMode::Normal;
@@ -80,15 +99,16 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
         KeyCode::Char('a') => {
             let cur = state.active_panel().path().to_path_buf();
             if state.hotlist().iter().any(|p| p == &cur) {
-                state.ui.status_message = Some("Directory already in hotlist".to_string());
+                state.set_status("Directory already in hotlist");
             } else {
                 state.hotlist_push(cur);
-                state.ui.status_message = Some("Added current directory to hotlist".to_string());
+                state.set_status("Added current directory to hotlist");
             }
         }
         KeyCode::Char('d') if state.ui.picker_selected < state.hotlist().len() => {
             state.hotlist_remove(state.ui.picker_selected);
-            if state.ui.picker_selected > 0 && state.ui.picker_selected >= state.hotlist().len() {
+            let hotlist_len = state.hotlist().len();
+            if state.ui.picker_selected > 0 && state.ui.picker_selected >= hotlist_len {
                 state.ui.picker_selected -= 1;
             }
         }
@@ -99,121 +119,126 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
 fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
     let modes = CompareMode::ALL;
     let len = modes.len();
-    match key {
-        KeyCode::Esc => {
+    if let NavOutcome::Handled = handle_nav_key(state, key, len) {
+        return;
+    }
+    if key == KeyCode::Enter {
+        let Some(&chosen) = modes.get(state.ui.picker_selected) else {
             state.mode = AppMode::Normal;
-        }
-        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
-        KeyCode::Enter => {
-            let Some(&chosen) = modes.get(state.ui.picker_selected) else {
-                state.mode = AppMode::Normal;
-                return;
-            };
-            state.mode = AppMode::Normal;
-            compare_directories(state, chosen);
-        }
-        _ => {}
+            return;
+        };
+        state.mode = AppMode::Normal;
+        compare_directories(state, chosen);
     }
 }
 
 fn handle_user_menu_picker(state: &mut AppState, key: KeyCode) {
     let len = state.ui.user_menu_entries.len();
-    match key {
-        KeyCode::Esc => {
-            state.mode = AppMode::Normal;
+    if let NavOutcome::Handled = handle_nav_key(state, key, len) {
+        return;
+    }
+    if key == KeyCode::Enter {
+        activate_user_menu_entry(state, len);
+    }
+}
+
+/// Run the user-menu entry under the cursor: build the substitution context,
+/// expand the command template, then either confirm (local menus) or execute.
+fn activate_user_menu_entry(state: &mut AppState, len: usize) {
+    let idx = state.ui.picker_selected.min(len.saturating_sub(1));
+    state.mode = AppMode::Normal;
+    let cmd = match resolve_user_menu_command(state, idx) {
+        Some(Ok(cmd)) => cmd,
+        Some(Err(err)) => {
+            state.ui.status_message = Some(err);
+            return;
         }
-        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
-        KeyCode::Enter => {
-            let idx = state.ui.picker_selected.min(len.saturating_sub(1));
-            state.mode = AppMode::Normal;
-            if let Some(entry) = state.ui.user_menu_entries.get(idx).cloned() {
-                let active_dir = state.active_panel().path().to_path_buf();
-                let other_dir = state.inactive_panel().path().to_path_buf();
-                let current_file = state
-                    .active_panel()
-                    .current_entry()
-                    .map(|e| e.name.clone())
-                    .unwrap_or_default();
-                let tagged: Vec<PathBuf> = state
-                    .active_panel()
-                    .selected_entries()
-                    .filter(|e| e.name != "..")
-                    .map(|e| e.path.clone())
-                    .collect();
-                let ctx = user_menu::SubstContext {
-                    current_file: std::path::Path::new(&current_file),
-                    active_dir: &active_dir,
-                    other_dir: &other_dir,
-                    tagged: &tagged,
-                };
-                let cmd = match user_menu::apply_substitutions(&entry.command, &ctx) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        state.ui.status_message = Some(e);
-                        return;
-                    }
-                };
-                if state.ui.user_menu_source == MenuSource::Local {
-                    state.ui.pending_menu_command = Some(cmd);
-                    state.input.dialog_selection = 0;
-                    state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
-                        "Trust Local Menu?",
-                        "This menu comes from the current directory.\n\
-                             Running untrusted commands may be dangerous.\n\n\
-                             Execute?",
-                    )));
-                } else {
-                    lc::app::shell::run_shell_command(state, &cmd, true, refresh_active);
-                }
-            }
-        }
-        _ => {}
+        None => return,
+    };
+    dispatch_user_menu_command(state, cmd);
+}
+
+/// Expand the substitution template of the entry at `idx` against the current
+/// panels. Returns `None` when no entry exists at `idx`, otherwise the
+/// expansion result. Only the command template is cloned (not the whole
+/// `MenuEntry`), so the compiled condition is never duplicated.
+fn resolve_user_menu_command(state: &AppState, idx: usize) -> Option<Result<String, String>> {
+    let command = state.ui.user_menu_entries.get(idx)?.command.clone();
+    let active_dir = state.active_panel().path().to_path_buf();
+    let other_dir = state.inactive_panel().path().to_path_buf();
+    let current_file = state
+        .active_panel()
+        .current_entry()
+        .map(|e| e.name.clone())
+        .unwrap_or_default();
+    let tagged: Vec<PathBuf> = state
+        .active_panel()
+        .selected_entries()
+        .filter(|e| e.name != "..")
+        .map(|e| e.path.clone())
+        .collect();
+    let ctx = user_menu::SubstContext {
+        current_file: std::path::Path::new(&current_file),
+        active_dir: &active_dir,
+        other_dir: &other_dir,
+        tagged: &tagged,
+    };
+    Some(user_menu::apply_substitutions(&command, &ctx))
+}
+
+/// Either prompt for trust (local menus, which may carry untrusted commands)
+/// or run the expanded command straight away (global menus).
+fn dispatch_user_menu_command(state: &mut AppState, cmd: String) {
+    if state.ui.user_menu_source == MenuSource::Local {
+        state.ui.pending_menu_command = Some(cmd);
+        state.input.dialog_selection = 0;
+        state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+            "Trust Local Menu?",
+            "This menu comes from the current directory.\n\
+                 Running untrusted commands may be dangerous.\n\n\
+                 Execute?",
+        )));
+    } else {
+        lc::app::shell::run_shell_command(state, &cmd, true, refresh_active);
     }
 }
 
 fn handle_archive_menu_picker(state: &mut AppState, key: KeyCode) {
     const ITEMS: [&str; 2] = ["Extract Archive", "Create Archive"];
     let len = ITEMS.len();
-    match key {
-        KeyCode::Esc => {
-            state.mode = AppMode::Normal;
-        }
-        KeyCode::Up => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Up),
-        KeyCode::Down => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Down),
-        KeyCode::Home => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::Home),
-        KeyCode::End => move_cursor(len, &mut state.ui.picker_selected, MoveDirection::End),
-        KeyCode::Enter => {
-            let choice = state.ui.picker_selected;
-            state.mode = AppMode::Normal;
-            match choice {
-                0 => {
-                    if let Some(entry) = state.active_panel().current_entry() {
-                        if entry.name != ".." && file_type::is_archive(&entry.name) {
-                            super::normal::show_archive_dialog(state);
-                        } else {
-                            state.ui.status_message =
-                                Some("Cursor is not on an archive file".to_string());
-                        }
-                    }
-                }
-                1 => {
-                    let paths = super::normal::selected_or_current_paths(state);
-                    if paths.is_empty() {
-                        state.ui.status_message = Some("No files selected".to_string());
+    if let NavOutcome::Handled = handle_nav_key(state, key, len) {
+        return;
+    }
+    if key == KeyCode::Enter {
+        let choice = state.ui.picker_selected;
+        state.mode = AppMode::Normal;
+        match choice {
+            0 => {
+                // Preserve original behaviour: do nothing when the panel has no
+                // current entry; only report when an entry exists but is not an
+                // archive.
+                if let Some(on_archive) = state
+                    .active_panel()
+                    .current_entry()
+                    .map(|e| e.name != ".." && file_type::is_archive(&e.name))
+                {
+                    if on_archive {
+                        super::normal::show_archive_dialog(state);
                     } else {
-                        show_create_dialog(state, paths);
+                        state.set_status("Cursor is not on an archive file");
                     }
                 }
-                _ => {}
             }
+            1 => {
+                let paths = super::normal::selected_or_current_paths(state);
+                if paths.is_empty() {
+                    state.set_status("No files selected");
+                } else {
+                    show_create_dialog(state, paths);
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -251,15 +276,16 @@ pub(crate) fn handle_list_picker(state: &mut AppState, key: KeyCode) {
     }
 }
 
-fn effective_entries(panel: &PanelState) -> &[FileEntry] {
-    // Single backing store: always compare over the full set, regardless of
-    // any active filter.
+/// Entries to feed into a directory comparison: always the full, unfiltered
+/// listing. Comparison must reflect the whole directory, not whatever subset a
+/// user-applied filter happens to show, so any active filter is ignored here.
+fn comparable_entries(panel: &PanelState) -> &[FileEntry] {
     panel.listing.unfiltered()
 }
 
 pub(crate) fn compare_directories(state: &mut AppState, mode: CompareMode) {
-    let left_entries = effective_entries(&state.left_panel);
-    let right_entries = effective_entries(&state.right_panel);
+    let left_entries = comparable_entries(&state.left_panel);
+    let right_entries = comparable_entries(&state.right_panel);
     let report = ops::compare_entries(left_entries, right_entries, mode);
     ops::apply_compare_to_panels(&mut state.left_panel, &mut state.right_panel, &report);
 

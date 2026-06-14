@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used)]
+// `unwrap_used`/`expect_used` are allowed for this whole module because it is a
+// `#[cfg(test)]` `mod tests` (AGENTS.md permits the allow only on test modules).
+// The unwraps are all on `TempDir`/filesystem setup or on building a known-valid
+// `FileEntry`, where a failure means the test environment is broken and
+// panicking with a backtrace is the right outcome.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
 use crate::app::types::{
@@ -58,36 +63,21 @@ fn setup_copy_dirs() -> TestDirs {
     }
 }
 
+/// A regular-file `FileEntry` at `/{name}`. Built via the production
+/// `FileEntry::builder()` rather than a hand-rolled struct literal so it tracks
+/// the real field set.
+///
+/// (The richer `TestEntry` builder lives behind `#[cfg(test)]` in the *library*
+/// crate and is not reachable from these binary-side unit tests, so the plain
+/// `FileEntry::builder()` is used here.)
 fn mk_entry(name: &str) -> crate::app::types::FileEntry {
-    use std::sync::Arc;
-    crate::app::types::FileEntry {
-        name: name.to_string(),
-        path: std::path::PathBuf::from(format!("/{}", name)),
-        cha: crate::fs::cha::Cha {
-            kind: crate::fs::cha::ChaKind::empty(),
-            mode: crate::fs::cha::ChaMode::new(0o100644),
-            len: 0,
-            mtime: None,
-            btime: None,
-            ctime: None,
-            atime: None,
-            uid: 0,
-            gid: 0,
-            dev: 0,
-            nlink: 0,
-        },
-        owner: Arc::from(""),
-        group: Arc::from(""),
-        selected: false,
-        mime_type: None,
-        time_str: String::new(),
-        size_str: String::new(),
-        name_width: unicode_width::UnicodeWidthStr::width(name),
-        size_width: 0,
-        time_width: 0,
-        category: crate::app::types::FileCategory::Other,
-        sanitized_name: None,
-    }
+    crate::app::types::FileEntry::builder()
+        .name(name)
+        .path(std::path::PathBuf::from(format!("/{name}")))
+        .is_dir(false)
+        .size(0)
+        .build()
+        .expect("valid test file entry")
 }
 
 #[test]
@@ -220,117 +210,118 @@ fn mouse_function_bar_zero_width_does_not_panic() {
     assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
 }
 
-#[test]
-fn mouse_error_dialog_click_does_not_dismiss() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Error("error".to_string())),
-        ..Default::default()
-    };
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
-    assert!(outcomes.is_some());
-    assert!(matches!(state.mode, AppMode::Dialog(DialogKind::Error(_))));
-}
+/// One parameterized passive-dialog case: a label, the initial state, the click
+/// position (chosen to miss any action button), and a matcher asserting the
+/// dialog mode survived the click.
+type PassiveDialogCase = (&'static str, AppState, MousePosition, fn(&AppMode) -> bool);
 
-#[test]
-fn mouse_properties_dialog_click_does_not_dismiss() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Properties(Box::new(PropertiesDetails {
-            name: "file.txt".to_string(),
-            size: 0,
-            mtime: std::time::SystemTime::UNIX_EPOCH,
-            permissions: 0o644,
-            owner: String::new(),
-            group: String::new(),
-            kind: FileKind::from_metadata_flags(false, false),
-        }))),
-        ..Default::default()
-    };
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Properties(..))
-    ));
-}
-
-#[test]
-fn mouse_help_dialog_click_does_not_dismiss() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Help {
-            message: "help".to_string(),
-            scroll_offset: 0,
-        }),
-        ..Default::default()
-    };
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Help { .. })
-    ));
-}
-
-#[test]
-fn mouse_confirm_dialog_keeps_existing_behavior() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
-            "Confirm", "Run?",
-        ))),
-        input: InputState {
-            dialog_selection: 1,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(79, 23, 80, 24));
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::Confirm(_))
-    ));
-}
-
-#[test]
-fn mouse_overwrite_confirm_dialog_handled() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
-            OverwriteConfirmDetails {
-                conflicting: vec![],
+/// A non-actionable click on each of these dialogs must be `Consumed` and must
+/// leave the dialog mode unchanged. Parameterized over the six passive dialog
+/// kinds (the former six near-identical `*_does_not_dismiss` / `_handled` /
+/// `_is_consumed` tests) so the shared assertion lives in one place.
+fn passive_dialog_cases() -> Vec<PassiveDialogCase> {
+    vec![
+        (
+            "error",
+            AppState {
+                mode: AppMode::Dialog(DialogKind::Error("error".to_string())),
+                ..Default::default()
             },
-        ))),
-        input: InputState {
-            dialog_selection: 0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(1, 1, 80, 24));
-    assert!(outcomes.is_some());
-    assert!(matches!(
-        state.mode,
-        AppMode::Dialog(DialogKind::OverwriteConfirm(..))
-    ));
+            mp(1, 1, 80, 24),
+            |m| matches!(m, AppMode::Dialog(DialogKind::Error(_))),
+        ),
+        (
+            "properties",
+            AppState {
+                mode: AppMode::Dialog(DialogKind::Properties(Box::new(PropertiesDetails {
+                    name: "file.txt".to_string(),
+                    size: 0,
+                    mtime: std::time::SystemTime::UNIX_EPOCH,
+                    permissions: 0o644,
+                    owner: String::new(),
+                    group: String::new(),
+                    kind: FileKind::from_metadata_flags(false, false),
+                }))),
+                ..Default::default()
+            },
+            mp(1, 1, 80, 24),
+            |m| matches!(m, AppMode::Dialog(DialogKind::Properties(..))),
+        ),
+        (
+            "help",
+            AppState {
+                mode: AppMode::Dialog(DialogKind::Help {
+                    message: "help".to_string(),
+                    scroll_offset: 0,
+                }),
+                ..Default::default()
+            },
+            mp(1, 1, 80, 24),
+            |m| matches!(m, AppMode::Dialog(DialogKind::Help { .. })),
+        ),
+        (
+            "confirm",
+            AppState {
+                mode: AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                    "Confirm", "Run?",
+                ))),
+                input: InputState {
+                    dialog_selection: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            // Outside the button row: click must not trigger the action.
+            mp(79, 23, 80, 24),
+            |m| matches!(m, AppMode::Dialog(DialogKind::Confirm(_))),
+        ),
+        (
+            "overwrite",
+            AppState {
+                mode: AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+                    OverwriteConfirmDetails {
+                        conflicting: vec![],
+                    },
+                ))),
+                input: InputState {
+                    dialog_selection: 0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            mp(1, 1, 80, 24),
+            |m| matches!(m, AppMode::Dialog(DialogKind::OverwriteConfirm(..))),
+        ),
+        (
+            "progress",
+            AppState {
+                mode: AppMode::Dialog(DialogKind::Progress {
+                    message: "Copying".to_string(),
+                    progress_fraction: 0.5,
+                    cancellable: true,
+                }),
+                ..Default::default()
+            },
+            mp(40, 21, 80, 24),
+            |m| matches!(m, AppMode::Dialog(DialogKind::Progress { .. })),
+        ),
+    ]
 }
 
 #[test]
-fn mouse_progress_click_is_consumed() {
-    let mut state = AppState {
-        mode: AppMode::Dialog(DialogKind::Progress {
-            message: "Copying".to_string(),
-            progress_fraction: 0.5,
-            cancellable: true,
-        }),
-        ..Default::default()
-    };
-    let mut running_job = None;
-    let outcomes = handle_mouse_dialog(&mut state, &mut running_job, &mp(40, 21, 80, 24));
-    assert!(outcomes.is_some());
-    assert!(matches!(outcomes, Some(MouseOutcome::Consumed)));
+fn passive_dialog_click_is_consumed_and_preserves_mode() {
+    for (label, mut state, pos, mode_ok) in passive_dialog_cases() {
+        let mut running_job = None;
+        let outcome = handle_mouse_dialog(&mut state, &mut running_job, &pos);
+        assert!(
+            matches!(outcome, Some(MouseOutcome::Consumed)),
+            "{label}: expected Consumed, got {outcome:?}"
+        );
+        assert!(
+            mode_ok(&state.mode),
+            "{label}: dialog mode was not preserved"
+        );
+    }
 }
 
 #[test]
@@ -398,10 +389,21 @@ fn drag_select_range() {
         ..Default::default()
     };
 
+    // anchor = index 0; click at row 5 maps to filtered index 3
+    // (list starts at row 2, so relative row 3). The drag selects the inclusive
+    // range 0..=3, i.e. entries a, b, c, d — and must leave e untouched.
     handle_mouse_drag(&mut state, &mp(1, 5, 80, 24));
 
-    let selected_count = state.left_panel.selected_entries().count();
-    assert_eq!(selected_count, 4);
+    let selected: Vec<&str> = state
+        .left_panel
+        .selected_entries()
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(selected, ["a", "b", "c", "d"], "wrong entries selected");
+    assert_eq!(state.left_panel.cursor, 3, "cursor should land on drag end");
+    // The right panel shares identical entries but is not the active panel, so
+    // the drag must not touch its selection.
+    assert_eq!(state.right_panel.selected_entries().count(), 0);
 }
 
 #[test]
