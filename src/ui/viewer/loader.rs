@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
@@ -15,7 +15,12 @@ use crate::debug_log;
 const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
 const PIPE_READ_LIMIT: u64 = 50 * 1024 * 1024;
 const PIPE_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// Owns a background worker plus its cancellation flag and result channel.
+///
+/// Held as a field by the public loaders rather than unpacked into them, so the
+/// cancel/result plumbing and the drop semantics live in one place.
 struct CancellableLoader<T> {
     receiver: mpsc::Receiver<T>,
     cancel: Arc<AtomicBool>,
@@ -37,83 +42,131 @@ impl<T: Send + 'static> CancellableLoader<T> {
             handle: Some(handle),
         }
     }
-}
 
-pub struct ViewerLoader {
-    pub receiver: mpsc::Receiver<std::io::Result<ViewerState>>,
-    pub cancel: Arc<AtomicBool>,
-    pub path: PathBuf,
-    pub(crate) handle: Option<JoinHandle<()>>,
-}
+    fn try_recv(&self) -> Result<T, mpsc::TryRecvError> {
+        self.receiver.try_recv()
+    }
 
-impl ViewerLoader {
-    pub fn start(path: PathBuf) -> Self {
-        let owned_path = path.clone();
-        let inner = CancellableLoader::spawn(move |cancel_flag, tx| {
-            if cancel_flag.load(Ordering::Acquire) {
-                return;
-            }
-            let result = ViewerState::open_with_cancel(&owned_path, Some(cancel_flag));
-            if !cancel_flag.load(Ordering::Acquire) {
-                let _ = tx.send(result);
-            }
-        });
+    fn cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn from_parts(
+        receiver: mpsc::Receiver<T>,
+        cancel: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    ) -> Self {
         Self {
-            receiver: inner.receiver,
-            cancel: inner.cancel,
-            path,
-            handle: inner.handle,
+            receiver,
+            cancel,
+            handle,
         }
     }
 }
 
-impl Drop for ViewerLoader {
+impl<T> Drop for CancellableLoader<T> {
     fn drop(&mut self) {
+        // Signal cancellation and *detach* the worker — deliberately not join.
+        // Drops run on the event thread (e.g. when the viewer closes), which
+        // must never block; a worker can be mid-`read()` on a slow device.
+        // Every worker polls `cancel` between units of work and will not send a
+        // stale result once it is set, so detaching is deterministic: the thread
+        // observes the flag and terminates on its own.
         self.cancel.store(true, Ordering::Release);
-        let _ = self.handle.take();
+        drop(self.handle.take());
+    }
+}
+
+/// Shared guard around a worker body: skip the work if cancellation already
+/// happened, and only publish the result if cancellation has not happened by
+/// the time the work finishes.
+fn run_guarded<T, F>(cancel: &AtomicBool, tx: &mpsc::Sender<T>, work: F)
+where
+    F: FnOnce(&AtomicBool) -> T,
+{
+    if cancel.load(Ordering::Acquire) {
+        return;
+    }
+    let result = work(cancel);
+    if !cancel.load(Ordering::Acquire) {
+        let _ = tx.send(result);
+    }
+}
+
+pub struct ViewerLoader {
+    inner: CancellableLoader<std::io::Result<ViewerState>>,
+    pub path: Arc<Path>,
+}
+
+impl ViewerLoader {
+    pub fn start(path: PathBuf) -> Self {
+        // Share one allocation between the worker and the struct instead of
+        // cloning the path into a second owned `PathBuf` before spawning.
+        let path: Arc<Path> = Arc::from(path);
+        let worker_path = Arc::clone(&path);
+        let inner = CancellableLoader::spawn(move |cancel, tx| {
+            run_guarded(cancel, &tx, |c| {
+                ViewerState::open_with_cancel(&worker_path, Some(c))
+            });
+        });
+        Self { inner, path }
+    }
+
+    pub fn try_recv(&self) -> Result<std::io::Result<ViewerState>, mpsc::TryRecvError> {
+        self.inner.try_recv()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        receiver: mpsc::Receiver<std::io::Result<ViewerState>>,
+        cancel: Arc<AtomicBool>,
+        path: PathBuf,
+        handle: Option<JoinHandle<()>>,
+    ) -> Self {
+        Self {
+            inner: CancellableLoader::from_parts(receiver, cancel, handle),
+            path: Arc::from(path),
+        }
     }
 }
 
 pub struct ImagePreviewLoader {
     pub file_path: PathBuf,
-    pub(crate) receiver: mpsc::Receiver<(u16, u16, Text<'static>)>,
-    pub(crate) cancel: Arc<AtomicBool>,
-    pub(crate) handle: Option<JoinHandle<()>>,
+    inner: CancellableLoader<(u16, u16, Text<'static>)>,
 }
 
 impl ImagePreviewLoader {
     pub fn start(path: PathBuf, width: u16, height: u16) -> Self {
         let file_path = path.clone();
-        let inner = CancellableLoader::spawn(move |cancel_flag, tx| {
-            if cancel_flag.load(Ordering::Acquire) {
-                return;
-            }
-            let text = run_chafa(&path, width, height, Some(cancel_flag));
-            if !cancel_flag.load(Ordering::Acquire) {
-                let _ = tx.send((width, height, text));
-            }
+        let inner = CancellableLoader::spawn(move |cancel, tx| {
+            run_guarded(cancel, &tx, |c| {
+                let text = run_chafa(&path, width, height, Some(c));
+                (width, height, text)
+            });
         });
-        Self {
-            file_path,
-            receiver: inner.receiver,
-            cancel: inner.cancel,
-            handle: inner.handle,
-        }
+        Self { file_path, inner }
     }
 
     pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Release);
+        self.inner.cancel();
     }
 
     pub fn try_recv(&self) -> Result<(u16, u16, Text<'static>), mpsc::TryRecvError> {
-        self.receiver.try_recv()
+        self.inner.try_recv()
     }
-}
 
-impl Drop for ImagePreviewLoader {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Release);
-        let _ = self.handle.take();
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        file_path: PathBuf,
+        receiver: mpsc::Receiver<(u16, u16, Text<'static>)>,
+        cancel: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    ) -> Self {
+        Self {
+            file_path,
+            inner: CancellableLoader::from_parts(receiver, cancel, handle),
+        }
     }
 }
 
@@ -123,7 +176,7 @@ pub(crate) fn run_chafa(
     height: u16,
     cancel: Option<&AtomicBool>,
 ) -> Text<'static> {
-    let size_str = format!("{}x{}", width, height);
+    let size_str = format!("{width}x{height}");
     let child = Command::new("chafa")
         .arg("-f")
         .arg("symbols")
@@ -145,69 +198,68 @@ pub(crate) fn run_chafa(
     match child.and_then(|c| wait_for_chafa_output(c, cancel)) {
         Ok(out) if out.status.success() => match out.stdout.into_text() {
             Ok(text) => text,
-            Err(e) => Text::raw(format!("Failed to parse ANSI: {}", e)),
+            Err(e) => Text::raw(format!("Failed to parse ANSI: {e}")),
         },
         Ok(out) => {
             let err_msg = String::from_utf8_lossy(&out.stderr);
-            Text::raw(format!("Chafa error: {}", err_msg))
+            Text::raw(format!("Chafa error: {err_msg}"))
         }
-        Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {}", e)),
+        Err(e) => Text::raw(format!("Failed to execute chafa (is it installed?): {e}")),
     }
 }
 
 fn wait_for_chafa_output(mut child: Child, cancel: Option<&AtomicBool>) -> std::io::Result<Output> {
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_reader = read_pipe_in_background(stdout);
-    let stderr_reader = read_pipe_in_background(stderr);
+    let stdout_rx = read_pipe_in_background(child.stdout.take());
+    let stderr_rx = read_pipe_in_background(child.stderr.take());
     let deadline = Instant::now() + CHAFA_TIMEOUT;
 
     loop {
         if let Some(status) = child.try_wait()? {
-            let stdout = join_pipe_reader_with_timeout(stdout_reader);
-            let stderr = join_pipe_reader_with_timeout(stderr_reader);
-            return Ok(Output {
-                status,
-                stdout,
-                stderr,
-            });
+            return Ok(collect_output(status, &stdout_rx, &stderr_rx, None));
         }
-        if let Some(flag) = cancel
-            && flag.load(Ordering::Acquire)
-        {
+
+        let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
+        let timed_out = Instant::now() >= deadline;
+        if cancelled || timed_out {
             let _ = child.kill();
             let status = child.wait()?;
-            let stdout = join_pipe_reader_with_timeout(stdout_reader);
-            let stderr = join_pipe_reader_with_timeout(stderr_reader);
-            return Ok(Output {
-                status,
-                stdout,
-                stderr,
-            });
+            // A genuine timeout (not a user cancel) substitutes a message when
+            // chafa produced no diagnostics of its own.
+            let fallback = (!cancelled && timed_out).then_some(b"Chafa timed out".as_slice());
+            return Ok(collect_output(status, &stdout_rx, &stderr_rx, fallback));
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let status = child.wait()?;
-            let stdout = join_pipe_reader_with_timeout(stdout_reader);
-            let stderr = join_pipe_reader_with_timeout(stderr_reader);
-            return Ok(Output {
-                status,
-                stdout,
-                stderr: if stderr.is_empty() {
-                    b"Chafa timed out".to_vec()
-                } else {
-                    stderr
-                },
-            });
-        }
-        thread::sleep(Duration::from_millis(20));
+
+        thread::sleep(CHILD_POLL_INTERVAL);
     }
 }
 
-fn read_pipe_in_background<R>(pipe: Option<R>) -> JoinHandle<Vec<u8>>
+/// Assembles the [`Output`] from the exited child and its two pipe readers,
+/// optionally substituting `stderr_fallback` when stderr came back empty.
+fn collect_output(
+    status: ExitStatus,
+    stdout_rx: &mpsc::Receiver<Vec<u8>>,
+    stderr_rx: &mpsc::Receiver<Vec<u8>>,
+    stderr_fallback: Option<&[u8]>,
+) -> Output {
+    let stdout = collect_pipe_reader(stdout_rx);
+    let mut stderr = collect_pipe_reader(stderr_rx);
+    if stderr.is_empty()
+        && let Some(fallback) = stderr_fallback
+    {
+        stderr = fallback.to_vec();
+    }
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
+fn read_pipe_in_background<R>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>>
 where
     R: Read + Send + 'static,
 {
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(pipe) = pipe {
@@ -216,26 +268,20 @@ where
                 debug_log!("pipe read error: {}", e);
             }
         }
-        bytes
-    })
+        let _ = tx.send(bytes);
+    });
+    rx
 }
 
-fn join_pipe_reader_with_timeout(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
-    let deadline = Instant::now() + PIPE_JOIN_TIMEOUT;
-    loop {
-        if handle.is_finished() {
-            return match handle.join() {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    debug_log!("pipe reader thread panicked: {:?}", e);
-                    Vec::new()
-                }
-            };
-        }
-        if Instant::now() >= deadline {
+/// Collects a background pipe reader's bytes, blocking up to
+/// [`PIPE_JOIN_TIMEOUT`] on the channel (no busy-wait). On timeout the reader
+/// thread is detached and the bytes read so far are dropped.
+fn collect_pipe_reader(rx: &mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+    match rx.recv_timeout(PIPE_JOIN_TIMEOUT) {
+        Ok(bytes) => bytes,
+        Err(_) => {
             debug_log!("pipe reader join timed out, detaching");
-            return Vec::new();
+            Vec::new()
         }
-        thread::sleep(Duration::from_millis(10));
     }
 }

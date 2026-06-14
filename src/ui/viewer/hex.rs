@@ -6,6 +6,19 @@ pub(crate) const HEX_LINE_WIDTH: usize =
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
+/// Bits in a hex nibble; a byte is two nibbles, a `u64` offset is 16.
+const NIBBLE_BITS: u32 = 4;
+/// Mask selecting the low nibble of a byte.
+const LOW_NIBBLE_MASK: u8 = 0x0f;
+/// Hex digits needed to render a `u64` offset (`64 / 4`).
+const OFFSET_HEX_DIGITS: usize = (u64::BITS / NIBBLE_BITS) as usize;
+/// Bytes shown before the extra gap that splits a row into two visual groups.
+const HEX_GROUP_SIZE: usize = HEX_BYTES_PER_LINE / 2;
+/// Columns a byte occupies in the hex pane: two nibble digits plus a space.
+const HEX_COLS_PER_BYTE: usize = 3;
+/// Printable ASCII range used by the right-hand text pane.
+const PRINTABLE_ASCII: std::ops::RangeInclusive<u8> = 0x20..=0x7e;
+
 #[cfg(test)]
 #[must_use]
 pub(crate) fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
@@ -14,11 +27,28 @@ pub(crate) fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
     buf
 }
 
+fn push_byte_hex(buf: &mut String, b: u8) {
+    buf.push(HEX_CHARS[(b >> NIBBLE_BITS) as usize] as char);
+    buf.push(HEX_CHARS[(b & LOW_NIBBLE_MASK) as usize] as char);
+    buf.push(' ');
+}
+
 fn format_offset_hex(offset: usize, buf: &mut String) {
-    let mut n = offset as u64;
-    for _ in 0..16 {
-        buf.push(HEX_CHARS[(n >> 60) as usize] as char);
-        n <<= 4;
+    // Render the 16 most-significant-first nibbles into a stack buffer, then
+    // append in one shot rather than pushing each digit individually.
+    let mut digits = [0u8; OFFSET_HEX_DIGITS];
+    let n = offset as u64;
+    for (i, slot) in digits.iter_mut().enumerate() {
+        let shift = (OFFSET_HEX_DIGITS - 1 - i) as u32 * NIBBLE_BITS;
+        *slot = HEX_CHARS[((n >> shift) & u64::from(LOW_NIBBLE_MASK)) as usize];
+    }
+    // `digits` is built solely from `HEX_CHARS`, so it is always valid ASCII.
+    debug_assert!(
+        std::str::from_utf8(&digits).is_ok(),
+        "HEX_CHARS must be ASCII"
+    );
+    if let Ok(s) = std::str::from_utf8(&digits) {
+        buf.push_str(s);
     }
 }
 
@@ -26,29 +56,24 @@ pub(crate) fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut S
     format_offset_hex(offset, buf);
     buf.push_str(": ");
 
-    for b in &bytes[..bytes.len().min(8)] {
-        buf.push(HEX_CHARS[(b >> 4) as usize] as char);
-        buf.push(HEX_CHARS[(b & 0x0f) as usize] as char);
-        buf.push(' ');
+    let split = bytes.len().min(HEX_GROUP_SIZE);
+    for &b in &bytes[..split] {
+        push_byte_hex(buf, b);
     }
-    if bytes.len() > 8 {
+    if bytes.len() > HEX_GROUP_SIZE {
         buf.push(' ');
-        for b in &bytes[8..] {
-            buf.push(HEX_CHARS[(b >> 4) as usize] as char);
-            buf.push(HEX_CHARS[(b & 0x0f) as usize] as char);
-            buf.push(' ');
+        for &b in &bytes[HEX_GROUP_SIZE..] {
+            push_byte_hex(buf, b);
         }
     }
 
-    let hex_expected = bytes.len() * 3 + usize::from(bytes.len() > 8);
+    let hex_expected = bytes.len() * HEX_COLS_PER_BYTE + usize::from(bytes.len() > HEX_GROUP_SIZE);
     let padding_needed = HEX_PART_WIDTH.saturating_sub(hex_expected);
-    for _ in 0..padding_needed {
-        buf.push(' ');
-    }
+    buf.extend(std::iter::repeat_n(' ', padding_needed));
 
     buf.push_str(" |");
     for &b in bytes {
-        let c = if (32..=126).contains(&b) {
+        let c = if PRINTABLE_ASCII.contains(&b) {
             b as char
         } else {
             '.'

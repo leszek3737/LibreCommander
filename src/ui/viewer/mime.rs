@@ -177,6 +177,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_should_open_as_text_non_utf8_filename_with_known_extension() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;

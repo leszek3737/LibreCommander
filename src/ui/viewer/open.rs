@@ -40,7 +40,7 @@ pub struct ViewerState {
     pub horizontal_offset: usize,
     pub line_count: usize,
     pub search_query: Option<String>,
-    pub search_matches: Vec<(usize, usize, usize)>,
+    pub search_matches: Vec<super::SearchMatch>,
     pub(crate) search_matches_by_line: Vec<super::SearchLineMatch>,
     pub current_match: Option<usize>,
     pub wrap_lines: bool,
@@ -54,6 +54,22 @@ pub struct ViewerState {
     pub(crate) originally_binary: bool,
     pub(crate) file_truncated: bool,
     pub(crate) render_cache: ViewerRenderCache,
+}
+
+/// Parameters for [`ViewerState::build`]. Groups the per-constructor inputs so
+/// the shared assembler stays under the argument-count lint without an
+/// `#[allow]`.
+struct ViewerInit {
+    path: PathBuf,
+    raw_bytes: Vec<u8>,
+    file_size: usize,
+    view_mode: ViewMode,
+    detected_mime: Option<String>,
+    file_truncated: bool,
+    wrap_lines: bool,
+    show_line_numbers: bool,
+    has_invalid_utf8: bool,
+    originally_binary: bool,
 }
 
 impl ViewerState {
@@ -82,50 +98,157 @@ impl ViewerState {
         }
     }
 
-    pub(crate) fn compute_max_line_width(line_offsets: &[usize], raw_bytes: &[u8]) -> usize {
-        let mut max_w = 0;
-        for (i, &start) in line_offsets.iter().enumerate() {
-            let end = line_offsets.get(i + 1).copied().unwrap_or(raw_bytes.len());
-            let line_end = Self::line_end_excluding_newline(raw_bytes, end);
-            let w = match std::str::from_utf8(&raw_bytes[start..line_end]) {
-                Ok(s) => unicode_width::UnicodeWidthStr::width(s),
-                Err(_) => {
-                    // String::from_utf8_lossy allocates a new String with
-                    // replacement characters for invalid UTF-8 sequences.
-                    // This is unavoidable for computing the display width
-                    // of the lossy replacement.
-                    let cow = String::from_utf8_lossy(&raw_bytes[start..line_end]);
-                    unicode_width::UnicodeWidthStr::width(cow.as_ref())
+    /// Display width of a raw line slice, computed without allocating.
+    ///
+    /// Valid UTF-8 is measured directly. Invalid UTF-8 is measured the way it
+    /// will be displayed: `String::from_utf8_lossy` substitutes exactly one
+    /// `U+FFFD` (display width 1) per maximal ill-formed subsequence, which is
+    /// precisely the unit [`str::utf8_chunks`] yields, so we add 1 per invalid
+    /// chunk instead of materializing the lossy `String`.
+    pub(crate) fn line_display_width(bytes: &[u8]) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        match std::str::from_utf8(bytes) {
+            Ok(s) => UnicodeWidthStr::width(s),
+            Err(_) => {
+                let mut w = 0;
+                for chunk in bytes.utf8_chunks() {
+                    w += UnicodeWidthStr::width(chunk.valid());
+                    if !chunk.invalid().is_empty() {
+                        w += 1;
+                    }
                 }
-            };
-            if w > max_w {
-                max_w = w;
+                w
             }
         }
-        max_w
     }
 
+    fn line_bytes_in<'a>(raw_bytes: &'a [u8], line_offsets: &[usize], idx: usize) -> &'a [u8] {
+        let Some(&start) = line_offsets.get(idx) else {
+            return b"";
+        };
+        let end = line_offsets
+            .get(idx + 1)
+            .copied()
+            .unwrap_or(raw_bytes.len());
+        let line_end = Self::line_end_excluding_newline(raw_bytes, end);
+        if line_end <= start {
+            return b"";
+        }
+        &raw_bytes[start..line_end]
+    }
+
+    /// Display width of logical line `idx`, computed straight from the raw
+    /// bytes. Used by the wrap-layout hot path so it never has to decode (and,
+    /// for invalid UTF-8, allocate) a `String` just to measure a line.
+    pub(crate) fn line_width(&self, idx: usize) -> usize {
+        Self::line_display_width(Self::line_bytes_in(
+            &self.raw_bytes,
+            &self.line_offsets,
+            idx,
+        ))
+    }
+
+    pub(crate) fn compute_max_line_width(line_offsets: &[usize], raw_bytes: &[u8]) -> usize {
+        (0..line_offsets.len())
+            .map(|i| Self::line_display_width(Self::line_bytes_in(raw_bytes, line_offsets, i)))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Decodes logical line `idx` for display.
+    ///
+    /// Valid UTF-8 lines are returned borrowed (zero-copy); invalid UTF-8 lines
+    /// are decoded lossily into an owned `String`. The per-frame wrap-layout
+    /// pass measures widths via [`Self::line_width`] (no decode), so the only
+    /// repeated `Cow::Owned` allocations are for the handful of lines actually
+    /// visible on screen.
     pub fn get_line(&self, idx: usize) -> Cow<'_, str> {
         if self.raw_bytes.is_empty() && idx == 0 {
             return Cow::Borrowed("[Empty file]");
         }
-        let Some(&start) = self.line_offsets.get(idx) else {
-            return Cow::Borrowed("");
-        };
-        let end = self
-            .line_offsets
-            .get(idx + 1)
-            .copied()
-            .unwrap_or(self.raw_bytes.len());
-        let line_end = Self::line_end_excluding_newline(&self.raw_bytes, end);
-        if line_end <= start {
+        let bytes = Self::line_bytes_in(&self.raw_bytes, &self.line_offsets, idx);
+        if bytes.is_empty() {
             return Cow::Borrowed("");
         }
-        match std::str::from_utf8(&self.raw_bytes[start..line_end]) {
+        match std::str::from_utf8(bytes) {
             Ok(s) => Cow::Borrowed(s),
-            Err(_) => {
-                Cow::Owned(String::from_utf8_lossy(&self.raw_bytes[start..line_end]).into_owned())
-            }
+            Err(_) => Cow::Owned(String::from_utf8_lossy(bytes).into_owned()),
+        }
+    }
+
+    /// Computes the text-mode line metrics shared by every constructor and by
+    /// the hex→text toggle: byte offsets of each logical line, the line count
+    /// (an empty file still reports one line for the `[Empty file]`
+    /// placeholder), and the widest line's display width.
+    pub(crate) fn compute_text_metrics(raw_bytes: &[u8]) -> (Vec<usize>, usize, usize) {
+        let line_offsets = Self::compute_line_offsets(raw_bytes);
+        let line_count = if raw_bytes.is_empty() {
+            1
+        } else {
+            line_offsets.len()
+        };
+        let max_line_width = if raw_bytes.is_empty() {
+            0
+        } else {
+            Self::compute_max_line_width(&line_offsets, raw_bytes)
+        };
+        (line_offsets, line_count, max_line_width)
+    }
+
+    /// Shared field assembly for every constructor. Computes line metrics from
+    /// `view_mode` (text vs hex/image) and fills the render cache, so the two
+    /// public entry points only differ in the flags they pass in.
+    fn build(init: ViewerInit) -> Self {
+        let ViewerInit {
+            path,
+            raw_bytes,
+            file_size,
+            view_mode,
+            detected_mime,
+            file_truncated,
+            wrap_lines,
+            show_line_numbers,
+            has_invalid_utf8,
+            originally_binary,
+        } = init;
+
+        let (line_offsets, line_count, max_line_width) = if matches!(view_mode, ViewMode::Text) {
+            Self::compute_text_metrics(&raw_bytes)
+        } else {
+            let line_count = if raw_bytes.is_empty() {
+                1
+            } else {
+                raw_bytes.len().div_ceil(HEX_BYTES_PER_LINE)
+            };
+            (Vec::new(), line_count, 0)
+        };
+
+        let render_cache = ViewerRenderCache::new();
+        render_cache
+            .cached_line_num_col_width
+            .set(line_number_column_width(line_count));
+
+        ViewerState {
+            file_path: path,
+            line_offsets,
+            scroll_offset: 0,
+            horizontal_offset: 0,
+            line_count,
+            search_query: None,
+            search_matches: Vec::new(),
+            search_matches_by_line: Vec::new(),
+            current_match: None,
+            wrap_lines,
+            show_line_numbers,
+            view_mode,
+            raw_bytes,
+            max_line_width,
+            detected_mime,
+            file_size,
+            has_invalid_utf8,
+            originally_binary,
+            file_truncated,
+            render_cache,
         }
     }
 
@@ -138,50 +261,19 @@ impl ViewerState {
         file_truncated: bool,
     ) -> Self {
         let has_invalid_utf8 = !raw_bytes.is_empty() && std::str::from_utf8(&raw_bytes).is_err();
-        let is_text = matches!(view_mode, ViewMode::Text);
-        let line_offsets = if is_text {
-            Self::compute_line_offsets(&raw_bytes)
-        } else {
-            Vec::new()
-        };
-        let line_count = if raw_bytes.is_empty() {
-            1
-        } else if is_text {
-            line_offsets.len()
-        } else {
-            raw_bytes.len().div_ceil(HEX_BYTES_PER_LINE)
-        };
-        let max_line_width = if is_text && !raw_bytes.is_empty() {
-            Self::compute_max_line_width(&line_offsets, &raw_bytes)
-        } else {
-            0
-        };
-        let render_cache = ViewerRenderCache::new();
-        render_cache
-            .cached_line_num_col_width
-            .set(line_number_column_width(line_count));
-        ViewerState {
-            file_path: path.to_path_buf(),
-            line_offsets,
-            scroll_offset: 0,
-            horizontal_offset: 0,
-            line_count,
-            search_query: None,
-            search_matches: Vec::new(),
-            search_matches_by_line: Vec::new(),
-            current_match: None,
+        let originally_binary = !matches!(view_mode, ViewMode::Text);
+        Self::build(ViewerInit {
+            path: path.to_path_buf(),
+            raw_bytes,
+            file_size,
+            view_mode,
+            detected_mime,
+            file_truncated,
             wrap_lines: true,
             show_line_numbers: false,
-            view_mode,
-            raw_bytes,
-            max_line_width,
-            detected_mime,
-            file_size,
             has_invalid_utf8,
-            originally_binary: !is_text,
-            file_truncated,
-            render_cache,
-        }
+            originally_binary,
+        })
     }
 
     fn new_text_listing(
@@ -191,43 +283,20 @@ impl ViewerState {
         wrap_lines: bool,
         show_line_numbers: bool,
     ) -> Self {
-        let line_offsets = Self::compute_line_offsets(&raw_bytes);
-        let line_count = if raw_bytes.is_empty() {
-            1
-        } else {
-            line_offsets.len()
-        };
-        let max_line_width = if !raw_bytes.is_empty() {
-            Self::compute_max_line_width(&line_offsets, &raw_bytes)
-        } else {
-            0
-        };
-        let render_cache = ViewerRenderCache::new();
-        render_cache
-            .cached_line_num_col_width
-            .set(line_number_column_width(line_count));
-        ViewerState {
-            file_path: path.to_path_buf(),
-            line_offsets,
-            scroll_offset: 0,
-            horizontal_offset: 0,
-            line_count,
-            search_query: None,
-            search_matches: Vec::new(),
-            search_matches_by_line: Vec::new(),
-            current_match: None,
+        Self::build(ViewerInit {
+            path: path.to_path_buf(),
+            raw_bytes,
+            file_size,
+            view_mode: ViewMode::Text,
+            detected_mime: Some("text/plain".to_string()),
+            file_truncated: false,
             wrap_lines,
             show_line_numbers,
-            view_mode: ViewMode::Text,
-            raw_bytes,
-            max_line_width,
-            detected_mime: Some("text/plain".to_string()),
-            file_size,
+            // Archive listings are generated text we produce ourselves, so they
+            // are always valid UTF-8 — never flag the invalid-UTF-8 warning.
             has_invalid_utf8: false,
             originally_binary: false,
-            file_truncated: false,
-            render_cache,
-        }
+        })
     }
 
     pub(crate) fn open_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<Self> {
@@ -307,6 +376,51 @@ impl ViewerState {
         ))
     }
 
+    fn format_archive_listing(path: &Path) -> io::Result<String> {
+        use crate::ops::archive::list::list_archive;
+        use std::fmt::Write;
+
+        let entries = list_archive(path).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to list archive {}: {e}", path.display()),
+            )
+        })?;
+        let mut out = String::new();
+
+        let mut write_section = || -> Result<(), std::fmt::Error> {
+            writeln!(out, "Archive: {}", path.display())?;
+            writeln!(out, "Entries: {}", entries.len())?;
+            writeln!(out)?;
+            writeln!(out, "  {:<8} {:<20} Name", "Size", "Modified")?;
+            writeln!(out, "  {:<8} {:<20} ----", "----", "--------")?;
+            for entry in &entries {
+                let size = if entry.is_dir {
+                    "<DIR>".to_string()
+                } else {
+                    crate::app::types::format_size(entry.size)
+                };
+                let mtime = entry
+                    .modified
+                    .map(crate::app::types::format_time)
+                    .unwrap_or_default();
+                let name = if entry.is_dir {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.to_string()
+                };
+                writeln!(out, "  {size:<8} {mtime:<20} {name}")?;
+            }
+            Ok(())
+        };
+
+        // Writing into a `String` only fails if a `Display` impl errors, which
+        // none of these do; surface it as I/O data corruption rather than
+        // discarding the cause.
+        write_section().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        Ok(out)
+    }
+
     #[must_use]
     pub fn is_hex_mode(&self) -> bool {
         matches!(self.view_mode, ViewMode::Hex)
@@ -319,39 +433,5 @@ impl ViewerState {
 
     pub fn image_content_size(area_width: u16, area_height: u16) -> (u16, u16) {
         (area_width, area_height.saturating_sub(3))
-    }
-
-    fn format_archive_listing(path: &Path) -> Result<String, ()> {
-        use crate::ops::archive::list::list_archive;
-        use std::fmt::Write;
-
-        let entries = list_archive(path).map_err(|_| ())?;
-        let mut out = String::new();
-
-        writeln!(out, "Archive: {}", path.display()).map_err(|_| ())?;
-        writeln!(out, "Entries: {}", entries.len()).map_err(|_| ())?;
-        writeln!(out).map_err(|_| ())?;
-        writeln!(out, "  {:<8} {:<20} Name", "Size", "Modified").map_err(|_| ())?;
-        writeln!(out, "  {:<8} {:<20} ----", "----", "--------").map_err(|_| ())?;
-
-        for entry in &entries {
-            let size = if entry.is_dir {
-                "<DIR>".to_string()
-            } else {
-                crate::app::types::format_size(entry.size)
-            };
-            let mtime = entry
-                .modified
-                .map(crate::app::types::format_time)
-                .unwrap_or_default();
-            let name = if entry.is_dir {
-                format!("{}/", entry.name)
-            } else {
-                entry.name.to_string()
-            };
-            writeln!(out, "  {size:<8} {mtime:<20} {name}").map_err(|_| ())?;
-        }
-
-        Ok(out)
     }
 }
