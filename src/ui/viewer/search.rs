@@ -337,6 +337,12 @@ impl ViewerState {
 
     pub(crate) fn parse_hex_query(query: &str) -> Result<Vec<u8>, HexQueryError> {
         let cleaned: String = query.chars().filter(|c| !c.is_whitespace()).collect();
+        // A hex query is only ASCII hex digits. Reject non-ASCII up front: the
+        // 2-byte slicing below indexes by byte and would panic on a multi-byte
+        // codepoint whose boundary falls mid-pair (e.g. a 4-byte emoji).
+        if !cleaned.is_ascii() {
+            return Err(HexQueryError::Invalid);
+        }
         if cleaned.len() < 2 {
             return Err(HexQueryError::TooShort);
         }

@@ -43,6 +43,10 @@ fn format_offset_hex(offset: usize, buf: &mut String) {
         *slot = HEX_CHARS[((n >> shift) & u64::from(LOW_NIBBLE_MASK)) as usize];
     }
     // `digits` is built solely from `HEX_CHARS`, so it is always valid ASCII.
+    debug_assert!(
+        std::str::from_utf8(&digits).is_ok(),
+        "HEX_CHARS must be ASCII"
+    );
     if let Ok(s) = std::str::from_utf8(&digits) {
         buf.push_str(s);
     }

@@ -1126,6 +1126,28 @@ fn test_parse_hex_query_distinguishes_too_short_from_invalid() {
         ViewerState::parse_hex_query("zz"),
         Err(HexQueryError::Invalid)
     );
+    // Non-ASCII must be rejected without panicking on the byte-slicing path
+    // (a 4-byte emoji has an even byte length whose boundary falls mid-pair).
+    assert_eq!(
+        ViewerState::parse_hex_query("😀"),
+        Err(HexQueryError::Invalid)
+    );
+    assert_eq!(
+        ViewerState::parse_hex_query("ąć"),
+        Err(HexQueryError::Invalid)
+    );
+}
+
+#[test]
+fn test_hex_search_multibyte_query_does_not_panic() {
+    let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+    file.write_all(b"\x00hello world").unwrap();
+    let mut state = ViewerState::open(file.path()).unwrap();
+    assert!(state.is_hex_mode());
+
+    // Must not panic on the hex-query slicing path; falls back to text search.
+    state.search("😀", DEFAULT_PAGE_HEIGHT);
+    assert!(state.search_matches.is_empty());
 }
 
 #[test]

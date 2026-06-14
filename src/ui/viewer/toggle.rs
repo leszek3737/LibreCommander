@@ -94,6 +94,11 @@ impl ViewerState {
         // so the per-frame cost stays O(1).
         const MAX_VISUAL_LINES: usize = 1_000_000;
         if self.line_count > MAX_VISUAL_LINES {
+            // Defensively drop any stale layout so logical-line scrolling can't
+            // pick up heights from a smaller prior state.
+            if !self.render_cache.visual_heights.borrow().is_empty() {
+                self.invalidate_visual_cache();
+            }
             return;
         }
         let mut new_heights = Vec::with_capacity(self.line_count);

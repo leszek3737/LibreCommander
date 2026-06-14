@@ -26,8 +26,10 @@ fn viewer_title<'a>(path: &'a Path, suffix: &str) -> Cow<'a, str> {
     match path.to_str() {
         // Common case (valid-UTF-8 path, no suffix): borrow the path directly.
         Some(s) if suffix.is_empty() => Cow::Borrowed(s),
-        _ if suffix.is_empty() => Cow::Owned(path.display().to_string()),
-        _ => Cow::Owned(format!("{} [{suffix}]", path.display())),
+        // Valid-UTF-8 path with a suffix: reuse `s` instead of re-running `display()`.
+        Some(s) => Cow::Owned(format!("{s} [{suffix}]")),
+        None if suffix.is_empty() => Cow::Owned(path.display().to_string()),
+        None => Cow::Owned(format!("{} [{suffix}]", path.display())),
     }
 }
 
