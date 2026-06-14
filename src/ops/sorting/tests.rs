@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used)]
+
 use super::*;
 use std::time::SystemTime;
 
@@ -29,7 +31,7 @@ fn make_entry(
     if let Some(btime) = btime_secs {
         builder = builder.created(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(btime));
     }
-    builder.build()
+    builder.build().expect("valid test entry")
 }
 
 fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
@@ -898,12 +900,14 @@ fn test_sort_mtime_none_after_known() {
     let no_mtime = FileEntry::builder()
         .name("unknown.txt")
         .path("unknown.txt")
-        .build();
+        .build()
+        .expect("valid test entry");
     let with_mtime = FileEntry::builder()
         .name("known.txt")
         .path("known.txt")
         .modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
-        .build();
+        .build()
+        .expect("valid test entry");
 
     let mut entries = vec![no_mtime, with_mtime];
     sort_entries(

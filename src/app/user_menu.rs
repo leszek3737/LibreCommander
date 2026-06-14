@@ -103,8 +103,17 @@ fn non_utf8_err() -> String {
     NON_UTF8_ERR.to_owned()
 }
 
+/// Extract the UTF-8 file name component of `path`, erroring on non-UTF-8.
+fn file_name_str(path: &Path) -> Result<&str, String> {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(non_utf8_err)
+}
+
 pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, String> {
-    let mut out = String::with_capacity(cmd.len() * 2);
+    // Most commands expand by a small constant (a few quoted names), so a flat
+    // headroom beats `len * 2`, which over-allocates for substitution-free text.
+    let mut out = String::with_capacity(cmd.len() + 16);
     let mut chars = cmd.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -116,12 +125,7 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
             None => out.push('%'),
             Some('%') => out.push('%'),
             Some('f') => {
-                let name = ctx
-                    .current_file
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .ok_or_else(non_utf8_err)?;
-                out.push_str(&safe_file_arg(name));
+                out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?));
             }
             Some('d') => {
                 out.push_str(&shell_quote(
@@ -135,19 +139,16 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
             }
             Some('t' | 's') => {
                 if ctx.tagged.is_empty() {
-                    let name = ctx
-                        .current_file
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .ok_or_else(non_utf8_err)?;
-                    out.push_str(&safe_file_arg(name));
+                    out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?));
                 } else {
-                    let quoted: Result<Vec<String>, String> = ctx
-                        .tagged
-                        .iter()
-                        .map(|p| tagged_name(p, ctx.active_dir).map(|n| safe_file_arg(&n)))
-                        .collect();
-                    out.push_str(&quoted?.join(" "));
+                    // Write space-separated quoted names straight into `out`,
+                    // avoiding an intermediate Vec<String> and its join().
+                    for (i, p) in ctx.tagged.iter().enumerate() {
+                        if i > 0 {
+                            out.push(' ');
+                        }
+                        out.push_str(&safe_file_arg(&tagged_name(p, ctx.active_dir)?));
+                    }
                 }
             }
             Some(other) => {
@@ -197,7 +198,8 @@ fn collect_body_lines(
     initial_condition: Option<ConditionParseResult>,
     initial_condition_line: usize,
 ) -> BodyCollectResult {
-    let mut body_lines: Vec<String> = Vec::new();
+    // Menu bodies are typically a few lines; preallocate to skip early regrows.
+    let mut body_lines: Vec<String> = Vec::with_capacity(4);
     let mut condition = initial_condition;
     let mut condition_line = initial_condition_line;
 

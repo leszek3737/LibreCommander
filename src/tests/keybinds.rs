@@ -34,7 +34,7 @@ fn ctrl_s_starts_search_mode() {
     );
 
     assert_eq!(state.mode, AppMode::Search);
-    assert_eq!(state.search_query, "");
+    assert_eq!(state.input.search_query, "");
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn ctrl_r_refreshes() {
     std::fs::write(temp_dir.path().join("existing.txt"), b"data").unwrap();
     state.left_panel.set_path(temp_dir.path().to_path_buf());
     state.left_panel.set_entries(vec![]);
-    assert!(state.left_panel.listing.entries.is_empty());
+    assert!(state.left_panel.listing.filtered_is_empty());
 
     dispatch_key(
         &mut state,
@@ -87,8 +87,7 @@ fn ctrl_r_refreshes() {
         state
             .left_panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .any(|e| e.name == "existing.txt"),
         "refresh_active should have loaded directory entries"
     );
@@ -129,7 +128,7 @@ fn alt_j_does_not_start_search_mode() {
     );
 
     assert_eq!(state.mode, AppMode::Normal);
-    assert_eq!(state.search_query, "");
+    assert_eq!(state.input.search_query, "");
 }
 
 #[test]
@@ -251,16 +250,19 @@ fn alt_c_opens_quick_cd() {
 #[test]
 fn alt_x_opens_command_line() {
     let mut state = AppState::default();
-    state.command_line.set_text_at_end("draft".to_string());
-    state.history_index = Some(0);
+    state
+        .input
+        .command_line
+        .set_text_at_end("draft".to_string());
+    state.input.history_index = Some(0);
     state.prev_mode = Some(AppMode::Search);
 
     handle_alt_keys(&mut state, KeyCode::Char('X'), VISIBLE_HEIGHT);
 
     assert_eq!(state.mode, AppMode::CommandLine);
-    assert!(state.command_line.text().is_empty());
-    assert_eq!(state.command_line.cursor(), 0);
-    assert_eq!(state.history_index, None);
+    assert!(state.input.command_line.text().is_empty());
+    assert_eq!(state.input.command_line.cursor(), 0);
+    assert_eq!(state.input.history_index, None);
     assert_eq!(state.prev_mode, None);
 }
 
@@ -287,7 +289,7 @@ fn f7_opens_create_directory_dialog() {
             ..
         })
     ));
-    assert!(state.dialog_input.text().is_empty());
+    assert!(state.input.dialog_input.text().is_empty());
 }
 
 #[test]
@@ -297,7 +299,7 @@ fn f9_enters_menu_mode() {
     let mut terminal = test_terminal();
     handle_function_keys(&mut state, &mut viewer, KeyCode::F(9), &mut terminal);
     assert!(matches!(state.mode, AppMode::Menu));
-    assert_eq!(state.menu_item_selected, 0);
+    assert_eq!(state.ui.menu_item_selected, 0);
 }
 
 #[test]
@@ -306,7 +308,7 @@ fn f10_sets_should_quit() {
     let mut viewer = None;
     let mut terminal = test_terminal();
     handle_function_keys(&mut state, &mut viewer, KeyCode::F(10), &mut terminal);
-    assert!(state.should_quit);
+    assert!(state.should_quit());
 }
 
 #[test]
@@ -366,37 +368,46 @@ fn tab_clamps_cursor() {
 #[test]
 fn directory_tree_page_down_uses_terminal_height() {
     let mut state = AppState {
-        tree_entries: dummy_tree_entries(50),
+        tree: app::types::TreeState {
+            entries: dummy_tree_entries(50),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     directory_tree::handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::PageDown, 12);
 
-    assert_eq!(state.tree_selected, 9);
-    assert_eq!(state.tree_scroll, 9);
+    assert_eq!(state.tree.selected, 9);
+    assert_eq!(state.tree.scroll, 9);
 }
 
 #[test]
 fn directory_tree_page_up_uses_terminal_height() {
     let mut state = AppState {
-        tree_entries: dummy_tree_entries(50),
-        tree_selected: 25,
-        tree_scroll: 25,
+        tree: app::types::TreeState {
+            entries: dummy_tree_entries(50),
+            selected: 25,
+            scroll: 25,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
     directory_tree::handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::PageUp, 12);
 
-    assert_eq!(state.tree_selected, 16);
-    assert_eq!(state.tree_scroll, 16);
+    assert_eq!(state.tree.selected, 16);
+    assert_eq!(state.tree.scroll, 16);
 }
 
 #[test]
 fn command_line_up_loads_last_history_entry() {
     let mut state = AppState::default();
-    state.command_history.push_back("git status".to_string());
+    state
+        .input
+        .command_history
+        .push_back("git status".to_string());
 
     command_line::handle_command_line(&mut state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
 
-    assert_eq!(state.command_line.text(), "git status");
+    assert_eq!(state.input.command_line.text(), "git status");
 }

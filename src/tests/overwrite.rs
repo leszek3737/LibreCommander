@@ -1,8 +1,8 @@
 use crate::input::dialogs;
 use crossterm::event::KeyCode;
 use lc::app::types::{
-    ActivePanel, AppMode, AppState, ArchiveExtractDetails, DialogKind, PendingAction, TextInput,
-    TransferAction,
+    ActivePanel, AppMode, AppState, ArchiveExtractDetails, DialogKind, InputState, PendingAction,
+    TextInput, TransferAction, UiState,
 };
 use lc::ops::archive::ArchiveFormat;
 use ratatui::layout::Size;
@@ -31,11 +31,14 @@ fn check_overwrite_no_conflicts_returns_none() {
     setup_src_dest(&src, &dest, &["new.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src.join("new.txt")],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src.join("new.txt")],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -51,11 +54,14 @@ fn check_overwrite_one_conflict_returns_some() {
     setup_dest_files(&dest, &["clash.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src.join("clash.txt")],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src.join("clash.txt")],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -72,11 +78,14 @@ fn check_overwrite_all_conflicts_returns_all_names() {
     setup_dest_files(&dest, &["a.txt", "b.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src.join("a.txt"), src.join("b.txt")],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src.join("a.txt"), src.join("b.txt")],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -93,11 +102,14 @@ fn check_overwrite_source_equals_dest_skipped() {
     std::fs::write(&file, b"data").unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![file],
-            dest: tmp.path().to_path_buf(),
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![file],
+                dest: tmp.path().to_path_buf(),
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -115,11 +127,14 @@ fn check_overwrite_broken_symlink_at_dest_is_conflict() {
     std::os::unix::fs::symlink("/nonexistent/broken", dest.join("link.txt")).unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src.join("link.txt")],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src.join("link.txt")],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -136,11 +151,14 @@ fn check_overwrite_move_conflict() {
     setup_dest_files(&dest, &["file.txt"]);
     let state = AppState {
         active_panel: ActivePanel::Left,
-        pending_action: Some(PendingAction::Move(TransferAction {
-            sources: vec![src.join("file.txt")],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Move(TransferAction {
+                sources: vec![src.join("file.txt")],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -155,11 +173,14 @@ fn check_overwrite_move_same_file_no_conflict() {
     let file = src.join("file.txt");
     let state = AppState {
         active_panel: ActivePanel::Left,
-        pending_action: Some(PendingAction::Move(TransferAction {
-            sources: vec![file],
-            dest: src,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Move(TransferAction {
+                sources: vec![file],
+                dest: src,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -175,11 +196,14 @@ fn check_overwrite_move_overwrite_no_conflict() {
     setup_dest_files(&dest, &["file.txt"]);
     let state = AppState {
         active_panel: ActivePanel::Left,
-        pending_action: Some(PendingAction::Move(TransferAction {
-            sources: vec![src.join("file.txt")],
-            dest,
-            overwrite: true,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Move(TransferAction {
+                sources: vec![src.join("file.txt")],
+                dest,
+                overwrite: true,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -189,9 +213,12 @@ fn check_overwrite_move_overwrite_no_conflict() {
 #[test]
 fn check_overwrite_delete_no_conflict() {
     let state = AppState {
-        pending_action: Some(PendingAction::Delete {
-            paths: vec![PathBuf::from("/tmp/nonexistent")],
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::Delete {
+                paths: vec![PathBuf::from("/tmp/nonexistent")],
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state);
@@ -224,11 +251,14 @@ fn check_overwrite_extract_archive_no_conflict_empty_dest() {
     let dest = tmp.path().join("dest");
     std::fs::create_dir_all(&dest).unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::ExtractArchive {
-            source: src,
-            dest,
-            overwrite: false,
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::ExtractArchive {
+                source: src,
+                dest,
+                overwrite: false,
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
@@ -242,11 +272,14 @@ fn check_overwrite_extract_archive_conflict_with_existing_file() {
     std::fs::create_dir_all(&dest).unwrap();
     std::fs::write(dest.join("file1.txt"), b"existing").unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::ExtractArchive {
-            source: src,
-            dest,
-            overwrite: false,
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::ExtractArchive {
+                source: src,
+                dest,
+                overwrite: false,
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
@@ -261,11 +294,14 @@ fn check_overwrite_extract_archive_overwrite_true_no_conflict() {
     std::fs::create_dir_all(&dest).unwrap();
     std::fs::write(dest.join("file1.txt"), b"existing").unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::ExtractArchive {
-            source: src,
-            dest,
-            overwrite: true,
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::ExtractArchive {
+                source: src,
+                dest,
+                overwrite: true,
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
@@ -279,12 +315,15 @@ fn check_overwrite_create_archive_dest_exists_conflict() {
     std::fs::write(&file, b"data").unwrap();
     std::fs::write(&dest, b"existing").unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::CreateArchive {
-            sources: vec![file],
-            dest,
-            format: ArchiveFormat::TarGz,
-            overwrite: false,
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::CreateArchive {
+                sources: vec![file],
+                dest,
+                format: ArchiveFormat::TarGz,
+                overwrite: false,
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
@@ -298,12 +337,15 @@ fn check_overwrite_create_archive_dest_not_exists_no_conflict() {
     let file = tmp.path().join("file.txt");
     std::fs::write(&file, b"data").unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::CreateArchive {
-            sources: vec![file],
-            dest,
-            format: ArchiveFormat::TarGz,
-            overwrite: false,
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::CreateArchive {
+                sources: vec![file],
+                dest,
+                format: ArchiveFormat::TarGz,
+                overwrite: false,
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
@@ -317,12 +359,15 @@ fn check_overwrite_create_archive_overwrite_true_no_conflict() {
     std::fs::write(&file, b"data").unwrap();
     std::fs::write(&dest, b"existing").unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::CreateArchive {
-            sources: vec![file],
-            dest,
-            format: ArchiveFormat::TarGz,
-            overwrite: true,
-        }),
+        ui: UiState {
+            pending_action: Some(PendingAction::CreateArchive {
+                sources: vec![file],
+                dest,
+                format: ArchiveFormat::TarGz,
+                overwrite: true,
+            }),
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
@@ -338,11 +383,14 @@ fn check_overwrite_copy_directory_source_conflict() {
     std::fs::create_dir_all(dest.join("mydir")).unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src_dir],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src_dir],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -359,11 +407,14 @@ fn check_overwrite_copy_directory_source_no_conflict() {
     std::fs::create_dir_all(&dest).unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src_dir],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src_dir],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -387,11 +438,14 @@ fn check_overwrite_copy_symlink_source_conflict() {
     std::fs::write(dest.join("link.txt"), b"existing").unwrap();
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![link],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![link],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -403,11 +457,14 @@ fn check_overwrite_copy_symlink_source_conflict() {
 fn check_overwrite_copy_empty_sources_no_panic() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![],
-            dest: dir.path().to_path_buf(),
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![],
+                dest: dir.path().to_path_buf(),
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let result = dialogs::check_overwrite_conflict(&state);
@@ -418,11 +475,14 @@ fn check_overwrite_copy_empty_sources_no_panic() {
 fn check_overwrite_move_empty_sources_no_panic() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState {
-        pending_action: Some(PendingAction::Move(TransferAction {
-            sources: vec![],
-            dest: dir.path().to_path_buf(),
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Move(TransferAction {
+                sources: vec![],
+                dest: dir.path().to_path_buf(),
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let result = dialogs::check_overwrite_conflict(&state);
@@ -448,7 +508,10 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
                 dest_input,
             },
         ))),
-        dialog_selection: 0,
+        input: InputState {
+            dialog_selection: 0,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut running_job = None;
@@ -467,7 +530,7 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
     ));
     assert!(running_job.is_none());
     assert!(matches!(
-        state.pending_action,
+        state.ui.pending_action,
         Some(PendingAction::ExtractArchive {
             overwrite: false,
             ..
@@ -478,7 +541,10 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
 #[test]
 fn check_overwrite_pending_action_none_returns_none() {
     let state = AppState {
-        pending_action: None,
+        ui: UiState {
+            pending_action: None,
+            ..Default::default()
+        },
         ..Default::default()
     };
     assert!(dialogs::check_overwrite_conflict(&state).is_none());
@@ -493,11 +559,14 @@ fn check_overwrite_copy_overwrite_true_no_conflict() {
     setup_dest_files(&dest, &["file.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src.join("file.txt")],
-            dest,
-            overwrite: true,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src.join("file.txt")],
+                dest,
+                overwrite: true,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -515,11 +584,14 @@ fn check_overwrite_copy_duplicate_sources_different_dirs_conflict() {
     setup_dest_files(&dest, &["same.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src_a.join("same.txt"), src_b.join("same.txt")],
-            dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src_a.join("same.txt"), src_b.join("same.txt")],
+                dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -535,11 +607,14 @@ fn check_overwrite_copy_nonexistent_dest_no_panic() {
     setup_src_dest(&src, &nonexistent_dest, &["file.txt"]);
 
     let state = AppState {
-        pending_action: Some(PendingAction::Copy(TransferAction {
-            sources: vec![src.join("file.txt")],
-            dest: nonexistent_dest,
-            overwrite: false,
-        })),
+        ui: UiState {
+            pending_action: Some(PendingAction::Copy(TransferAction {
+                sources: vec![src.join("file.txt")],
+                dest: nonexistent_dest,
+                overwrite: false,
+            })),
+            ..Default::default()
+        },
         ..Default::default()
     };
 

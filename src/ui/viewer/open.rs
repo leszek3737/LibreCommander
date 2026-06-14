@@ -341,8 +341,8 @@ impl ViewerState {
         let mime =
             crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
 
-        let open_as_text = should_open_as_text(path, mime.as_deref(), &raw_bytes);
-        let is_image = is_image_mime(mime.as_deref());
+        let open_as_text = should_open_as_text(path, mime, &raw_bytes);
+        let is_image = is_image_mime(mime);
         let view_mode = if is_image {
             ViewMode::Image
         } else if open_as_text {
@@ -356,7 +356,7 @@ impl ViewerState {
             raw_bytes,
             file_size,
             view_mode,
-            mime,
+            mime.map(String::from),
             file_truncated,
         ))
     }

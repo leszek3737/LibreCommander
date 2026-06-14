@@ -40,15 +40,11 @@ pub(crate) fn render_ui(
         AppMode::Viewing => {
             if let Some(vs) = viewer_state {
                 match vs.view_mode {
-                    ViewMode::Hex => {
-                        viewer::render_hex_view_with_colors(f, f.area(), vs, colors);
-                    }
+                    ViewMode::Hex => viewer::render_hex_view_with_colors(f, f.area(), vs, colors),
                     ViewMode::Image => {
-                        viewer::render_image_view_with_colors(f, f.area(), vs, colors);
+                        viewer::render_image_view_with_colors(f, f.area(), vs, colors)
                     }
-                    ViewMode::Text => {
-                        viewer::render_viewer_with_colors(f, f.area(), vs, colors);
-                    }
+                    ViewMode::Text => viewer::render_viewer_with_colors(f, f.area(), vs, colors),
                 }
                 return;
             }
@@ -58,7 +54,7 @@ pub(crate) fn render_ui(
                     f.area(),
                     &loader.path,
                     colors,
-                    state.viewer_spinner_frame,
+                    state.ui.viewer_spinner_frame,
                 );
                 return;
             }
@@ -68,10 +64,10 @@ pub(crate) fn render_ui(
         AppMode::DirectoryTree => {
             ui::dir_tree::render_directory_tree_with_colors(
                 f,
-                &state.tree_root,
-                &state.tree_entries,
-                state.tree_selected,
-                state.tree_scroll,
+                &state.tree.root,
+                &state.tree.entries,
+                state.tree.selected,
+                state.tree.scroll,
                 colors,
             );
             return;
@@ -126,13 +122,18 @@ pub(crate) fn render_ui(
     let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
         cursor_line(
             "$ ",
-            state.command_line.text(),
-            state.command_line.byte_pos(),
+            state.input.command_line.text(),
+            state.input.command_line.byte_pos(),
         )
         .into()
     } else if state.mode == AppMode::Search {
-        cursor_line("Search: ", &state.search_query, state.search_cursor).into()
-    } else if let Some(ref msg) = state.status_message {
+        cursor_line(
+            "Search: ",
+            &state.input.search_query,
+            state.input.search_cursor,
+        )
+        .into()
+    } else if let Some(ref msg) = state.ui.status_message {
         Cow::Borrowed(msg.as_str())
     } else {
         active.path().to_string_lossy()
@@ -156,8 +157,8 @@ fn render_overlays(f: &mut Frame, state: &AppState, menu_bar_area: Rect, colors:
         ui::menu::render_menu_bar_with_colors(
             f,
             menu_bar_area,
-            state.menu_selected,
-            state.menu_item_selected,
+            state.ui.menu_selected,
+            state.ui.menu_item_selected,
             colors,
         );
     }
@@ -194,13 +195,14 @@ fn render_list_picker_overlay(
     kind: &PickerKind,
     colors: &ColorPalette,
 ) {
-    let selected = state.picker_selected;
+    let selected = state.ui.picker_selected;
     match kind {
         PickerKind::History => {
             // command_history is mutable state stored newest-last in a VecDeque,
             // so a reversed contiguous slice doesn't exist; we materialize per
             // frame. SmallVec keeps typical histories off the heap (no alloc).
             let items: SmallVec<[&str; 32]> = state
+                .input
                 .command_history
                 .iter()
                 .rev()
@@ -218,7 +220,7 @@ fn render_list_picker_overlay(
         PickerKind::Hotlist => render_picker(
             f,
             "Directory Hotlist",
-            &state.cached_hotlist_strings,
+            &state.ui.cached_hotlist_strings,
             selected,
             "Enter: cd  a: add current  d: delete  Esc: close",
             colors,
@@ -237,7 +239,7 @@ fn render_list_picker_overlay(
         PickerKind::UserMenu => render_picker(
             f,
             "User Menu",
-            &state.cached_user_menu_strings,
+            &state.ui.cached_user_menu_strings,
             selected,
             "Enter: run  Esc: cancel",
             colors,

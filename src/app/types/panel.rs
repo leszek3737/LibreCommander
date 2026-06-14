@@ -12,35 +12,216 @@ pub enum ListingState {
     NeedsFullRead,
 }
 
+/// Outcome of a single-entry selection toggle.
+///
+/// The cursor toggle used to be a silent no-op for the `..` parent link and for
+/// an empty listing, leaving callers unable to distinguish "nothing happened"
+/// from "selection flipped off". Encoding the result as a type makes those
+/// states explicit (type-driven: invalid/ignored cases are not silently
+/// swallowed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleResult {
+    /// Selection flipped; payload is the entry's new `selected` state.
+    Toggled(bool),
+    /// The cursor entry is the `..` parent link; selection is not allowed.
+    SkippedParent,
+    /// No entry exists under the cursor (empty or out-of-range view).
+    NoEntry,
+}
+
+/// A directory listing backed by a single owning store.
+///
+/// `unfiltered_entries` is the sole owner of every [`FileEntry`] (and the sole
+/// home of per-entry selection state). `entries` is the *filtered view*: a list
+/// of indices into `unfiltered_entries`, in display order. Storing the view as
+/// indices (rather than a second `Vec<FileEntry>`) removes the dual-store
+/// duplication whose selection had to be hand-synced on every toggle/rebuild —
+/// the historic source of selection-desync bugs.
+///
+/// `path_index` maps each entry path to its slot in `unfiltered_entries` and is
+/// kept consistent by every mutator below; it is the canonical path lookup used
+/// by the watcher upsert/remove fast paths.
+///
+/// Invariant: indices in `entries` either point at a live slot in
+/// `unfiltered_entries` or are transiently stale after an in-place
+/// `upsert`/`remove` — in which case the owning panel is marked dirty and the
+/// view is rebuilt before it is read again. Reads defensively skip dead indices,
+/// so a stale index can never panic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelListing {
-    pub entries: Vec<FileEntry>,
-    pub unfiltered_entries: Vec<FileEntry>,
-    pub path_index: HashMap<PathBuf, usize>,
+    unfiltered_entries: Vec<FileEntry>,
+    entries: Vec<usize>,
+    path_index: HashMap<PathBuf, usize>,
     state: ListingState,
 }
 
 impl PanelListing {
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
             unfiltered_entries: Vec::new(),
+            entries: Vec::new(),
             path_index: HashMap::new(),
             state: ListingState::NeedsFullRead,
         }
     }
 
+    /// Replace the backing store. Rebuilds `path_index` and invalidates the
+    /// filtered view (rebuild it afterwards via
+    /// [`set_filtered`](Self::set_filtered) or
+    /// [`set_filtered_all`](Self::set_filtered_all)).
     pub fn set_unfiltered(&mut self, entries: Vec<FileEntry>) {
         self.path_index.clear();
+        self.path_index.reserve(entries.len());
         for (i, entry) in entries.iter().enumerate() {
+            // Owned-key clone is required: the HashMap key must outlive `entries`,
+            // which is moved into the backing store on the next line. This is the
+            // index's own cost; the *filtered view* no longer pays a clone since it
+            // stores indices, not entry copies.
             self.path_index.insert(entry.path.clone(), i);
         }
         self.unfiltered_entries = entries;
+        self.entries.clear();
         self.state = ListingState::Clean;
     }
 
-    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
-        self.entries = entries;
+    /// Rebuild the filtered view from an ordered slice of entries, mapping each
+    /// back to its slot in the backing store by path. Entries whose path is not
+    /// in the store are skipped.
+    ///
+    /// Selection is intentionally NOT copied from `ordered` (which may be a stale
+    /// clone): it lives solely in `unfiltered_entries`, so the filtered view can
+    /// never carry a divergent selection.
+    pub fn set_filtered(&mut self, ordered: &[FileEntry]) {
+        self.ensure_index();
+        self.entries.clear();
+        self.entries.reserve(ordered.len());
+        for e in ordered {
+            if let Some(&idx) = self.path_index.get(&e.path) {
+                self.entries.push(idx);
+            }
+        }
+    }
+
+    /// Set the filtered view to the full backing store, in storage order
+    /// (the no-filter case).
+    pub fn set_filtered_all(&mut self) {
+        self.entries.clear();
+        self.entries.extend(0..self.unfiltered_entries.len());
+    }
+
+    /// Number of entries in the filtered (visible) view.
+    pub fn filtered_len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the filtered (visible) view is empty.
+    pub fn filtered_is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Iterate the filtered (visible) entries in display order. Dead indices
+    /// (transiently stale after an in-place mutation) are skipped.
+    pub fn filtered(&self) -> impl Iterator<Item = &FileEntry> {
+        self.entries
+            .iter()
+            .filter_map(|&i| self.unfiltered_entries.get(i))
+    }
+
+    /// Entry at filtered position `i`, if any.
+    pub fn filtered_get(&self, i: usize) -> Option<&FileEntry> {
+        self.entries
+            .get(i)
+            .and_then(|&idx| self.unfiltered_entries.get(idx))
+    }
+
+    /// The backing store (every entry, regardless of filter), as a slice.
+    pub fn unfiltered(&self) -> &[FileEntry] {
+        &self.unfiltered_entries
+    }
+
+    /// Mutable access to the backing store for in-place edits (e.g. restoring
+    /// selection by path). Cannot resize — use [`upsert`](Self::upsert) or
+    /// [`remove`](Self::remove) for that.
+    pub fn unfiltered_mut(&mut self) -> &mut [FileEntry] {
+        &mut self.unfiltered_entries
+    }
+
+    /// Look up a backing entry by path via `path_index`.
+    pub fn entry_by_path(&self, path: &Path) -> Option<&FileEntry> {
+        self.path_index
+            .get(path)
+            .and_then(|&i| self.unfiltered_entries.get(i))
+    }
+
+    /// Backing-store index for `path`, if present.
+    pub fn index_of(&self, path: &Path) -> Option<usize> {
+        self.path_index.get(path).copied()
+    }
+
+    /// Whether `path` is present in the backing store.
+    pub fn contains_path(&self, path: &Path) -> bool {
+        self.path_index.contains_key(path)
+    }
+
+    /// Rebuild `path_index` only if it is currently empty (lazy refresh used by
+    /// the watcher fast paths before a lookup).
+    pub fn ensure_index(&mut self) {
+        if self.path_index.is_empty() {
+            self.rebuild_index();
+        }
+    }
+
+    /// Unconditionally rebuild `path_index` from the backing store.
+    pub fn rebuild_index(&mut self) {
+        self.path_index.clear();
+        self.path_index.reserve(self.unfiltered_entries.len());
+        for (i, entry) in self.unfiltered_entries.iter().enumerate() {
+            self.path_index.insert(entry.path.clone(), i);
+        }
+    }
+
+    /// Insert `entry`, or replace the existing entry with the same path
+    /// (preserving its selection). Keeps `path_index` consistent.
+    ///
+    /// Note: a replace edits in place (filtered view unaffected), but the caller
+    /// should mark the panel dirty so the view is rebuilt — a newly inserted
+    /// entry is not yet part of the filtered view.
+    pub fn upsert(&mut self, mut entry: FileEntry) {
+        self.ensure_index();
+        if let Some(&idx) = self.path_index.get(&entry.path) {
+            if let Some(existing) = self.unfiltered_entries.get_mut(idx) {
+                entry.selected = existing.selected;
+                *existing = entry;
+            }
+        } else {
+            let new_idx = self.unfiltered_entries.len();
+            self.path_index.insert(entry.path.clone(), new_idx);
+            self.unfiltered_entries.push(entry);
+        }
+    }
+
+    /// Remove the entry at `path`, returning whether it existed. Uses
+    /// `swap_remove` and repairs `path_index` for the moved tail entry.
+    ///
+    /// `swap_remove` can leave indices in the filtered view stale; the caller
+    /// must mark the panel dirty so the view is rebuilt before the next read.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        if self.unfiltered_entries.is_empty() {
+            return false;
+        }
+        self.ensure_index();
+        let Some(idx) = self.path_index.remove(path) else {
+            return false;
+        };
+        let last = self.unfiltered_entries.len() - 1;
+        if idx < last {
+            let last_path = self.unfiltered_entries[last].path.clone();
+            self.unfiltered_entries.swap_remove(idx);
+            self.path_index.insert(last_path, idx);
+        } else {
+            self.unfiltered_entries.pop();
+        }
+        true
     }
 
     pub fn state(&self) -> ListingState {
@@ -94,10 +275,16 @@ impl Default for PanelListing {
     }
 }
 
-// NOTE: ~30 pub getters/setters below. By design this struct exposes
-// individual field access instead of a single `set_fields()` mega-method
-// so input handlers can update only what changed without re-allocating
-// the rest. If you add a field, add its getter+setter pair.
+// NOTE: ~30 pub getters/setters below. By design this struct exposes individual
+// field access instead of a single `set_fields()` mega-method so input handlers
+// can update only what changed without re-allocating the rest. Invariant-bearing
+// fields are NOT plain beans: their setters enforce the invariant (`set_path`
+// re-canonicalizes, `push_history` caps at `MAX_HISTORY`) and selection is
+// single-sourced in `listing` (see `PanelListing`). `cursor`/`scroll_offset`
+// stay public because their only invariant — staying within the view and
+// on-screen — depends on the viewport height, which a field setter does not
+// have; callers enforce it via `ensure_cursor_visible(height)`. If you add a
+// field, add its getter+setter pair (and any invariant it carries).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelState {
     pub(crate) path: PathBuf,
@@ -262,103 +449,65 @@ impl PanelState {
     }
 
     pub fn current_entry(&self) -> Option<&FileEntry> {
-        self.listing.entries.get(self.cursor)
+        self.listing.filtered_get(self.cursor)
     }
 
-    pub fn toggle_selection(&mut self) {
-        if let Some(entry) = self.listing.entries.get_mut(self.cursor) {
-            if entry.name == ".." {
-                return;
-            }
-            entry.selected = !entry.selected;
-            let size = entry.size();
-            let selected = entry.selected;
-            let path = entry.path.clone();
-            self.update_selection_stats(size, selected);
-            self.set_unfiltered_selection(&path, selected);
+    /// Toggle selection of the entry under the cursor.
+    ///
+    /// Selection is mutated directly on the single backing store via the
+    /// filtered index, so there is no path lookup and no second store to sync.
+    pub fn toggle_selection(&mut self) -> ToggleResult {
+        let Some(&idx) = self.listing.entries.get(self.cursor) else {
+            return ToggleResult::NoEntry;
+        };
+        // Defensive `get_mut` (rather than indexing): the filtered view may be
+        // transiently stale after an in-place mutation, matching the rest of the
+        // read API which skips dead indices instead of panicking.
+        let Some(entry) = self.listing.unfiltered_entries.get_mut(idx) else {
+            return ToggleResult::NoEntry;
+        };
+        if entry.name == ".." {
+            return ToggleResult::SkippedParent;
         }
+        entry.selected = !entry.selected;
+        let size = entry.size();
+        let selected = entry.selected;
+        self.update_selection_stats(size, selected);
+        ToggleResult::Toggled(selected)
     }
 
     pub fn set_selection_at(&mut self, index: usize, selected: bool) {
-        if let Some(entry) = self.listing.entries.get_mut(index) {
-            if entry.name == ".." || entry.selected == selected {
-                return;
-            }
-            entry.selected = selected;
-            let size = entry.size();
-            let path = entry.path.clone();
-            self.update_selection_stats(size, selected);
-            self.set_unfiltered_selection(&path, selected);
+        let Some(&idx) = self.listing.entries.get(index) else {
+            return;
+        };
+        let Some(entry) = self.listing.unfiltered_entries.get_mut(idx) else {
+            return;
+        };
+        if entry.name == ".." || entry.selected == selected {
+            return;
         }
+        entry.selected = selected;
+        let size = entry.size();
+        self.update_selection_stats(size, selected);
     }
 
     pub fn toggle_selection_at(&mut self, index: usize) {
-        let selected = self.listing.entries.get(index).is_some_and(|e| !e.selected);
+        let selected = self
+            .listing
+            .filtered_get(index)
+            .is_some_and(|e| !e.selected);
         self.set_selection_at(index, selected);
     }
 
-    fn set_unfiltered_selection(&mut self, path: &Path, selected: bool) {
-        if let Some(&idx) = self.listing.path_index.get(path) {
-            if let Some(ue) = self.listing.unfiltered_entries.get_mut(idx) {
-                ue.selected = selected;
-            }
-        } else {
-            // O(n) fallback — path_index miss, scanning unfiltered_entries
-            let found = self
-                .listing
-                .unfiltered_entries
-                .iter_mut()
-                .find(|e| e.path == *path);
-            if let Some(ue) = found {
-                ue.selected = selected;
-            }
-            // path_index should always cover unfiltered_entries; a miss
-            // means index is stale (listing changed without rebuilding it)
-        }
-    }
-
-    pub fn sync_unfiltered_selection(&mut self) {
-        if self.listing.unfiltered_entries.is_empty() {
-            return;
-        }
-
-        let index: HashMap<PathBuf, usize> = self
-            .listing
-            .unfiltered_entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.path.clone(), i))
-            .collect();
-
-        for entry in &self.listing.entries {
-            if let Some(&idx) = index.get(&entry.path)
-                && let Some(ue) = self.listing.unfiltered_entries.get_mut(idx)
-            {
-                ue.selected = entry.selected;
-            }
-        }
-    }
-
-    fn source_entries(&self) -> &[FileEntry] {
-        if self.listing.unfiltered_entries.is_empty() {
-            &self.listing.entries
-        } else {
-            &self.listing.unfiltered_entries
-        }
-    }
-
-    pub fn selected_entries(&self) -> Vec<&FileEntry> {
-        self.source_entries()
-            .iter()
-            .filter(|e| e.selected)
-            .collect()
+    /// Iterate the currently selected entries. Selection lives only in the
+    /// backing store, so this returns a borrowing iterator (no allocation).
+    pub fn selected_entries(&self) -> impl Iterator<Item = &FileEntry> {
+        self.listing.unfiltered().iter().filter(|e| e.selected)
     }
 
     pub fn clear_selection(&mut self) {
-        for entry in &mut self.listing.entries {
-            entry.selected = false;
-        }
-        for entry in &mut self.listing.unfiltered_entries {
+        // Single store: clearing the backing entries clears the filtered view too.
+        for entry in self.listing.unfiltered_mut() {
             entry.selected = false;
         }
         self.selected_count = 0;
@@ -369,7 +518,7 @@ impl PanelState {
         let mut selected_count: usize = 0;
         let mut selected_size: u64 = 0;
         let mut total_size: u64 = 0;
-        for entry in self.source_entries() {
+        for entry in self.listing.unfiltered() {
             total_size = total_size.saturating_add(entry.size());
             if entry.selected {
                 selected_count = selected_count.saturating_add(1);
@@ -382,14 +531,15 @@ impl PanelState {
     }
 
     pub fn move_cursor_up(&mut self, max_height: usize) {
-        if self.listing.entries.is_empty() {
+        let len = self.listing.filtered_len();
+        if len == 0 {
             return;
         }
 
         if self.cursor == 0 {
-            self.cursor = self.listing.entries.len().saturating_sub(1);
+            self.cursor = len.saturating_sub(1);
             if max_height > 0 {
-                self.scroll_offset = self.listing.entries.len().saturating_sub(max_height);
+                self.scroll_offset = len.saturating_sub(max_height);
             }
         } else {
             self.cursor = self.cursor.saturating_sub(1);
@@ -400,11 +550,12 @@ impl PanelState {
     }
 
     pub fn move_cursor_down(&mut self, max_height: usize) {
-        if self.listing.entries.is_empty() {
+        let len = self.listing.filtered_len();
+        if len == 0 {
             return;
         }
 
-        let max_index = self.listing.entries.len() - 1;
+        let max_index = len - 1;
 
         if self.cursor >= max_index {
             self.cursor = 0;
@@ -418,7 +569,7 @@ impl PanelState {
     }
 
     pub fn ensure_cursor_visible(&mut self, visible_height: usize) {
-        let max_scroll = self.listing.entries.len().saturating_sub(1);
+        let max_scroll = self.listing.filtered_len().saturating_sub(1);
         if self.scroll_offset > max_scroll {
             self.scroll_offset = max_scroll;
         }
@@ -430,10 +581,12 @@ impl PanelState {
         }
     }
 
+    /// Replace the listing with `entries`, no filter applied (the filtered view
+    /// becomes the full set). No clone: the dual-store duplication that once
+    /// required one is gone.
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
-        // Clone required: unfiltered_entries holds the full set, entries holds the filtered view
-        self.listing.set_unfiltered(entries.clone());
-        self.listing.set_entries(entries);
+        self.listing.set_unfiltered(entries);
+        self.listing.set_filtered_all();
         self.cursor = 0;
         self.scroll_offset = 0;
         self.recalculate_selection_stats();

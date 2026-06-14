@@ -3,7 +3,7 @@ use crate::input::dialogs;
 use crossterm::event::KeyCode;
 use lc::app::job_runner::RunningJob;
 use lc::app::types::{
-    ActivePanel, AppMode, AppState, DialogKind, InputAction, TextInput, ViewMode,
+    ActivePanel, AppMode, AppState, DialogKind, InputAction, InputState, TextInput, ViewMode,
 };
 use lc::ui;
 use lc::ui::viewer;
@@ -149,11 +149,14 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
             prompt: "Viewer search:".to_string(),
             action: InputAction::ViewerSearch,
         }),
-        dialog_input: {
-            let mut ti = TextInput::new();
-            ti.set_text("needle".to_string());
-            ti.set_cursor(6);
-            ti
+        input: InputState {
+            dialog_input: {
+                let mut ti = TextInput::new();
+                ti.set_text("needle".to_string());
+                ti.set_cursor(6);
+                ti
+            },
+            ..Default::default()
         },
         prev_mode: Some(AppMode::Normal),
         ..Default::default()
@@ -171,8 +174,8 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
 
     assert!(matches!(state.mode, AppMode::Viewing));
     assert_eq!(state.prev_mode, Some(AppMode::Normal));
-    assert!(state.dialog_input.text().is_empty());
-    assert_eq!(state.dialog_input.cursor(), 0);
+    assert!(state.input.dialog_input.text().is_empty());
+    assert_eq!(state.input.dialog_input.cursor(), 0);
 }
 
 #[test]

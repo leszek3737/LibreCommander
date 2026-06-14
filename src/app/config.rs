@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -11,9 +12,9 @@ use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode
 pub struct PersistedPanel {
     #[serde(default)]
     pub path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_listing_mode_with_fallback")]
+    #[serde(default, deserialize_with = "deserialize_with_fallback")]
     pub listing_mode: ListingMode,
-    #[serde(default, deserialize_with = "deserialize_sort_mode_with_fallback")]
+    #[serde(default, deserialize_with = "deserialize_with_fallback")]
     pub sort_mode: SortMode,
     #[serde(default)]
     pub filter: String,
@@ -27,26 +28,21 @@ fn default_true() -> bool {
     true
 }
 
-// Falls back to default on invalid config values, logging via debug_log.
+// Falls back to `T::default()` on invalid config values, logging via debug_log.
 // This runs during deserialization — in a TUI app eprintln! would corrupt
-// the alternate screen buffer. debug_log writes to a file instead.
-fn deserialize_listing_mode_with_fallback<'de, D>(d: D) -> Result<ListingMode, D::Error>
+// the alternate screen buffer. debug_log writes to a file instead. Generic over
+// the field type so every fallible persisted field shares one implementation.
+fn deserialize_with_fallback<'de, D, T>(d: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
 {
-    ListingMode::deserialize(d).or_else(|_| {
-        crate::debug_log!("config: invalid value for listing_mode, using default");
-        Ok(ListingMode::default())
-    })
-}
-
-fn deserialize_sort_mode_with_fallback<'de, D>(d: D) -> Result<SortMode, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    SortMode::deserialize(d).or_else(|_| {
-        crate::debug_log!("config: invalid value for sort_mode, using default");
-        Ok(SortMode::default())
+    T::deserialize(d).or_else(|_| {
+        crate::debug_log!(
+            "config: invalid value for {}, using default",
+            std::any::type_name::<T>()
+        );
+        Ok(T::default())
     })
 }
 
@@ -56,7 +52,7 @@ pub struct PersistedSetup {
     pub active_panel: String,
     #[serde(default = "default_true")]
     pub dir_first: bool,
-    #[serde(default, rename = "sort_sensitive", alias = "sensitive")]
+    #[serde(default, alias = "sort_sensitive")]
     pub sensitive: bool,
     #[serde(default)]
     pub left: PersistedPanel,
@@ -91,7 +87,7 @@ impl Settings {
             sensitive: sort_options.sensitive,
             left: panel_to_persisted(&state.left_panel),
             right: panel_to_persisted(&state.right_panel),
-            hotlist: state.directory_hotlist.clone(),
+            hotlist: state.ui.directory_hotlist.clone(),
         }
     }
 
@@ -112,11 +108,7 @@ impl Settings {
 impl From<&Settings> for PersistedSetup {
     fn from(settings: &Settings) -> Self {
         Self {
-            active_panel: match settings.active_panel {
-                ActivePanel::Left => "left",
-                ActivePanel::Right => "right",
-            }
-            .to_string(),
+            active_panel: active_panel_to_wire(settings.active_panel).to_string(),
             dir_first: settings.dir_first,
             sensitive: settings.sensitive,
             left: settings.left.clone(),
@@ -129,37 +121,56 @@ impl From<&Settings> for PersistedSetup {
 impl From<PersistedSetup> for Settings {
     fn from(setup: PersistedSetup) -> Self {
         Self {
-            active_panel: {
-                if setup.active_panel.eq_ignore_ascii_case("right") {
-                    ActivePanel::Right
-                } else if setup.active_panel.eq_ignore_ascii_case("left") {
-                    ActivePanel::Left
-                } else {
-                    if !setup.active_panel.is_empty() {
-                        crate::debug_log!(
-                            "config: invalid active_panel value '{}', using default Left",
-                            setup.active_panel
-                        );
-                    }
-                    ActivePanel::Left
-                }
-            },
+            active_panel: active_panel_from_wire(&setup.active_panel),
             dir_first: setup.dir_first,
             sensitive: setup.sensitive,
             left: setup.left,
             right: setup.right,
-            hotlist: setup
-                .hotlist
-                .unwrap_or_default()
-                .iter()
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| {
-                    let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(s));
-                    fs::canonicalize(&path).unwrap_or(path)
-                })
-                .collect(),
+            hotlist: canonicalize_hotlist(&setup.hotlist.unwrap_or_default()),
         }
     }
+}
+
+/// Maps an [`ActivePanel`] to its persisted wire string.
+fn active_panel_to_wire(panel: ActivePanel) -> &'static str {
+    match panel {
+        ActivePanel::Left => "left",
+        ActivePanel::Right => "right",
+    }
+}
+
+/// Parses a persisted `active_panel` string into [`ActivePanel`], defaulting to
+/// `Left` (and logging) on any unrecognized non-empty value. Inverse of
+/// [`active_panel_to_wire`].
+fn active_panel_from_wire(s: &str) -> ActivePanel {
+    if s.eq_ignore_ascii_case("right") {
+        ActivePanel::Right
+    } else if s.eq_ignore_ascii_case("left") {
+        ActivePanel::Left
+    } else {
+        if !s.is_empty() {
+            crate::debug_log!("config: invalid active_panel value '{s}', using default Left");
+        }
+        ActivePanel::Left
+    }
+}
+
+/// Resolves persisted hotlist strings to canonical paths. Each unique cleaned
+/// path is canonicalized at most once — the `fs::canonicalize` syscall result is
+/// cached so repeated entries skip redundant I/O. Empty/whitespace strings are
+/// dropped; duplicate inputs are preserved in the output.
+fn canonicalize_hotlist(raw: &[String]) -> Vec<PathBuf> {
+    let mut cache: HashMap<PathBuf, PathBuf> = HashMap::new();
+    raw.iter()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(s));
+            cache
+                .entry(path.clone())
+                .or_insert_with(|| fs::canonicalize(&path).unwrap_or_else(|_| path.clone()))
+                .clone()
+        })
+        .collect()
 }
 
 fn panel_to_persisted(panel: &PanelState) -> PersistedPanel {
@@ -216,7 +227,7 @@ pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
 }
 
 pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
-    let Some(raw) = read_config_raw()? else {
+    let Some(raw) = read_config_raw_with_env(&paths::ProcessEnv)? else {
         return Ok(None);
     };
     // clone() is required because toml::Value only implements IntoDeserializer
@@ -243,10 +254,6 @@ pub fn load_settings_with_env(env: &impl paths::EnvProvider) -> Result<Option<Se
     Ok(Some(Settings::from(setup)))
 }
 
-fn read_config_raw() -> Result<Option<toml::Value>, String> {
-    read_config_raw_with_env(&paths::ProcessEnv)
-}
-
 fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml::Value>, String> {
     let Some(path) = paths::config_file_path_with_env(env) else {
         return Ok(None);
@@ -262,27 +269,11 @@ fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml
 }
 
 fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
-    if let Some(ref path_str) = persisted.path {
-        let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
-        let canonical = fs::canonicalize(&path).ok();
-        if let Some(c) = canonical {
-            if c.is_dir() {
-                panel.set_path(c.clone());
-                panel.set_canonical_path(Some(c));
-            }
-        } else {
-            crate::debug_log!(
-                "config: canonicalize failed for {}: {}",
-                path.display(),
-                "falling back to raw path"
-            );
-            if path.is_dir() {
-                panel.set_path(path);
-                panel.set_canonical_path(None);
-            } else {
-                crate::debug_log!("configured panel path ignored: {}", path.display());
-            }
-        }
+    if let Some(path_str) = persisted.path.as_deref()
+        && let Some((path, canonical)) = resolve_persisted_path(path_str)
+    {
+        panel.set_path(path);
+        panel.set_canonical_path(canonical);
     }
     panel.set_listing_mode(persisted.listing_mode);
     panel.set_sort_mode(persisted.sort_mode);
@@ -293,6 +284,30 @@ fn apply_panel(panel: &mut PanelState, persisted: &PersistedPanel) {
     });
     panel.set_show_hidden(persisted.show_hidden);
     panel.set_show_permissions(persisted.show_permissions);
+}
+
+/// Resolves a persisted panel path into the `(path, canonical)` pair to assign,
+/// or `None` when the configured path is unusable (not a directory). Prefers the
+/// canonicalized path; on canonicalize failure it falls back to the cleaned raw
+/// path when that is a directory.
+fn resolve_persisted_path(path_str: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    let path = crate::fs::path::clean_path(&crate::fs::path::expand_path(path_str));
+    match fs::canonicalize(&path) {
+        Ok(canonical) if canonical.is_dir() => Some((canonical.clone(), Some(canonical))),
+        Ok(_) => None,
+        Err(_) => {
+            crate::debug_log!(
+                "config: canonicalize failed for {}, falling back to raw path",
+                path.display()
+            );
+            if path.is_dir() {
+                Some((path, None))
+            } else {
+                crate::debug_log!("configured panel path ignored: {}", path.display());
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -308,9 +323,8 @@ mod tests {
     #[test]
     fn settings_from_state_captures_persisted_fields() {
         let tmp_dir = std::env::temp_dir();
-        let state = AppState {
+        let mut state = AppState {
             active_panel: ActivePanel::Right,
-            directory_hotlist: vec![tmp_dir.clone(), PathBuf::from("/usr")],
             left_panel: PanelState {
                 path: tmp_dir.clone(),
                 listing_mode: ListingMode::Brief,
@@ -321,6 +335,7 @@ mod tests {
             },
             ..AppState::default()
         };
+        state.hotlist_set(vec![tmp_dir.clone(), PathBuf::from("/usr")]);
 
         let settings = Settings::from_state(&state);
 
@@ -341,7 +356,7 @@ mod tests {
         );
         assert_eq!(settings.left.filter, "rs");
         assert!(!settings.left.show_hidden);
-        assert_eq!(settings.hotlist, state.directory_hotlist);
+        assert_eq!(settings.hotlist, state.ui.directory_hotlist);
     }
 
     #[test]
@@ -382,7 +397,7 @@ mod tests {
         );
         assert_eq!(state.left_panel.filter(), Some("txt"));
         assert!(!state.left_panel.show_hidden());
-        assert_eq!(state.directory_hotlist, hotlist);
+        assert_eq!(state.ui.directory_hotlist, hotlist);
     }
 
     #[allow(clippy::unwrap_used)]

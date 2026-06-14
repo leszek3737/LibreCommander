@@ -2,37 +2,79 @@ use std::path::Path;
 
 use crate::app::types::FileCategory;
 
+// Shared MIME literals: single source of truth for strings that appear both in
+// the public classification tables below and in `mime_to_category`'s match arms.
+// Naming them once stops the tables and the match from silently drifting apart
+// (e.g. a value fixed in one place but forgotten in the other).
+//
+// MIME prefixes (tested with `str::starts_with`).
+const PREFIX_IMAGE: &str = "image/";
+const PREFIX_AUDIO: &str = "audio/";
+const PREFIX_VIDEO: &str = "video/";
+const PREFIX_OPENDOCUMENT: &str = "application/vnd.oasis.opendocument.";
+const PREFIX_OOXML: &str = "application/vnd.openxmlformats-officedocument.";
+//
+// Text-bearing `application/*` MIME types.
+const MIME_JSON: &str = "application/json";
+const MIME_TOML: &str = "application/toml";
+const MIME_YAML: &str = "application/yaml";
+const MIME_X_YAML: &str = "application/x-yaml";
+const MIME_XML: &str = "application/xml";
+const MIME_JAVASCRIPT: &str = "application/javascript";
+const MIME_TYPESCRIPT: &str = "application/typescript";
+const MIME_ECMASCRIPT: &str = "application/ecmascript";
+const MIME_SQL: &str = "application/sql";
+const MIME_PHP: &str = "application/x-httpd-php";
+const MIME_SH: &str = "application/x-sh";
+const MIME_RTF: &str = "application/rtf";
+//
+// Binary `application/*` MIME types.
+const MIME_ZIP: &str = "application/zip";
+const MIME_TAR: &str = "application/x-tar";
+const MIME_GZIP: &str = "application/gzip";
+const MIME_X_GZIP: &str = "application/x-gzip";
+const MIME_BZIP2: &str = "application/x-bzip2";
+const MIME_XZ: &str = "application/x-xz";
+const MIME_7Z: &str = "application/x-7z-compressed";
+const MIME_RAR: &str = "application/vnd.rar";
+const MIME_RAR_COMPRESSED: &str = "application/x-rar-compressed";
+const MIME_ZSTD: &str = "application/zstd";
+const MIME_PDF: &str = "application/pdf";
+const MIME_MSWORD: &str = "application/msword";
+const MIME_EPUB: &str = "application/epub+zip";
+const MIME_WASM: &str = "application/wasm";
+
 pub const TEXT_APPLICATION_MIMES: &[&str] = &[
-    "application/json",
-    "application/toml",
-    "application/yaml",
-    "application/x-yaml",
-    "application/xml",
-    "application/javascript",
-    "application/typescript",
-    "application/ecmascript",
-    "application/sql",
-    "application/x-httpd-php",
-    "application/x-sh",
-    "application/rtf",
+    MIME_JSON,
+    MIME_TOML,
+    MIME_YAML,
+    MIME_X_YAML,
+    MIME_XML,
+    MIME_JAVASCRIPT,
+    MIME_TYPESCRIPT,
+    MIME_ECMASCRIPT,
+    MIME_SQL,
+    MIME_PHP,
+    MIME_SH,
+    MIME_RTF,
 ];
 
 pub const KNOWN_BINARY_MIMES: &[&str] = &[
     "application/octet-stream",
-    "application/zip",
-    "application/x-tar",
-    "application/gzip",
-    "application/x-gzip",
-    "application/x-bzip2",
-    "application/x-xz",
-    "application/x-7z-compressed",
-    "application/vnd.rar",
-    "application/x-rar-compressed",
-    "application/zstd",
-    "application/pdf",
-    "application/msword",
-    "application/epub+zip",
-    "application/wasm",
+    MIME_ZIP,
+    MIME_TAR,
+    MIME_GZIP,
+    MIME_X_GZIP,
+    MIME_BZIP2,
+    MIME_XZ,
+    MIME_7Z,
+    MIME_RAR,
+    MIME_RAR_COMPRESSED,
+    MIME_ZSTD,
+    MIME_PDF,
+    MIME_MSWORD,
+    MIME_EPUB,
+    MIME_WASM,
     "application/x-mach-binary",
     "application/x-dosexec",
     "application/x-executable",
@@ -41,23 +83,23 @@ pub const KNOWN_BINARY_MIMES: &[&str] = &[
 ];
 
 pub const KNOWN_BINARY_PREFIXES: &[&str] = &[
-    "image/",
-    "audio/",
-    "video/",
-    "application/vnd.oasis.opendocument.",
-    "application/vnd.openxmlformats-officedocument.",
+    PREFIX_IMAGE,
+    PREFIX_AUDIO,
+    PREFIX_VIDEO,
+    PREFIX_OPENDOCUMENT,
+    PREFIX_OOXML,
     "application/vnd.ms-",
 ];
 
-pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<String> {
-    infer::get(bytes)
-        .map(|kind| kind.mime_type().to_string())
-        .or_else(|| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .and_then(extension_mime)
-                .map(str::to_string)
-        })
+pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<&'static str> {
+    // Both sources already yield `&'static str` (`infer` returns static MIME
+    // strings, `extension_mime` returns table literals), so no allocation is
+    // needed.
+    infer::get(bytes).map(|kind| kind.mime_type()).or_else(|| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(extension_mime)
+    })
 }
 
 #[must_use]
@@ -65,17 +107,17 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     if mime == "inode/directory" {
         return FileCategory::Dir;
     }
-    if mime.starts_with("image/") {
+    if mime.starts_with(PREFIX_IMAGE) {
         return if mime == "image/vnd.djvu" {
             FileCategory::Document
         } else {
             FileCategory::Image
         };
     }
-    if mime.starts_with("audio/") {
+    if mime.starts_with(PREFIX_AUDIO) {
         return FileCategory::Audio;
     }
-    if mime.starts_with("video/") {
+    if mime.starts_with(PREFIX_VIDEO) {
         return FileCategory::Video;
     }
     if mime.starts_with("text/") {
@@ -93,40 +135,33 @@ pub fn mime_to_category(mime: &str) -> FileCategory {
     }
     if mime.starts_with("application/") {
         return match mime {
-            "application/json" | "application/toml" | "application/yaml" | "application/x-yaml"
-            | "application/xml" => FileCategory::Config,
-            "application/pdf"
-            | "application/msword"
-            | "application/rtf"
-            | "application/epub+zip"
+            MIME_JSON | MIME_TOML | MIME_YAML | MIME_X_YAML | MIME_XML => FileCategory::Config,
+            MIME_PDF
+            | MIME_MSWORD
+            | MIME_RTF
+            | MIME_EPUB
             | "application/x-mobipocket-ebook"
             | "application/vnd.amazon.ebook"
             | "application/vnd.ms-htmlhelp"
             | "application/x-tex" => FileCategory::Document,
-            m if m.starts_with("application/vnd.oasis.opendocument.") => FileCategory::Document,
-            m if m.starts_with("application/vnd.openxmlformats-officedocument.") => {
-                FileCategory::Document
-            }
-            "application/javascript"
-            | "application/typescript"
-            | "application/ecmascript"
-            | "application/sql"
-            | "application/wasm"
-            | "application/x-httpd-php"
-            | "application/x-sh" => FileCategory::Code,
+            m if m.starts_with(PREFIX_OPENDOCUMENT) => FileCategory::Document,
+            m if m.starts_with(PREFIX_OOXML) => FileCategory::Document,
+            MIME_JAVASCRIPT | MIME_TYPESCRIPT | MIME_ECMASCRIPT | MIME_SQL | MIME_WASM
+            | MIME_PHP | MIME_SH => FileCategory::Code,
             "application/vnd.ms-fontobject" => FileCategory::Font,
-            // NOTE: large archive match — consider extracting to a helper or
-            // using a phf set if the match count grows further.
-            "application/zip"
-            | "application/x-tar"
-            | "application/gzip"
-            | "application/x-gzip"
-            | "application/x-bzip2"
-            | "application/x-xz"
-            | "application/x-7z-compressed"
-            | "application/vnd.rar"
-            | "application/x-rar-compressed"
-            | "application/zstd"
+            // NOTE: phf/trie intentionally avoided here — a linear match is fine
+            // at TUI scale. Shared MIME constants keep these arms in sync with
+            // the public tables above.
+            MIME_ZIP
+            | MIME_TAR
+            | MIME_GZIP
+            | MIME_X_GZIP
+            | MIME_BZIP2
+            | MIME_XZ
+            | MIME_7Z
+            | MIME_RAR
+            | MIME_RAR_COMPRESSED
+            | MIME_ZSTD
             | "application/x-lzma"
             | "application/vnd.ms-cab-compressed"
             | "application/x-iso9660-image"
@@ -170,22 +205,26 @@ pub fn category_from_ext(name: &str) -> FileCategory {
 }
 
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
-    s.len() >= suffix.len()
-        && s.chars()
-            .rev()
-            .zip(suffix.chars().rev())
-            .all(|(a, b)| a.eq_ignore_ascii_case(&b))
+    let (s, suffix) = (s.as_bytes(), suffix.as_bytes());
+    s.len() >= suffix.len() && s[s.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 #[must_use]
 fn dotless_config_mime(name: &str) -> Option<&'static str> {
-    match name.to_ascii_lowercase().as_str() {
-        "makefile" => Some("text/x-makefile"),
-        "dockerfile" | "containerfile" => Some("text/x-dockerfile"),
-        "vagrantfile" | "rakefile" | "gemfile" | "brewfile" => Some("text/x-ruby"),
-        "justfile" => Some("text/x-justfile"),
-        "jenkinsfile" => Some("text/x-groovy"),
-        _ => None,
+    // ASCII case-insensitive compare without allocating a lowercased copy.
+    let eq = |candidate: &str| name.eq_ignore_ascii_case(candidate);
+    if eq("makefile") {
+        Some("text/x-makefile")
+    } else if eq("dockerfile") || eq("containerfile") {
+        Some("text/x-dockerfile")
+    } else if eq("vagrantfile") || eq("rakefile") || eq("gemfile") || eq("brewfile") {
+        Some("text/x-ruby")
+    } else if eq("justfile") {
+        Some("text/x-justfile")
+    } else if eq("jenkinsfile") {
+        Some("text/x-groovy")
+    } else {
+        None
     }
 }
 

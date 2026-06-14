@@ -61,12 +61,14 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
                 panel.sort_mode(),
                 *panel.sort_options(),
             );
+            // Both listing stores receive pre-sorted data: `set_unfiltered` takes
+            // the sorted backing store, and `set_filtered` takes the sorted
+            // filtered slice and maps each entry back to its backing slot by path.
+            // Ordering is the caller's responsibility; the listing never reorders.
             panel.listing.set_unfiltered(sorted_unfiltered);
-            panel.listing.set_entries(new_filtered);
+            panel.listing.set_filtered(&new_filtered);
             restore_panel_selection(panel, &saved);
-            panel.recalculate_selection_stats();
-            restore_panel_cursor(panel, current_name.as_deref());
-            panel.ensure_cursor_visible(visible_height);
+            finalize_view(panel, current_name.as_deref(), visible_height);
         }
         Err(e) => {
             panel.listing.clear();
@@ -82,11 +84,14 @@ pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Err
     if errors.is_empty() {
         panel.set_last_error(None);
     } else {
-        let error_summary = errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
+        // Fold straight into one String (no intermediate Vec<String> alloc).
+        let error_summary = errors.iter().fold(String::new(), |mut acc, e| {
+            if !acc.is_empty() {
+                acc.push_str("; ");
+            }
+            acc.push_str(&e.to_string());
+            acc
+        });
         panel.set_last_error(Some(format!(
             "{} file(s) failed to read: {error_summary}",
             errors.len()
@@ -97,20 +102,13 @@ pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Err
 fn current_panel_entry_name(panel: &PanelState) -> Option<String> {
     panel
         .listing
-        .entries
-        .get(panel.cursor)
+        .filtered_get(panel.cursor)
         .filter(|e| e.name != "..")
         .map(|e| e.name.clone())
 }
 
 fn selected_panel_paths(panel: &PanelState) -> HashSet<PathBuf> {
-    panel
-        .listing
-        .entries
-        .iter()
-        .filter(|e| e.selected)
-        .map(|e| e.path.clone())
-        .collect()
+    panel.selected_entries().map(|e| e.path.clone()).collect()
 }
 
 pub fn filtered_sorted_entries(
@@ -120,30 +118,36 @@ pub fn filtered_sorted_entries(
     sort_options: SortOptions,
     show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
+    // PERF FOLLOW-UP: `CompiledPattern` is rebuilt on every call (once per
+    // filtered_sorted_entries). It cannot be cached on `PanelState` yet because
+    // `CompiledPattern` derives none of `Debug`/`Clone`/`PartialEq` that
+    // `PanelState` requires; caching needs those derives added in
+    // ops/search/pattern.rs first (cross-module, separate change).
     let compiled = filter.map(|f| ops::CompiledPattern::new(f, false));
-    let mut sort_entries: Vec<reader::FileEntry> = entries
+    // PERF FOLLOW-UP: `.cloned()` copies each (potentially large) FileEntry into
+    // the filtered Vec. A `Vec<&FileEntry>` / index view would avoid the copy,
+    // but `ops::sort_entries` takes `&mut [FileEntry]` (owned), so a borrow-only
+    // view needs a reference-sorting variant in `ops` first (cross-module).
+    let mut filtered_entries: Vec<reader::FileEntry> = entries
         .iter()
         .filter(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden))
         .cloned()
         .collect();
-    ops::sort_entries(&mut sort_entries, sort_mode, sort_options);
-    sort_entries
+    ops::sort_entries(&mut filtered_entries, sort_mode, sort_options);
+    filtered_entries
 }
 
 pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
-    panel.sync_unfiltered_selection();
     let current_name = current_panel_entry_name(panel);
     let filtered = filtered_sorted_entries(
-        &panel.listing.unfiltered_entries,
+        panel.listing.unfiltered(),
         panel.filter(),
         panel.sort_mode(),
         *panel.sort_options(),
         panel.show_hidden(),
     );
-    panel.listing.set_entries(filtered);
-    panel.recalculate_selection_stats();
-    restore_panel_cursor(panel, current_name.as_deref());
-    panel.ensure_cursor_visible(visible_height);
+    panel.listing.set_filtered(&filtered);
+    finalize_view(panel, current_name.as_deref(), visible_height);
 }
 
 pub(crate) fn entry_matches_panel(
@@ -163,18 +167,27 @@ fn restore_selection_for(entries: &mut [reader::FileEntry], saved: &HashSet<Path
 }
 
 fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
-    restore_selection_for(&mut panel.listing.entries, saved);
-    restore_selection_for(&mut panel.listing.unfiltered_entries, saved);
+    // Single backing store now owns selection; the filtered view borrows it.
+    restore_selection_for(panel.listing.unfiltered_mut(), saved);
+}
+
+/// Shared post-rebuild steps for both the full refresh and the filter-only
+/// rebuild: recompute selection stats, re-anchor the cursor on the previously
+/// focused entry name (if still visible) and clamp it into the viewport.
+fn finalize_view(panel: &mut PanelState, current_name: Option<&str>, visible_height: usize) {
+    panel.recalculate_selection_stats();
+    restore_panel_cursor(panel, current_name);
+    panel.ensure_cursor_visible(visible_height);
 }
 
 fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
     if let Some(name) = current_name
-        && let Some(pos) = panel.listing.entries.iter().position(|e| e.name == name)
+        && let Some(pos) = panel.listing.filtered().position(|e| e.name == name)
     {
         panel.cursor = pos;
     }
-    if panel.cursor >= panel.listing.entries.len() {
-        panel.cursor = panel.listing.entries.len().saturating_sub(1);
+    if panel.cursor >= panel.listing.filtered_len() {
+        panel.cursor = panel.listing.filtered_len().saturating_sub(1);
     }
 }
 
@@ -203,22 +216,25 @@ pub fn refresh_both(state: &mut AppState) {
 }
 
 pub fn set_active_panel(state: &mut AppState, panel: ActivePanel) {
-    state.active_panel = panel;
+    state.set_active_panel(panel);
 }
 
+// Indices into the top menu bar (`crate::menu::MENUS`):
+// 0:Left 1:File 2:Command 3:Options 4:Right. The "Left"/"Right" menus drive the
+// panel of the same name, so their selection maps onto the matching `ActivePanel`.
 const MENU_ITEM_LEFT_PANEL: usize = 0;
 const MENU_ITEM_RIGHT_PANEL: usize = 4;
 
 pub fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
     let original = state.active_panel;
-    match state.menu_selected {
+    match state.ui.menu_selected {
         MENU_ITEM_LEFT_PANEL => set_active_panel(state, ActivePanel::Left),
         MENU_ITEM_RIGHT_PANEL => set_active_panel(state, ActivePanel::Right),
         _ => {}
     }
     let result = f(state);
     if matches!(state.mode, AppMode::Dialog(_)) {
-        state.menu_restore_panel = Some(original);
+        state.ui.menu_restore_panel = Some(original);
     } else {
         set_active_panel(state, original);
     }
@@ -234,13 +250,12 @@ pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
         Some(p) => p.clone(),
         None => {
             let len = state.hotlist().len();
-            state.status_message =
-                Some(format!("Hotlist index {} out of range (0..{})", index, len));
+            state.set_status(format!("Hotlist index {} out of range (0..{})", index, len));
             return;
         }
     };
     if !path.is_dir() {
-        state.status_message = Some(format!("{} is not a directory", path.display()));
+        state.set_status(format!("{} is not a directory", path.display()));
         return;
     }
     let display = path.display().to_string();
@@ -251,7 +266,7 @@ pub fn navigate_to_hotlist(state: &mut AppState, index: usize) {
     panel.scroll_offset = 0;
     panel.set_filter(None);
     refresh_active(state);
-    state.status_message = Some(format!("cd to {display}"));
+    state.set_status(format!("cd to {display}"));
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::dialogs::{ConfirmDetails, CopyMoveDetails, DialogKind, InputAction, PickerKind};
+use super::dialogs::{ConfirmDetails, CopyMoveDetails, CopyMoveKind, DialogKind, InputAction};
 use super::file_entry::{FileCategory, FileEntry};
 use super::modes::AppMode;
 use super::panel::{ActivePanel, PanelState};
@@ -19,18 +19,26 @@ fn entry(name: &str) -> TestEntry {
     TestEntry::new(name).path(test_path(name))
 }
 
-fn panel_with_n_entries(n: u32) -> PanelState {
+/// A panel at `/test` whose full (unfiltered) listing is `entries`. Centralizes
+/// the `new()` + `set_entries()` setup repeated across the suite (the filtered
+/// view becomes the full set, and selection stats are recalculated).
+fn panel_from(entries: Vec<FileEntry>) -> PanelState {
     let mut panel = PanelState::new(PathBuf::from("/test"));
-    for i in 0..n {
-        panel.listing.entries.push(
-            TestEntry::new(format!("file{}.txt", i))
-                .path(test_path(format!("file{}.txt", i)))
+    panel.set_entries(entries);
+    panel
+}
+
+fn panel_with_n_entries(n: u32) -> PanelState {
+    let entries = (0..n)
+        .map(|i| {
+            TestEntry::new(format!("file{i}.txt"))
+                .path(test_path(format!("file{i}.txt")))
                 .file(100)
                 .permissions(0o644)
-                .build(),
-        );
-    }
-    panel
+                .build()
+        })
+        .collect();
+    panel_from(entries)
 }
 
 fn panel_with_cursor(n: u32, cursor: usize, scroll_offset: usize) -> PanelState {
@@ -72,7 +80,6 @@ fn test_file_entry_display_permissions() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn test_file_entry_display_modified() {
     let entry = entry("test.txt").file(100).permissions(0o644).build();
     let expected = chrono::DateTime::from_timestamp(1_000_000_000, 0)
@@ -96,7 +103,7 @@ fn test_panel_state_new() {
     let path = PathBuf::from("/test");
     let panel = PanelState::new(path.clone());
     assert_eq!(panel.path(), path);
-    assert_eq!(panel.listing.entries.len(), 0);
+    assert_eq!(panel.listing.filtered_len(), 0);
     assert_eq!(panel.cursor, 0);
     assert_eq!(panel.scroll_offset, 0);
     assert_eq!(panel.sort_mode(), SortMode::default());
@@ -112,13 +119,10 @@ fn test_panel_state_current_entry_none_when_empty() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn test_panel_state_current_entry_some() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file1.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![
+        entry("file1.txt").file(100).permissions(0o644).build(),
+    ]);
     panel.cursor = 0;
     assert_eq!(
         panel.current_entry().expect("current entry exists").name,
@@ -128,136 +132,124 @@ fn test_panel_state_current_entry_some() {
 
 #[test]
 fn test_panel_state_current_entry_out_of_bounds() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file1.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![
+        entry("file1.txt").file(100).permissions(0o644).build(),
+    ]);
     panel.cursor = 5;
-    assert!(panel.current_entry().is_none());
+    assert!(
+        panel.current_entry().is_none(),
+        "out-of-range cursor yields no current entry"
+    );
 }
 
 #[test]
 fn test_panel_state_toggle_selection_toggle_on() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file1.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![
+        entry("file1.txt").file(100).permissions(0o644).build(),
+    ]);
     panel.cursor = 0;
     panel.toggle_selection();
-    assert!(panel.listing.entries[0].selected);
-    assert_eq!(panel.selected_count(), 1);
-    assert_eq!(panel.selected_size(), 100);
+    assert!(
+        panel.current_entry().expect("entry under cursor").selected,
+        "toggle selects the cursor entry"
+    );
+    assert_eq!(
+        panel.selected_count(),
+        1,
+        "one entry selected after toggle on"
+    );
+    assert_eq!(
+        panel.selected_size(),
+        100,
+        "selected size equals the toggled entry's size"
+    );
 }
 
 #[test]
 fn test_panel_state_toggle_selection_toggle_off() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries.push(
+    let mut panel = panel_from(vec![
         entry("file1.txt")
             .file(100)
             .permissions(0o644)
             .selected()
             .build(),
-    );
+    ]);
     panel.cursor = 0;
-    assert!(panel.listing.entries[0].selected);
+    assert!(
+        panel.current_entry().expect("entry under cursor").selected,
+        "entry starts selected"
+    );
     panel.toggle_selection();
-    assert!(!panel.listing.entries[0].selected);
-    assert_eq!(panel.selected_count(), 0);
-    assert_eq!(panel.selected_size(), 0);
+    assert!(
+        !panel.current_entry().expect("entry under cursor").selected,
+        "toggle deselects the cursor entry"
+    );
+    assert_eq!(
+        panel.selected_count(),
+        0,
+        "no entries selected after toggle off"
+    );
+    assert_eq!(
+        panel.selected_size(),
+        0,
+        "selected size cleared after toggle off"
+    );
 }
 
 #[test]
 fn test_panel_state_set_selection_at_on() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file1.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![
+        entry("file1.txt").file(100).permissions(0o644).build(),
+    ]);
 
     panel.set_selection_at(0, true);
 
-    assert!(panel.listing.entries[0].selected);
+    assert!(
+        panel.current_entry().expect("entry under cursor").selected,
+        "set_selection_at(true) selects the entry"
+    );
     assert_eq!(panel.selected_count(), 1);
     assert_eq!(panel.selected_size(), 100);
 }
 
 #[test]
 fn test_panel_state_set_selection_at_off() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries.push(
+    let mut panel = panel_from(vec![
         entry("file1.txt")
             .file(100)
             .permissions(0o644)
             .selected()
             .build(),
-    );
+    ]);
 
     panel.set_selection_at(0, false);
 
-    assert!(!panel.listing.entries[0].selected);
+    assert!(
+        !panel.current_entry().expect("entry under cursor").selected,
+        "set_selection_at(false) deselects the entry"
+    );
     assert_eq!(panel.selected_count(), 0);
     assert_eq!(panel.selected_size(), 0);
 }
 
 #[test]
-fn test_panel_state_sync_unfiltered_selection() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+fn test_panel_state_selected_entries() {
+    let panel = panel_from(vec![
         entry("file1.txt")
             .file(100)
             .permissions(0o644)
             .selected()
             .build(),
         entry("file2.txt").file(200).permissions(0o644).build(),
-    ];
-    panel.listing.unfiltered_entries = vec![
-        entry("file1.txt").file(100).permissions(0o644).build(),
-        entry("file2.txt")
-            .file(200)
-            .permissions(0o644)
-            .selected()
-            .build(),
         entry("file3.txt")
             .file(300)
             .permissions(0o644)
             .selected()
             .build(),
-    ];
+    ]);
 
-    panel.sync_unfiltered_selection();
-
-    assert!(panel.listing.unfiltered_entries[0].selected);
-    assert!(!panel.listing.unfiltered_entries[1].selected);
-    assert!(panel.listing.unfiltered_entries[2].selected);
-}
-
-#[test]
-fn test_panel_state_selected_entries() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries.push(
-        entry("file1.txt")
-            .file(100)
-            .permissions(0o644)
-            .selected()
-            .build(),
-    );
-    panel
-        .listing
-        .entries
-        .push(entry("file2.txt").file(200).permissions(0o644).build());
-    panel.listing.entries.push(
-        entry("file3.txt")
-            .file(300)
-            .permissions(0o644)
-            .selected()
-            .build(),
-    );
-
-    let selected = panel.selected_entries();
-    assert_eq!(selected.len(), 2);
+    let selected: Vec<_> = panel.selected_entries().collect();
+    assert_eq!(selected.len(), 2, "two entries are selected");
     assert_eq!(selected[0].name, "file1.txt");
     assert_eq!(selected[1].name, "file3.txt");
 }
@@ -271,11 +263,9 @@ fn test_panel_state_move_cursor_up() {
 
 #[test]
 fn test_panel_state_move_cursor_up_at_top() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file1.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![
+        entry("file1.txt").file(100).permissions(0o644).build(),
+    ]);
     panel.cursor = 0;
     panel.move_cursor_up(10);
     assert_eq!(panel.cursor, 0);
@@ -316,8 +306,8 @@ fn test_app_state_new_sets_field_defaults() {
     let state = AppState::new();
     assert_eq!(state.active_panel, ActivePanel::Left);
     assert_eq!(state.mode, AppMode::Normal);
-    assert!(!state.should_quit);
-    assert!(state.status_message.is_none());
+    assert!(!state.should_quit());
+    assert!(state.ui.status_message.is_none());
 }
 
 #[test]
@@ -326,15 +316,15 @@ fn test_app_state_substate_defaults() {
 
     assert_eq!(state.active_panel, ActivePanel::Left);
     assert_eq!(state.mode, AppMode::Normal);
-    assert!(!state.should_quit);
-    assert!(state.status_message.is_none());
-    assert_eq!(state.dialog_input.cursor(), 0);
-    assert_eq!(state.picker_selected, 0);
-    assert_eq!(state.menu_selected, 0);
-    assert_eq!(state.menu_item_selected, 0);
-    assert!(state.tree_entries.is_empty());
-    assert!(state.user_menu_entries.is_empty());
-    assert_eq!(state.directory_hotlist.len(), 1);
+    assert!(!state.should_quit());
+    assert!(state.ui.status_message.is_none());
+    assert_eq!(state.input.dialog_input.cursor(), 0);
+    assert_eq!(state.ui.picker_selected, 0);
+    assert_eq!(state.ui.menu_selected, 0);
+    assert_eq!(state.ui.menu_item_selected, 0);
+    assert!(state.tree.entries.is_empty());
+    assert!(state.ui.user_menu_entries.is_empty());
+    assert_eq!(state.ui.directory_hotlist.len(), 1);
 }
 
 #[test]
@@ -434,7 +424,6 @@ fn test_confirm_details_simple() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn test_confirm_details_with_files() {
     let files = vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()];
     let cd = ConfirmDetails::with_files("Delete", "Delete 2 entries?", files);
@@ -495,72 +484,20 @@ fn test_dialog_kind_progress() {
 fn test_dialog_kind_copy_move() {
     let sources = vec![PathBuf::from("/source1"), PathBuf::from("/source2")];
     let dest = PathBuf::from("/dest");
-    let source_display: Vec<String> = sources
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.display().to_string())
-        })
-        .collect();
     let dialog = DialogKind::CopyMove(Box::new(CopyMoveDetails {
         source: sources.clone(),
-        source_display: source_display.clone(),
         dest: dest.clone(),
-        is_move: true,
+        kind: CopyMoveKind::Move,
     }));
     let DialogKind::CopyMove(details) = dialog else {
         panic!("Expected CopyMove variant");
     };
     assert_eq!(details.source, sources);
-    assert_eq!(details.source_display, source_display);
+    // `source_display()` is now derived on demand from `source` (file name,
+    // falling back to the full path) instead of a stored parallel field.
+    assert_eq!(details.source_display(), vec!["source1", "source2"]);
     assert_eq!(details.dest, dest);
-    assert!(details.is_move);
-}
-
-// Smoke test: verifies PartialEq derivation is correct and all variants compile
-#[test]
-fn test_app_mode_variants() {
-    let normal = AppMode::Normal;
-    assert_eq!(normal, AppMode::Normal);
-
-    let viewing = AppMode::Viewing;
-    assert_eq!(viewing, AppMode::Viewing);
-
-    let cmd_line = AppMode::CommandLine;
-    assert_eq!(cmd_line, AppMode::CommandLine);
-
-    let dialog = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple("Test", "test")));
-    if let AppMode::Dialog(DialogKind::Confirm(cd)) = &dialog {
-        assert_eq!(cd.message, "test");
-    }
-
-    let search = AppMode::Search;
-    assert_eq!(search, AppMode::Search);
-
-    let menu = AppMode::Menu;
-    assert_eq!(menu, AppMode::Menu);
-
-    let picker = AppMode::ListPicker(PickerKind::History);
-    assert_eq!(picker, AppMode::ListPicker(PickerKind::History));
-}
-
-// Smoke test: verifies PartialEq derivation is correct and variants compile
-#[test]
-fn test_active_panel_variants() {
-    let left = ActivePanel::Left;
-    assert_eq!(left, ActivePanel::Left);
-
-    let right = ActivePanel::Right;
-    assert_eq!(right, ActivePanel::Right);
-}
-
-// Smoke test: verifies Default derivation produces the same state as new()
-#[test]
-fn test_app_state_default() {
-    let state = AppState::default();
-    assert_eq!(state.active_panel, ActivePanel::Left);
-    assert!(!state.should_quit);
+    assert!(details.kind.is_move());
 }
 
 #[test]
@@ -625,8 +562,7 @@ fn test_panel_state_ensure_cursor_visible_edge_case() {
 
 #[test]
 fn test_total_size_computed_by_recalculate() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    let mut panel = panel_from(vec![
         entry("a.txt").file(100).permissions(0o644).build(),
         entry("b.txt").file(200).permissions(0o644).build(),
         entry("c.txt")
@@ -634,7 +570,7 @@ fn test_total_size_computed_by_recalculate() {
             .permissions(0o644)
             .selected()
             .build(),
-    ];
+    ]);
     panel.recalculate_selection_stats();
     assert_eq!(panel.total_size(), 600);
     assert_eq!(panel.selected_count(), 1);
@@ -645,7 +581,7 @@ fn test_total_size_computed_by_recalculate() {
 fn test_hidden_script_is_code() {
     let entry = entry(".script.sh")
         .raw_mode(0o100755)
-        .size(100)
+        .file(100)
         .hidden()
         .build();
     assert_eq!(entry.category(), FileCategory::Code);
@@ -655,7 +591,7 @@ fn test_hidden_script_is_code() {
 fn test_hidden_archive_is_archive() {
     let entry = entry(".backup.zip")
         .raw_mode(0o100644)
-        .size(100)
+        .file(100)
         .hidden()
         .build();
     assert_eq!(entry.category(), FileCategory::Archive);
@@ -675,7 +611,7 @@ fn test_symlink_overrides_hidden() {
 
 #[test]
 fn test_executable_without_extension_is_executable() {
-    let entry = entry("mybinary").raw_mode(0o100755).size(100).build();
+    let entry = entry("mybinary").raw_mode(0o100755).file(100).build();
     assert_eq!(entry.category(), FileCategory::Executable);
 }
 
@@ -683,7 +619,7 @@ fn test_executable_without_extension_is_executable() {
 fn test_hidden_apk_is_archive() {
     let entry = entry(".app.apk")
         .raw_mode(0o100644)
-        .size(100)
+        .file(100)
         .hidden()
         .build();
     assert_eq!(entry.category(), FileCategory::Archive);
@@ -691,15 +627,14 @@ fn test_hidden_apk_is_archive() {
 
 #[test]
 fn test_total_size_includes_all_entries() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    let mut panel = panel_from(vec![
         entry("small.txt").file(50).permissions(0o644).build(),
         entry("big.txt")
             .file(5000)
             .permissions(0o644)
             .selected()
             .build(),
-    ];
+    ]);
     panel.recalculate_selection_stats();
     assert_eq!(panel.total_size(), 5050);
     assert_eq!(panel.selected_size(), 5000);
@@ -708,15 +643,14 @@ fn test_total_size_includes_all_entries() {
 #[test]
 fn test_panel_state_empty_entries_cursor_scroll_zero() {
     let panel = PanelState::new(PathBuf::from("/test"));
-    assert_eq!(panel.listing.entries.len(), 0);
+    assert_eq!(panel.listing.filtered_len(), 0);
     assert_eq!(panel.cursor, 0);
     assert_eq!(panel.scroll_offset, 0);
 }
 
 #[test]
 fn test_panel_state_single_item_cursor() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![entry("only.txt").file(10).permissions(0o644).build()];
+    let mut panel = panel_from(vec![entry("only.txt").file(10).permissions(0o644).build()]);
 
     assert_eq!(panel.cursor, 0);
     panel.move_cursor_down(10);
@@ -727,18 +661,19 @@ fn test_panel_state_single_item_cursor() {
 
 #[test]
 fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    let mut panel = panel_from(vec![
         entry("a.txt").file(10).permissions(0o644).build(),
         entry("b.txt").file(10).permissions(0o644).build(),
         entry("c.txt").file(10).permissions(0o644).build(),
-    ];
+    ]);
+
+    // Simulate the listing shrinking to a single entry (e.g. a watcher refresh),
+    // leaving the cursor stale at its old index past the new end.
+    panel.set_entries(vec![entry("a.txt").file(10).permissions(0o644).build()]);
     panel.cursor = 2;
 
-    panel.listing.entries.truncate(1);
-
     // Tests same clamping logic as restore_panel_cursor() in panel_ops.rs
-    let max_index = panel.listing.entries.len().saturating_sub(1);
+    let max_index = panel.listing.filtered_len().saturating_sub(1);
     panel.cursor = panel.cursor.min(max_index);
 
     assert_eq!(panel.cursor, 0);
@@ -746,11 +681,10 @@ fn test_panel_state_cursor_stays_at_last_after_entry_removal() {
 
 #[test]
 fn test_panel_state_move_cursor_down_clamped_at_last() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![
+    let mut panel = panel_from(vec![
         entry("a.txt").file(10).permissions(0o644).build(),
         entry("b.txt").file(10).permissions(0o644).build(),
-    ];
+    ]);
     panel.cursor = 1;
 
     panel.move_cursor_down(10);
@@ -762,8 +696,7 @@ fn test_panel_state_move_cursor_down_clamped_at_last() {
 
 #[test]
 fn test_panel_state_move_cursor_up_clamped_at_zero() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = vec![entry("a.txt").file(10).permissions(0o644).build()];
+    let mut panel = panel_from(vec![entry("a.txt").file(10).permissions(0o644).build()]);
     panel.cursor = 0;
 
     panel.move_cursor_up(10);
@@ -780,16 +713,17 @@ fn test_panel_state_current_entry_empty_returns_none() {
 
 #[test]
 fn test_panel_state_scroll_offset_with_many_entries() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel.listing.entries = (0..100)
-        .map(|i| {
-            TestEntry::new(format!("file{i:03}.txt"))
-                .path(test_path(format!("file{i:03}.txt")))
-                .file(10)
-                .permissions(0o644)
-                .build()
-        })
-        .collect();
+    let mut panel = panel_from(
+        (0..100)
+            .map(|i| {
+                TestEntry::new(format!("file{i:03}.txt"))
+                    .path(test_path(format!("file{i:03}.txt")))
+                    .file(10)
+                    .permissions(0o644)
+                    .build()
+            })
+            .collect(),
+    );
 
     let visible_height = 20;
 
@@ -825,7 +759,8 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .name("d")
         .path(PathBuf::from("d"))
         .is_dir(true)
-        .build();
+        .build()
+        .expect("valid test entry");
     let mut cha = dir_entry.cha;
     cha.kind.insert(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
     assert!(cha.kind.contains(ChaKind::DIR_TARGET));
@@ -836,7 +771,8 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .path(PathBuf::from("d"))
         .cha(cha)
         .is_dir(false)
-        .build();
+        .build()
+        .expect("valid test entry");
     assert!(!cleared.cha.kind.contains(ChaKind::DIR_TARGET));
     assert!(!cleared.cha.kind.contains(ChaKind::FOLLOW));
 
@@ -844,7 +780,8 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .name("l")
         .path(PathBuf::from("l"))
         .is_symlink(true)
-        .build();
+        .build()
+        .expect("valid test entry");
     let mut cha = link_entry.cha;
     cha.kind.insert(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
     assert!(cha.kind.contains(ChaKind::DIR_TARGET));
@@ -855,18 +792,19 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .path(PathBuf::from("l"))
         .cha(cha)
         .is_symlink(false)
-        .build();
+        .build()
+        .expect("valid test entry");
     assert!(!cleared.cha.kind.contains(ChaKind::DIR_TARGET));
     assert!(!cleared.cha.kind.contains(ChaKind::FOLLOW));
 }
 
 #[test]
-#[allow(clippy::expect_used)]
 fn mtime_none_displays_unknown() {
     let no_mtime = FileEntry::builder()
         .name("unknown.txt")
         .path(PathBuf::from("unknown.txt"))
-        .build();
+        .build()
+        .expect("valid test entry");
     let expected_epoch = chrono::DateTime::from_timestamp(0, 0)
         .expect("valid timestamp")
         .with_timezone(&chrono::Local)
@@ -886,11 +824,7 @@ fn test_move_cursor_up_wraps_to_last_entry() {
 
 #[test]
 fn test_move_cursor_up_wraps_with_single_entry() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![entry("file.txt").file(100).permissions(0o644).build()]);
     panel.cursor = 0;
     panel.move_cursor_up(3);
     assert_eq!(panel.cursor, 0);
@@ -907,11 +841,7 @@ fn test_move_cursor_down_wraps_to_first_entry() {
 
 #[test]
 fn test_move_cursor_down_wraps_with_single_entry() {
-    let mut panel = PanelState::new(PathBuf::from("/test"));
-    panel
-        .listing
-        .entries
-        .push(entry("file.txt").file(100).permissions(0o644).build());
+    let mut panel = panel_from(vec![entry("file.txt").file(100).permissions(0o644).build()]);
     panel.cursor = 0;
     panel.move_cursor_down(3);
     assert_eq!(panel.cursor, 0);

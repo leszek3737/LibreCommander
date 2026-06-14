@@ -12,9 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::{ColorCtx, ColorPalette, DEFAULT_COLORS, IconTheme, Theme};
 
-use crate::app::types::{
-    FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
-};
+use crate::app::types::{FileCategory, FileEntry, ListingMode, PanelState, format_size};
 
 const FN_KEY_TEXTS: [&str; 10] = [
     " F1 ", " F2 ", " F3 ", " F4 ", " F5 ", " F6 ", " F7 ", " F8 ", " F9 ", " F10 ",
@@ -167,7 +165,7 @@ pub fn render_panel_with_colors(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner_area);
 
-    let entry_count = panel.listing.entries.len();
+    let entry_count = panel.listing.filtered_len();
     let start_idx = panel.scroll_offset.min(entry_count);
     let end_idx = std::cmp::min(entry_count, start_idx + inner_area.height as usize);
 
@@ -184,8 +182,7 @@ pub fn render_panel_with_colors(
 
     for entry in panel
         .listing
-        .entries
-        .iter()
+        .filtered()
         .skip(start_idx)
         .take(end_idx.saturating_sub(start_idx))
     {
@@ -242,7 +239,7 @@ pub fn render_panel_with_colors(
 
     f.render_stateful_widget(list, chunks[0], &mut list_state);
 
-    if panel.listing.entries.is_empty()
+    if panel.listing.filtered_is_empty()
         && let Some(err) = panel.last_error()
     {
         let err_text =
@@ -250,7 +247,7 @@ pub fn render_panel_with_colors(
         f.render_widget(err_text, chunks[0]);
     }
 
-    if !panel.listing.entries.is_empty() {
+    if !panel.listing.filtered_is_empty() {
         render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors, &mut suffix_buf);
     }
 }
@@ -276,7 +273,7 @@ fn build_suffix_into(
     let size_date_width = size_width + date_width + 2;
 
     if show_permissions {
-        let perms_str = format_permissions(entry.mode_bits());
+        let perms_str = FileEntry::display_permissions_raw(entry.mode_bits());
         let perms_width = UnicodeWidthStr::width(perms_str.as_str());
         let full_width = size_date_width + perms_width + 1;
         if 2 + full_width <= width {
@@ -386,7 +383,7 @@ fn format_entry_line(
 
 fn write_status_metadata(buf: &mut String, size: &str, entry: &FileEntry, show_permissions: bool) {
     if show_permissions {
-        let perms = format_permissions(entry.mode_bits());
+        let perms = FileEntry::display_permissions_raw(entry.mode_bits());
         write!(buf, "{size} | {perms} | {} | {}", entry.owner, entry.group).ok();
     } else {
         write!(buf, "{size} | {} | {}", entry.owner, entry.group).ok();
@@ -439,11 +436,11 @@ pub fn render_scrollbar_with_colors(
     colors: &ColorPalette,
     buf: &mut String,
 ) {
-    if panel.listing.entries.is_empty() {
+    if panel.listing.filtered_is_empty() {
         return;
     }
 
-    let total_entries = panel.listing.entries.len();
+    let total_entries = panel.listing.filtered_len();
     let height = area.height as usize;
     let max_scroll = total_entries.saturating_sub(height);
     let scroll_offset = panel.scroll_offset.min(max_scroll);
@@ -486,7 +483,7 @@ pub fn render_scrollbar_with_colors(
 
 pub fn panel_status_summary(panel: &PanelState, buf: &mut String) -> usize {
     buf.clear();
-    let total = panel.listing.entries.len();
+    let total = panel.listing.filtered_len();
     if total == 0 {
         return 0;
     }
@@ -529,8 +526,9 @@ pub fn render_status_bar_with_colors(
 
     let mut out = String::with_capacity(remaining + right_summary.len() + 8);
 
-    if !panel.listing.entries.is_empty() && panel.cursor < panel.listing.entries.len() {
-        let entry = &panel.listing.entries[panel.cursor];
+    // Render the cursor entry's info only when it exists; an out-of-range or
+    // empty listing simply skips the left side rather than panicking.
+    if let Some(entry) = panel.listing.filtered_get(panel.cursor) {
         let display_name = entry.display_name();
         let size_str = format_size(entry.size());
 

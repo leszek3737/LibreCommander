@@ -117,13 +117,13 @@ fn key_repeat_text_edit_updates_input_dialog() {
             prompt: "Create directory:".to_string(),
             action: InputAction::CreateDirectory,
         }),
-        dialog_input: {
-            let mut ti = TextInput::new();
-            ti.set_text("ab".to_string());
-            ti.set_cursor(2);
-            ti
-        },
         ..Default::default()
+    };
+    state.input.dialog_input = {
+        let mut ti = TextInput::new();
+        ti.set_text("ab".to_string());
+        ti.set_cursor(2);
+        ti
     };
     let mut terminal = test_terminal();
     let key = KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Repeat);
@@ -132,8 +132,8 @@ fn key_repeat_text_edit_updates_input_dialog() {
         dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
     assert!(handled.is_ok());
-    assert_eq!(state.dialog_input.text(), "a");
-    assert_eq!(state.dialog_input.cursor(), 1);
+    assert_eq!(state.input.dialog_input.text(), "a");
+    assert_eq!(state.input.dialog_input.cursor(), 1);
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn key_repeat_destructive_is_ignored() {
 
     assert!(handled.is_ok());
     assert!(matches!(state.mode, AppMode::Normal));
-    assert!(state.pending_action.is_none());
+    assert!(state.ui.pending_action.is_none());
 }
 
 #[test]

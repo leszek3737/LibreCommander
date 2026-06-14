@@ -135,46 +135,65 @@ fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
         .any(|suffix| ends_with_ignore_ascii_case(name, suffix))
 }
 
+// NOTE: case-sensitivity is chosen at compile time via `cfg!(target_os)` rather
+// than by probing the underlying filesystem's case-folding behavior at runtime.
+// This is a deliberate simplification: Linux filesystems are case-sensitive by
+// default, while macOS/Windows are case-insensitive by default. It can misjudge
+// atypical mounts (a case-insensitive volume on Linux, or a case-sensitive APFS
+// volume on macOS), but the result only drives icon/color categorization, never
+// file operations, so a wrong guess is purely cosmetic. `exact_name_match` and
+// `prefix_match` share this single policy so that name and prefix checks fold
+// identically (e.g. `.env` and `.env.local` behave the same way).
+#[inline]
+fn name_is_case_sensitive() -> bool {
+    cfg!(target_os = "linux")
+}
+
 #[inline]
 fn exact_name_match(name: &str, expected: &str) -> bool {
-    #[cfg(target_os = "linux")]
-    {
+    if name_is_case_sensitive() {
         name == expected
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
+    } else {
         name.eq_ignore_ascii_case(expected)
     }
 }
 
 #[inline]
-pub fn is_archive(name: &str) -> bool {
-    has_any_suffix(name, ARCHIVE_SUFFIXES)
+fn prefix_match(name: &str, prefix: &str) -> bool {
+    let (name_bytes, prefix_bytes) = (name.as_bytes(), prefix.as_bytes());
+    if name_bytes.len() < prefix_bytes.len() {
+        return false;
+    }
+    let head = &name_bytes[..prefix_bytes.len()];
+    if name_is_case_sensitive() {
+        head == prefix_bytes
+    } else {
+        head.eq_ignore_ascii_case(prefix_bytes)
+    }
 }
 
-#[inline]
-pub fn is_image(name: &str) -> bool {
-    has_any_suffix(name, IMAGE_SUFFIXES)
+// Generates the family of `pub fn is_xxx(&str) -> bool` suffix predicates.
+// Each one was an identical `has_any_suffix(name, TABLE)` wrapper; the macro
+// keeps them as distinct public functions while removing the boilerplate.
+macro_rules! suffix_predicates {
+    ($($name:ident => $suffixes:ident),+ $(,)?) => {
+        $(
+            #[inline]
+            pub fn $name(name: &str) -> bool {
+                has_any_suffix(name, $suffixes)
+            }
+        )+
+    };
 }
 
-#[inline]
-pub fn is_source_code(name: &str) -> bool {
-    has_any_suffix(name, SOURCE_CODE_SUFFIXES)
-}
-
-#[inline]
-pub fn is_document(name: &str) -> bool {
-    has_any_suffix(name, DOCUMENT_SUFFIXES)
-}
-
-#[inline]
-pub fn is_audio(name: &str) -> bool {
-    has_any_suffix(name, AUDIO_SUFFIXES)
-}
-
-#[inline]
-pub fn is_video(name: &str) -> bool {
-    has_any_suffix(name, VIDEO_SUFFIXES)
+suffix_predicates! {
+    is_archive => ARCHIVE_SUFFIXES,
+    is_image => IMAGE_SUFFIXES,
+    is_source_code => SOURCE_CODE_SUFFIXES,
+    is_document => DOCUMENT_SUFFIXES,
+    is_audio => AUDIO_SUFFIXES,
+    is_video => VIDEO_SUFFIXES,
+    is_font => FONT_SUFFIXES,
 }
 
 #[inline]
@@ -182,13 +201,8 @@ pub fn is_config(name: &str) -> bool {
     CONFIG_EXACT_NAMES
         .iter()
         .any(|&n| exact_name_match(name, n))
-        || CONFIG_PREFIXES.iter().any(|&p| name.starts_with(p))
+        || CONFIG_PREFIXES.iter().any(|&p| prefix_match(name, p))
         || has_any_suffix(name, CONFIG_SUFFIXES)
-}
-
-#[inline]
-pub fn is_font(name: &str) -> bool {
-    has_any_suffix(name, FONT_SUFFIXES)
 }
 
 pub fn category(name: &str, is_dir: bool, is_exec: bool, is_link: bool) -> FileCategory {

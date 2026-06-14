@@ -22,6 +22,11 @@ pub struct TestEntry {
     raw_mode: Option<u32>,
 }
 
+// `#[allow(dead_code)]` is hoisted to the impl block (collapsed from 11
+// per-method attributes): this shared test builder exposes setters that are used
+// à la carte across the whole suite, so any given setter can be legitimately
+// unused in a single compilation unit.
+#[allow(dead_code)]
 impl TestEntry {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
@@ -47,72 +52,54 @@ impl TestEntry {
         self
     }
 
+    /// Marks the entry as a regular file of `size` bytes. This is the canonical
+    /// size setter; the former identical `.size()` alias and the no-op `.dir()`
+    /// (the default kind is already `Directory`) were removed as redundant.
     pub fn file(mut self, size: u64) -> Self {
         self.kind = EntryKind::File(size);
         self
     }
 
-    #[allow(dead_code)]
-    pub fn dir(mut self) -> Self {
-        self.kind = EntryKind::Directory;
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn size(mut self, size: u64) -> Self {
-        self.kind = EntryKind::File(size);
-        self
-    }
-
-    #[allow(dead_code)]
     pub fn selected(mut self) -> Self {
         self.selected = true;
         self
     }
 
-    #[allow(dead_code)]
     pub fn symlink(mut self) -> Self {
         self.symlink = true;
         self
     }
 
-    #[allow(dead_code)]
     pub fn permissions(mut self, perms: u32) -> Self {
         self.permissions = Some(perms);
         self
     }
 
-    #[allow(dead_code)]
     pub fn hidden(mut self) -> Self {
         self.hidden = Some(true);
         self
     }
 
-    #[allow(dead_code)]
     pub fn modified(mut self, t: SystemTime) -> Self {
         self.modified = Some(t);
         self
     }
 
-    #[allow(dead_code)]
     pub fn created(mut self, t: SystemTime) -> Self {
         self.created = Some(t);
         self
     }
 
-    #[allow(dead_code)]
     pub fn owner(mut self, o: impl Into<String>) -> Self {
         self.owner = Some(o.into());
         self
     }
 
-    #[allow(dead_code)]
     pub fn group(mut self, g: impl Into<String>) -> Self {
         self.group = Some(g.into());
         self
     }
 
-    #[allow(dead_code)]
     pub fn raw_mode(mut self, mode: u32) -> Self {
         self.raw_mode = Some(mode);
         self
@@ -143,6 +130,12 @@ impl TestEntry {
             builder = builder.group(group);
         }
 
+        // File type + permission bits.
+        //
+        // Precedence: an explicit `raw_mode` is the authoritative source for the
+        // type (dir/symlink/regular) and the permission bits, since it mirrors a
+        // real `stat()` `st_mode`. Without it, the type comes from `kind` (file vs
+        // directory) and permissions from an explicit `.permissions(..)`.
         if let Some(mode) = self.raw_mode {
             let is_link = (mode & 0o170000) == 0o120000;
             let is_directory = (mode & 0o170000) == 0o040000;
@@ -153,8 +146,8 @@ impl TestEntry {
                 .permissions(perms);
         } else {
             match self.kind {
-                EntryKind::File(size) => {
-                    builder = builder.is_dir(false).size(size);
+                EntryKind::File(_) => {
+                    builder = builder.is_dir(false);
                 }
                 EntryKind::Directory => {
                     builder = builder.is_dir(true);
@@ -165,6 +158,19 @@ impl TestEntry {
             }
         }
 
+        // Byte size composes independently of the type source: `raw_mode` carries
+        // no length, so `.file(size)` is always honored, even alongside `raw_mode`
+        // (WS-C fix: previously `.raw_mode(..).file(N)` silently dropped the size).
+        // A `Directory` kind keeps size 0 (a listing's directory size is
+        // meaningless here).
+        if let EntryKind::File(size) = self.kind {
+            builder = builder.size(size);
+        }
+
+        // Symlink precedence: an explicit `.symlink()` is a hard override that
+        // upgrades the entry to a symlink even when `raw_mode` encoded a
+        // non-symlink type. It only ever upgrades — it never downgrades a symlink
+        // that `raw_mode` already established.
         if self.symlink {
             builder = builder.is_symlink(true);
         }
@@ -172,6 +178,9 @@ impl TestEntry {
         let hidden = self.hidden.unwrap_or_else(|| self.name.starts_with('.'));
         builder = builder.is_hidden(hidden).selected(self.selected);
 
-        builder.build()
+        // `TestEntry::build` keeps returning `FileEntry` (not `Result`): test code
+        // always supplies a non-empty name, so the only `BuildError` is unreachable
+        // here and is surfaced as a panic with a clear message.
+        builder.build().expect("valid test entry")
     }
 }

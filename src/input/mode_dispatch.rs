@@ -17,7 +17,7 @@ const HORIZONTAL_SCROLL_STEP: usize = 4;
 fn refresh_or_rebuild(state: &mut AppState, visible_height: usize) {
     let needs_refresh = {
         let panel = state.active_panel();
-        panel.listing.needs_full_read() || panel.listing.unfiltered_entries.is_empty()
+        panel.listing.needs_full_read() || panel.listing.unfiltered().is_empty()
     };
     if needs_refresh {
         panel_ops::refresh_active(state);
@@ -28,8 +28,8 @@ fn refresh_or_rebuild(state: &mut AppState, visible_height: usize) {
 
 pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
     state.restore_prev_mode();
-    state.search_query.clear();
-    state.search_cursor = 0;
+    state.input.search_query.clear();
+    state.input.search_cursor = 0;
     state.active_panel_mut().set_filter(None);
     refresh_or_rebuild(state, visible_height);
 }
@@ -39,7 +39,7 @@ fn set_active_panel_filter(state: &mut AppState, filter: String) {
 }
 
 fn apply_search_filter(state: &mut AppState, visible: usize) {
-    let filter_query = state.search_query.clone();
+    let filter_query = state.input.search_query.clone();
     set_active_panel_filter(state, filter_query);
     refresh_or_rebuild(state, visible);
 }
@@ -51,9 +51,9 @@ pub(crate) fn initiate_search(
     visible_height: usize,
 ) {
     state.prev_mode = Some(prev_mode);
-    state.search_query.push(c);
-    state.search_cursor = state.search_query.len();
-    let filter_query = state.search_query.clone();
+    state.input.search_query.push(c);
+    state.input.search_cursor = state.input.search_query.len();
+    let filter_query = state.input.search_query.clone();
     state.mode = AppMode::Search;
     set_active_panel_filter(state, filter_query);
     refresh_or_rebuild(state, visible_height);
@@ -149,6 +149,7 @@ pub(crate) fn handle_viewer_mode(
             KeyCode::Char('N') => vs.prev_match(page_height),
             KeyCode::Char('/') => {
                 state
+                    .input
                     .dialog_input
                     .set_text_at_end(vs.search_query.as_deref().unwrap_or("").to_owned());
                 state.mode = AppMode::Dialog(DialogKind::Input {
@@ -174,17 +175,17 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_he
             clear_search_state(state, visible);
         }
         KeyCode::Backspace => {
-            state.search_query.pop();
-            state.search_cursor = state.search_query.len();
-            if state.search_query.is_empty() {
+            state.input.search_query.pop();
+            state.input.search_cursor = state.input.search_query.len();
+            if state.input.search_query.is_empty() {
                 clear_search_state(state, visible);
             } else {
                 apply_search_filter(state, visible);
             }
         }
         KeyCode::Char(c) => {
-            state.search_query.push(c);
-            state.search_cursor = state.search_query.len();
+            state.input.search_query.push(c);
+            state.input.search_cursor = state.input.search_query.len();
             apply_search_filter(state, visible);
         }
         _ => {}
@@ -239,7 +240,7 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
 ) {
     let total = MENUS.len();
-    let max_items = menu_item_count(state.menu_selected);
+    let max_items = menu_item_count(state.ui.menu_selected);
     if max_items == 0 {
         state.mode = AppMode::Normal;
         return;
@@ -250,26 +251,26 @@ pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
             state.restore_prev_mode();
         }
         KeyCode::Left => {
-            state.menu_selected = if state.menu_selected == 0 {
+            state.ui.menu_selected = if state.ui.menu_selected == 0 {
                 total - 1
             } else {
-                state.menu_selected - 1
+                state.ui.menu_selected - 1
             };
-            state.menu_item_selected = 0;
+            state.ui.menu_item_selected = 0;
         }
         KeyCode::Right => {
-            state.menu_selected = (state.menu_selected + 1) % total;
-            state.menu_item_selected = 0;
+            state.ui.menu_selected = (state.ui.menu_selected + 1) % total;
+            state.ui.menu_item_selected = 0;
         }
         KeyCode::Up => {
-            state.menu_item_selected = if state.menu_item_selected == 0 {
+            state.ui.menu_item_selected = if state.ui.menu_item_selected == 0 {
                 max_items - 1
             } else {
-                state.menu_item_selected - 1
+                state.ui.menu_item_selected - 1
             };
         }
         KeyCode::Down => {
-            state.menu_item_selected = (state.menu_item_selected + 1) % max_items;
+            state.ui.menu_item_selected = (state.ui.menu_item_selected + 1) % max_items;
         }
         KeyCode::Enter => {
             run_selected_menu_action(

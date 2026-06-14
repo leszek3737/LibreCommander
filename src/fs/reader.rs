@@ -12,7 +12,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 #[cfg(test)]
 use std::time::SystemTime;
 
-use crate::app::types::{PanelListing, PanelState, compute_category, sanitize_name};
+use crate::app::types::{PanelState, compute_category, sanitize_name};
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
@@ -20,9 +20,6 @@ use crate::fs::cha::Cha;
 const CACHE_MAX_SIZE: usize = 1024;
 
 const INITIAL_DIR_CAPACITY: usize = 256;
-
-#[cfg(test)]
-use crate::app::types::format_permissions;
 
 pub use crate::app::types::FileEntry;
 
@@ -207,19 +204,8 @@ fn build_file_entry_from_metadata(
     }
 }
 
-fn rebuild_path_index(listing: &mut PanelListing) {
-    listing.path_index.clear();
-    listing.path_index.reserve(listing.unfiltered_entries.len());
-    for (i, entry) in listing.unfiltered_entries.iter().enumerate() {
-        listing.path_index.insert(entry.path.clone(), i);
-    }
-}
-
 pub fn ensure_path_index(panel: &mut PanelState) {
-    if !panel.listing.path_index.is_empty() {
-        return;
-    }
-    rebuild_path_index(&mut panel.listing);
+    panel.listing.ensure_index();
 }
 
 pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
@@ -331,41 +317,17 @@ pub fn file_info_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> FileEn
     build_file_entry_from_metadata(path, file_name, metadata, None)
 }
 
-pub fn upsert_entry(panel: &mut PanelState, mut entry: FileEntry) {
+pub fn upsert_entry(panel: &mut PanelState, entry: FileEntry) {
+    // The `..` parent link is synthesized per directory read and must never be
+    // tracked as a real entry; guard before delegating to the listing store.
     if is_parent_entry(&entry) {
         return;
     }
-
-    ensure_path_index(panel);
-
-    if let Some(&idx) = panel.listing.path_index.get(&entry.path) {
-        if let Some(existing) = panel.listing.unfiltered_entries.get_mut(idx) {
-            entry.selected = existing.selected;
-            *existing = entry;
-        }
-    } else {
-        let new_idx = panel.listing.unfiltered_entries.len();
-        panel.listing.path_index.insert(entry.path.clone(), new_idx);
-        panel.listing.unfiltered_entries.push(entry);
-    }
+    panel.listing.upsert(entry);
 }
 
 pub fn remove_entry(panel: &mut PanelState, path: &Path) {
-    if panel.listing.unfiltered_entries.is_empty() {
-        return;
-    }
-
-    ensure_path_index(panel);
-    if let Some(idx) = panel.listing.path_index.remove(path) {
-        let last = panel.listing.unfiltered_entries.len() - 1;
-        if idx < last {
-            let last_path = panel.listing.unfiltered_entries[last].path.clone();
-            panel.listing.unfiltered_entries.swap_remove(idx);
-            panel.listing.path_index.insert(last_path, idx);
-        } else {
-            panel.listing.unfiltered_entries.pop();
-        }
-    }
+    panel.listing.remove(path);
 }
 
 #[cfg(test)]
@@ -394,7 +356,7 @@ pub fn is_executable(_mode: u32) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::app::types::FileEntry as CanonicalFileEntry;
@@ -417,6 +379,7 @@ mod tests {
             .group("group")
             .selected(selected)
             .build()
+            .expect("valid test entry")
     }
 
     fn parent_entry() -> FileEntry {
@@ -428,12 +391,12 @@ mod tests {
             .modified(SystemTime::now())
             .permissions(0o755)
             .build()
+            .expect("valid test entry")
     }
 
     fn test_panel(entries: Vec<FileEntry>) -> PanelState {
         let mut panel = PanelState::new(std::env::temp_dir());
-        panel.listing.entries = entries;
-        panel.recalculate_selection_stats();
+        panel.set_entries(entries);
         panel
     }
 
@@ -446,7 +409,8 @@ mod tests {
             .modified(SystemTime::now())
             .owner("user")
             .group("group")
-            .build();
+            .build()
+            .expect("valid test entry");
         assert_eq!(entry.display_size(), "   0 B");
     }
 
@@ -459,7 +423,8 @@ mod tests {
             .modified(SystemTime::now())
             .owner("user")
             .group("group")
-            .build();
+            .build()
+            .expect("valid test entry");
         assert_eq!(entry.display_size(), " 500 B");
     }
 
@@ -472,7 +437,8 @@ mod tests {
             .modified(SystemTime::now())
             .owner("user")
             .group("group")
-            .build();
+            .build()
+            .expect("valid test entry");
         let result = entry.display_size();
         assert!(result.contains("KB"));
     }
@@ -486,7 +452,8 @@ mod tests {
             .modified(SystemTime::now())
             .owner("user")
             .group("group")
-            .build();
+            .build()
+            .expect("valid test entry");
         let result = entry.display_size();
         assert!(result.contains("MB"));
     }
@@ -500,7 +467,8 @@ mod tests {
             .modified(SystemTime::now())
             .owner("user")
             .group("group")
-            .build();
+            .build()
+            .expect("valid test entry");
         let result = entry.display_size();
         assert!(result.contains("GB"));
     }
@@ -514,18 +482,19 @@ mod tests {
             .modified(SystemTime::now())
             .owner("user")
             .group("group")
-            .build();
+            .build()
+            .expect("valid test entry");
         let result = entry.display_size();
         assert!(result.contains("TB"));
     }
 
     #[test]
     fn test_format_permissions_rwx() {
-        assert_eq!(format_permissions(0o755), "rwxr-xr-x");
-        assert_eq!(format_permissions(0o644), "rw-r--r--");
-        assert_eq!(format_permissions(0o700), "rwx------");
-        assert_eq!(format_permissions(0o000), "---------");
-        assert_eq!(format_permissions(0o777), "rwxrwxrwx");
+        assert_eq!(FileEntry::display_permissions_raw(0o755), "rwxr-xr-x");
+        assert_eq!(FileEntry::display_permissions_raw(0o644), "rw-r--r--");
+        assert_eq!(FileEntry::display_permissions_raw(0o700), "rwx------");
+        assert_eq!(FileEntry::display_permissions_raw(0o000), "---------");
+        assert_eq!(FileEntry::display_permissions_raw(0o777), "rwxrwxrwx");
     }
 
     #[test]
@@ -689,31 +658,29 @@ mod tests {
     #[test]
     fn test_upsert_entry_adds_new_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("b.txt", false)]);
-        panel.listing.unfiltered_entries = panel.listing.entries.clone();
         upsert_entry(&mut panel, test_entry("a.txt", false));
 
         assert!(
             panel
                 .listing
-                .unfiltered_entries
+                .unfiltered()
                 .iter()
                 .any(|entry| entry.name == "a.txt")
         );
-        assert_eq!(panel.listing.unfiltered_entries.len(), 3);
+        assert_eq!(panel.listing.unfiltered().len(), 3);
     }
 
     #[test]
     fn test_upsert_entry_updates_existing_and_preserves_selection() {
         let mut panel = test_panel(vec![test_entry("file.txt", true)]);
-        panel.listing.unfiltered_entries = panel.listing.entries.clone();
         let mut updated = test_entry("file.txt", false);
         updated.cha.len = 99;
 
         upsert_entry(&mut panel, updated);
 
-        assert_eq!(panel.listing.unfiltered_entries.len(), 1);
-        assert_eq!(panel.listing.unfiltered_entries[0].cha.len, 99);
-        assert!(panel.listing.unfiltered_entries[0].selected);
+        assert_eq!(panel.listing.unfiltered().len(), 1);
+        assert_eq!(panel.listing.unfiltered()[0].cha.len, 99);
+        assert!(panel.listing.unfiltered()[0].selected);
     }
 
     #[test]
@@ -724,21 +691,20 @@ mod tests {
             removed.clone(),
             test_entry("keep.txt", false),
         ]);
-        panel.listing.unfiltered_entries = panel.listing.entries.clone();
 
         remove_entry(&mut panel, &removed.path);
 
         assert!(
             !panel
                 .listing
-                .unfiltered_entries
+                .unfiltered()
                 .iter()
                 .any(|entry| entry.name == "remove.txt")
         );
         assert!(
             panel
                 .listing
-                .unfiltered_entries
+                .unfiltered()
                 .iter()
                 .any(|entry| entry.name == "keep.txt")
         );
@@ -747,14 +713,13 @@ mod tests {
     #[test]
     fn test_upsert_adds_hidden_to_unfiltered() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("visible.txt", false)]);
-        panel.listing.unfiltered_entries = panel.listing.entries.clone();
         panel.set_show_hidden(false);
         upsert_entry(&mut panel, test_entry(".hidden", false));
 
         assert!(
             panel
                 .listing
-                .unfiltered_entries
+                .unfiltered()
                 .iter()
                 .any(|entry| entry.name == ".hidden")
         );
@@ -762,26 +727,27 @@ mod tests {
 
     #[test]
     fn test_upsert_with_empty_unfiltered_inserts_entry() {
-        let mut panel = test_panel(vec![parent_entry(), test_entry("main.rs", false)]);
+        // Single-store model: an empty backing store is the "empty unfiltered"
+        // precondition this test exercises (the dual-store split is gone).
+        let mut panel = test_panel(vec![]);
         panel.set_filter(Some("*.rs".to_string()));
 
         upsert_entry(&mut panel, test_entry("notes.txt", false));
 
-        assert_eq!(panel.listing.unfiltered_entries.len(), 1);
-        assert_eq!(panel.listing.unfiltered_entries[0].name, "notes.txt");
+        assert_eq!(panel.listing.unfiltered().len(), 1);
+        assert_eq!(panel.listing.unfiltered()[0].name, "notes.txt");
     }
 
     #[test]
     fn test_remove_entry_preserves_parent_entry() {
         let mut panel = test_panel(vec![parent_entry(), test_entry("file.txt", false)]);
-        panel.listing.unfiltered_entries = panel.listing.entries.clone();
 
         remove_entry(&mut panel, &std::env::temp_dir().join("file.txt"));
 
         assert!(
             panel
                 .listing
-                .unfiltered_entries
+                .unfiltered()
                 .iter()
                 .any(|entry| entry.name == "..")
         );

@@ -4,6 +4,15 @@ use std::time::SystemTime;
 use super::text_input::TextInput;
 use crate::ops::archive::ArchiveEntry;
 
+// NOTE (Message newtype / Cow): the message-carrying `String` fields below
+// (`ConfirmDetails::{title,message}`, `DialogKind::{Error, Help.message,
+// Input.prompt, Progress.message}`) were considered for a `Message` newtype and
+// for `Cow<'static, str>`. Both are deferred: these strings are read as `&str`
+// by the render layer (`render_dialog_map`) and constructed at ~60 call sites
+// across `input::` and the tests, so either change cascades widely without
+// adding real invariant safety here. Follow-up: introduce `Message` (and/or
+// `Cow`) when the render boundary is reworked.
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmDetails {
     pub title: String,
@@ -12,20 +21,21 @@ pub struct ConfirmDetails {
 }
 
 impl ConfirmDetails {
-    pub fn simple(title: &str, message: &str) -> Self {
+    /// Shared constructor; `simple` and `with_files` differ only in `files`.
+    fn build(title: &str, message: &str, files: Option<Vec<String>>) -> Self {
         Self {
             title: title.to_string(),
             message: message.to_string(),
-            files: None,
+            files,
         }
     }
 
+    pub fn simple(title: &str, message: &str) -> Self {
+        Self::build(title, message, None)
+    }
+
     pub fn with_files(title: &str, message: &str, files: Vec<String>) -> Self {
-        Self {
-            title: title.to_string(),
-            message: message.to_string(),
-            files: Some(files),
-        }
+        Self::build(title, message, Some(files))
     }
 }
 
@@ -40,12 +50,73 @@ pub enum InputAction {
     ViewerSearch,
 }
 
+/// Whether a [`CopyMoveDetails`] dialog confirms a copy or a move. Replaces the
+/// former `is_move: bool` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyMoveKind {
+    Copy,
+    Move,
+}
+
+impl CopyMoveKind {
+    pub fn is_move(self) -> bool {
+        matches!(self, Self::Move)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopyMoveDetails {
     pub source: Vec<PathBuf>,
-    pub source_display: Vec<String>,
     pub dest: PathBuf,
-    pub is_move: bool,
+    pub kind: CopyMoveKind,
+}
+
+impl CopyMoveDetails {
+    /// Per-source display labels (file name, falling back to the full path).
+    /// Derived on demand from `source` instead of being stored as a parallel
+    /// `source_display` field that could drift out of sync.
+    pub fn source_display(&self) -> Vec<String> {
+        self.source
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect()
+    }
+}
+
+/// The kind of filesystem object a [`PropertiesDetails`] describes. Replaces the
+/// former `is_dir: bool` / `is_symlink: bool` flag pair, which could encode the
+/// nonsensical "both true / which wins?" states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+}
+
+impl FileKind {
+    /// Build from the legacy `(is_dir, is_symlink)` metadata flags. Symlinks
+    /// take precedence over directories, matching the previous render logic.
+    pub fn from_metadata_flags(is_dir: bool, is_symlink: bool) -> Self {
+        if is_symlink {
+            Self::Symlink
+        } else if is_dir {
+            Self::Directory
+        } else {
+            Self::File
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "File",
+            Self::Directory => "Directory",
+            Self::Symlink => "Symlink",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,8 +127,7 @@ pub struct PropertiesDetails {
     pub permissions: u32,
     pub owner: String,
     pub group: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
+    pub kind: FileKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +179,10 @@ impl DialogKind {
     pub fn progress(message: String, fraction: f32, cancellable: bool) -> Self {
         Self::Progress {
             message,
+            // Intentional fixup: out-of-range inputs (e.g. a computed 1.5 or a
+            // negative fraction) are silently snapped into 0.0..=1.0 rather than
+            // rejected. Progress is cosmetic, so clamping is preferred over an
+            // error path or a debug assertion here.
             progress_fraction: fraction.clamp(0.0, 1.0),
             cancellable,
         }

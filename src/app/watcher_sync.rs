@@ -367,20 +367,15 @@ fn apply_successful_read(
 ) {
     let current_name = panel
         .listing
-        .entries
-        .get(panel.cursor)
+        .filtered_get(panel.cursor)
         .filter(|entry| entry.name != "..")
         .map(|entry| entry.name.clone());
-    let saved: HashSet<PathBuf> = panel
-        .selected_entries()
-        .into_iter()
-        .map(|e| e.path.clone())
-        .collect();
+    let saved: HashSet<PathBuf> = panel.selected_entries().map(|e| e.path.clone()).collect();
 
     update_panel_read_errors(panel, errors);
     panel.listing.set_unfiltered(entries);
     panel.set_canonical_path(panel.path().canonicalize().ok());
-    for entry in &mut panel.listing.unfiltered_entries {
+    for entry in panel.listing.unfiltered_mut() {
         entry.selected = saved.contains(&entry.path);
     }
     rebuild_visible_entries(panel, current_name.as_deref());
@@ -482,7 +477,7 @@ fn path_parent_matches_cached(path: &Path, cache: &PanelCache) -> bool {
 }
 
 fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
-    let Ok(mut entry) = reader::get_file_info(path) else {
+    let Ok(entry) = reader::get_file_info(path) else {
         return false;
     };
 
@@ -491,16 +486,13 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
     }
 
     reader::ensure_path_index(panel);
-    let existing = panel
-        .listing
-        .path_index
-        .get(&entry.path)
-        .and_then(|&idx| panel.listing.unfiltered_entries.get(idx));
-    if let Some(existing) = existing {
-        if existing.cha.hits(&entry.cha) {
-            return false;
-        }
-        entry.selected = existing.selected;
+    let existing = panel.listing.entry_by_path(&entry.path);
+    // An unchanged entry is a no-op. `selected` preservation on a real update is
+    // handled by `PanelListing::upsert`, which copies it from the existing entry.
+    if let Some(existing) = existing
+        && existing.cha.hits(&entry.cha)
+    {
+        return false;
     }
 
     reader::upsert_entry(panel, entry);
@@ -510,7 +502,7 @@ fn apply_watcher_upsert(panel: &mut PanelState, path: &Path) -> bool {
 
 fn apply_watcher_remove(panel: &mut PanelState, path: &Path) -> bool {
     reader::ensure_path_index(panel);
-    let existed = panel.listing.path_index.contains_key(path);
+    let existed = panel.listing.contains_path(path);
     if existed {
         reader::remove_entry(panel, path);
         panel.mark_dirty();
@@ -529,8 +521,7 @@ pub(crate) fn refresh_panel_from_disk(panel: &mut PanelState) {
 fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>) {
     let current_name = panel
         .listing
-        .entries
-        .get(panel.cursor)
+        .filtered_get(panel.cursor)
         .filter(|entry| entry.name != "..")
         .map(|entry| entry.name.clone())
         .or_else(|| preferred_name.map(str::to_string));
@@ -543,21 +534,20 @@ fn rebuild_visible_entries(panel: &mut PanelState, preferred_name: Option<&str>)
     if let Some(name) = current_name.as_deref()
         && let Some(pos) = panel
             .listing
-            .entries
-            .iter()
+            .filtered()
             .position(|entry| entry.name == name)
     {
         panel.cursor = pos;
     }
 
-    if panel.listing.entries.is_empty() {
+    if panel.listing.filtered_is_empty() {
         panel.cursor = 0;
         panel.scroll_offset = 0;
-    } else if panel.cursor >= panel.listing.entries.len() {
-        panel.cursor = panel.listing.entries.len() - 1;
+    } else if panel.cursor >= panel.listing.filtered_len() {
+        panel.cursor = panel.listing.filtered_len() - 1;
     }
 
-    let max_scroll = panel.listing.entries.len().saturating_sub(1);
+    let max_scroll = panel.listing.filtered_len().saturating_sub(1);
     if panel.scroll_offset > max_scroll {
         panel.scroll_offset = max_scroll;
     }

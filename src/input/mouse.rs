@@ -201,7 +201,7 @@ fn handle_mouse_scroll(
         state.active_panel = ActivePanel::Right;
     }
     let panel = state.active_panel_mut();
-    let len = panel.listing.entries.len();
+    let len = panel.listing.filtered_len();
     match kind {
         MouseEventKind::ScrollUp => {
             panel.cursor = panel.cursor.saturating_sub(SCROLL_LINES);
@@ -359,25 +359,25 @@ fn handle_confirm_click(
 
     if geo.hit_button_row(pos) {
         let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
-        if state.dialog_selection == new_sel {
+        if state.input.dialog_selection == new_sel {
             if new_sel == 0 {
-                if state.pending_action.is_some() {
+                if state.ui.pending_action.is_some() {
                     if let Some(conflicting) = check_overwrite_conflict(state) {
-                        state.dialog_selection = 0;
+                        state.input.dialog_selection = 0;
                         state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
                             OverwriteConfirmDetails { conflicting },
                         )));
                         return Some(MouseOutcome::Consumed);
                     }
-                    let status_message = state.status_message.take();
+                    let status_message = state.ui.status_message.take();
                     start_confirmed_action(state, running_job);
-                    if state.status_message.is_none() {
-                        state.status_message = status_message;
+                    if state.ui.status_message.is_none() {
+                        state.ui.status_message = status_message;
                     }
                     finish_confirmed_action(state);
                     return Some(MouseOutcome::Consumed);
                 }
-                if let Some(cmd) = state.pending_menu_command.take() {
+                if let Some(cmd) = state.ui.pending_menu_command.take() {
                     state.mode = AppMode::Normal;
                     shell::run_shell_command(state, &cmd, true, refresh_active);
                     return Some(MouseOutcome::Consumed);
@@ -388,7 +388,7 @@ fn handle_confirm_click(
                 dismiss_dialog(state);
             }
         } else {
-            state.dialog_selection = new_sel;
+            state.input.dialog_selection = new_sel;
         }
     }
     Some(MouseOutcome::Consumed)
@@ -403,11 +403,11 @@ fn handle_overwrite_click(
 
     if geo.hit_button_row(pos) {
         let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
-        if state.dialog_selection == new_sel {
+        if state.input.dialog_selection == new_sel {
             match new_sel {
                 0 => {
-                    if let Some(action) = state.pending_action.as_mut() {
-                        action.set_overwrite();
+                    if let Some(a) = &mut state.ui.pending_action {
+                        a.set_overwrite();
                     }
                     start_confirmed_action(state, running_job);
                     finish_confirmed_action(state);
@@ -418,7 +418,7 @@ fn handle_overwrite_click(
                 _ => {}
             }
         } else {
-            state.dialog_selection = new_sel;
+            state.input.dialog_selection = new_sel;
         }
     }
     Some(MouseOutcome::Consumed)
@@ -435,7 +435,7 @@ fn handle_progress_click(
         && let Some(job) = running_job.as_ref()
     {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-        state.status_message = Some("Cancel requested".to_string());
+        state.ui.status_message = Some("Cancel requested".to_string());
     }
     Some(MouseOutcome::Consumed)
 }
@@ -454,8 +454,8 @@ fn handle_mouse_menu_bar(state: &mut AppState, pos: &MousePosition) -> Option<Mo
         let x_offset = menu_title_x(pos.width, i);
         let title_width = menu_title_width(title);
         if pos.col >= x_offset && pos.col < x_offset + title_width {
-            state.menu_selected = i;
-            state.menu_item_selected = 0;
+            state.ui.menu_selected = i;
+            state.ui.menu_item_selected = 0;
             if state.mode != AppMode::Menu {
                 state.prev_mode = Some(state.mode.clone());
                 state.mode = AppMode::Menu;
@@ -470,7 +470,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
     if !matches!(state.mode, AppMode::Menu) || pos.row < 1 {
         return None;
     }
-    let items = MENUS[state.menu_selected].items;
+    let items = MENUS[state.ui.menu_selected].items;
     let dropdown_width = items
         .iter()
         .map(|s| UnicodeWidthStr::width(*s))
@@ -478,7 +478,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
         .unwrap_or(10) as u16
         + 4;
     let menu_bar_area = Rect::new(0, 0, pos.width, 1);
-    let dropdown_x = menu_dropdown_x(menu_bar_area, state.menu_selected, dropdown_width);
+    let dropdown_x = menu_dropdown_x(menu_bar_area, state.ui.menu_selected, dropdown_width);
 
     let inner_x = dropdown_x + 1;
     let inner_y = 2u16;
@@ -487,7 +487,10 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
     let max_visible = pos.height.saturating_sub(1);
     let dropdown_height = ((items.len().min(u16::MAX as usize - 2)) as u16 + 2).min(max_visible);
     let visible_items = dropdown_height.saturating_sub(2) as usize;
-    let clamped_selected = state.menu_item_selected.min(items.len().saturating_sub(1));
+    let clamped_selected = state
+        .ui
+        .menu_item_selected
+        .min(items.len().saturating_sub(1));
     let scroll_offset = if items.len() <= visible_items {
         0
     } else {
@@ -501,7 +504,7 @@ fn handle_mouse_menu_dropdown(state: &mut AppState, pos: &MousePosition) -> Opti
     {
         let item_idx = scroll_offset + (pos.row - inner_y) as usize;
         if item_idx < items.len() {
-            state.menu_item_selected = item_idx;
+            state.ui.menu_item_selected = item_idx;
             return Some(MouseOutcome::MenuAction);
         }
     }
@@ -570,29 +573,28 @@ fn handle_mouse_panels(
     let relative_row = pos.row.saturating_sub(list_start_row);
     let clicked_index = panel.scroll_offset + relative_row as usize;
 
-    if clicked_index >= panel.listing.entries.len() {
+    if clicked_index >= panel.listing.filtered_len() {
         return;
     }
 
     let now = std::time::Instant::now();
-    let is_double_click = if let Some(last_time) = state.last_click_time {
-        if let Some(last_pos) = state.last_click_position {
-            last_pos.0 == pos.col
-                && last_pos.1 == pos.row
-                && now.duration_since(last_time) < Duration::from_millis(DOUBLE_CLICK_THRESHOLD_MS)
-        } else {
-            false
-        }
+    let is_double_click = if let Some((last_time, last_pos)) = state.interaction.last_click {
+        last_pos.0 == pos.col
+            && last_pos.1 == pos.row
+            && now.duration_since(last_time) < Duration::from_millis(DOUBLE_CLICK_THRESHOLD_MS)
     } else {
         false
     };
 
     if is_double_click {
-        state.last_click_time = None;
-        state.last_click_position = None;
-        state.drag_anchor_index = None;
+        state.interaction.last_click = None;
+        state.interaction.drag_anchor_index = None;
 
-        let entry = &panel.listing.entries[clicked_index];
+        // Bail out gracefully if the entry vanished between the bounds check
+        // and here (e.g. a concurrent refresh) instead of panicking.
+        let Some(entry) = panel.listing.filtered_get(clicked_index) else {
+            return;
+        };
         let is_dir = entry.is_dir();
         let path = entry.path.clone();
         if is_dir {
@@ -612,9 +614,8 @@ fn handle_mouse_panels(
             state.mode = AppMode::Viewing;
         }
     } else {
-        state.last_click_time = Some(now);
-        state.last_click_position = Some((pos.col, pos.row));
-        state.drag_anchor_index = Some(clicked_index);
+        state.interaction.last_click = Some((now, (pos.col, pos.row)));
+        state.interaction.drag_anchor_index = Some(clicked_index);
 
         let panel_mut = state.active_panel_mut();
         panel_mut.cursor = clicked_index;
@@ -632,7 +633,7 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
     }
     let (panel_start_row, panel_end_row) = panel_bounds(pos.height);
 
-    let anchor = match state.drag_anchor_index {
+    let anchor = match state.interaction.drag_anchor_index {
         Some(idx) => idx,
         None => return,
     };
@@ -654,7 +655,7 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
     let relative_row = pos.row.saturating_sub(list_start_row);
     let current_index = panel.scroll_offset + relative_row as usize;
 
-    if current_index >= panel.listing.entries.len() {
+    if current_index >= panel.listing.filtered_len() {
         return;
     }
 
@@ -671,9 +672,8 @@ fn handle_mouse_drag(state: &mut AppState, pos: &MousePosition) {
 }
 
 fn handle_mouse_up(state: &mut AppState) {
-    state.drag_anchor_index = None;
-    state.last_click_time = None;
-    state.last_click_position = None;
+    state.interaction.drag_anchor_index = None;
+    state.interaction.last_click = None;
 }
 
 #[cfg(test)]

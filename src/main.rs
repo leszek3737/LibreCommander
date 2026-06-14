@@ -131,7 +131,7 @@ fn poll_viewer_loader(
             changed = true;
         }
         Ok(Err(e)) => {
-            state.status_message = Some(format!("Failed to open file: {e}"));
+            state.ui.status_message = Some(format!("Failed to open file: {e}"));
             state.mode = AppMode::Normal;
             *viewer_loader = None;
             changed = true;
@@ -139,16 +139,17 @@ fn poll_viewer_loader(
         Err(std::sync::mpsc::TryRecvError::Empty) => {
             let now = std::time::Instant::now();
             let should_redraw = state
+                .ui
                 .viewer_spinner_last_tick
                 .is_none_or(|last| now.duration_since(last) >= SPINNER_TICK_INTERVAL);
             if should_redraw {
-                state.viewer_spinner_last_tick = Some(now);
-                state.viewer_spinner_frame = state.viewer_spinner_frame.wrapping_add(1);
+                state.ui.viewer_spinner_last_tick = Some(now);
+                state.ui.viewer_spinner_frame = state.ui.viewer_spinner_frame.wrapping_add(1);
                 changed = true;
             }
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-            state.status_message = Some("Viewer load failed: thread panicked".to_string());
+            state.ui.status_message = Some("Viewer load failed: thread panicked".to_string());
             state.mode = AppMode::Normal;
             *viewer_loader = None;
             changed = true;
@@ -178,7 +179,7 @@ fn poll_image_preview(
         }
         Err(mpsc::TryRecvError::Empty) => false,
         Err(mpsc::TryRecvError::Disconnected) => {
-            state.status_message = Some("Image preview failed: thread panicked".to_string());
+            state.ui.status_message = Some("Image preview failed: thread panicked".to_string());
             *image_preview_loader = None;
             true
         }
@@ -237,14 +238,14 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let config_raw = match app::config::load_setup(&mut state) {
         Ok(raw) => raw,
         Err(e) => {
-            state.status_message = Some(e);
+            state.ui.status_message = Some(e);
             None
         }
     };
     if let Some(ref raw) = config_raw
         && let Err(e) = ui::theme::Theme::apply_from_value_to_palette(raw, &mut state.theme_colors)
     {
-        state.status_message = Some(e);
+        state.ui.status_message = Some(e);
     }
 
     let mut viewer_state: Option<viewer::ViewerState> = None;
@@ -256,7 +257,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         Ok(w) => Some(w),
         Err(err) => {
             let msg = format!("watcher disabled: {err}");
-            state.status_message = Some(match state.status_message.take() {
+            state.ui.status_message = Some(match state.ui.status_message.take() {
                 Some(prev) => format!("{prev}; {msg}"),
                 None => msg,
             });
@@ -325,7 +326,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             )?;
         }
 
-        if state.should_quit {
+        if state.should_quit() {
             shutdown_job(&mut running_job);
             return Ok(());
         }
