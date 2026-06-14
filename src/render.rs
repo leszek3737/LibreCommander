@@ -12,9 +12,17 @@ fn safe_split_at(s: &str, mut byte_idx: usize) -> (&str, &str) {
     s.split_at(byte_idx)
 }
 
+/// Build a `prefix` + text-with-cursor line (e.g. `"$ before_after"`).
+/// Shared by the command-line and search variants of the bottom bar.
+fn cursor_line(prefix: &str, text: &str, byte_pos: usize) -> String {
+    let (before, after) = safe_split_at(text, byte_pos);
+    format!("{prefix}{before}_{after}")
+}
+
 use lc::{app, ui};
 
 use app::types::{ActivePanel, AppMode, AppState, PickerKind, ViewMode};
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use ui::theme::{ColorPalette, Theme};
 use ui::{dialogs, panels, viewer};
@@ -111,26 +119,23 @@ pub(crate) fn render_ui(
         icon_theme,
     );
 
-    let active = if state.active_panel == ActivePanel::Left {
-        &state.left_panel
-    } else {
-        &state.right_panel
-    };
+    let active = state.active_panel();
     panels::render_status_bar_with_colors(f, main_layout[2], active, colors);
 
     // Per-frame alloc for command bar — low cost (short strings, discarded each frame).
     let cmd_text: Cow<'_, str> = if state.mode == AppMode::CommandLine {
-        let (before, after) =
-            safe_split_at(state.command_line.text(), state.command_line.byte_pos());
-        format!("$ {before}_{after}").into()
+        cursor_line(
+            "$ ",
+            state.command_line.text(),
+            state.command_line.byte_pos(),
+        )
+        .into()
     } else if state.mode == AppMode::Search {
-        let (before, after) = safe_split_at(&state.search_query, state.search_cursor);
-        format!("Search: {before}_{after}").into()
+        cursor_line("Search: ", &state.search_query, state.search_cursor).into()
     } else if let Some(ref msg) = state.status_message {
         Cow::Borrowed(msg.as_str())
     } else {
-        let ap = state.active_panel();
-        ap.path().to_string_lossy()
+        active.path().to_string_lossy()
     };
     let cmd_paragraph =
         ratatui::widgets::Paragraph::new(cmd_text).style(Theme::status_bar_with_colors(colors));
@@ -166,79 +171,85 @@ fn clamp_selected(selected: usize, len: usize) -> usize {
     selected.min(len.saturating_sub(1))
 }
 
+/// Shared hint shown by pickers that simply select or cancel.
+const SELECT_CANCEL_HINT: &str = "Enter: select  Esc: cancel";
+
+/// Clamp the selection against `items` and render the overlay. Collapses the
+/// per-`PickerKind` items -> clamp -> render boilerplate into one path.
+fn render_picker<T: AsRef<str>>(
+    f: &mut Frame,
+    title: &str,
+    items: &[T],
+    selected: usize,
+    hint: &str,
+    colors: &ColorPalette,
+) {
+    let selected = clamp_selected(selected, items.len());
+    dialogs::render_list_picker_with_colors(f, title, items, selected, hint, colors);
+}
+
 fn render_list_picker_overlay(
     f: &mut Frame,
     state: &AppState,
     kind: &PickerKind,
     colors: &ColorPalette,
 ) {
+    let selected = state.picker_selected;
     match kind {
         PickerKind::History => {
-            // NOTE: Do NOT cache this Vec — command_history is mutable state.
-            // Caching would require invalidation tracking and break the
-            // "render is a pure function of AppState" invariant.
-            let items: Vec<&str> = state
+            // command_history is mutable state stored newest-last in a VecDeque,
+            // so a reversed contiguous slice doesn't exist; we materialize per
+            // frame. SmallVec keeps typical histories off the heap (no alloc).
+            let items: SmallVec<[&str; 32]> = state
                 .command_history
                 .iter()
                 .rev()
-                .map(|s| s.as_str())
+                .map(String::as_str)
                 .collect();
-            let selected = clamp_selected(state.picker_selected, items.len());
-            dialogs::render_list_picker_with_colors(
+            render_picker(
                 f,
                 "Command History",
                 &items,
                 selected,
-                "Enter: select  Esc: cancel",
+                SELECT_CANCEL_HINT,
                 colors,
             );
         }
-        PickerKind::Hotlist => {
-            let selected =
-                clamp_selected(state.picker_selected, state.cached_hotlist_strings.len());
-            dialogs::render_list_picker_with_colors(
-                f,
-                "Directory Hotlist",
-                &state.cached_hotlist_strings,
-                selected,
-                "Enter: cd  a: add current  d: delete  Esc: close",
-                colors,
-            );
-        }
+        PickerKind::Hotlist => render_picker(
+            f,
+            "Directory Hotlist",
+            &state.cached_hotlist_strings,
+            selected,
+            "Enter: cd  a: add current  d: delete  Esc: close",
+            colors,
+        ),
         PickerKind::CompareMode => {
             const COMPARE_MODES: [&str; 3] = ["Quick", "Size", "Thorough"];
-            let items = &COMPARE_MODES[..];
-            let selected = clamp_selected(state.picker_selected, items.len());
-            dialogs::render_list_picker_with_colors(
+            render_picker(
                 f,
                 "Compare Mode",
-                items,
+                &COMPARE_MODES,
                 selected,
-                "Enter: select  Esc: cancel",
+                SELECT_CANCEL_HINT,
                 colors,
             );
         }
-        PickerKind::UserMenu => {
-            let selected =
-                clamp_selected(state.picker_selected, state.cached_user_menu_strings.len());
-            dialogs::render_list_picker_with_colors(
-                f,
-                "User Menu",
-                &state.cached_user_menu_strings,
-                selected,
-                "Enter: run  Esc: cancel",
-                colors,
-            );
-        }
+        PickerKind::UserMenu => render_picker(
+            f,
+            "User Menu",
+            &state.cached_user_menu_strings,
+            selected,
+            "Enter: run  Esc: cancel",
+            colors,
+        ),
         PickerKind::ArchiveMenu => {
             const ITEMS: [&str; 2] = ["Extract Archive", "Create Archive"];
-            let selected = clamp_selected(state.picker_selected, ITEMS.len());
-            dialogs::render_list_picker_with_colors(
+            render_picker(
                 f,
                 "Archive Operations",
                 &ITEMS,
                 selected,
-                "Enter: select  Esc: cancel",
+                SELECT_CANCEL_HINT,
                 colors,
             );
         }

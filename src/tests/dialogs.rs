@@ -19,6 +19,26 @@ fn entry(name: &str) -> TestEntry {
     TestEntry::new(name).path(test_path(name))
 }
 
+/// Render `state` on the standard test terminal and return the buffer as text.
+/// Collapses the repeated `test_terminal` + `render_ui` + `buffer_to_string`
+/// triple used by the text-content assertions below.
+fn render_and_get_text(state: &AppState) -> String {
+    let mut terminal = test_terminal();
+    let viewer_state = no_viewer_state();
+    terminal
+        .draw(|f| render::render_ui(f, state, viewer_state.as_ref(), None))
+        .unwrap();
+    buffer_to_string(terminal.backend().buffer())
+}
+
+// Named cell coordinates / terminal sizes for the buffer-position checks.
+const TOP_ROW: u16 = 0;
+const BOTTOM_ROW: u16 = TERMINAL_HEIGHT - 1;
+const SAMPLE_COLUMN: u16 = 39;
+const STATUS_BAR_COLUMN: u16 = 2;
+const SMALL_TERM_WIDTH: u16 = 40;
+const SMALL_TERM_HEIGHT: u16 = 10;
+
 #[test]
 fn confirm_enter_without_pending_action_dismisses_dialog() {
     let mut state = AppState {
@@ -133,21 +153,13 @@ fn parse_octal_mode_edge_cases() {
 
 #[test]
 fn dialog_overlay_renders_error_text() {
-    let mut terminal = test_terminal();
     let state = AppState {
         mode: AppMode::Dialog(app::types::DialogKind::Error(
             "Test Error Message".to_string(),
         )),
         ..Default::default()
     };
-    let viewer_state = no_viewer_state();
-
-    terminal
-        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
-        .unwrap();
-
-    let buffer = terminal.backend().buffer();
-    let rendered = buffer_to_string(buffer);
+    let rendered = render_and_get_text(&state);
     assert!(rendered.contains("Test Error"));
     assert!(rendered.contains("Message"));
 }
@@ -176,7 +188,8 @@ fn dialog_with_long_title_does_not_overflow() {
         mode: AppMode::Dialog(DialogKind::Error(long_msg)),
         ..Default::default()
     };
-    let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let mut terminal =
+        Terminal::new(TestBackend::new(SMALL_TERM_WIDTH, SMALL_TERM_HEIGHT)).unwrap();
     let viewer_state = no_viewer_state();
     terminal
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
@@ -189,7 +202,6 @@ fn dialog_with_long_title_does_not_overflow() {
 
 #[test]
 fn help_dialog_renders_help_text() {
-    let mut terminal = test_terminal();
     let state = AppState {
         mode: AppMode::Dialog(app::types::DialogKind::Help {
             message: "TEST HELP CONTENT".to_string(),
@@ -197,14 +209,7 @@ fn help_dialog_renders_help_text() {
         }),
         ..Default::default()
     };
-    let viewer_state = no_viewer_state();
-
-    terminal
-        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
-        .unwrap();
-
-    let buffer = terminal.backend().buffer();
-    let rendered = buffer_to_string(buffer);
+    let rendered = render_and_get_text(&state);
     assert!(rendered.contains("TEST HELP"));
 }
 
@@ -218,13 +223,7 @@ fn progress_dialog_nan_percent_handled() {
         }),
         ..Default::default()
     };
-    let mut terminal = test_terminal();
-    let viewer_state = no_viewer_state();
-    terminal
-        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
-        .unwrap();
-    let buf = terminal.backend().buffer();
-    let text = buffer_to_string(buf);
+    let text = render_and_get_text(&state);
     assert!(!text.is_empty());
     assert!(
         !text.contains("NaN"),
@@ -234,42 +233,26 @@ fn progress_dialog_nan_percent_handled() {
 
 #[test]
 fn menu_dropdown_renders_over_panels() {
-    let mut terminal = test_terminal();
     let state = AppState {
         mode: AppMode::Menu,
         menu_selected: 1,
         menu_item_selected: 0,
         ..Default::default()
     };
-    let viewer_state = no_viewer_state();
-
-    terminal
-        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
-        .unwrap();
-
-    let buffer = terminal.backend().buffer();
-    let rendered = buffer_to_string(buffer);
+    let rendered = render_and_get_text(&state);
     assert!(rendered.contains("User menu"));
     assert!(rendered.contains("View file"));
 }
 
 #[test]
 fn list_picker_overlay_renders_title() {
-    let mut terminal = test_terminal();
     let mut state = AppState {
         mode: AppMode::ListPicker(PickerKind::History),
         picker_selected: 0,
         ..Default::default()
     };
     state.command_history.push_back("echo hello".to_string());
-    let viewer_state = no_viewer_state();
-
-    terminal
-        .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
-        .unwrap();
-
-    let buffer = terminal.backend().buffer();
-    let rendered = buffer_to_string(buffer);
+    let rendered = render_and_get_text(&state);
     assert!(rendered.contains("Command History"));
     assert!(rendered.contains("echo hello"));
 }
@@ -283,7 +266,7 @@ fn menu_bar_rendered_at_top() {
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
-    let cell = buf.cell((39, 0)).unwrap();
+    let cell = buf.cell((SAMPLE_COLUMN, TOP_ROW)).unwrap();
     assert!(!cell.symbol().trim().is_empty());
 }
 
@@ -296,7 +279,7 @@ fn status_bar_at_bottom() {
         .draw(|f| render::render_ui(f, &state, viewer_state.as_ref(), None))
         .unwrap();
     let buf = terminal.backend().buffer();
-    let cell = buf.cell((2, 23)).unwrap();
+    let cell = buf.cell((STATUS_BAR_COLUMN, BOTTOM_ROW)).unwrap();
     assert!(!cell.symbol().trim().is_empty());
 }
 

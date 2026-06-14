@@ -126,7 +126,8 @@ fn help_scrollbar_reserved_for_wrapped_single_line() {
 fn wrapped_line_count_long_line_narrow_area() {
     let text = "abcdefghijklmnopqrstuvwxyz";
     assert_eq!(wrapped_line_count(text, 10), 3);
-    assert!(wrapped_line_count(text, 1) > 1);
+    // 26 width-1 chars at width 1 wrap to exactly 26 lines.
+    assert_eq!(wrapped_line_count(text, 1), 26);
 }
 
 #[test]
@@ -179,8 +180,7 @@ fn truncate_path_preserves_filename() {
 
 #[test]
 fn overwrite_dialog_empty_files_returns_early() {
-    let backend = TestBackend::new(40, 12);
-    let mut terminal = Terminal::new(backend).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
     terminal
         .draw(|f| {
             render_dialog(
@@ -192,26 +192,91 @@ fn overwrite_dialog_empty_files_returns_early() {
             );
         })
         .unwrap();
+
+    // Early return draws nothing, so the buffer stays at its default blank state.
+    let all_blank = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .all(|cell| cell.symbol() == " ");
+    assert!(
+        all_blank,
+        "empty-files overwrite dialog must render nothing"
+    );
+
+    // Sanity: a non-empty overwrite DOES draw, proving "all blank" has teeth.
+    let files = vec!["conflict.txt".to_string()];
+    let mut terminal2 = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal2
+        .draw(|f| {
+            render_dialog(
+                f,
+                &DialogKind::OverwriteConfirm {
+                    selection: 0,
+                    files: Cow::Borrowed(files.as_slice()),
+                },
+            );
+        })
+        .unwrap();
+    let drew_something = terminal2
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .any(|cell| cell.symbol() != " ");
+    assert!(drew_something, "non-empty overwrite dialog must render");
 }
 
 #[test]
 fn list_picker_keeps_selected_visible() {
-    let backend = TestBackend::new(40, 10);
-    let mut terminal = Terminal::new(backend).unwrap();
+    let area = ratatui::layout::Rect::new(0, 0, 40, 10);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     let items: Vec<String> = (0..20).map(|i| format!("Item {i}")).collect();
+    let selected = items.len() - 1;
 
     terminal
-        .draw(|f| render_list_picker(f, "Pick", &items, 19, "hint"))
+        .draw(|f| render_list_picker(f, "Pick", &items, selected, "hint"))
         .unwrap();
 
+    // Mirror the picker geometry (centered_rect + bordered block + vertical
+    // split) to locate the list viewport rect, then assert WHERE the selection
+    // lands rather than scanning the whole buffer.
+    let picker_area = centered_rect(60, 70, area);
+    let inner = Block::default().borders(Borders::ALL).inner(picker_area);
+    let list_area = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([
+            ratatui::layout::Constraint::Min(1),
+            ratatui::layout::Constraint::Length(1),
+        ])
+        .split(inner)[0];
+
     let buffer = terminal.backend().buffer();
-    let rendered = buffer
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
-    assert!(rendered.contains("Item 19"));
-    assert!(!rendered.contains("Item 0"));
+    let row_text = |y: u16| -> String {
+        (list_area.x..list_area.x + list_area.width)
+            .filter_map(|x| buffer.cell((x, y)).map(|c| c.symbol()))
+            .collect()
+    };
+
+    // The selection is the last item, so it scrolls to the bottom viewport row
+    // and carries the "> " highlight symbol.
+    let selected_row = row_text(list_area.y + list_area.height - 1);
+    assert!(
+        selected_row.contains("Item 19"),
+        "selected item should occupy the last viewport row, got: {selected_row:?}"
+    );
+    assert!(
+        selected_row.trim_start().starts_with("> "),
+        "selected viewport row should carry the highlight symbol, got: {selected_row:?}"
+    );
+
+    // Items scrolled above the viewport must not render anywhere.
+    let whole: String = buffer.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        !whole.contains("Item 0"),
+        "Item 0 should be scrolled out of view"
+    );
 }
 
 #[test]

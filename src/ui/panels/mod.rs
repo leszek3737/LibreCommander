@@ -7,10 +7,10 @@ use ratatui::{
 };
 use std::borrow::Cow;
 use std::fmt::Write;
+use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
-use super::theme::IconTheme;
-use super::theme::{ColorPalette, Theme};
+use super::theme::{ColorCtx, ColorPalette, DEFAULT_COLORS, IconTheme, Theme};
 
 use crate::app::types::{
     FileCategory, FileEntry, ListingMode, PanelState, format_permissions, format_size,
@@ -46,15 +46,6 @@ pub fn get_file_color_with_palette(
 
 pub fn get_file_icon(category: &FileCategory) -> &'static str {
     get_file_icon_with_theme(category, IconTheme::default())
-}
-
-macro_rules! impl_default_colors {
-    ($vis:vis fn $name:ident(f: &mut Frame, area: Rect $(, $($arg:ident : $ty:ty),+ $(,)?)?) =>
-     $with:ident, $($default:expr),* $(,)?) => {
-        $vis fn $name(f: &mut Frame, area: Rect $(, $($arg: $ty),+)?) {
-            $with(f, area $(, $($arg),+)?, $($default),*);
-        }
-    };
 }
 
 pub fn get_file_icon_with_theme(category: &FileCategory, theme: IconTheme) -> &'static str {
@@ -137,9 +128,9 @@ fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     truncate_to_width(name, max_width)
 }
 
-impl_default_colors! {
-    pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) =>
-    render_panel_with_colors, &ColorPalette::default(), IconTheme::default()
+pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
+    let ctx = ColorCtx::defaults();
+    render_panel_with_colors(f, area, panel, is_active, ctx.colors, ctx.icon_theme);
 }
 
 pub fn render_panel_with_colors(
@@ -176,14 +167,20 @@ pub fn render_panel_with_colors(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner_area);
 
-    let start_idx = panel.scroll_offset.min(panel.listing.entries.len());
-    let end_idx = std::cmp::min(
-        panel.listing.entries.len(),
-        start_idx + inner_area.height as usize,
-    );
+    let entry_count = panel.listing.entries.len();
+    let start_idx = panel.scroll_offset.min(entry_count);
+    let end_idx = std::cmp::min(entry_count, start_idx + inner_area.height as usize);
+
+    let ctx = ColorCtx::new(colors, icon_theme);
+    let mode = panel.listing_mode();
+    let show_permissions = panel.show_permissions();
+    let content_width = chunks[0].width.saturating_sub(2) as usize;
 
     let mut list_items = Vec::with_capacity(end_idx.saturating_sub(start_idx));
-    let mut scratch = String::with_capacity(256);
+    // Reused across lines for the size/date/permissions suffix only. Each panel
+    // line still needs its own `String` because the `List` widget owns them all
+    // simultaneously, but the per-line buffer is pre-sized to avoid reallocs.
+    let mut suffix_buf = String::with_capacity(64);
 
     for entry in panel
         .listing
@@ -195,24 +192,21 @@ pub fn render_panel_with_colors(
         let cat = entry.category();
         let bold = entry.is_dir() || entry.is_executable();
 
-        scratch.clear();
-        let string_line = match panel.listing_mode() {
-            ListingMode::Long => {
-                let width = chunks[0].width.saturating_sub(2) as usize;
-                format_entry_line(
-                    entry,
-                    width,
-                    panel.show_permissions(),
-                    &cat,
-                    icon_theme,
-                    &mut scratch,
-                )
-            }
+        let mut line = String::with_capacity(content_width + 8);
+        match mode {
+            ListingMode::Long => format_entry_line(
+                entry,
+                content_width,
+                show_permissions,
+                &cat,
+                ctx,
+                &mut suffix_buf,
+                &mut line,
+            ),
             ListingMode::Brief => {
-                let width = chunks[0].width.saturating_sub(2) as usize;
-                format_brief_entry_line(entry, width, &cat, icon_theme, &mut scratch)
+                format_brief_entry_line(entry, content_width, &cat, ctx, &mut line)
             }
-        };
+        }
 
         let line_style = if entry.selected {
             get_file_color_with_palette(&cat, bold, colors).fg(colors.selected_file_fg)
@@ -220,7 +214,7 @@ pub fn render_panel_with_colors(
             get_file_color_with_palette(&cat, bold, colors)
         };
 
-        list_items.push(ListItem::new(Span::styled(string_line, line_style)));
+        list_items.push(ListItem::new(Span::styled(line, line_style)));
     }
 
     let highlight_style = if is_active {
@@ -233,9 +227,17 @@ pub fn render_panel_with_colors(
         .block(Block::default().padding(Padding::new(1, 1, 0, 0)))
         .highlight_style(highlight_style);
 
+    // Event-layer contract: input handlers keep `panel.cursor` inside
+    // `0..entries.len()`. We clamp here purely for DISPLAY so a transiently
+    // stale cursor (e.g. a directory that shrank before the next input tick)
+    // still highlights a valid row instead of selecting nothing. This does NOT
+    // mutate AppState.
     let mut list_state = ListState::default();
-    if panel.cursor >= start_idx && panel.cursor < end_idx {
-        list_state.select(Some(panel.cursor - start_idx));
+    if entry_count > 0 {
+        let cursor = panel.cursor.min(entry_count - 1);
+        if cursor >= start_idx && cursor < end_idx {
+            list_state.select(Some(cursor - start_idx));
+        }
     }
 
     f.render_stateful_widget(list, chunks[0], &mut list_state);
@@ -249,11 +251,18 @@ pub fn render_panel_with_colors(
     }
 
     if !panel.listing.entries.is_empty() {
-        scratch.clear();
-        render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors, &mut scratch);
+        render_scrollbar_with_colors(f, chunks[1], panel, is_active, colors, &mut suffix_buf);
     }
 }
 
+/// Appends the trailing metadata column (size, date and optionally permissions)
+/// for `entry` to `buf` and returns its display width.
+///
+/// This has BOTH a side effect (writing into `buf`) and a return value: callers
+/// size the preceding filename column from the returned width, so the two must
+/// stay in sync. The suffix degrades gracefully to fit `width`: permissions are
+/// dropped first, then the date, then the size, returning width 0 (writing
+/// nothing) when not even the size fits.
 fn build_suffix_into(
     entry: &FileEntry,
     width: usize,
@@ -287,66 +296,92 @@ fn build_suffix_into(
     }
 }
 
+/// Writes `icon`, a separating space and the (possibly truncated) `display_name`
+/// into `out`, never exceeding `available_width` display columns. Returns the
+/// display width actually consumed so the caller can pad the rest of the column.
+fn write_icon_and_name(
+    out: &mut String,
+    icon: &str,
+    icon_width: usize,
+    display_name: &str,
+    display_name_width: usize,
+    available_width: usize,
+) -> usize {
+    // Guard the width arithmetic below against an overflow on pathological names.
+    if display_name_width >= usize::MAX - icon_width {
+        return 0;
+    }
+
+    let name_with_icon_total = icon_width + 1 + display_name_width;
+    if name_with_icon_total <= available_width {
+        out.push_str(icon);
+        out.push(' ');
+        out.push_str(display_name);
+        return name_with_icon_total;
+    }
+
+    let name_budget = available_width.saturating_sub(icon_width + 1);
+    if name_budget > 0 {
+        let truncated = truncate_to_width(display_name, name_budget);
+        out.push_str(icon);
+        out.push(' ');
+        out.push_str(&truncated);
+        icon_width + 1 + UnicodeWidthStr::width(&*truncated)
+    } else {
+        // Not even the icon fits cleanly; truncate the icon into what we have.
+        let truncated = truncate_to_width(icon, available_width);
+        let w = UnicodeWidthStr::width(&*truncated);
+        out.push_str(&truncated);
+        w
+    }
+}
+
+/// Renders one long-mode panel row directly into `out` (no per-line return
+/// allocation). `suffix_buf` is a caller-owned scratch buffer reused across rows
+/// for the trailing metadata column. `out` is expected to start empty.
 fn format_entry_line(
     entry: &FileEntry,
     width: usize,
     show_permissions: bool,
     category: &FileCategory,
-    icon_theme: IconTheme,
-    scratch: &mut String,
-) -> String {
+    ctx: ColorCtx,
+    suffix_buf: &mut String,
+    out: &mut String,
+) {
     let marker = if entry.selected { '*' } else { ' ' };
     if width <= 1 {
-        return format!("{marker}");
+        out.push(marker);
+        return;
     }
 
     let display_name = entry.display_name();
     let display_name_width = UnicodeWidthStr::width(display_name);
 
-    let icon = get_file_icon_with_theme(category, icon_theme);
-    let icon_width = icon_display_width(icon_theme);
+    let icon = get_file_icon_with_theme(category, ctx.icon_theme);
+    let icon_width = icon_display_width(ctx.icon_theme);
 
-    scratch.clear();
-    let suffix_width = build_suffix_into(entry, width, show_permissions, scratch);
+    suffix_buf.clear();
+    let suffix_width = build_suffix_into(entry, width, show_permissions, suffix_buf);
 
     let available_name_width = width.saturating_sub(1 + suffix_width);
     if available_name_width == 0 {
-        return format!("{marker}");
+        out.push(marker);
+        return;
     }
 
-    let mut out = String::with_capacity(width + 32);
     out.push(marker);
-
-    let name_actual_width = if display_name_width < usize::MAX - icon_width {
-        let name_with_icon_total = icon_width + 1 + display_name_width;
-        if name_with_icon_total <= available_name_width {
-            out.push_str(icon);
-            out.push(' ');
-            out.push_str(display_name);
-            name_with_icon_total
-        } else {
-            let name_budget = available_name_width.saturating_sub(icon_width + 1);
-            if name_budget > 0 {
-                let truncated = truncate_to_width(display_name, name_budget);
-                out.push_str(icon);
-                out.push(' ');
-                out.push_str(&truncated);
-                icon_width + 1 + UnicodeWidthStr::width(&*truncated)
-            } else {
-                let truncated = truncate_to_width(icon, available_name_width);
-                let w = UnicodeWidthStr::width(&*truncated);
-                out.push_str(&truncated);
-                w
-            }
-        }
-    } else {
-        0
-    };
+    let name_actual_width = write_icon_and_name(
+        out,
+        icon,
+        icon_width,
+        display_name,
+        display_name_width,
+        available_name_width,
+    );
 
     let padding = available_name_width.saturating_sub(name_actual_width);
     out.extend(std::iter::repeat_n(' ', padding));
-    out.push_str(scratch.as_str());
-    out
+    out.push_str(suffix_buf.as_str());
 }
 
 fn write_status_metadata(buf: &mut String, size: &str, entry: &FileEntry, show_permissions: bool) {
@@ -358,52 +393,42 @@ fn write_status_metadata(buf: &mut String, size: &str, entry: &FileEntry, show_p
     }
 }
 
+/// Renders one brief-mode panel row directly into `out` (expected to start
+/// empty), avoiding the extra owned `String` the previous `scratch.clone()`
+/// allocated for every visible row each frame.
 fn format_brief_entry_line(
     entry: &FileEntry,
     width: usize,
     category: &FileCategory,
-    icon_theme: IconTheme,
-    scratch: &mut String,
-) -> String {
+    ctx: ColorCtx,
+    out: &mut String,
+) {
     let marker = if entry.selected { '*' } else { ' ' };
     let display_name = entry.display_name();
     let display_name_width = UnicodeWidthStr::width(display_name);
 
-    let icon = get_file_icon_with_theme(category, icon_theme);
-    let icon_width = icon_display_width(icon_theme) + 1;
+    let icon = get_file_icon_with_theme(category, ctx.icon_theme);
+    let icon_width = icon_display_width(ctx.icon_theme) + 1;
     let available = width.saturating_sub(1);
-    if available == 0 {
-        return format!("{marker}");
-    }
+    // `icon_width` is always >= 2, so this also covers `available == 0`
+    // (widths 0 and 1 leave room only for the selection marker).
     if available < icon_width {
-        return format!("{marker}");
+        out.push(marker);
+        return;
     }
 
-    scratch.clear();
-    write!(scratch, "{marker}{icon} ").ok();
+    write!(out, "{marker}{icon} ").ok();
 
     let name_available = available - icon_width;
     if name_available >= display_name_width {
-        scratch.push_str(display_name);
+        out.push_str(display_name);
     } else if name_available == 0 {
-        scratch.pop();
+        // Drop the trailing space after the icon when no room is left for a name.
+        out.pop();
     } else {
         let truncated = truncate_name(display_name, name_available);
-        scratch.push_str(&truncated);
+        out.push_str(&truncated);
     }
-    scratch.clone()
-}
-
-pub fn render_scrollbar(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
-    let mut buf = String::new();
-    render_scrollbar_with_colors(
-        f,
-        area,
-        panel,
-        is_active,
-        &ColorPalette::default(),
-        &mut buf,
-    );
 }
 
 pub fn render_scrollbar_with_colors(
@@ -485,9 +510,8 @@ pub fn panel_status_summary(panel: &PanelState, buf: &mut String) -> usize {
     UnicodeWidthStr::width(buf.as_str())
 }
 
-impl_default_colors! {
-    pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) =>
-    render_status_bar_with_colors, &ColorPalette::default()
+pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
+    render_status_bar_with_colors(f, area, panel, &ColorPalette::default());
 }
 
 pub fn render_status_bar_with_colors(
@@ -551,9 +575,38 @@ pub fn render_status_bar_with_colors(
     f.render_widget(paragraph, area);
 }
 
-impl_default_colors! {
-    pub fn render_function_bar(f: &mut Frame, area: Rect) =>
-    render_function_bar_with_colors, &ColorPalette::default()
+pub fn render_function_bar(f: &mut Frame, area: Rect) {
+    render_function_bar_with_colors(f, area, &ColorPalette::default());
+}
+
+fn function_bar_styles(colors: &ColorPalette) -> (Style, Style) {
+    let key_style = Style::default()
+        .fg(colors.function_bar_fg)
+        .bg(colors.function_bar_bg)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default()
+        .fg(colors.function_bar_fg)
+        .bg(colors.function_bar_bg);
+    (key_style, label_style)
+}
+
+fn make_function_bar_cell(i: usize, key_style: Style, label_style: Style) -> Paragraph<'static> {
+    let line = Line::from(vec![
+        Span::styled(FN_KEY_TEXTS[i], key_style),
+        Span::styled(FN_LABEL_TEXTS[i], label_style),
+    ]);
+    Paragraph::new(line).block(Block::default().padding(Padding::new(1, 1, 0, 0)))
+}
+
+/// The 10 function-bar cells for the built-in palette, built once. The bar is
+/// static text and (for the default theme) static styling, so it is rendered by
+/// reference instead of rebuilt every frame.
+fn default_function_bar_cells() -> &'static [Paragraph<'static>; 10] {
+    static CELLS: OnceLock<[Paragraph<'static>; 10]> = OnceLock::new();
+    CELLS.get_or_init(|| {
+        let (key_style, label_style) = function_bar_styles(&DEFAULT_COLORS);
+        std::array::from_fn(|i| make_function_bar_cell(i, key_style, label_style))
+    })
 }
 
 pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {
@@ -564,29 +617,26 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
         .constraints(CONSTRAINTS)
         .split(area);
 
-    let key_style = Style::default()
-        .fg(colors.function_bar_fg)
-        .bg(colors.function_bar_bg)
-        .add_modifier(Modifier::BOLD);
-    let label_style = Style::default()
-        .fg(colors.function_bar_fg)
-        .bg(colors.function_bar_bg);
+    // Common path: default function-bar colors -> reuse the precomputed cells.
+    if colors.function_bar_fg == DEFAULT_COLORS.function_bar_fg
+        && colors.function_bar_bg == DEFAULT_COLORS.function_bar_bg
+    {
+        let cells = default_function_bar_cells();
+        for (cell, chunk) in cells.iter().zip(chunks.iter()) {
+            f.render_widget(cell, *chunk);
+        }
+        return;
+    }
 
-    for i in 0..10 {
-        let line = Line::from(vec![
-            Span::styled(FN_KEY_TEXTS[i], key_style),
-            Span::styled(FN_LABEL_TEXTS[i], label_style),
-        ]);
-        let paragraph =
-            Paragraph::new(line).block(Block::default().padding(Padding::new(1, 1, 0, 0)));
-
-        f.render_widget(paragraph, chunks[i]);
+    // Custom function-bar colors: build the cells for this frame.
+    let (key_style, label_style) = function_bar_styles(colors);
+    for (i, chunk) in chunks.iter().enumerate() {
+        f.render_widget(make_function_bar_cell(i, key_style, label_style), *chunk);
     }
 }
 
-impl_default_colors! {
-    pub fn render_menu_bar(f: &mut Frame, area: Rect) =>
-    render_menu_bar_with_colors, &ColorPalette::default()
+pub fn render_menu_bar(f: &mut Frame, area: Rect) {
+    render_menu_bar_with_colors(f, area, &ColorPalette::default());
 }
 
 pub fn render_menu_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {

@@ -10,14 +10,14 @@ fn test_timestamp() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000)
 }
 
-fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
+fn entry_with(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool, size: u64) -> FileEntry {
     FileEntry::builder()
         .name(name)
         .path(name)
         .is_dir(is_dir)
         .is_symlink(is_symlink)
         .is_executable(is_exec)
-        .size(1024)
+        .size(size)
         .modified(test_timestamp())
         .owner("user")
         .group("group")
@@ -25,155 +25,239 @@ fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) 
         .build()
 }
 
-macro_rules! test_file_color {
-    ($name:ident, $filename:expr, $is_dir:expr, $is_exec:expr, $is_symlink:expr, $expected:expr, bold) => {
-        #[test]
-        fn $name() {
-            let entry = create_test_entry($filename, $is_dir, $is_exec, $is_symlink);
-            let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-            assert_eq!(style.fg, Some($expected));
-            assert!(style.add_modifier.contains(Modifier::BOLD));
-        }
-    };
-    ($name:ident, $filename:expr, $is_dir:expr, $is_exec:expr, $is_symlink:expr, $expected:expr) => {
-        #[test]
-        fn $name() {
-            let entry = create_test_entry($filename, $is_dir, $is_exec, $is_symlink);
-            let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-            assert_eq!(style.fg, Some($expected));
-        }
-    };
-}
-#[test]
-fn test_get_file_color_unknown_no_bold() {
-    let entry = create_test_entry("random.qzx", false, false, false);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::White));
-    assert!(!style.add_modifier.contains(Modifier::BOLD));
+fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
+    entry_with(name, is_dir, is_exec, is_symlink, 1024)
 }
 
-#[test]
-fn test_get_file_color_symlink_not_bold() {
-    let entry = create_test_entry("link", false, false, true);
-    let style = get_file_color(&entry.category(), entry.is_dir() || entry.is_executable());
-    assert_eq!(style.fg, Some(Color::Cyan));
-    assert!(!style.add_modifier.contains(Modifier::BOLD));
+/// Render a long-mode entry line into a fresh buffer, matching how
+/// `render_panel_with_colors` drives `format_entry_line`.
+fn entry_line(entry: &FileEntry, width: usize, show_permissions: bool) -> String {
+    let mut suffix = String::new();
+    let mut out = String::new();
+    format_entry_line(
+        entry,
+        width,
+        show_permissions,
+        &entry.category(),
+        ColorCtx::defaults(),
+        &mut suffix,
+        &mut out,
+    );
+    out
 }
 
-test_file_color!(
-    test_get_file_color_directory,
-    "mydir",
-    true,
-    false,
-    false,
-    Color::White,
-    bold
-);
-test_file_color!(
-    test_get_file_color_code_script,
-    "script.sh",
-    false,
-    true,
-    false,
-    Color::Yellow
-);
-test_file_color!(
-    test_get_file_color_extensionless_executable,
-    "mybinary",
-    false,
-    true,
-    false,
-    Color::Green,
-    bold
-);
-test_file_color!(
-    test_get_file_color_symlink,
-    "link",
-    false,
-    false,
-    true,
-    Color::Cyan
-);
-test_file_color!(
-    test_get_file_color_archive,
-    "archive.tar.gz",
-    false,
-    false,
-    false,
-    Color::Red
-);
-test_file_color!(
-    test_get_file_color_image,
-    "photo.png",
-    false,
-    false,
-    false,
-    Color::Magenta
-);
-test_file_color!(
-    test_get_file_color_source_code,
-    "main.rs",
-    false,
-    false,
-    false,
-    Color::Yellow
-);
-test_file_color!(
-    test_get_file_color_hidden_as_other,
-    ".hidden",
-    false,
-    false,
-    false,
-    Color::White
-);
-test_file_color!(
-    test_get_file_color_config,
-    "settings.toml",
-    false,
-    false,
-    false,
-    Color::LightBlue
-);
-test_file_color!(
-    test_get_file_color_video,
-    "movie.mp4",
-    false,
-    false,
-    false,
-    Color::LightMagenta
-);
-test_file_color!(
-    test_get_file_color_audio,
-    "song.mp3",
-    false,
-    false,
-    false,
-    Color::LightGreen
-);
-test_file_color!(
-    test_get_file_color_font,
-    "font.ttf",
-    false,
-    false,
-    false,
-    Color::LightCyan
-);
-test_file_color!(
-    test_get_file_color_regular,
-    "unknown.xyz",
-    false,
-    false,
-    false,
-    Color::White
-);
-test_file_color!(
-    test_get_file_color_document,
-    "document.txt",
-    false,
-    false,
-    false,
-    Color::LightYellow
-);
+/// Render a brief-mode entry line into a fresh buffer.
+fn brief_line(entry: &FileEntry, width: usize) -> String {
+    let mut out = String::new();
+    format_brief_entry_line(
+        entry,
+        width,
+        &entry.category(),
+        ColorCtx::defaults(),
+        &mut out,
+    );
+    out
+}
+
+// Data-driven case table; splitting into smaller fns would destroy readability without reducing complexity.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn file_color_table_maps_categories_with_intended_bold() {
+    // One row per (name, flags, size) input. `bold` is exactly what the panel
+    // passes to `get_file_color` (`is_dir || is_exec`); we assert both the
+    // foreground color and whether BOLD is set, so the table documents intent.
+    struct Case<'a> {
+        name: &'a str,
+        is_dir: bool,
+        is_exec: bool,
+        is_symlink: bool,
+        size: u64,
+        fg: Color,
+    }
+
+    let long_name: String = "a".repeat(300);
+    let cases = [
+        Case {
+            name: "mydir",
+            is_dir: true,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::White,
+        },
+        Case {
+            name: "script.sh",
+            is_dir: false,
+            is_exec: true,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::Yellow,
+        },
+        Case {
+            name: "mybinary",
+            is_dir: false,
+            is_exec: true,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::Green,
+        },
+        Case {
+            name: "link",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: true,
+            size: 1024,
+            fg: Color::Cyan,
+        },
+        Case {
+            name: "archive.tar.gz",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::Red,
+        },
+        Case {
+            name: "photo.png",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::Magenta,
+        },
+        Case {
+            name: "main.rs",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::Yellow,
+        },
+        Case {
+            name: ".hidden",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::White,
+        },
+        Case {
+            name: "settings.toml",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::LightBlue,
+        },
+        Case {
+            name: "movie.mp4",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::LightMagenta,
+        },
+        Case {
+            name: "song.mp3",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::LightGreen,
+        },
+        Case {
+            name: "font.ttf",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::LightCyan,
+        },
+        Case {
+            name: "unknown.xyz",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::White,
+        },
+        Case {
+            name: "random.qzx",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::White,
+        },
+        Case {
+            name: "document.txt",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::LightYellow,
+        },
+        // Edge cases.
+        // u64::MAX size must not change the (size-independent) color.
+        Case {
+            name: "huge.qzx",
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: u64::MAX,
+            fg: Color::White,
+        },
+        // dir + executable -> directory wins (file_type::category precedence).
+        Case {
+            name: "bindir",
+            is_dir: true,
+            is_exec: true,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::White,
+        },
+        // symlink + executable -> symlink wins.
+        Case {
+            name: "exelink",
+            is_dir: false,
+            is_exec: true,
+            is_symlink: true,
+            size: 1024,
+            fg: Color::Cyan,
+        },
+        // 300-char name, no extension -> Other.
+        Case {
+            name: long_name.as_str(),
+            is_dir: false,
+            is_exec: false,
+            is_symlink: false,
+            size: 1024,
+            fg: Color::White,
+        },
+        // Empty names are unrepresentable: FileEntry::build() asserts a non-empty name, so
+        // the panel never receives one. The empty-string → Other mapping is verified at the
+        // category level in `compute_category_empty_name_is_other` below.
+    ];
+
+    for case in cases {
+        let entry = entry_with(
+            case.name,
+            case.is_dir,
+            case.is_exec,
+            case.is_symlink,
+            case.size,
+        );
+        let bold = entry.is_dir() || entry.is_executable();
+        let style = get_file_color(&entry.category(), bold);
+        assert_eq!(style.fg, Some(case.fg), "fg mismatch for {:?}", case.name);
+        assert_eq!(
+            style.add_modifier.contains(Modifier::BOLD),
+            bold,
+            "bold mismatch for {:?}",
+            case.name
+        );
+    }
+}
 
 #[test]
 fn test_format_size_zero() {
@@ -323,122 +407,56 @@ fn test_format_time_unix_epoch_is_non_empty() {
 #[test]
 fn test_format_entry_line_basic() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        60,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert!(result.contains("file.txt"));
+    assert!(entry_line(&entry, 60, false).contains("file.txt"));
 }
 
 #[test]
 fn test_format_entry_line_selected() {
     let mut entry = create_test_entry("file.txt", false, false, false);
     entry.selected = true;
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        60,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert!(result.starts_with('*'));
+    assert!(entry_line(&entry, 60, false).starts_with('*'));
 }
 
 #[test]
 fn test_format_entry_line_with_permissions() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        60,
-        true,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
+    let result = entry_line(&entry, 60, true);
     assert!(result.contains("file.txt"));
     assert!(result.contains("r"));
 }
 
 #[test]
-fn test_format_entry_line_width_zero() {
-    let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        0,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert_eq!(result, " ");
-}
+fn test_format_entry_line_tiny_width_renders_only_marker() {
+    // At width 0 or 1 there is only room for the 1-column selection marker:
+    // a space for an unselected entry, '*' for a selected one.
+    let unselected = create_test_entry("file.txt", false, false, false);
+    let mut selected = create_test_entry("file.txt", false, false, false);
+    selected.selected = true;
 
-#[test]
-fn test_format_entry_line_width_one() {
-    let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        1,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert_eq!(result, " ");
+    assert_eq!(entry_line(&unselected, 0, false), " ");
+    assert_eq!(entry_line(&unselected, 1, false), " ");
+    assert_eq!(entry_line(&selected, 0, false), "*");
+    assert_eq!(entry_line(&selected, 1, false), "*");
 }
 
 #[test]
 fn test_format_entry_line_width_two() {
+    // Width 2 leaves the marker plus a single ellipsis cell for the name.
     let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        2,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert_eq!(result, " …");
+    assert_eq!(entry_line(&entry, 2, false), " …");
 }
 
 #[test]
 fn test_format_brief_entry_line_basic() {
     let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_brief_entry_line(
-        &entry,
-        60,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert!(result.contains("file.txt"));
+    assert!(brief_line(&entry, 60).contains("file.txt"));
 }
 
 #[test]
 fn test_format_brief_entry_line_selected() {
     let mut entry = create_test_entry("file.txt", false, false, false);
     entry.selected = true;
-    let mut scratch = String::new();
-    let result = format_brief_entry_line(
-        &entry,
-        60,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert!(result.starts_with('*'));
+    assert!(brief_line(&entry, 60).starts_with('*'));
 }
 
 #[test]
@@ -449,34 +467,22 @@ fn test_format_brief_entry_line_truncation() {
         false,
         false,
     );
-    let mut scratch = String::new();
-    let result = format_brief_entry_line(
-        &entry,
-        30,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
+    let result = brief_line(&entry, 30);
     assert!(result.contains('…'));
     assert!(UnicodeWidthStr::width(result.as_str()) <= 30);
 }
 
 #[test]
-fn test_format_brief_entry_line_width_zero() {
-    let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result =
-        format_brief_entry_line(&entry, 0, &entry.category(), IconTheme::Emoji, &mut scratch);
-    assert_eq!(result, " ");
-}
+fn test_format_brief_entry_line_tiny_width_renders_only_marker() {
+    // Same contract as the long-mode line: widths 0 and 1 render just the marker.
+    let unselected = create_test_entry("file.txt", false, false, false);
+    let mut selected = create_test_entry("file.txt", false, false, false);
+    selected.selected = true;
 
-#[test]
-fn test_format_brief_entry_line_width_one() {
-    let entry = create_test_entry("file.txt", false, false, false);
-    let mut scratch = String::new();
-    let result =
-        format_brief_entry_line(&entry, 1, &entry.category(), IconTheme::Emoji, &mut scratch);
-    assert_eq!(result, " ");
+    assert_eq!(brief_line(&unselected, 0), " ");
+    assert_eq!(brief_line(&unselected, 1), " ");
+    assert_eq!(brief_line(&selected, 0), "*");
+    assert_eq!(brief_line(&selected, 1), "*");
 }
 
 #[test]
@@ -645,30 +651,13 @@ fn test_format_entry_line_truncation() {
         false,
         false,
     );
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        47,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
-    assert!(result.contains('…'));
+    assert!(entry_line(&entry, 47, false).contains('…'));
 }
 
 #[test]
 fn test_format_entry_line_truncation_handles_unicode() {
     let entry = create_test_entry("日本語テストファイル.txt", false, false, false);
-    let mut scratch = String::new();
-    let result = format_entry_line(
-        &entry,
-        47,
-        false,
-        &entry.category(),
-        IconTheme::Emoji,
-        &mut scratch,
-    );
+    let result = entry_line(&entry, 47, false);
     assert!(result.contains('…'));
     assert!(UnicodeWidthStr::width(result.as_str()) <= 47);
 }
@@ -904,4 +893,14 @@ fn test_sanitize_del_replaced() {
 fn test_sanitize_mixed_control_chars() {
     let result = sanitize_for_display("a\nb\rc\x1b[32md\x00e\tf");
     assert_eq!(&*result, "a⏎bcd·e  f");
+}
+
+#[test]
+fn compute_category_empty_name_is_other() {
+    // An empty name cannot be stored in FileEntry (the builder asserts non-empty),
+    // but compute_category itself must still handle it gracefully and return Other.
+    use crate::app::types::compute_category;
+    use crate::fs::Cha;
+    let cha = Cha::regular_file(0);
+    assert_eq!(compute_category(&cha, ""), FileCategory::Other);
 }

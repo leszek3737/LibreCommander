@@ -1,25 +1,60 @@
+use std::sync::OnceLock;
+
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::Rect,
     style::Style,
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear},
 };
 use unicode_width::UnicodeWidthStr;
 
 use crate::menu::{MENUS, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::theme::{ColorPalette, Theme};
 
+/// Number of top-level menus (compile-time constant length of `MENUS`).
+const MENU_COUNT: usize = MENUS.len();
+
+/// Fallback content width for a dropdown whose menu has no items
+/// (so `Iterator::max` yields `None`).
 const MIN_DROPDOWN_ITEM_WIDTH: usize = 10;
+
+/// Extra width added to the widest item to size a dropdown box:
+/// 2 columns for the left/right borders + 2 for the one-space padding each side.
 const MENU_PADDING_WIDTH: u16 = 4;
+
+/// Extra height added to the item count to size a dropdown box:
+/// the top and bottom border rows.
 const MENU_DROPDOWN_OFFSET: u16 = 2;
 
-fn styled_padded_line(text: &str, style: Style) -> Line<'_> {
-    Line::from(vec![
-        Span::styled(" ", style),
-        Span::styled(text, style),
-        Span::styled(" ", style),
-    ])
+/// Writes ` text ` (one leading + trailing space) at `(x, y)` in a single
+/// `style`, clipped to `max_width` columns. Writing straight into the buffer
+/// avoids the per-item `Vec<Span>` + `Paragraph` allocation that building a
+/// `Line` would require (`Line` always wraps a heap `Vec<Span>`).
+fn render_padded_text(buf: &mut Buffer, x: u16, y: u16, text: &str, max_width: u16, style: Style) {
+    let end_x = x.saturating_add(max_width);
+    let mut cx = buf.set_stringn(x, y, " ", max_width as usize, style).0;
+    cx = buf
+        .set_stringn(cx, y, text, end_x.saturating_sub(cx) as usize, style)
+        .0;
+    buf.set_stringn(cx, y, " ", end_x.saturating_sub(cx) as usize, style);
+}
+
+/// Widest dropdown item, per menu index, computed once and cached.
+/// `UnicodeWidthStr::width` is not `const`, so the table is built lazily on
+/// first use and then reused every frame the dropdown opens, instead of
+/// rescanning all items each time.
+fn dropdown_item_max_widths() -> &'static [usize; MENU_COUNT] {
+    static WIDTHS: OnceLock<[usize; MENU_COUNT]> = OnceLock::new();
+    WIDTHS.get_or_init(|| {
+        let mut widths = [MIN_DROPDOWN_ITEM_WIDTH; MENU_COUNT];
+        for (i, entry) in MENUS.iter().enumerate() {
+            if let Some(max) = entry.items.iter().map(|s| UnicodeWidthStr::width(*s)).max() {
+                widths[i] = max;
+            }
+        }
+        widths
+    })
 }
 
 fn render_menu_title_bar(
@@ -28,6 +63,10 @@ fn render_menu_title_bar(
     selected_menu: usize,
     colors: &ColorPalette,
 ) {
+    let y = menu_bar_area.y;
+    let base_x = menu_bar_area.x;
+    let bar_width = menu_bar_area.width;
+    let buf = f.buffer_mut();
     for (i, entry) in MENUS.iter().enumerate() {
         let title = entry.title;
         let title_width = menu_title_width(title);
@@ -36,15 +75,8 @@ fn render_menu_title_bar(
         } else {
             Theme::menu_bar_with_colors(colors)
         };
-        let line = styled_padded_line(title, style);
-        let p = Paragraph::new(line);
-        let area = Rect::new(
-            menu_bar_area.x + menu_title_x(menu_bar_area.width, i),
-            menu_bar_area.y,
-            title_width,
-            1,
-        );
-        f.render_widget(p, area);
+        let x = base_x + menu_title_x(bar_width, i);
+        render_padded_text(buf, x, y, title, title_width, style);
     }
 }
 
@@ -56,22 +88,23 @@ fn render_menu_dropdown(
     colors: &ColorPalette,
 ) {
     let items = MENUS[active_menu].items;
-    let dropdown_width = u16::try_from(
-        items
-            .iter()
-            .map(|s| UnicodeWidthStr::width(*s))
-            .max()
-            .unwrap_or(MIN_DROPDOWN_ITEM_WIDTH),
-    )
-    .unwrap_or(u16::MAX)
-    .saturating_add(MENU_PADDING_WIDTH);
+    // Widest item width is precomputed once; `try_from(..).unwrap_or(u16::MAX)`
+    // clamps a pathologically wide menu instead of overflowing u16.
+    let dropdown_width = u16::try_from(dropdown_item_max_widths()[active_menu])
+        .unwrap_or(u16::MAX)
+        .saturating_add(MENU_PADDING_WIDTH);
     let dropdown_y = menu_bar_area.y + 1;
     let max_visible = f.area().height.saturating_sub(dropdown_y);
     if max_visible < 2 {
         return;
     }
-    let dropdown_height =
-        ((items.len().min(u16::MAX as usize - 2)) as u16 + MENU_DROPDOWN_OFFSET).min(max_visible);
+    // Cap the item count before adding the two border rows so the `+ OFFSET`
+    // cannot overflow u16, then clamp the box to the available screen height.
+    let dropdown_height = ((items
+        .len()
+        .min(u16::MAX as usize - MENU_DROPDOWN_OFFSET as usize)) as u16
+        + MENU_DROPDOWN_OFFSET)
+        .min(max_visible);
     let dropdown_x = menu_dropdown_x(menu_bar_area, active_menu, dropdown_width);
     let dropdown_area = Rect::new(dropdown_x, dropdown_y, dropdown_width, dropdown_height);
 
@@ -86,12 +119,19 @@ fn render_menu_dropdown(
 
     let clamped_selected = selected_item.min(items.len().saturating_sub(1));
     let visible_items = inner.height as usize;
+    // When the list is taller than the viewport, scroll just enough to keep the
+    // selected item as the last visible row (it is the lowest item that must
+    // stay on screen); otherwise show from the top.
     let scroll_offset = if items.len() <= visible_items {
         0
     } else {
         clamped_selected.saturating_sub(visible_items.saturating_sub(1))
     };
 
+    let item_x = inner.x;
+    let item_y = inner.y;
+    let item_width = inner.width;
+    let buf = f.buffer_mut();
     for (i, item) in items
         .iter()
         .enumerate()
@@ -104,10 +144,7 @@ fn render_menu_dropdown(
         } else {
             Theme::panel_with_colors(colors)
         };
-        let item_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
-        let line = styled_padded_line(item, style);
-        let p = Paragraph::new(line);
-        f.render_widget(p, item_area);
+        render_padded_text(buf, item_x, item_y + row as u16, item, item_width, style);
     }
 }
 
@@ -234,5 +271,28 @@ mod tests {
                 render_menu_bar(f, menu_bar, 1, 5);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn dropdown_item_widths_match_live_computation() {
+        let cached = dropdown_item_max_widths();
+        for (i, entry) in MENUS.iter().enumerate() {
+            let live = entry
+                .items
+                .iter()
+                .map(|s| UnicodeWidthStr::width(*s))
+                .max()
+                .unwrap_or(MIN_DROPDOWN_ITEM_WIDTH);
+            assert_eq!(cached[i], live, "menu {i}");
+        }
+    }
+
+    #[test]
+    fn dropdown_width_overflow_saturates() {
+        // Pathologically wide content must clamp to u16::MAX without overflowing.
+        let width = u16::try_from(usize::MAX)
+            .unwrap_or(u16::MAX)
+            .saturating_add(MENU_PADDING_WIDTH);
+        assert_eq!(width, u16::MAX);
     }
 }

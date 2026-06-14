@@ -17,6 +17,7 @@ mod list_picker;
 mod simple;
 mod text;
 
+pub use archive::{render_archive_create_dialog, render_archive_extract_dialog};
 pub use confirm::{render_confirm_dialog, render_overwrite_dialog};
 pub use help::render_help_dialog;
 pub use input::render_input_dialog;
@@ -185,7 +186,7 @@ fn dispatch_dialog_render(
             dest_value,
             dest_cursor,
             selection,
-        } => archive::render_archive_extract_dialog(
+        } => render_archive_extract_dialog(
             f,
             area,
             info.as_ref(),
@@ -199,7 +200,7 @@ fn dispatch_dialog_render(
             dest_value,
             dest_cursor,
             selection,
-        } => archive::render_archive_create_dialog(
+        } => render_archive_create_dialog(
             f,
             area,
             *source_count,
