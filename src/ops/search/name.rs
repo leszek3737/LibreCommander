@@ -6,11 +6,10 @@ use std::sync::atomic::AtomicBool;
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::{file_info_from_metadata, get_file_info};
-use crate::ops::helpers::get_inode_key;
 use crate::ops::search::pattern::{CompiledPattern, MatchScratch};
 use crate::ops::search::walk::{
     FileSearchContext, SearchContext, item_limit_reached, prepare_dir_scan, seed_visited_dir,
-    with_fresh_cancel,
+    should_recurse, with_fresh_cancel,
 };
 use crate::ops::search::{
     MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
@@ -66,17 +65,6 @@ pub fn search_files_with_diagnostics_cancellable(
         &mut scratch,
     );
     outcome
-}
-
-/// Decide whether to descend into a directory, given the `lstat` result already
-/// fetched for it. A fresh inode → recurse; a previously seen inode → cycle,
-/// skip. If the metadata could not be read we still recurse (without cycle
-/// detection), matching the historical best-effort behavior.
-fn should_recurse(meta: io::Result<Metadata>, visited: &mut HashSet<(u64, u64)>) -> bool {
-    match meta {
-        Ok(meta) => get_inode_key(&meta).is_none_or(|key| visited.insert(key)),
-        Err(_) => true,
-    }
 }
 
 fn search_files_recursive(

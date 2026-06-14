@@ -7,11 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::{memchr, memmem};
 
-use crate::ops::helpers::get_inode_key;
 use crate::ops::search::pattern::contains_case_insensitive;
 use crate::ops::search::walk::{
     ContentSearchContext, SearchContext, item_limit_reached, prepare_content_dir_scan,
-    seed_visited_dir, with_fresh_cancel,
+    seed_visited_dir, should_recurse, with_fresh_cancel,
 };
 use crate::ops::search::{
     MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS, MAX_SEARCH_DEPTH,
@@ -183,13 +182,7 @@ fn process_content_entry(
     }
 
     if file_type.is_dir() {
-        if ctx.recursive {
-            if let Ok(meta) = entry.metadata()
-                && let Some(key) = get_inode_key(&meta)
-                && !ctx.visited.insert(key)
-            {
-                return false;
-            }
+        if ctx.recursive && should_recurse(entry.metadata(), ctx.visited) {
             search_content_recursive_inner(&entry_path, depth + 1, ctx);
         }
     } else {

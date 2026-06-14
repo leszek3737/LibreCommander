@@ -45,11 +45,27 @@ impl SearchContext for ContentSearchContext<'_> {
 
 /// Run `f` with a fresh, never-cancelled flag.
 ///
-/// Collapses the `*_with_diagnostics` → `*_with_diagnostics_cancellable`
-/// boilerplate shared by the name and content searches into one place.
+/// Collapses the boilerplate in the two non-cancellable entry points
+/// (`search_files_with_diagnostics` / `search_content_with_diagnostics`), which
+/// each forward to their `*_cancellable` counterpart with a throwaway flag.
 pub(super) fn with_fresh_cancel<T>(f: impl FnOnce(&AtomicBool) -> T) -> T {
     let cancel = AtomicBool::new(false);
     f(&cancel)
+}
+
+/// Decide whether to descend into a directory given its already-fetched `lstat`
+/// result. A fresh inode → recurse; a previously seen inode → cycle, skip. If
+/// the metadata could not be read we still recurse (without cycle detection),
+/// matching the historical best-effort behavior. Shared by the name and content
+/// searches.
+pub(super) fn should_recurse(
+    meta: std::io::Result<std::fs::Metadata>,
+    visited: &mut HashSet<(u64, u64)>,
+) -> bool {
+    match meta {
+        Ok(meta) => get_inode_key(&meta).is_none_or(|key| visited.insert(key)),
+        Err(_) => true,
+    }
 }
 
 pub(super) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {

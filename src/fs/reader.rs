@@ -322,6 +322,11 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
 /// the entry must not be a symlink — symlinks need their target metadata, which
 /// this fast path does not resolve.
 pub fn file_info_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> FileEntry {
+    debug_assert!(
+        !metadata.is_symlink(),
+        "file_info_from_metadata requires non-symlink metadata (symlinks need target metadata): {}",
+        path.display()
+    );
     let file_name = file_name_from_path(&path);
     build_file_entry_from_metadata(path, file_name, metadata, None)
 }

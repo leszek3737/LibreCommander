@@ -105,8 +105,15 @@ impl Plain {
 /// `prefix`/`suffix` are stored lowercased when matching case-insensitively;
 /// `None` means that side is empty (a bare `*` is both `None`).
 struct WildcardAffix {
+    /// Affixes for the case-sensitive (byte) path; for insensitive patterns
+    /// these hold the lowercased form and seed `matches_bytes` on non-UTF-8.
     prefix: Option<String>,
     suffix: Option<String>,
+    /// Precomputed lowercased chars for the case-insensitive UTF-8 path —
+    /// `Some` only for insensitive patterns, so matching avoids re-decoding and
+    /// re-counting the affix on every comparison.
+    prefix_chars: Option<Box<[char]>>,
+    suffix_chars: Option<Box<[char]>>,
 }
 
 impl WildcardAffix {
@@ -120,9 +127,22 @@ impl WildcardAffix {
                 }
             })
         };
+        let prefix = norm(pre);
+        let suffix = norm(suf);
+        // Only insensitive matching consults the char slices; don't pay for them
+        // on case-sensitive patterns.
+        let to_chars = |s: &Option<String>| {
+            insensitive
+                .then(|| s.as_ref().map(|x| x.chars().collect::<Box<[char]>>()))
+                .flatten()
+        };
+        let prefix_chars = to_chars(&prefix);
+        let suffix_chars = to_chars(&suffix);
         WildcardAffix {
-            prefix: norm(pre),
-            suffix: norm(suf),
+            prefix,
+            suffix,
+            prefix_chars,
+            suffix_chars,
         }
     }
 
@@ -143,26 +163,23 @@ impl WildcardAffix {
                     .is_none_or(|s| name.ends_with(s.as_str()));
         }
         // Case-insensitive: fold the name once into the reused char buffer, then
-        // compare the leading/trailing slices against the (already lowercased)
-        // affixes. Folding can change char count, so we measure after folding.
+        // compare the leading/trailing slices against the precomputed (already
+        // lowercased) affix slices.
         let chars = &mut scratch.chars;
         chars.clear();
         chars.extend(name.chars().flat_map(char::to_lowercase));
-        let prefix_len = self.prefix.as_ref().map_or(0, |p| p.chars().count());
-        let suffix_len = self.suffix.as_ref().map_or(0, |s| s.chars().count());
+        let prefix_len = self.prefix_chars.as_ref().map_or(0, |p| p.len());
+        let suffix_len = self.suffix_chars.as_ref().map_or(0, |s| s.len());
         if chars.len() < prefix_len + suffix_len {
             return false;
         }
-        if let Some(prefix) = &self.prefix
-            && !chars[..prefix_len].iter().copied().eq(prefix.chars())
+        if let Some(prefix) = &self.prefix_chars
+            && chars[..prefix_len] != **prefix
         {
             return false;
         }
-        if let Some(suffix) = &self.suffix
-            && !chars[chars.len() - suffix_len..]
-                .iter()
-                .copied()
-                .eq(suffix.chars())
+        if let Some(suffix) = &self.suffix_chars
+            && chars[chars.len() - suffix_len..] != **suffix
         {
             return false;
         }
@@ -197,7 +214,9 @@ impl WildcardAffix {
 }
 
 enum PatternKind {
-    Plain(Plain),
+    // Boxed: a Plain carries a precomputed memmem::Finder (a Two-Way search
+    // table, ~300 bytes), which would otherwise bloat every CompiledPattern.
+    Plain(Box<Plain>),
     WildcardAffix(WildcardAffix),
     WildcardDp { pattern: Vec<char> },
 }
@@ -213,7 +232,7 @@ impl CompiledPattern {
 
         if !pattern.contains(['*', '?']) {
             return Self {
-                kind: PatternKind::Plain(Plain::new(pattern, insensitive)),
+                kind: PatternKind::Plain(Box::new(Plain::new(pattern, insensitive))),
                 insensitive,
             };
         }
@@ -264,7 +283,7 @@ impl CompiledPattern {
             // `*inner*` is a pure substring test — represent it as Plain.
             if pattern[..f].is_empty() && pattern[l + 1..].is_empty() {
                 return Some(Self {
-                    kind: PatternKind::Plain(Plain::new(inner, insensitive)),
+                    kind: PatternKind::Plain(Box::new(Plain::new(inner, insensitive))),
                     insensitive,
                 });
             }

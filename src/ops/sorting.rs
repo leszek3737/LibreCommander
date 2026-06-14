@@ -78,11 +78,17 @@ impl PartialOrd for NameSortKey {
 
 /// A sort key whose ordering flips with the chosen direction.
 ///
-/// Wrapping only the direction-sensitive component (e.g. size, mtime, the name
-/// itself) lets the surrounding key parts — the listing group and the name
-/// tiebreaker — stay ascending in both directions. This replaces the per-field
-/// `if asc { … } else { … Reverse … }` duplication.
-#[derive(Clone, PartialEq, Eq)]
+/// Only the listing **group** is guaranteed to stay ascending (it is kept
+/// outside this wrapper). The name tiebreaker stays ascending only for the
+/// fields that place it outside `directional` (size/mtime/btime/extension); for
+/// name/natural sorts the tiebreaker is wrapped together with the field and so
+/// reverses in descending order — matching the original `Reverse(..)` behavior.
+///
+/// `Eq`/`Ord` deliberately ignore `ascending` (every key in a single sort
+/// shares the same flag): comparing two values with the same value but
+/// different flags is `Equal`, and `Eq` must agree with that to uphold the
+/// `cmp == Equal ⟺ eq` contract.
+#[derive(Clone)]
 struct Directional<T> {
     value: T,
     ascending: bool,
@@ -107,6 +113,17 @@ impl<T: Ord> PartialOrd for Directional<T> {
         Some(self.cmp(other))
     }
 }
+
+impl<T: Ord> PartialEq for Directional<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        // Consistent with `cmp`: equal iff the values are equal, regardless of
+        // the direction flag.
+        self.value == other.value
+    }
+}
+
+impl<T: Ord> Eq for Directional<T> {}
 
 pub fn cmp_ignore_case(a: &str, b: &str) -> Ordering {
     let mut ai = a.chars().flat_map(|c| c.to_lowercase());
