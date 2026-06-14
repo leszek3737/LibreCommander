@@ -7,7 +7,6 @@ use ratatui::{
 };
 use std::borrow::Cow;
 use std::fmt::Write;
-use std::sync::OnceLock;
 use unicode_width::UnicodeWidthStr;
 
 use super::theme::{ColorCtx, ColorPalette, DEFAULT_COLORS, IconTheme, Theme};
@@ -596,15 +595,25 @@ fn make_function_bar_cell(i: usize, key_style: Style, label_style: Style) -> Par
     Paragraph::new(line).block(Block::default().padding(Padding::new(1, 1, 0, 0)))
 }
 
-/// The 10 function-bar cells for the built-in palette, built once. The bar is
-/// static text and (for the default theme) static styling, so it is rendered by
-/// reference instead of rebuilt every frame.
-fn default_function_bar_cells() -> &'static [Paragraph<'static>; 10] {
-    static CELLS: OnceLock<[Paragraph<'static>; 10]> = OnceLock::new();
-    CELLS.get_or_init(|| {
-        let (key_style, label_style) = function_bar_styles(&DEFAULT_COLORS);
-        std::array::from_fn(|i| make_function_bar_cell(i, key_style, label_style))
-    })
+/// Render the default-palette function-bar cells, built once per render thread.
+/// The bar is static text and (for the default theme) static styling, so the 10
+/// cells are cached and rendered by reference instead of rebuilt every frame.
+/// `Paragraph` is no longer `Sync` (ratatui-widgets >=0.3.1 put a non-`Sync`
+/// `Shadow` in `Block`), so the cache lives in a `thread_local!` instead of a
+/// `static OnceLock`. Rendering is single-threaded, so this is equivalent to the
+/// previous process-wide cache.
+fn render_default_function_bar(f: &mut Frame, chunks: &[Rect]) {
+    thread_local! {
+        static CELLS: [Paragraph<'static>; 10] = {
+            let (key_style, label_style) = function_bar_styles(&DEFAULT_COLORS);
+            std::array::from_fn(|i| make_function_bar_cell(i, key_style, label_style))
+        };
+    }
+    CELLS.with(|cells| {
+        for (cell, chunk) in cells.iter().zip(chunks.iter()) {
+            f.render_widget(cell, *chunk);
+        }
+    });
 }
 
 pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {
@@ -619,10 +628,7 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
     if colors.function_bar_fg == DEFAULT_COLORS.function_bar_fg
         && colors.function_bar_bg == DEFAULT_COLORS.function_bar_bg
     {
-        let cells = default_function_bar_cells();
-        for (cell, chunk) in cells.iter().zip(chunks.iter()) {
-            f.render_widget(cell, *chunk);
-        }
+        render_default_function_bar(f, &chunks);
         return;
     }
 

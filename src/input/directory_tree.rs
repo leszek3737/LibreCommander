@@ -3,16 +3,13 @@ use crossterm::event::KeyCode;
 use lc::app::{dir_tree, types::*};
 use lc::ui::{DIR_TREE_OVERHEAD_ROWS, viewer};
 
+use super::EventContext;
 use crate::app::panel_ops::refresh_active;
 
-pub(crate) fn handle_directory_tree(
-    state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    key: KeyCode,
-    terminal_height: u16,
-) {
-    let visible_height = directory_tree_visible_height(terminal_height);
+pub(crate) fn handle_directory_tree(ctx: &mut EventContext, key: KeyCode) {
+    let visible_height = directory_tree_visible_height(ctx.term_size.height);
+    let state = &mut *ctx.state;
+    let viewer_loader = &mut *ctx.viewer_loader;
     match key {
         KeyCode::Esc => {
             state.mode = AppMode::Normal;
@@ -84,11 +81,20 @@ pub(crate) fn set_tree_diagnostic_status(
         return;
     }
 
-    let items: Vec<String> = diagnostics
-        .iter()
-        .map(|d| format!("{}: {}", d.path.display(), d.message))
-        .collect();
-    *status_message = Some(format!("Directory tree warnings: [{}]", items.join("] [")));
+    // Build the message directly into a single buffer instead of allocating an
+    // intermediate Vec<String> plus a join() pass (avoids N+1 allocations).
+    use std::fmt::Write as _;
+
+    let mut buf = String::from("Directory tree warnings: [");
+    for (i, d) in diagnostics.iter().enumerate() {
+        if i > 0 {
+            buf.push_str("] [");
+        }
+        // Writing to a String is infallible; the Result is intentionally ignored.
+        let _ = write!(buf, "{}: {}", d.path.display(), d.message);
+    }
+    buf.push(']');
+    *status_message = Some(buf);
 }
 
 fn handle_tree_enter(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
@@ -144,6 +150,24 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// Drive `handle_directory_tree` with a freshly built `EventContext` so the
+    /// per-test call-sites stay as terse as the old positional form.
+    fn tree_key(state: &mut AppState, key: KeyCode, height: u16) {
+        let mut viewer_state = None;
+        let mut viewer_loader = None;
+        let mut image_preview_loader = None;
+        let mut running_job = None;
+        let mut ctx = EventContext {
+            state,
+            viewer_state: &mut viewer_state,
+            viewer_loader: &mut viewer_loader,
+            image_preview_loader: &mut image_preview_loader,
+            running_job: &mut running_job,
+            term_size: ratatui::layout::Size::new(80, height),
+        };
+        handle_directory_tree(&mut ctx, key);
+    }
+
     fn make_tree_entries(count: usize) -> Vec<lc::app::dir_tree::TreeEntry> {
         (0..count)
             .map(|i| {
@@ -167,7 +191,7 @@ mod tests {
         let mut state = AppState::default();
         state.mode = AppMode::DirectoryTree;
         state.tree.entries = make_tree_entries(10);
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Esc, 24);
+        tree_key(&mut state, KeyCode::Esc, 24);
         assert_eq!(state.mode, AppMode::Normal);
     }
 
@@ -176,7 +200,7 @@ mod tests {
         let mut state = AppState::default();
         state.mode = AppMode::DirectoryTree;
         state.tree.entries = make_tree_entries(10);
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Up, 24);
+        tree_key(&mut state, KeyCode::Up, 24);
         assert_eq!(state.tree.selected, 0);
     }
 
@@ -185,7 +209,7 @@ mod tests {
         let mut state = AppState::default();
         state.mode = AppMode::DirectoryTree;
         state.tree.entries = make_tree_entries(10);
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
+        tree_key(&mut state, KeyCode::Down, 24);
         assert_eq!(state.tree.selected, 1);
     }
 
@@ -195,7 +219,7 @@ mod tests {
         state.mode = AppMode::DirectoryTree;
         state.tree.entries = make_tree_entries(5);
         state.tree.selected = 4;
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
+        tree_key(&mut state, KeyCode::Down, 24);
         assert_eq!(state.tree.selected, 4);
     }
 
@@ -206,7 +230,7 @@ mod tests {
         state.tree.entries = make_tree_entries(50);
         state.tree.selected = 25;
         state.tree.scroll = 20;
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Home, 24);
+        tree_key(&mut state, KeyCode::Home, 24);
         assert_eq!(state.tree.selected, 0);
         assert_eq!(state.tree.scroll, 0);
     }
@@ -216,7 +240,7 @@ mod tests {
         let mut state = AppState::default();
         state.mode = AppMode::DirectoryTree;
         state.tree.entries = make_tree_entries(50);
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::End, 24);
+        tree_key(&mut state, KeyCode::End, 24);
         assert_eq!(state.tree.selected, 49);
     }
 
@@ -225,11 +249,11 @@ mod tests {
         let mut state = AppState::default();
         state.mode = AppMode::DirectoryTree;
         state.tree.entries = vec![];
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Down, 24);
+        tree_key(&mut state, KeyCode::Down, 24);
         assert_eq!(state.tree.selected, 0);
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::End, 24);
+        tree_key(&mut state, KeyCode::End, 24);
         assert_eq!(state.tree.selected, 0);
-        handle_directory_tree(&mut state, &mut None, &mut None, KeyCode::Enter, 24);
+        tree_key(&mut state, KeyCode::Enter, 24);
     }
 
     #[test]

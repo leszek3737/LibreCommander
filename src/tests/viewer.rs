@@ -162,15 +162,21 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
         ..Default::default()
     };
     let mut viewer: Option<viewer::ViewerState> = None;
+    let mut viewer_loader = None;
+    let mut image_preview_loader = None;
     let mut job: Option<RunningJob> = None;
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut viewer,
-        &mut job,
-        KeyCode::Esc,
-        TEST_VIEWPORT,
-    );
+    {
+        let mut ctx = crate::input::EventContext {
+            state: &mut state,
+            viewer_state: &mut viewer,
+            viewer_loader: &mut viewer_loader,
+            image_preview_loader: &mut image_preview_loader,
+            running_job: &mut job,
+            term_size: TEST_VIEWPORT,
+        };
+        dialogs::handle_dialog(&mut ctx, KeyCode::Esc);
+    }
 
     assert!(matches!(state.mode, AppMode::Viewing));
     assert_eq!(state.prev_mode, Some(AppMode::Normal));
@@ -248,15 +254,19 @@ fn viewer_close_via_escape() {
     };
     let mut viewer_loader: Option<ui::viewer::ViewerLoader> = None;
     let mut image_preview_loader: Option<ui::viewer::ImagePreviewLoader> = None;
+    let mut job = None;
 
-    crate::input::mode_dispatch::handle_viewer_mode(
-        &mut state,
-        &mut viewer_state,
-        &mut viewer_loader,
-        &mut image_preview_loader,
-        KeyCode::Esc,
-        TEST_VIEWPORT,
-    );
+    {
+        let mut ctx = crate::input::EventContext {
+            state: &mut state,
+            viewer_state: &mut viewer_state,
+            viewer_loader: &mut viewer_loader,
+            image_preview_loader: &mut image_preview_loader,
+            running_job: &mut job,
+            term_size: TEST_VIEWPORT,
+        };
+        crate::input::mode_dispatch::handle_viewer_mode(&mut ctx, KeyCode::Esc);
+    }
 
     assert!(matches!(state.mode, AppMode::Normal));
     assert!(viewer_state.is_none());

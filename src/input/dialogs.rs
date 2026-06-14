@@ -11,10 +11,15 @@ use lc::ops;
 use lc::ops::archive::ArchiveFormat;
 use lc::ui::{dialogs, viewer};
 
+use super::EventContext;
 use crate::app::panel_ops::{
     panel_visible_height, rebuild_visible_entries, refresh_active, refresh_both, set_active_panel,
 };
 
+/// Upper bound on the byte length of any dialog text field (paths, names, octal
+/// modes, search queries). Caps memory for pathological pasted input and keeps
+/// the single-line input renderable; enforced per inserted char in
+/// [`apply_dialog_text_edit`].
 const MAX_DIALOG_INPUT_BYTES: usize = 4096;
 
 pub(crate) fn parse_octal_mode(input: &str) -> Option<u32> {
@@ -66,10 +71,6 @@ fn reset_dialog_state(state: &mut AppState) {
     if let Some(panel) = state.ui.menu_restore_panel.take() {
         set_active_panel(state, panel);
     }
-}
-
-fn dismiss_dialog_and_restore(state: &mut AppState) {
-    reset_dialog_state(state);
 }
 
 pub(crate) fn finish_confirmed_action(state: &mut AppState) {
@@ -143,11 +144,7 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
                     }
                 })
                 .collect();
-            if conflicting.is_empty() {
-                None
-            } else {
-                Some(conflicting)
-            }
+            (!conflicting.is_empty()).then_some(conflicting)
         }
         PendingAction::CreateArchive {
             dest, overwrite, ..
@@ -190,11 +187,7 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
                     }
                 })
                 .collect();
-            if conflicting.is_empty() {
-                None
-            } else {
-                Some(conflicting)
-            }
+            (!conflicting.is_empty()).then_some(conflicting)
         }
         PendingAction::Delete { .. } => None,
     }
@@ -310,6 +303,84 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
     }
 }
 
+/// What the common epilogue should do after a per-action handler runs.
+enum InputOutcome {
+    /// The handler already finalized the dialog; skip the common epilogue.
+    Finalized,
+    /// Reset to Normal mode and refresh the active panel.
+    ResetWithRefresh,
+    /// Reset to Normal mode without refreshing (Filter rebuilds in place).
+    ResetNoRefresh,
+}
+
+fn input_action_viewer_search(
+    state: &mut AppState,
+    viewer_state: &mut Option<viewer::ViewerState>,
+    input: &str,
+    terminal_height: u16,
+) -> InputOutcome {
+    if let Some(vs) = viewer_state.as_mut() {
+        vs.search(input, terminal_height.saturating_sub(3) as usize);
+    }
+    state.mode = AppMode::Viewing;
+    state.input.dialog_input.clear();
+    InputOutcome::Finalized
+}
+
+fn input_action_create_directory(state: &mut AppState, input: &str) -> InputOutcome {
+    if let Err(msg) = validate_create_or_rename(input, "Directory name") {
+        state.ui.status_message = Some(msg);
+        return InputOutcome::Finalized;
+    }
+    let target = fs::path::resolve_user_path(state.active_panel().path(), input);
+    if let Err(err) = ops::create_directory(&target) {
+        state.ui.status_message = Some(format!("Create directory failed: {err}"));
+    }
+    InputOutcome::ResetWithRefresh
+}
+
+fn input_action_rename(state: &mut AppState, input: &str) -> InputOutcome {
+    if let Err(msg) = validate_create_or_rename(input, "New name") {
+        state.ui.status_message = Some(msg);
+        return InputOutcome::Finalized;
+    }
+    if let Some(entry) = state.active_panel().current_entry()
+        && input != entry.name
+        && let Err(err) = ops::rename_entry(&entry.path, input)
+    {
+        state.ui.status_message = Some(format!("Rename failed: {err}"));
+    }
+    InputOutcome::ResetWithRefresh
+}
+
+fn input_action_chmod(state: &mut AppState, input: &str) -> InputOutcome {
+    let Some(mode) = parse_octal_mode(input) else {
+        if input.trim().is_empty() {
+            state.ui.status_message = Some("Octal mode cannot be empty".to_string());
+        } else {
+            state.ui.status_message = Some(format!("Invalid octal mode '{input}'"));
+        }
+        return InputOutcome::Finalized;
+    };
+    if let Some(entry) = state.active_panel().current_entry()
+        && let Err(err) = ops::chmod(&entry.path, mode)
+    {
+        state.ui.status_message = Some(format!("Chmod failed: {err}"));
+    }
+    InputOutcome::ResetWithRefresh
+}
+
+fn input_action_filter(state: &mut AppState, input: String, terminal_height: u16) -> InputOutcome {
+    let panel = state.active_panel_mut();
+    panel.set_filter((!input.trim().is_empty()).then_some(input));
+    if panel.listing.needs_full_read() || panel.listing.unfiltered().is_empty() {
+        refresh_active(state);
+    } else {
+        rebuild_visible_entries(panel, panel_visible_height(terminal_height));
+    }
+    InputOutcome::ResetNoRefresh
+}
+
 fn handle_input_action(
     state: &mut AppState,
     viewer_state: &mut Option<viewer::ViewerState>,
@@ -317,78 +388,39 @@ fn handle_input_action(
     action: &InputAction,
     terminal_height: u16,
 ) {
+    // Raw input is preserved verbatim for the search actions (ViewerSearch,
+    // FindFile) where leading/trailing whitespace is meaningful (e.g. searching
+    // indented code like `    fn`). All filesystem-mutating / navigation actions
+    // trim it so pasted whitespace cannot create entries named `" foo "` and so
+    // whitespace-only input fails the non-empty validation as empty.
     let input = state.input.dialog_input.text().to_owned();
-    match action {
+    let trimmed = input.trim();
+    let outcome = match action {
         InputAction::ViewerSearch => {
-            if let Some(vs) = viewer_state.as_mut() {
-                vs.search(&input, terminal_height.saturating_sub(3) as usize);
-            }
-            state.mode = AppMode::Viewing;
-            state.input.dialog_input.clear();
-            return;
+            input_action_viewer_search(state, viewer_state, &input, terminal_height)
         }
-        InputAction::CreateDirectory => {
-            if let Err(msg) = validate_create_or_rename(&input, "Directory name") {
-                state.ui.status_message = Some(msg);
-                return;
-            }
-            let target = fs::path::resolve_user_path(state.active_panel().path(), &input);
-            if let Err(err) = ops::create_directory(&target) {
-                state.ui.status_message = Some(format!("Create directory failed: {err}"));
-            }
+        InputAction::CreateDirectory => input_action_create_directory(state, trimmed),
+        InputAction::Rename => input_action_rename(state, trimmed),
+        InputAction::Chmod => input_action_chmod(state, trimmed),
+        InputAction::Filter => input_action_filter(state, trimmed.to_owned(), terminal_height),
+        InputAction::QuickCd => {
+            handle_quick_cd(state, trimmed);
+            InputOutcome::ResetWithRefresh
         }
-        InputAction::Rename => {
-            if let Err(msg) = validate_create_or_rename(&input, "New name") {
-                state.ui.status_message = Some(msg);
-                return;
-            }
-            if let Some(entry) = state.active_panel().current_entry()
-                && input != entry.name
-                && let Err(err) = ops::rename_entry(&entry.path, &input)
-            {
-                state.ui.status_message = Some(format!("Rename failed: {err}"));
-            }
-        }
-        InputAction::Chmod => {
-            let mode = match parse_octal_mode(&input) {
-                Some(m) => m,
-                None => {
-                    if input.trim().is_empty() {
-                        state.ui.status_message = Some("Octal mode cannot be empty".to_string());
-                    } else {
-                        state.ui.status_message = Some(format!("Invalid octal mode '{input}'"));
-                    }
-                    return;
-                }
-            };
-            if let Some(entry) = state.active_panel().current_entry()
-                && let Err(err) = ops::chmod(&entry.path, mode)
-            {
-                state.ui.status_message = Some(format!("Chmod failed: {err}"));
-            }
-        }
-        InputAction::Filter => {
-            let panel = state.active_panel_mut();
-            panel.set_filter(if input.trim().is_empty() {
-                None
-            } else {
-                Some(input)
-            });
-            if panel.listing.needs_full_read() || panel.listing.unfiltered().is_empty() {
-                refresh_active(state);
-            } else {
-                rebuild_visible_entries(panel, panel_visible_height(terminal_height));
-            }
-        }
-        InputAction::QuickCd => handle_quick_cd(state, &input),
         InputAction::FindFile => {
             handle_find_file(state, running_job, &input);
-            return;
+            InputOutcome::Finalized
         }
-    }
+    };
+
+    let refresh = match outcome {
+        InputOutcome::Finalized => return,
+        InputOutcome::ResetWithRefresh => true,
+        InputOutcome::ResetNoRefresh => false,
+    };
     state.mode = AppMode::Normal;
     state.input.dialog_input.clear();
-    if !matches!(action, InputAction::Filter) {
+    if refresh {
         refresh_active(state);
     }
     if let Some(panel) = state.ui.menu_restore_panel.take() {
@@ -439,7 +471,7 @@ fn handle_input_dialog(
 
 fn handle_error_dialog(state: &mut AppState, key: KeyCode) {
     if matches!(key, KeyCode::Enter | KeyCode::Esc) {
-        dismiss_dialog_and_restore(state);
+        reset_dialog_state(state);
     }
 }
 
@@ -454,7 +486,7 @@ fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>
 
 fn handle_properties_dialog(state: &mut AppState, key: KeyCode) {
     if matches!(key, KeyCode::Enter | KeyCode::Esc) {
-        dismiss_dialog_and_restore(state);
+        reset_dialog_state(state);
     }
 }
 
@@ -509,15 +541,28 @@ fn apply_dialog_text_edit(dest_input: &mut TextInput, key: KeyCode) {
     }
 }
 
-fn handle_archive_extract_dialog(
-    state: &mut AppState,
-    running_job: &mut Option<RunningJob>,
-    key: KeyCode,
-) {
+/// Navigation outcome shared by the archive extract/create dialogs, which use an
+/// identical OK/Cancel button layout and text-input field.
+enum ArchiveNav {
+    /// User confirmed (OK): build and dispatch the pending action.
+    Commit,
+    /// User cancelled (Esc, Cancel button) — dialog already dismissed.
+    Dismissed,
+    /// Key fully handled (e.g. OK/Cancel toggle) — do NOT fall through to text
+    /// edit. Prevents Left/Right from both toggling the button selection and
+    /// moving the destination text cursor (double action).
+    Handled,
+    /// A non-committing key (no-op for nav) was not consumed; fall through to
+    /// text edit (Char/Backspace/Delete/Home/End).
+    Continue,
+}
+
+/// Handle the OK/Cancel button navigation common to both archive dialogs.
+fn archive_dialog_nav(state: &mut AppState, key: KeyCode) -> ArchiveNav {
     match key {
         KeyCode::Esc => {
             dismiss_dialog(state);
-            return;
+            ArchiveNav::Dismissed
         }
         KeyCode::Left | KeyCode::Right => {
             state.input.dialog_selection = if state.input.dialog_selection == 0 {
@@ -525,93 +570,102 @@ fn handle_archive_extract_dialog(
             } else {
                 0
             };
-            return;
+            ArchiveNav::Handled
         }
         KeyCode::Enter if state.input.dialog_selection == 1 => {
             dismiss_dialog(state);
-            return;
+            ArchiveNav::Dismissed
         }
-        KeyCode::Enter => {
-            let (source, dest_text) =
-                if let AppMode::Dialog(DialogKind::ArchiveExtract(ref details)) = state.mode {
-                    (details.source.clone(), details.dest_input.text().to_owned())
-                } else {
-                    return;
-                };
-            if dest_text.trim().is_empty() {
-                state.ui.status_message = Some("Destination path cannot be empty".to_string());
-                return;
-            }
-            let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
-            state.ui.pending_action = Some(PendingAction::ExtractArchive {
-                source,
-                dest,
-                overwrite: false,
-            });
-            dispatch_with_overwrite_check(state, running_job);
-            return;
-        }
-        _ => {}
-    }
-    if let AppMode::Dialog(DialogKind::ArchiveExtract(ref mut details)) = state.mode {
-        apply_dialog_text_edit(&mut details.dest_input, key);
+        KeyCode::Enter => ArchiveNav::Commit,
+        _ => ArchiveNav::Continue,
     }
 }
 
-fn handle_archive_create_dialog(
+/// Build the `ExtractArchive` pending action from the active extract dialog and
+/// dispatch it. Returns early (without dispatch) on empty/invalid input.
+fn commit_archive_extract(state: &mut AppState, running_job: &mut Option<RunningJob>) {
+    let AppMode::Dialog(DialogKind::ArchiveExtract(details)) = &state.mode else {
+        return;
+    };
+    let source = details.source.clone();
+    let dest_text = details.dest_input.text().trim().to_owned();
+    if dest_text.is_empty() {
+        state.ui.status_message = Some("Destination path cannot be empty".to_string());
+        return;
+    }
+    let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
+    state.ui.pending_action = Some(PendingAction::ExtractArchive {
+        source,
+        dest,
+        overwrite: false,
+    });
+    dispatch_with_overwrite_check(state, running_job);
+}
+
+/// Build the `CreateArchive` pending action from the active create dialog and
+/// dispatch it. Returns early (without dispatch) on empty input or unknown format.
+fn commit_archive_create(state: &mut AppState, running_job: &mut Option<RunningJob>) {
+    let AppMode::Dialog(DialogKind::ArchiveCreate(details)) = &state.mode else {
+        return;
+    };
+    let sources = details.sources.clone();
+    let dest_text = details.dest_input.text().trim().to_owned();
+    if dest_text.is_empty() {
+        state.ui.status_message = Some("Archive path cannot be empty".to_string());
+        return;
+    }
+    let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
+    let Some(format) = archive_format_from_path(&dest) else {
+        state.ui.status_message = Some(
+            "Unsupported archive format. Use: zip, tar, tar.gz, tar.bz2, tar.xz, tar.zst, 7z"
+                .to_string(),
+        );
+        return;
+    };
+    state.ui.pending_action = Some(PendingAction::CreateArchive {
+        sources,
+        dest,
+        format,
+        overwrite: false,
+    });
+    dispatch_with_overwrite_check(state, running_job);
+}
+
+/// Borrow the destination text input of whichever archive dialog is active.
+fn active_archive_dest_input(state: &mut AppState) -> Option<&mut TextInput> {
+    match &mut state.mode {
+        AppMode::Dialog(DialogKind::ArchiveExtract(details)) => Some(&mut details.dest_input),
+        AppMode::Dialog(DialogKind::ArchiveCreate(details)) => Some(&mut details.dest_input),
+        _ => None,
+    }
+}
+
+/// Shared handler for the archive extract/create dialogs. They share identical
+/// OK/Cancel navigation and a single text field; only the committed pending
+/// action differs (selected by `is_extract`).
+fn handle_archive_dialog(
     state: &mut AppState,
     running_job: &mut Option<RunningJob>,
     key: KeyCode,
+    is_extract: bool,
 ) {
-    match key {
-        KeyCode::Esc => {
-            dismiss_dialog(state);
-            return;
-        }
-        KeyCode::Left | KeyCode::Right => {
-            state.input.dialog_selection = if state.input.dialog_selection == 0 {
-                1
+    match archive_dialog_nav(state, key) {
+        ArchiveNav::Dismissed => return,
+        ArchiveNav::Commit => {
+            if is_extract {
+                commit_archive_extract(state, running_job);
             } else {
-                0
-            };
-            return;
-        }
-        KeyCode::Enter if state.input.dialog_selection == 1 => {
-            dismiss_dialog(state);
-            return;
-        }
-        KeyCode::Enter => {
-            let (sources, dest_text) =
-                if let AppMode::Dialog(DialogKind::ArchiveCreate(ref details)) = state.mode {
-                    (
-                        details.sources.clone(),
-                        details.dest_input.text().to_owned(),
-                    )
-                } else {
-                    return;
-                };
-            if dest_text.trim().is_empty() {
-                state.ui.status_message = Some("Archive path cannot be empty".to_string());
-                return;
+                commit_archive_create(state, running_job);
             }
-            let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
-            let Some(format) = archive_format_from_path(&dest) else {
-                state.ui.status_message = Some("Unsupported archive format. Use: zip, tar, tar.gz, tar.bz2, tar.xz, tar.zst, 7z".to_string());
-                return;
-            };
-            state.ui.pending_action = Some(PendingAction::CreateArchive {
-                sources,
-                dest,
-                format,
-                overwrite: false,
-            });
-            dispatch_with_overwrite_check(state, running_job);
             return;
         }
-        _ => {}
+        // Key already consumed by nav (OK/Cancel toggle); must NOT also run text
+        // edit, otherwise Left/Right would move the dest-path cursor too.
+        ArchiveNav::Handled => return,
+        ArchiveNav::Continue => {}
     }
-    if let AppMode::Dialog(DialogKind::ArchiveCreate(ref mut details)) = state.mode {
-        apply_dialog_text_edit(&mut details.dest_input, key);
+    if let Some(dest_input) = active_archive_dest_input(state) {
+        apply_dialog_text_edit(dest_input, key);
     }
 }
 
@@ -646,13 +700,11 @@ fn handle_copymove_dialog(
     }
 }
 
-pub(crate) fn handle_dialog(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    running_job: &mut Option<RunningJob>,
-    key: KeyCode,
-    terminal_size: ratatui::layout::Size,
-) {
+pub(crate) fn handle_dialog(ctx: &mut EventContext, key: KeyCode) {
+    let terminal_size = ctx.term_size;
+    let state = &mut *ctx.state;
+    let viewer_state = &mut *ctx.viewer_state;
+    let running_job = &mut *ctx.running_job;
     if let AppMode::Dialog(DialogKind::Help {
         message,
         scroll_offset,
@@ -698,20 +750,25 @@ pub(crate) fn handle_dialog(
             _ => false,
         };
         if should_exit {
-            dismiss_dialog_and_restore(state);
+            reset_dialog_state(state);
         }
         return;
     }
 
+    // Match on a reference and dispatch by variant. Each handler re-borrows
+    // `state.mode` for the data it needs, so cloning the whole `DialogKind`
+    // (`Box`/`Vec<PathBuf>`/`TextInput`) on every key press is avoided. Only the
+    // `Copy` `InputAction` is lifted out here before the borrow is released.
     let AppMode::Dialog(dk) = &state.mode else {
         return;
     };
 
-    match dk.clone() {
+    match dk {
         DialogKind::Confirm(_) => {
             handle_confirm_dialog(state, running_job, key);
         }
         DialogKind::Input { action, .. } => {
+            let action = *action;
             handle_input_dialog(
                 state,
                 viewer_state,
@@ -737,10 +794,10 @@ pub(crate) fn handle_dialog(
             handle_overwrite_dialog(state, running_job, key);
         }
         DialogKind::ArchiveExtract(..) => {
-            handle_archive_extract_dialog(state, running_job, key);
+            handle_archive_dialog(state, running_job, key, true);
         }
         DialogKind::ArchiveCreate(..) => {
-            handle_archive_create_dialog(state, running_job, key);
+            handle_archive_dialog(state, running_job, key, false);
         }
         // unreachable: Help handled above; arm kept for match exhaustiveness
         DialogKind::Help { .. } => {}

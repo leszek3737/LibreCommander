@@ -1,11 +1,10 @@
 use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::prelude::*;
 
 use lc::app::panel_ops;
 use lc::app::types::{AppMode, AppState, DialogKind, InputAction};
 use lc::menu::{MENUS, menu_item_count};
-use lc::ui::viewer;
 
+use super::EventContext;
 use crate::{
     handle_alt_keys, handle_ctrl_keys, handle_enter_key, handle_function_keys,
     handle_navigation_keys,
@@ -13,6 +12,12 @@ use crate::{
 
 const VIEWER_CHROME_HEIGHT: u16 = 3;
 const HORIZONTAL_SCROLL_STEP: usize = 4;
+
+/// Keys that close the file viewer (both the loading and loaded states).
+/// Single source of truth so the loader and viewer-state branches can't drift.
+fn is_viewer_exit_key(key: KeyCode) -> bool {
+    matches!(key, KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q'))
+}
 
 fn refresh_or_rebuild(state: &mut AppState, visible_height: usize) {
     let needs_refresh = {
@@ -34,13 +39,13 @@ pub(crate) fn clear_search_state(state: &mut AppState, visible_height: usize) {
     refresh_or_rebuild(state, visible_height);
 }
 
-fn set_active_panel_filter(state: &mut AppState, filter: String) {
-    state.active_panel_mut().set_filter(Some(filter));
-}
-
+/// Applies the current `search_query` as the active panel's filter and
+/// refreshes/rebuilds the visible entries. Shared by `initiate_search` and
+/// `handle_search_mode` so the clone-query → set-filter → refresh sequence
+/// lives in one place.
 fn apply_search_filter(state: &mut AppState, visible: usize) {
     let filter_query = state.input.search_query.clone();
-    set_active_panel_filter(state, filter_query);
+    state.active_panel_mut().set_filter(Some(filter_query));
     refresh_or_rebuild(state, visible);
 }
 
@@ -53,25 +58,22 @@ pub(crate) fn initiate_search(
     state.prev_mode = Some(prev_mode);
     state.input.search_query.push(c);
     state.input.search_cursor = state.input.search_query.len();
-    let filter_query = state.input.search_query.clone();
     state.mode = AppMode::Search;
-    set_active_panel_filter(state, filter_query);
-    refresh_or_rebuild(state, visible_height);
+    apply_search_filter(state, visible_height);
 }
 
 pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    _viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    ctx: &mut EventContext,
     key: KeyCode,
     modifiers: KeyModifiers,
-    terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
+    let terminal_height = ctx.term_size.height;
     let visible = panel_ops::panel_visible_height(terminal_height);
+    let state = &mut *ctx.state;
     match key {
         KeyCode::F(_) => {
-            handle_function_keys(state, viewer_loader, key, terminal);
+            handle_function_keys(state, ctx.viewer_loader, key, terminal);
         }
         KeyCode::Up
         | KeyCode::Down
@@ -86,7 +88,7 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
             handle_navigation_keys(state, key, modifiers, visible);
         }
         KeyCode::Enter if !modifiers.contains(KeyModifiers::ALT) => {
-            handle_enter_key(state, viewer_loader, visible, terminal);
+            handle_enter_key(state, ctx.viewer_loader, visible, terminal);
         }
         KeyCode::Char('u' | 's' | 'h' | 'r' | 'o') if modifiers.contains(KeyModifiers::CONTROL) => {
             handle_ctrl_keys(state, key, terminal_height);
@@ -106,33 +108,28 @@ pub(crate) fn handle_normal_mode<B: ratatui::backend::Backend>(
     }
 }
 
-pub(crate) fn handle_viewer_mode(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
-    key: KeyCode,
-    terminal_size: Size,
-) {
-    if viewer_loader.is_some() {
-        if matches!(key, KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q')) {
-            viewer_loader.take();
-            *image_preview_loader = None;
+pub(crate) fn handle_viewer_mode(ctx: &mut EventContext, key: KeyCode) {
+    let terminal_size = ctx.term_size;
+    let state = &mut *ctx.state;
+    if ctx.viewer_loader.is_some() {
+        if is_viewer_exit_key(key) {
+            ctx.viewer_loader.take();
+            *ctx.image_preview_loader = None;
             state.restore_prev_mode();
-            *viewer_state = None;
+            *ctx.viewer_state = None;
         }
         return;
     }
-    if let Some(vs) = viewer_state.as_mut() {
+    if let Some(vs) = ctx.viewer_state.as_mut() {
         let page_height = terminal_size.height.saturating_sub(VIEWER_CHROME_HEIGHT) as usize;
         let content_width = terminal_size.width as usize;
         vs.update_wrap_layout(content_width);
         vs.clamp_scroll();
         match key {
-            KeyCode::Esc | KeyCode::F(3 | 10) | KeyCode::Char('q') => {
-                *image_preview_loader = None;
+            _ if is_viewer_exit_key(key) => {
+                *ctx.image_preview_loader = None;
                 state.restore_prev_mode();
-                *viewer_state = None;
+                *ctx.viewer_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => vs.scroll_up(1),
             KeyCode::Down | KeyCode::Char('j') => vs.scroll_down(1),
@@ -151,7 +148,7 @@ pub(crate) fn handle_viewer_mode(
                 state
                     .input
                     .dialog_input
-                    .set_text_at_end(vs.search_query.as_deref().unwrap_or("").to_owned());
+                    .set_text_at_end(vs.search_query.clone().unwrap_or_default());
                 state.mode = AppMode::Dialog(DialogKind::Input {
                     prompt: "Find in viewer:".to_string(),
                     action: InputAction::ViewerSearch,
@@ -160,7 +157,7 @@ pub(crate) fn handle_viewer_mode(
             _ => {}
         }
     } else {
-        *image_preview_loader = None;
+        *ctx.image_preview_loader = None;
         state.mode = AppMode::Normal;
     }
 }
@@ -193,93 +190,86 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_he
 }
 
 pub(crate) fn run_selected_menu_action<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
-    terminal_height: u16,
+    ctx: &mut EventContext,
     terminal: &mut ratatui::Terminal<B>,
 ) {
-    let prev = state.mode.clone();
-    if let Some((key, modifiers, for_menu_panel)) = super::menu_actions::execute_menu_action(state)
-    {
-        state.mode = AppMode::Normal;
-        if for_menu_panel {
-            panel_ops::with_menu_panel(state, |state| {
-                handle_normal_mode(
-                    state,
-                    viewer_state,
-                    viewer_loader,
-                    key,
-                    modifiers,
-                    terminal_height,
-                    terminal,
-                );
-            });
-        } else {
-            handle_normal_mode(
+    let prev = ctx.state.mode.clone();
+    let Some((key, modifiers, for_menu_panel)) =
+        super::menu_actions::execute_menu_action(ctx.state)
+    else {
+        if ctx.state.mode == prev {
+            ctx.state.restore_prev_mode();
+        }
+        return;
+    };
+    ctx.state.mode = AppMode::Normal;
+    if for_menu_panel {
+        // `with_menu_panel` must own `&mut state` for the duration of the
+        // closure (it flips the active panel before/after). The other context
+        // fields are disjoint, so we reborrow them into a fresh `EventContext`
+        // bound to the closure's `state` rather than passing `ctx` (whose
+        // `state` field is moved into `with_menu_panel`).
+        let viewer_state = &mut *ctx.viewer_state;
+        let viewer_loader = &mut *ctx.viewer_loader;
+        let image_preview_loader = &mut *ctx.image_preview_loader;
+        let running_job = &mut *ctx.running_job;
+        let term_size = ctx.term_size;
+        panel_ops::with_menu_panel(ctx.state, |state| {
+            let mut inner = EventContext {
                 state,
                 viewer_state,
                 viewer_loader,
-                key,
-                modifiers,
-                terminal_height,
-                terminal,
-            );
-        }
-    } else if state.mode == prev {
-        state.restore_prev_mode();
+                image_preview_loader,
+                running_job,
+                term_size,
+            };
+            handle_normal_mode(&mut inner, key, modifiers, terminal);
+        });
+    } else {
+        handle_normal_mode(ctx, key, modifiers, terminal);
     }
 }
 
 pub(crate) fn handle_menu_mode<B: ratatui::backend::Backend>(
-    state: &mut AppState,
-    viewer_state: &mut Option<viewer::ViewerState>,
-    viewer_loader: &mut Option<viewer::ViewerLoader>,
+    ctx: &mut EventContext,
     key: KeyCode,
-    terminal_height: u16,
     terminal: &mut ratatui::Terminal<B>,
 ) {
     let total = MENUS.len();
-    let max_items = menu_item_count(state.ui.menu_selected);
+    let max_items = menu_item_count(ctx.state.ui.menu_selected);
     if max_items == 0 {
-        state.mode = AppMode::Normal;
+        ctx.state.mode = AppMode::Normal;
         return;
     }
 
     match key {
         KeyCode::Esc | KeyCode::F(9 | 10) => {
-            state.restore_prev_mode();
+            ctx.state.restore_prev_mode();
         }
         KeyCode::Left => {
-            state.ui.menu_selected = if state.ui.menu_selected == 0 {
+            ctx.state.ui.menu_selected = if ctx.state.ui.menu_selected == 0 {
                 total - 1
             } else {
-                state.ui.menu_selected - 1
+                ctx.state.ui.menu_selected - 1
             };
-            state.ui.menu_item_selected = 0;
+            ctx.state.ui.menu_item_selected = 0;
         }
         KeyCode::Right => {
-            state.ui.menu_selected = (state.ui.menu_selected + 1) % total;
-            state.ui.menu_item_selected = 0;
+            ctx.state.ui.menu_selected = (ctx.state.ui.menu_selected + 1) % total;
+            ctx.state.ui.menu_item_selected = 0;
         }
         KeyCode::Up => {
-            state.ui.menu_item_selected = if state.ui.menu_item_selected == 0 {
+            ctx.state.ui.menu_item_selected = if ctx.state.ui.menu_item_selected == 0 {
                 max_items - 1
             } else {
-                state.ui.menu_item_selected - 1
+                ctx.state.ui.menu_item_selected - 1
             };
         }
         KeyCode::Down => {
-            state.ui.menu_item_selected = (state.ui.menu_item_selected + 1) % max_items;
+            ctx.state.ui.menu_item_selected = (ctx.state.ui.menu_item_selected + 1) % max_items;
         }
         KeyCode::Enter => {
-            run_selected_menu_action(
-                state,
-                viewer_state,
-                viewer_loader,
-                terminal_height,
-                terminal,
-            );
+            run_selected_menu_action(ctx, terminal);
         }
         _ => {}
     }

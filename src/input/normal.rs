@@ -1,14 +1,16 @@
+use std::io;
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use lc::app::file_type;
+use lc::app::paths::terminal_state_file_path;
 use lc::app::types::{AppMode, AppState, FileEntry, InputAction, PickerKind};
 use lc::app::{panel_ops, shell};
 use lc::ops::archive;
 use lc::ui::viewer;
 
-use crate::{enter_tui_stdout, file_name_str, leave_tui_stdout, terminal_state_file_path};
+use crate::{enter_tui_stdout, file_name_str, leave_tui_stdout};
 
 pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
     state: &mut AppState,
@@ -17,72 +19,74 @@ pub(crate) fn handle_function_keys<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
 ) {
     match key {
-        KeyCode::F(1) => {
-            state.mode = AppMode::Dialog(lc::app::types::DialogKind::Help {
-                message: lc::app::keymap::build_help_message().to_string(),
-                scroll_offset: 0,
-            });
-        }
-        KeyCode::F(2) => {
-            super::menu_actions::open_user_menu(state);
-        }
-        KeyCode::F(3) => {
-            if let Some(entry) = state.active_panel().current_entry()
-                && !entry.is_dir()
-            {
-                open_in_viewer(state, viewer_loader, entry.path.clone());
-            }
-        }
-        KeyCode::F(4) => {
-            launch_editor(state, terminal);
-        }
-        KeyCode::F(5) => {
-            confirm_file_transfer(state, "Copy Confirm", "Copy", |sources, dest| {
-                lc::app::types::PendingAction::Copy(lc::app::types::TransferAction {
-                    sources,
-                    dest,
-                    overwrite: false,
-                })
-            });
-        }
-        KeyCode::F(6) => {
-            confirm_file_transfer(state, "Move Confirm", "Move", |sources, dest| {
-                lc::app::types::PendingAction::Move(lc::app::types::TransferAction {
-                    sources,
-                    dest,
-                    overwrite: false,
-                })
-            });
-        }
-        KeyCode::F(7) => {
-            handle_f7_key(state);
-        }
-        KeyCode::F(8) => {
-            confirm_delete(state);
-        }
-        KeyCode::F(9) => {
-            state.prev_mode = Some(std::mem::replace(&mut state.mode, AppMode::Menu));
-            state.ui.menu_item_selected = 0;
-        }
-        KeyCode::F(10) => {
-            state.request_quit();
-        }
-        KeyCode::F(11) => {
-            let entry_name = state.active_panel().current_entry().map(|e| e.name.clone());
-            if let Some(name) = entry_name
-                && name != ".."
-            {
-                state.input.dialog_input.set_text_at_end(name);
-                state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
-                    prompt: "Rename to:".to_string(),
-                    action: InputAction::Rename,
-                });
-            }
-        }
-        KeyCode::F(12) => {
-            handle_f12_key(state);
-        }
+        KeyCode::F(1) => open_help_dialog(state),
+        KeyCode::F(2) => super::menu_actions::open_user_menu(state),
+        KeyCode::F(3) => view_current_entry(state, viewer_loader),
+        KeyCode::F(4) => launch_editor(state, terminal),
+        KeyCode::F(5) => confirm_copy(state),
+        KeyCode::F(6) => confirm_move(state),
+        KeyCode::F(7) => handle_f7_key(state),
+        KeyCode::F(8) => confirm_delete(state),
+        KeyCode::F(9) => open_menu_bar(state),
+        KeyCode::F(10) => state.request_quit(),
+        KeyCode::F(11) => open_rename_dialog(state),
+        KeyCode::F(12) => handle_f12_key(state),
         _ => {}
+    }
+}
+
+fn open_help_dialog(state: &mut AppState) {
+    state.mode = AppMode::Dialog(lc::app::types::DialogKind::Help {
+        message: lc::app::keymap::build_help_message().to_string(),
+        scroll_offset: 0,
+    });
+}
+
+fn view_current_entry(state: &mut AppState, viewer_loader: &mut Option<viewer::ViewerLoader>) {
+    if let Some(entry) = state.active_panel().current_entry()
+        && !entry.is_dir()
+    {
+        open_in_viewer(state, viewer_loader, entry.path.clone());
+    }
+}
+
+fn confirm_copy(state: &mut AppState) {
+    confirm_file_transfer(state, "Copy Confirm", "Copy", |sources, dest| {
+        lc::app::types::PendingAction::Copy(lc::app::types::TransferAction {
+            sources,
+            dest,
+            overwrite: false,
+        })
+    });
+}
+
+fn confirm_move(state: &mut AppState) {
+    confirm_file_transfer(state, "Move Confirm", "Move", |sources, dest| {
+        lc::app::types::PendingAction::Move(lc::app::types::TransferAction {
+            sources,
+            dest,
+            overwrite: false,
+        })
+    });
+}
+
+fn open_menu_bar(state: &mut AppState) {
+    state.prev_mode = Some(std::mem::replace(&mut state.mode, AppMode::Menu));
+    state.ui.menu_item_selected = 0;
+}
+
+fn open_rename_dialog(state: &mut AppState) {
+    let entry_name = state
+        .active_panel()
+        .current_entry()
+        .filter(|e| e.name != "..")
+        .map(|e| e.name.clone());
+    if let Some(name) = entry_name {
+        state.input.dialog_input.set_text_at_end(name);
+        state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
+            prompt: "Rename to:".to_string(),
+            action: InputAction::Rename,
+        });
     }
 }
 
@@ -126,71 +130,108 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
     state: &mut AppState,
     terminal: &mut ratatui::Terminal<B>,
 ) {
-    let entry_info = state
+    let Some((is_dir, path)) = state
         .active_panel()
         .current_entry()
-        .map(|e| (e.is_dir(), e.path.clone()));
-    if let Some((is_dir, path)) = entry_info
-        && !is_dir
+        .map(|e| (e.is_dir(), e.path.clone()))
+    else {
+        return;
+    };
+    if is_dir {
+        return;
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    if let Err(e) = leave_tui_stdout() {
+        state.ui.status_message = Some(format!("Terminal suspend failed: {e}"));
+        return;
+    }
+
+    write_terminal_state_marker();
+    let spawn_result = spawn_editor(&editor, &path);
+    let resume_result = enter_tui_stdout();
+    clear_terminal_state_marker();
+
+    if let Some(message) = editor_status_message(spawn_result, resume_result) {
+        state.ui.status_message = Some(message);
+    }
+    if let Err(e) = terminal.clear() {
+        lc::debug_log!("terminal.clear() failed after editor: {e}");
+    }
+    panel_ops::refresh_active(state);
+}
+
+/// Parse the `EDITOR` value into argv parts, falling back to `vi` when the
+/// value cannot be split or is empty.
+fn editor_command_parts(editor: &str) -> Vec<String> {
+    shlex::split(editor).unwrap_or_else(|| {
+        let fallback: Vec<String> = editor.split_whitespace().map(String::from).collect();
+        if fallback.is_empty() {
+            vec!["vi".to_string()]
+        } else {
+            fallback
+        }
+    })
+}
+
+/// Spawn the configured editor on `path`, inheriting the parent stdio so the
+/// editor takes over the terminal. Returns the editor's exit status.
+fn spawn_editor(editor: &str, path: &std::path::Path) -> io::Result<std::process::ExitStatus> {
+    let parts = editor_command_parts(editor);
+    let cmd = parts.first().map_or("vi", |s| s.as_str());
+    std::process::Command::new(cmd)
+        .args(parts.get(1..).unwrap_or_default())
+        .arg(path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+}
+
+/// Persist a marker file so a crash mid-edit can detect we left the alternate
+/// screen. Best-effort: failures are logged but never surfaced to the user.
+fn write_terminal_state_marker() {
+    let Some(terminal_state_file) = terminal_state_file_path() else {
+        return;
+    };
+    if let Some(parent) = terminal_state_file.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
     {
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        if let Err(e) = leave_tui_stdout() {
-            state.ui.status_message = Some(format!("Terminal suspend failed: {e}"));
-            return;
+        lc::debug_log!("failed to create terminal state dir: {e}");
+    }
+    if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
+        lc::debug_log!("failed to write terminal state file: {e}");
+    }
+}
+
+/// Remove the terminal-state marker written before launching the editor.
+/// Best-effort: a missing or unremovable file is only logged.
+fn clear_terminal_state_marker() {
+    if let Some(terminal_state_file) = terminal_state_file_path()
+        && let Err(e) = std::fs::remove_file(&terminal_state_file)
+    {
+        lc::debug_log!("failed to remove terminal state file: {e}");
+    }
+}
+
+/// Build the user-facing status message (if any) from the editor spawn result
+/// and the terminal-resume result. Returns `None` when everything succeeded.
+fn editor_status_message(
+    spawn_result: io::Result<std::process::ExitStatus>,
+    resume_result: io::Result<()>,
+) -> Option<String> {
+    match (spawn_result, resume_result) {
+        (Err(e), _) => Some(format!("Editor error: {e}")),
+        (Ok(s), Err(e)) => {
+            let mut parts = Vec::new();
+            if !s.success() {
+                parts.push(format!("Editor exited with status: {s}"));
+            }
+            parts.push(format!("Terminal restore failed: {e}"));
+            Some(parts.join("; "))
         }
-        if let Some(terminal_state_file) = terminal_state_file_path() {
-            if let Some(parent) = terminal_state_file.parent()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                lc::debug_log!("failed to create terminal state dir: {e}");
-            }
-            if let Err(e) = std::fs::write(&terminal_state_file, "alternate_screen") {
-                lc::debug_log!("failed to write terminal state file: {e}");
-            }
-        }
-        let parts: Vec<String> = shlex::split(&editor).unwrap_or_else(|| {
-            let fallback: Vec<String> = editor.split_whitespace().map(String::from).collect();
-            if fallback.is_empty() {
-                vec!["vi".to_string()]
-            } else {
-                fallback
-            }
-        });
-        let cmd = parts.first().map_or("vi", |s| s.as_str());
-        let status = std::process::Command::new(cmd)
-            .args(parts.get(1..).unwrap_or_default())
-            .arg(&path)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status();
-        let resume_result = enter_tui_stdout();
-        if let Some(terminal_state_file) = terminal_state_file_path()
-            && let Err(e) = std::fs::remove_file(&terminal_state_file)
-        {
-            lc::debug_log!("failed to remove terminal state file: {e}");
-        }
-        match (status, resume_result) {
-            (Err(e), _) => {
-                state.ui.status_message = Some(format!("Editor error: {e}"));
-            }
-            (Ok(s), Err(e)) => {
-                let mut parts = Vec::new();
-                if !s.success() {
-                    parts.push(format!("Editor exited with status: {s}"));
-                }
-                parts.push(format!("Terminal restore failed: {e}"));
-                state.ui.status_message = Some(parts.join("; "));
-            }
-            (Ok(s), Ok(())) if !s.success() => {
-                state.ui.status_message = Some(format!("Editor exited with status: {s}"));
-            }
-            (Ok(_), Ok(_)) => {}
-        }
-        if let Err(e) = terminal.clear() {
-            lc::debug_log!("terminal.clear() failed after editor: {e}");
-        }
-        panel_ops::refresh_active(state);
+        (Ok(s), Ok(())) if !s.success() => Some(format!("Editor exited with status: {s}")),
+        (Ok(_), Ok(())) => None,
     }
 }
 
@@ -205,10 +246,9 @@ pub(crate) fn confirm_file_transfer(
         return;
     }
     let dest_dir = state.inactive_panel().path().to_path_buf();
-    let file_names: Vec<String> = display_file_names(&paths);
-    let msg = if paths.len() == 1 {
-        let name = file_names[0].as_str();
-        format!("{verb} '{name}' to '{}'?", dest_dir.display())
+    let file_names = display_file_names(&paths);
+    let msg = if let [single] = file_names.as_slice() {
+        format!("{verb} '{single}' to '{}'?", dest_dir.display())
     } else {
         format!(
             "{verb} {} entries to '{}'?",
@@ -216,11 +256,8 @@ pub(crate) fn confirm_file_transfer(
             dest_dir.display()
         )
     };
-    state.input.dialog_selection = 0;
-    state.mode = AppMode::Dialog(lc::app::types::DialogKind::Confirm(
-        lc::app::types::ConfirmDetails::with_files(label, &msg, file_names),
-    ));
-    state.ui.pending_action = Some(make_pending(paths, dest_dir));
+    let pending = make_pending(paths, dest_dir);
+    open_confirm_dialog(state, label, &msg, file_names, pending);
 }
 
 pub(crate) fn confirm_delete(state: &mut AppState) {
@@ -228,18 +265,31 @@ pub(crate) fn confirm_delete(state: &mut AppState) {
     if paths.is_empty() {
         return;
     }
-    let file_names: Vec<String> = display_file_names(&paths);
-    let msg = if paths.len() == 1 {
-        let name = file_names[0].as_str();
-        format!("Delete '{name}'?")
+    let file_names = display_file_names(&paths);
+    let msg = if let [single] = file_names.as_slice() {
+        format!("Delete '{single}'?")
     } else {
         format!("Delete {} entries?", paths.len())
     };
+    let pending = lc::app::types::PendingAction::Delete { paths };
+    open_confirm_dialog(state, "Delete Confirm", &msg, file_names, pending);
+}
+
+/// Open a confirmation dialog with the given label, message and affected file
+/// names, and arm `pending_action` to run once the user confirms. Shared by
+/// the copy/move/delete confirmation entry points.
+fn open_confirm_dialog(
+    state: &mut AppState,
+    label: &str,
+    msg: &str,
+    file_names: Vec<String>,
+    pending: lc::app::types::PendingAction,
+) {
     state.input.dialog_selection = 0;
     state.mode = AppMode::Dialog(lc::app::types::DialogKind::Confirm(
-        lc::app::types::ConfirmDetails::with_files("Delete Confirm", &msg, file_names),
+        lc::app::types::ConfirmDetails::with_files(label, msg, file_names),
     ));
-    state.ui.pending_action = Some(lc::app::types::PendingAction::Delete { paths });
+    state.ui.pending_action = Some(pending);
 }
 
 pub(crate) fn handle_navigation_keys(
@@ -248,73 +298,91 @@ pub(crate) fn handle_navigation_keys(
     modifiers: KeyModifiers,
     visible: usize,
 ) {
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
     match key {
-        KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
-            let panel = state.active_panel_mut();
-            if panel.listing.filtered_is_empty() {
-                return;
-            }
-            panel.toggle_selection_at(panel.cursor);
-            panel.move_cursor_up(visible);
-        }
-        KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
-            let panel = state.active_panel_mut();
-            if panel.listing.filtered_is_empty() {
-                return;
-            }
-            panel.toggle_selection_at(panel.cursor);
-            panel.move_cursor_down(visible);
-        }
+        KeyCode::Up if shift => select_and_move(state, visible, Direction::Up),
+        KeyCode::Down if shift => select_and_move(state, visible, Direction::Down),
         KeyCode::Up | KeyCode::Char('k') => {
-            let panel = state.active_panel_mut();
-            panel.move_cursor_up(visible);
+            state.active_panel_mut().move_cursor_up(visible);
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            let panel = state.active_panel_mut();
-            panel.move_cursor_down(visible);
+            state.active_panel_mut().move_cursor_down(visible);
         }
-        KeyCode::Home => {
-            let p = state.active_panel_mut();
-            p.cursor = 0;
-            p.scroll_offset = 0;
-        }
-        KeyCode::End => {
-            let len = state.active_panel().listing.filtered_len();
-            if len > 0 {
-                let p = state.active_panel_mut();
-                p.cursor = len - 1;
-                p.ensure_cursor_visible(visible);
-            }
-        }
-        KeyCode::PageUp => {
-            let p = state.active_panel_mut();
-            p.cursor = p.cursor.saturating_sub(visible);
-            p.scroll_offset = p.scroll_offset.saturating_sub(visible);
-        }
-        KeyCode::PageDown => {
-            let len = state.active_panel().listing.filtered_len();
-            let p = state.active_panel_mut();
-            p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
-            p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
-        }
-        KeyCode::Tab => {
-            state.active_panel = state.active_panel.toggle();
-            let p = state.active_panel_mut();
-            let max = p.listing.filtered_len().saturating_sub(1);
-            p.cursor = p.cursor.min(max);
-            p.ensure_cursor_visible(visible);
-        }
-        KeyCode::Insert => {
-            let panel = state.active_panel_mut();
-            if panel.listing.filtered_is_empty() {
-                return;
-            }
-            panel.toggle_selection();
-            if panel.cursor < panel.listing.filtered_len() - 1 {
-                panel.move_cursor_down(visible);
-            }
-        }
+        KeyCode::Home => move_cursor_home(state),
+        KeyCode::End => move_cursor_end(state, visible),
+        KeyCode::PageUp => page_up(state, visible),
+        KeyCode::PageDown => page_down(state, visible),
+        KeyCode::Tab => switch_active_panel(state, visible),
+        KeyCode::Insert => toggle_selection_and_advance(state, visible),
         _ => {}
+    }
+}
+
+/// Vertical movement direction for Shift+selection navigation.
+#[derive(Clone, Copy)]
+enum Direction {
+    Up,
+    Down,
+}
+
+/// Toggle the selection at the cursor, then move one row in `direction`.
+/// No-op on an empty (filtered) listing.
+fn select_and_move(state: &mut AppState, visible: usize, direction: Direction) {
+    let panel = state.active_panel_mut();
+    if panel.listing.filtered_is_empty() {
+        return;
+    }
+    panel.toggle_selection_at(panel.cursor);
+    match direction {
+        Direction::Up => panel.move_cursor_up(visible),
+        Direction::Down => panel.move_cursor_down(visible),
+    }
+}
+
+fn move_cursor_home(state: &mut AppState) {
+    let p = state.active_panel_mut();
+    p.cursor = 0;
+    p.scroll_offset = 0;
+}
+
+fn move_cursor_end(state: &mut AppState, visible: usize) {
+    let len = state.active_panel().listing.filtered_len();
+    if len > 0 {
+        let p = state.active_panel_mut();
+        p.cursor = len - 1;
+        p.ensure_cursor_visible(visible);
+    }
+}
+
+fn page_up(state: &mut AppState, visible: usize) {
+    let p = state.active_panel_mut();
+    p.cursor = p.cursor.saturating_sub(visible);
+    p.scroll_offset = p.scroll_offset.saturating_sub(visible);
+}
+
+fn page_down(state: &mut AppState, visible: usize) {
+    let len = state.active_panel().listing.filtered_len();
+    let p = state.active_panel_mut();
+    p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
+    p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
+}
+
+fn switch_active_panel(state: &mut AppState, visible: usize) {
+    state.active_panel = state.active_panel.toggle();
+    let p = state.active_panel_mut();
+    let max = p.listing.filtered_len().saturating_sub(1);
+    p.cursor = p.cursor.min(max);
+    p.ensure_cursor_visible(visible);
+}
+
+fn toggle_selection_and_advance(state: &mut AppState, visible: usize) {
+    let panel = state.active_panel_mut();
+    if panel.listing.filtered_is_empty() {
+        return;
+    }
+    panel.toggle_selection();
+    if panel.cursor < panel.listing.filtered_len() - 1 {
+        panel.move_cursor_down(visible);
     }
 }
 
@@ -528,9 +596,17 @@ fn open_in_viewer(
     state.mode = AppMode::Viewing;
 }
 
+/// Render the display name (last path component, falling back to the full path)
+/// for each path. Builds the strings directly to avoid an intermediate
+/// `Vec<PathBuf>` and the extra path clone it would require.
 fn display_file_names(paths: &[PathBuf]) -> Vec<String> {
-    panel_ops::file_names_from_paths(paths)
+    paths
         .iter()
-        .map(|p| p.display().to_string())
+        .map(|p| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        })
         .collect()
 }

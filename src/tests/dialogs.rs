@@ -56,13 +56,7 @@ fn confirm_enter_without_pending_action_dismisses_dialog() {
         ..Default::default()
     };
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        Size::new(80, 24),
-    );
+    dialog_key(&mut state, KeyCode::Enter, Size::new(80, 24));
 
     assert_eq!(state.mode, AppMode::Normal);
 }
@@ -92,13 +86,7 @@ fn confirm_enter_with_pending_action_starts_action() {
         .set_entries(vec![entry("delme.txt").build()]);
     state.left_panel.cursor = 0;
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        Size::new(80, 24),
-    );
+    dialog_key(&mut state, KeyCode::Enter, Size::new(80, 24));
 
     assert!(!matches!(
         state.mode,
@@ -336,13 +324,7 @@ fn chmod_valid_input_applies_mode_and_dismisses() {
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        Size::new(80, 24),
-    );
+    dialog_key(&mut state, KeyCode::Enter, Size::new(80, 24));
 
     assert_eq!(state.mode, AppMode::Normal);
     let meta = std::fs::metadata(&file).unwrap();
@@ -365,13 +347,7 @@ fn chmod_invalid_input_shows_error_stays_in_dialog() {
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Enter,
-        Size::new(80, 24),
-    );
+    dialog_key(&mut state, KeyCode::Enter, Size::new(80, 24));
 
     assert!(
         matches!(state.mode, AppMode::Dialog(DialogKind::Input { .. })),
@@ -411,13 +387,7 @@ fn chmod_esc_dismisses_without_changing_mode() {
     state.left_panel.cursor = 0;
     state.active_panel = app::types::ActivePanel::Left;
 
-    dialogs::handle_dialog(
-        &mut state,
-        &mut None,
-        &mut None,
-        KeyCode::Esc,
-        Size::new(80, 24),
-    );
+    dialog_key(&mut state, KeyCode::Esc, Size::new(80, 24));
 
     assert_eq!(state.mode, AppMode::Normal);
     let meta = std::fs::metadata(&file).unwrap();

@@ -8,7 +8,6 @@ use lc::app;
 use lc::app::types::PickerKind;
 use lc::app::types::{AppMode, AppState, UiState};
 use lc::app::user_menu::MenuSource;
-use lc::ui::viewer;
 use std::path::Path;
 
 const FILE_MENU_INDEX: usize = 1;
@@ -72,10 +71,6 @@ fn single_menu_entry() -> Vec<app::user_menu::MenuEntry> {
         command: "tar czf a.tgz".to_string(),
         condition: app::user_menu::CompiledCondition::Always,
     }]
-}
-
-fn test_viewer_refs() -> (Option<viewer::ViewerState>, Option<viewer::ViewerLoader>) {
-    (None, None)
 }
 
 /// Build an [`AppState`] in `mode` with the given user-menu `entries` already
@@ -168,16 +163,19 @@ fn user_menu_file_menu_no_menu_file_shows_error() {
     let tmp = tempfile::tempdir().unwrap();
     let mut terminal = test_terminal();
     let mut state = test_menu_state(&tmp);
-    let (mut no_viewer, mut no_loader) = test_viewer_refs();
-
-    handle_menu_mode(
-        &mut state,
-        &mut no_viewer,
-        &mut no_loader,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+    let mut no_viewer = None;
+    let mut no_loader = None;
+    let mut no_image = None;
+    let mut no_job = None;
+    let mut ctx = crate::input::EventContext {
+        state: &mut state,
+        viewer_state: &mut no_viewer,
+        viewer_loader: &mut no_loader,
+        image_preview_loader: &mut no_image,
+        running_job: &mut no_job,
+        term_size: ratatui::layout::Size::new(80, 24),
+    };
+    handle_menu_mode(&mut ctx, KeyCode::Enter, &mut terminal);
 
     assert!(matches!(
         state.mode,
@@ -191,16 +189,19 @@ fn user_menu_file_menu_with_entries_opens_picker() {
     create_menu_file(tmp.path());
     let mut terminal = test_terminal();
     let mut state = test_menu_state(&tmp);
-    let (mut no_viewer, mut no_loader) = test_viewer_refs();
-
-    handle_menu_mode(
-        &mut state,
-        &mut no_viewer,
-        &mut no_loader,
-        KeyCode::Enter,
-        24,
-        &mut terminal,
-    );
+    let mut no_viewer = None;
+    let mut no_loader = None;
+    let mut no_image = None;
+    let mut no_job = None;
+    let mut ctx = crate::input::EventContext {
+        state: &mut state,
+        viewer_state: &mut no_viewer,
+        viewer_loader: &mut no_loader,
+        image_preview_loader: &mut no_image,
+        running_job: &mut no_job,
+        term_size: ratatui::layout::Size::new(80, 24),
+    };
+    handle_menu_mode(&mut ctx, KeyCode::Enter, &mut terminal);
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::UserMenu));
     assert_eq!(state.ui.picker_selected, 0);
@@ -221,17 +222,19 @@ fn f2_loads_user_menu_file_with_entries() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    let (mut no_viewer, mut no_loader) = test_viewer_refs();
-
-    handle_normal_mode(
-        &mut state,
-        &mut no_viewer,
-        &mut no_loader,
-        KeyCode::F(2),
-        KeyModifiers::NONE,
-        24,
-        &mut terminal,
-    );
+    let mut no_viewer = None;
+    let mut no_loader = None;
+    let mut no_image = None;
+    let mut no_job = None;
+    let mut ctx = crate::input::EventContext {
+        state: &mut state,
+        viewer_state: &mut no_viewer,
+        viewer_loader: &mut no_loader,
+        image_preview_loader: &mut no_image,
+        running_job: &mut no_job,
+        term_size: ratatui::layout::Size::new(80, 24),
+    };
+    handle_normal_mode(&mut ctx, KeyCode::F(2), KeyModifiers::NONE, &mut terminal);
 
     assert_eq!(state.mode, AppMode::ListPicker(PickerKind::UserMenu));
     assert_eq!(state.ui.user_menu_entries.len(), 2);
@@ -250,17 +253,19 @@ fn f2_no_user_menu_file_shows_error() {
     let mut terminal = test_terminal();
     let mut state = AppState::default();
     state.left_panel.set_path(tmp.path().to_path_buf());
-    let (mut no_viewer, mut no_loader) = test_viewer_refs();
-
-    handle_normal_mode(
-        &mut state,
-        &mut no_viewer,
-        &mut no_loader,
-        KeyCode::F(2),
-        KeyModifiers::NONE,
-        24,
-        &mut terminal,
-    );
+    let mut no_viewer = None;
+    let mut no_loader = None;
+    let mut no_image = None;
+    let mut no_job = None;
+    let mut ctx = crate::input::EventContext {
+        state: &mut state,
+        viewer_state: &mut no_viewer,
+        viewer_loader: &mut no_loader,
+        image_preview_loader: &mut no_image,
+        running_job: &mut no_job,
+        term_size: ratatui::layout::Size::new(80, 24),
+    };
+    handle_normal_mode(&mut ctx, KeyCode::F(2), KeyModifiers::NONE, &mut terminal);
 
     assert!(matches!(
         state.mode,

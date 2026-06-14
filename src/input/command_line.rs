@@ -8,6 +8,15 @@ fn reset_history(state: &mut AppState) {
     state.input.history_index = None;
 }
 
+/// Reset history navigation only if the editing op actually changed the line.
+/// Collapses the repeated `if <edit happened> { reset_history }` pattern at
+/// every text-mutating key branch into a single call-site.
+fn reset_history_if(state: &mut AppState, edited: bool) {
+    if edited {
+        reset_history(state);
+    }
+}
+
 fn cancel_command_input(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.input.command_line.clear();
@@ -41,9 +50,8 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('w') => {
-                if state.input.command_line.delete_word_backward() {
-                    reset_history(state);
-                }
+                let edited = state.input.command_line.delete_word_backward();
+                reset_history_if(state, edited);
                 return;
             }
             KeyCode::Char('c') => {
@@ -56,8 +64,9 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
     }
 
     if key.modifiers.contains(KeyModifiers::ALT) {
-        if key.code == KeyCode::Backspace && state.input.command_line.delete_word_backward() {
-            reset_history(state);
+        if key.code == KeyCode::Backspace {
+            let edited = state.input.command_line.delete_word_backward();
+            reset_history_if(state, edited);
         }
         return;
     }
@@ -69,8 +78,9 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         KeyCode::Enter => {
             command_execute(state);
         }
-        KeyCode::Backspace if state.input.command_line.backspace() => {
-            reset_history(state);
+        KeyCode::Backspace => {
+            let edited = state.input.command_line.backspace();
+            reset_history_if(state, edited);
         }
         KeyCode::Left => {
             state.input.command_line.cursor_left();
@@ -105,10 +115,10 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
                         .set_text_at_end(state.input.command_history[idx + 1].clone());
                 } else {
                     state.input.history_index = None;
-                    state
-                        .input
-                        .command_line
-                        .set_text_at_end(state.input.command_draft.clone());
+                    // Move the draft out instead of cloning: leaving Down restores
+                    // the draft, and the next Up overwrites it before any read.
+                    let draft = std::mem::take(&mut state.input.command_draft);
+                    state.input.command_line.set_text_at_end(draft);
                 }
             }
         }

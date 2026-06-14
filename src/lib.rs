@@ -2,20 +2,20 @@
 //!
 //! Built with Ratatui + Crossterm. Single binary, no runtime dependencies.
 
+// Public API surface.
+//
+// The `lc` binary (`main.rs`, `render*`, `input/*`, integration tests under
+// `src/tests/`) consumes this library as an external crate and always reaches
+// items through their module path (e.g. `lc::app::types::AppState`,
+// `lc::ops::compare::compare_entries`). The crate-root re-exports that used to
+// live here were never referenced via `lc::<Symbol>` by any consumer, so they
+// were a redundant, inconsistent second surface. The intended public API is the
+// set of top-level modules below; navigate into them for concrete items.
 pub mod app;
 pub mod fs;
 pub mod menu;
 pub mod ops;
 pub mod ui;
 
-pub use app::types::{
-    ActivePanel, AppMode, AppState, CompareMode, DialogKind, Direction, FileCategory, FileEntry,
-    FileSize, ListingMode, PanelState, PendingAction, SortField, SortMode, SortOptions, ViewMode,
-};
-pub use menu::MenuAction;
-pub use ops::compare::{CompareReport, apply_compare_to_panels, compare_entries};
 #[cfg(unix)]
 pub use ops::file_ops::chmod;
-pub use ops::file_ops::{create_directory, rename_entry};
-pub use ops::search::{SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
-pub use ops::sorting::{cycle_sort_mode, sort_entries};
