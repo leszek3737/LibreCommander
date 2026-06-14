@@ -157,6 +157,8 @@ fn render_input_field(
         let (_vis_width, start_cum) =
             collect_visible_graphemes(value, scroll_display, visible_width, buf);
         let input_paragraph = Paragraph::new(buf.as_str()).block(input_block);
+        // `render_widget` consumes `input_paragraph`, dropping the shared borrow of `buf`
+        // synchronously here — before `set_cursor_position` below touches the closure scope.
         f.render_widget(input_paragraph, area);
 
         // 3) Cursor calc (clamped to stay inside the inner area).

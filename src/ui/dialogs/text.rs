@@ -220,4 +220,11 @@ mod tests {
     fn truncate_suffix_combining_mark_in_prefix() {
         assert_eq!(truncate_suffix("e\u{0301}fgh", 2), "e\u{0301}f");
     }
+
+    #[test]
+    fn truncate_suffix_no_char_fits_in_suffix_budget() {
+        // max_width = 4 -> suffix_budget = 1; every CJK glyph is width 2,
+        // so no character fits the suffix and the result is the ellipsis only.
+        assert_eq!(truncate_suffix("\u{6570}\u{6570}\u{6570}", 4), "...");
+    }
 }
