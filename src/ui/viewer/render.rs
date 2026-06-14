@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::fmt::Write;
 use std::path::Path;
 
 use ratatui::{
@@ -13,7 +12,7 @@ use ratatui::{
 use crate::app::types::format_size;
 
 use super::SearchLineMatch;
-use super::hex::{HEX_BYTES_PER_LINE, format_hex_line_to_buffer};
+use super::hex::{HEX_BYTES_PER_LINE, HEX_LINE_WIDTH, format_hex_line_to_buffer};
 use super::open::ViewerState;
 use super::scroll::{line_number_digits, paragraph_horizontal_scroll};
 use crate::ui::theme::{ColorPalette, Theme};
@@ -23,11 +22,12 @@ const VIEWER_MARGIN: Margin = Margin {
     vertical: 1,
 };
 
-fn viewer_title(path_display: &str, suffix: &str) -> String {
-    if suffix.is_empty() {
-        path_display.to_owned()
-    } else {
-        format!("{path_display} [{suffix}]")
+fn viewer_title<'a>(path: &'a Path, suffix: &str) -> Cow<'a, str> {
+    match path.to_str() {
+        // Common case (valid-UTF-8 path, no suffix): borrow the path directly.
+        Some(s) if suffix.is_empty() => Cow::Borrowed(s),
+        _ if suffix.is_empty() => Cow::Owned(path.display().to_string()),
+        _ => Cow::Owned(format!("{} [{suffix}]", path.display())),
     }
 }
 
@@ -50,9 +50,37 @@ fn viewer_content_areas(area: Rect) -> (Rect, Rect) {
     (inner, content)
 }
 
-fn write_line_number(buf: &mut String, line_idx: usize, width: usize) {
-    buf.clear();
-    let _ = write!(buf, "{:>width$}  ", line_idx + 1, width = width);
+fn format_line_number(line_idx: usize, width: usize) -> String {
+    format!("{:>width$}  ", line_idx + 1, width = width)
+}
+
+/// Walks the line-grouped search matches in render order.
+///
+/// `search_matches_by_line` is sorted by line, so both the text and hex views
+/// can skip to the first visible line once (`partition_point`) and then, as
+/// they render rows top-to-bottom, hand each row its contiguous slice of
+/// matches without rescanning. Replaces the duplicated partition/advance loops
+/// the two views used to carry.
+struct LineMatchCursor<'a> {
+    matches: &'a [SearchLineMatch],
+    pos: usize,
+}
+
+impl<'a> LineMatchCursor<'a> {
+    fn new(matches: &'a [SearchLineMatch], first_line: usize) -> Self {
+        let pos = matches.partition_point(|m| m.line < first_line);
+        Self { matches, pos }
+    }
+
+    /// Returns the matches on `line`, advancing the cursor past them. Callers
+    /// must pass non-decreasing `line` values (rows render in order).
+    fn matches_on(&mut self, line: usize) -> &'a [SearchLineMatch] {
+        let start = self.pos;
+        while self.pos < self.matches.len() && self.matches[self.pos].line == line {
+            self.pos += 1;
+        }
+        &self.matches[start..self.pos]
+    }
 }
 
 pub(crate) fn compute_visible_range(
@@ -117,7 +145,12 @@ fn render_content_paragraph(
         if state.wrap_lines {
             paragraph = paragraph.wrap(Wrap { trim: false });
             if use_visual && sub_row > 0 {
-                paragraph = paragraph.scroll((sub_row.min(u16::MAX as usize) as u16, 0));
+                // Vertical sub-row offset into a partially-scrolled wrapped
+                // line. ratatui's scroll unit is `u16`; a single logical line
+                // wrapping past 65 535 visual rows is not representable (and
+                // would need a viewport that tall), so clamp rather than wrap.
+                let sub_row = sub_row.min(u16::MAX as usize) as u16;
+                paragraph = paragraph.scroll((sub_row, 0));
             }
         } else {
             paragraph = paragraph.scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
@@ -133,7 +166,7 @@ pub fn render_viewer_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let title = viewer_title(&state.file_path.display().to_string(), "");
+    let title = viewer_title(&state.file_path, "");
     f.render_widget(viewer_block(title, colors), area);
 
     let (inner_area, content_area) = viewer_content_areas(area);
@@ -151,48 +184,46 @@ pub fn render_viewer_with_colors(
     let (start_idx, sub_row, end_idx) = compute_visible_range(state, visible_height);
     let capacity = end_idx - start_idx;
 
+    // Decode the visible lines once and keep them alive for the whole render.
+    // Valid UTF-8 borrows straight from `state` (zero-copy); invalid UTF-8 is
+    // decoded lossily here. Highlight spans then borrow from these buffers
+    // instead of cloning each span's substring into an owned `String`.
+    let line_texts: Vec<Cow<'_, str>> = (start_idx..end_idx).map(|i| state.get_line(i)).collect();
+
+    let separate_line_nums = !state.wrap_lines && state.show_line_numbers;
+    let show_line_nums = state.show_line_numbers;
+    let digit_width = line_number_digits(state.line_count);
+
+    // Pre-rendered line-number strings, owned and kept alive for borrowing.
+    let line_num_strings: Vec<String> = if show_line_nums {
+        (start_idx..end_idx)
+            .map(|i| format_line_number(i, digit_width))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut cursor = LineMatchCursor::new(&state.search_matches_by_line, start_idx);
+
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(capacity);
     let mut line_num_lines: Vec<Line<'_>> = Vec::with_capacity(capacity);
 
-    let separate_line_nums = !state.wrap_lines && state.show_line_numbers;
-    let visible_matches = &state.search_matches_by_line;
-    let mut match_start = visible_matches.partition_point(|line_match| line_match.line < start_idx);
-
-    let digit_width = line_number_digits(state.line_count);
-    let mut line_num_buf = String::with_capacity(digit_width + 2);
-
-    for i in start_idx..end_idx {
-        let line = state.get_line(i);
-        let line_match_start = match_start;
-        while match_start < visible_matches.len() && visible_matches[match_start].line == i {
-            match_start += 1;
-        }
-        let line_matches = &visible_matches[line_match_start..match_start];
+    for (k, i) in (start_idx..end_idx).enumerate() {
+        let line: &str = line_texts[k].as_ref();
+        let line_matches = cursor.matches_on(i);
 
         let text_spans: Vec<Span<'_>> = if line_matches.is_empty() {
             vec![Span::raw(line)]
         } else {
-            match line {
-                Cow::Borrowed(s) => {
-                    format_line_with_highlight(s, line_matches, state.current_match, colors)
-                }
-                Cow::Owned(ref s) => {
-                    format_line_with_highlight(s, line_matches, state.current_match, colors)
-                        .into_iter()
-                        .map(|sp| Span::styled(sp.content.into_owned(), sp.style))
-                        .collect()
-                }
-            }
+            format_line_with_highlight(line, line_matches, state.current_match, colors)
         };
 
         if separate_line_nums {
-            write_line_number(&mut line_num_buf, i, digit_width);
-            line_num_lines.push(Line::from(Span::raw(line_num_buf.clone())));
+            line_num_lines.push(Line::from(Span::raw(line_num_strings[k].as_str())));
             lines.push(Line::from(text_spans));
-        } else if state.show_line_numbers {
-            write_line_number(&mut line_num_buf, i, digit_width);
+        } else if show_line_nums {
             let mut combined: Vec<Span<'_>> = Vec::with_capacity(text_spans.len() + 1);
-            combined.push(Span::raw(line_num_buf.clone()));
+            combined.push(Span::raw(line_num_strings[k].as_str()));
             combined.extend(text_spans);
             lines.push(Line::from(combined));
         } else {
@@ -212,12 +243,17 @@ pub fn render_viewer_with_colors(
 
     let current_line = if use_visual {
         state.visual_row_to_logical(state.scroll_offset).0
-    } else if state.line_count == 0 {
-        0
     } else {
         state.scroll_offset
     };
-    let position_text = format!("Line: {}/{}", current_line + 1, state.line_count);
+    // Guard the empty-content case so the footer reads "Line: 0/0" rather than
+    // the nonsensical "Line: 1/0" (mirrors the hex view's `total_lines == 0`).
+    let position_display = if state.line_count == 0 {
+        0
+    } else {
+        current_line + 1
+    };
+    let position_text = format!("Line: {position_display}/{}", state.line_count);
     let size_label = format_size(state.file_size as u64);
     render_viewer_status(
         f,
@@ -236,7 +272,7 @@ pub fn render_hex_view_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let title = viewer_title(&state.file_path.display().to_string(), "Hex");
+    let title = viewer_title(&state.file_path, "Hex");
     f.render_widget(viewer_block(title, colors), area);
 
     let (inner_area, content_area) = viewer_content_areas(area);
@@ -253,33 +289,31 @@ pub fn render_hex_view_with_colors(
     let end_line = (start_line + visible_lines).min(total_lines);
 
     let line_count = end_line - start_line;
+
+    // Build the visible hex lines once and keep them alive so highlight spans
+    // can borrow them instead of cloning each line per frame.
+    let hex_strings: Vec<String> = (start_line..end_line)
+        .map(|line_idx| {
+            let mut hex_line = String::with_capacity(HEX_LINE_WIDTH);
+            let offset = line_idx * bytes_per_line;
+            let slice_len = (bytes.len() - offset).min(bytes_per_line);
+            let slice = &bytes[offset..offset + slice_len];
+            format_hex_line_to_buffer(offset, slice, &mut hex_line);
+            hex_line
+        })
+        .collect();
+
+    let mut cursor = LineMatchCursor::new(&state.search_matches_by_line, start_line);
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(line_count);
 
-    let visible_matches = &state.search_matches_by_line;
-    let mut match_start =
-        visible_matches.partition_point(|line_match| line_match.line < start_line);
-
-    let mut hex_line = String::with_capacity(128);
-    for line_idx in start_line..end_line {
-        hex_line.clear();
-        let offset = line_idx * bytes_per_line;
-        let slice_len = (bytes.len() - offset).min(bytes_per_line);
-        let slice = &bytes[offset..offset + slice_len];
-        format_hex_line_to_buffer(offset, slice, &mut hex_line);
-
-        let line_match_start = match_start;
-        while match_start < visible_matches.len() && visible_matches[match_start].line == line_idx {
-            match_start += 1;
-        }
-        let line_matches = &visible_matches[line_match_start..match_start];
+    for (k, line_idx) in (start_line..end_line).enumerate() {
+        let hex_line: &str = hex_strings[k].as_str();
+        let line_matches = cursor.matches_on(line_idx);
 
         let spans: Vec<Span<'_>> = if line_matches.is_empty() {
-            vec![Span::raw(hex_line.clone())]
+            vec![Span::raw(hex_line)]
         } else {
-            format_line_with_highlight(&hex_line, line_matches, state.current_match, colors)
-                .into_iter()
-                .map(|s| Span::styled(s.content.into_owned(), s.style))
-                .collect()
+            format_line_with_highlight(hex_line, line_matches, state.current_match, colors)
         };
         lines.push(Line::from(spans));
     }
@@ -312,7 +346,7 @@ pub fn render_image_view_with_colors(
     state: &ViewerState,
     colors: &ColorPalette,
 ) {
-    let title = viewer_title(&state.file_path.display().to_string(), "Image");
+    let title = viewer_title(&state.file_path, "Image");
     f.render_widget(viewer_block(title, colors), area);
 
     let (inner_area, content_area) = viewer_content_areas(area);

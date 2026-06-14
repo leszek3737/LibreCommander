@@ -51,8 +51,11 @@ impl ViewerState {
         (idx, visual_row - acc_before)
     }
 
+    /// Visual row at which logical line `logical_line` *starts* (its first
+    /// wrapped row). The inverse of [`Self::visual_row_to_logical`] for the
+    /// sub-row-0 case.
     #[must_use]
-    pub(crate) fn logical_to_visual_row(&self, logical_line: usize) -> usize {
+    pub(crate) fn logical_line_visual_start(&self, logical_line: usize) -> usize {
         if logical_line == 0 {
             0
         } else {
@@ -81,8 +84,7 @@ impl ViewerState {
     }
 
     pub fn scroll_down(&mut self, lines: usize) {
-        let max_scroll = self.max_scroll();
-        self.scroll_offset = (self.scroll_offset + lines).min(max_scroll);
+        self.scroll_offset = clamp_scroll_offset(self.scroll_offset, lines, self.max_scroll());
     }
 
     pub fn page_up(&mut self, page_height: usize) {
@@ -130,7 +132,7 @@ impl ViewerState {
             self.max_line_width
         };
         let max_offset = max_line.saturating_sub(effective_width);
-        self.horizontal_offset = (self.horizontal_offset + cols).min(max_offset);
+        self.horizontal_offset = clamp_scroll_offset(self.horizontal_offset, cols, max_offset);
     }
 
     pub fn needs_image_preview(&self, area_width: u16, area_height: u16) -> bool {
@@ -153,6 +155,14 @@ impl ViewerState {
     fn past_end_logical(line_count: usize) -> (usize, usize) {
         (line_count.saturating_sub(1), 0)
     }
+}
+
+/// Advances a scroll offset by `delta`, saturating against overflow and
+/// clamping the result to `max`. Shared by the vertical (`scroll_down`) and
+/// horizontal (`scroll_right`) helpers so the saturate-then-clamp arithmetic
+/// lives in one place.
+fn clamp_scroll_offset(offset: usize, delta: usize, max: usize) -> usize {
+    offset.saturating_add(delta).min(max)
 }
 
 pub(crate) fn line_number_digits(line_count: usize) -> usize {

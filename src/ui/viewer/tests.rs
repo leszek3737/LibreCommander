@@ -1,9 +1,9 @@
-use super::SearchLineMatch;
 use super::hex::format_hex_line;
 use super::mime::should_open_as_text;
 use super::open::ViewerState;
 use super::render::{format_line_with_highlight, render_viewer_with_colors};
 use super::scroll::{line_number_column_width, paragraph_horizontal_scroll};
+use super::{SearchLineMatch, SearchMatch};
 use crate::app::types::ViewMode;
 use crate::app::types::format_size;
 use crate::ui::theme::ColorPalette;
@@ -51,6 +51,14 @@ fn render_viewer_buffer(state: &ViewerState, width: u16, height: u16) -> Buffer 
     terminal.backend().buffer().clone()
 }
 
+fn match_at(line: usize, start_byte: usize, end_byte: usize) -> SearchMatch {
+    SearchMatch {
+        line,
+        start_byte,
+        end_byte,
+    }
+}
+
 fn buffer_line(buffer: &Buffer, y: u16) -> String {
     (0..buffer.area.width)
         .map(|x| buffer[(x, y)].symbol())
@@ -71,12 +79,12 @@ fn test_viewer_loader_drop_cancels_worker() {
         let _ = done_tx.send(());
     });
 
-    let loader = super::loader::ViewerLoader {
-        receiver: rx,
-        cancel: Arc::clone(&cancel),
-        path: PathBuf::new(),
-        handle: Some(handle),
-    };
+    let loader = super::loader::ViewerLoader::from_parts(
+        rx,
+        Arc::clone(&cancel),
+        PathBuf::new(),
+        Some(handle),
+    );
 
     drop(loader);
 
@@ -161,8 +169,8 @@ fn test_search() {
     state.search("apple", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(state.search_matches.len(), 2);
-    assert_eq!(state.search_matches[0], (0, 0, 5));
-    assert_eq!(state.search_matches[1], (3, 0, 5));
+    assert_eq!(state.search_matches[0], match_at(0, 0, 5));
+    assert_eq!(state.search_matches[1], match_at(3, 0, 5));
     assert_eq!(state.current_match, Some(0));
 }
 
@@ -191,8 +199,8 @@ fn test_search_case_insensitive() {
     state.search("hello", DEFAULT_PAGE_HEIGHT);
 
     assert_eq!(state.search_matches.len(), 2);
-    assert_eq!(state.search_matches[0], (0, 0, 5));
-    assert_eq!(state.search_matches[1], (2, 0, 5));
+    assert_eq!(state.search_matches[0], match_at(0, 0, 5));
+    assert_eq!(state.search_matches[1], match_at(2, 0, 5));
 }
 
 #[test]
@@ -271,26 +279,30 @@ fn test_source_code_ext_opens_as_text_even_with_nul_bytes() {
 }
 
 #[test]
-fn test_search_unicode_match_uses_char_columns() {
+fn test_search_unicode_match_uses_byte_offsets() {
     let mut state = init_state("zażółć gęślą jaźń");
 
     state.search("gęśl", DEFAULT_PAGE_HEIGHT);
 
-    assert_eq!(state.search_matches, vec![(0, 7, 4)]);
+    // "gęśl" spans bytes 11..17 of the line (g=1, ę=2, ś=2, l=1).
+    assert_eq!(state.search_matches, vec![match_at(0, 11, 17)]);
 }
 
 #[test]
-fn test_search_unicode_repeated_matches_keep_char_columns() {
+fn test_search_unicode_repeated_matches_keep_byte_offsets() {
     let mut state = init_state("żółw żółw");
 
     state.search("żółw", DEFAULT_PAGE_HEIGHT);
 
-    assert_eq!(state.search_matches, vec![(0, 0, 4), (0, 5, 4)]);
+    // Each "żółw" is 7 bytes (ż=2, ó=2, ł=2, w=1); the space sits at byte 7.
+    assert_eq!(
+        state.search_matches,
+        vec![match_at(0, 0, 7), match_at(0, 8, 15)]
+    );
 }
 
-// NOTE: search_matches stores (line_idx, char_start, char_len) — column positions.
-// search_matches_by_line stores SearchLineMatch with (start_byte, end_byte) — byte offsets.
-// In ASCII these coincide; for multi-byte Unicode they diverge (see tests below).
+// NOTE: both search_matches (SearchMatch) and search_matches_by_line
+// (SearchLineMatch) now store byte offsets in a single coordinate space.
 
 #[test]
 fn test_format_line_with_highlight_handles_unicode() {
@@ -665,15 +677,15 @@ fn test_visual_row_to_logical_roundtrip() {
     let total_visual: usize = state.render_cache.visual_heights.borrow().iter().sum();
     for row in 0..total_visual {
         let (logical, sub) = state.visual_row_to_logical(row);
-        let back = state.logical_to_visual_row(logical);
+        let back = state.logical_line_visual_start(logical);
         assert_eq!(back + sub, row, "roundtrip failed for visual row {row}");
     }
 }
 
-fn assert_no_duplicate_matches(matches: &[(usize, usize, usize)]) {
+fn assert_no_duplicate_matches(matches: &[SearchMatch]) {
     let mut seen = std::collections::HashSet::new();
     for m in matches {
-        assert!(seen.insert(*m), "duplicate match tuple: {:?}", m);
+        assert!(seen.insert(*m), "duplicate match: {:?}", m);
     }
 }
 
@@ -710,7 +722,7 @@ fn test_hex_mode_search() {
         "hex search for '01 02' should find matches in hex data section"
     );
     assert_eq!(state.current_match, Some(0));
-    assert!(state.search_matches[0].0 == 0);
+    assert!(state.search_matches[0].line == 0);
 }
 
 #[test]
@@ -747,7 +759,7 @@ fn create_wrapped_state_30_lines(width: usize) -> ViewerState {
 
 fn assert_visual_roundtrip(state: &ViewerState, row: usize) {
     let (logical, sub) = state.visual_row_to_logical(row);
-    let back = state.logical_to_visual_row(logical);
+    let back = state.logical_line_visual_start(logical);
     assert_eq!(
         back + sub,
         row,
@@ -929,18 +941,18 @@ fn test_image_preview_loader_stores_file_path() {
     let path_a = PathBuf::from("/tmp/image_a.png");
     let path_b = PathBuf::from("/tmp/image_b.png");
 
-    let loader_a = super::loader::ImagePreviewLoader {
-        file_path: path_a.clone(),
-        receiver: mpsc::channel().1,
-        cancel: Arc::new(AtomicBool::new(false)),
-        handle: None,
-    };
-    let loader_b = super::loader::ImagePreviewLoader {
-        file_path: path_b.clone(),
-        receiver: mpsc::channel().1,
-        cancel: Arc::new(AtomicBool::new(false)),
-        handle: None,
-    };
+    let loader_a = super::loader::ImagePreviewLoader::from_parts(
+        path_a.clone(),
+        mpsc::channel().1,
+        Arc::new(AtomicBool::new(false)),
+        None,
+    );
+    let loader_b = super::loader::ImagePreviewLoader::from_parts(
+        path_b.clone(),
+        mpsc::channel().1,
+        Arc::new(AtomicBool::new(false)),
+        None,
+    );
 
     assert_eq!(loader_a.file_path, path_a);
     assert_eq!(loader_b.file_path, path_b);
@@ -955,12 +967,12 @@ fn test_image_preview_race_condition_guard_discards_mismatched_path() {
     let loader_path = PathBuf::from("/tmp/old_image.png");
     let viewer_path = PathBuf::from("/tmp/new_image.png");
 
-    let loader = super::loader::ImagePreviewLoader {
-        file_path: loader_path,
-        receiver: mpsc::channel().1,
-        cancel: Arc::new(AtomicBool::new(false)),
-        handle: None,
-    };
+    let loader = super::loader::ImagePreviewLoader::from_parts(
+        loader_path,
+        mpsc::channel().1,
+        Arc::new(AtomicBool::new(false)),
+        None,
+    );
 
     let matched = viewer_path == loader.file_path;
     assert!(
@@ -1030,4 +1042,179 @@ fn test_large_unicode_file() {
 
     state.go_to_bottom(DEFAULT_PAGE_HEIGHT);
     assert!(state.scroll_offset <= state.max_scroll());
+}
+
+// --- WS-A: wrap layout / cache invalidation edge cases ---
+
+#[test]
+fn test_line_display_width_matches_lossy_for_invalid_utf8() {
+    // The raw-bytes width path must equal `from_utf8_lossy` + width exactly:
+    // one U+FFFD (width 1) per maximal invalid subsequence.
+    for raw in [
+        b"a\xffb".as_slice(),
+        b"\xff\xfe",
+        b"caf\xc3\xa9",      // valid "café"
+        "日本語".as_bytes(), // wide CJK
+        b"\xf0\x28\x8c\x28", // several separate invalid runs
+    ] {
+        let expected = unicode_width::UnicodeWidthStr::width(String::from_utf8_lossy(raw).as_ref());
+        assert_eq!(
+            ViewerState::line_display_width(raw),
+            expected,
+            "raw={raw:?}"
+        );
+    }
+}
+
+#[test]
+fn test_update_wrap_layout_zero_width_does_not_panic() {
+    let state = init_state("alpha\nbeta\ngamma");
+    // A zero content width clamps to 1 internally rather than dividing by zero.
+    state.update_wrap_layout(0);
+    let heights = state.render_cache.visual_heights.borrow();
+    assert_eq!(heights.len(), state.line_count);
+    assert!(heights.iter().all(|&h| h >= 1));
+}
+
+#[test]
+fn test_empty_file_wrap_layout_reports_single_line() {
+    // `line_count` is never 0 (empty file -> 1 placeholder line), so the
+    // wrap-layout path stays well-defined and produces exactly one row.
+    let state = init_state("");
+    assert_eq!(state.line_count, 1);
+    state.update_wrap_layout(40);
+    assert_eq!(state.render_cache.visual_heights.borrow().len(), 1);
+}
+
+#[test]
+fn test_toggle_hex_mode_invalidates_visual_cache() {
+    let mut state = init_state("some wrapped text here");
+    state.update_wrap_layout(8);
+    assert!(!state.render_cache.visual_heights.borrow().is_empty());
+
+    state.toggle_hex_mode();
+
+    assert!(
+        state.render_cache.visual_heights.borrow().is_empty(),
+        "toggling to hex must drop the stale text wrap layout"
+    );
+    assert_eq!(*state.render_cache.cached_content_width.borrow(), 0);
+}
+
+// --- WS-C: hex query parsing and chunk/UTF-8 coordinate handling ---
+
+#[test]
+fn test_parse_hex_query_distinguishes_too_short_from_invalid() {
+    use super::search::HexQueryError;
+
+    assert_eq!(ViewerState::parse_hex_query("0102"), Ok(vec![0x01, 0x02]));
+    assert_eq!(ViewerState::parse_hex_query("01 02"), Ok(vec![0x01, 0x02]));
+    assert_eq!(
+        ViewerState::parse_hex_query("a"),
+        Err(HexQueryError::TooShort)
+    );
+    assert_eq!(
+        ViewerState::parse_hex_query(""),
+        Err(HexQueryError::TooShort)
+    );
+    // Odd digit count and non-hex characters are both "invalid", not "short".
+    assert_eq!(
+        ViewerState::parse_hex_query("abc"),
+        Err(HexQueryError::Invalid)
+    );
+    assert_eq!(
+        ViewerState::parse_hex_query("zz"),
+        Err(HexQueryError::Invalid)
+    );
+}
+
+#[test]
+fn test_hex_text_search_invalid_utf8_maps_to_raw_bytes() {
+    // A NUL forces hex mode; the leading 0xFF is invalid UTF-8 and decodes to a
+    // 3-byte U+FFFD. The text "hello" therefore sits at a different offset in
+    // the lossy string than in the raw bytes — the search must report the raw
+    // offset (byte 2 -> hex column 24), not the lossy-string index.
+    let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+    file.write_all(b"\xff\x00hello").unwrap();
+    let mut state = ViewerState::open(file.path()).unwrap();
+    assert!(state.is_hex_mode());
+
+    state.search("hello", DEFAULT_PAGE_HEIGHT);
+
+    assert!(
+        !state.search_matches.is_empty(),
+        "expected a hex-text match"
+    );
+    assert_eq!(state.search_matches[0].line, 0);
+    // Byte offset 2 -> hex column 18 (offset prefix) + 2 * 3 = 24.
+    assert_eq!(state.search_matches_by_line[0].start_byte, 24);
+}
+
+#[test]
+fn test_hex_text_search_finds_match_across_chunk_boundary() {
+    const CHUNK_SIZE: usize = 1024 * 1024;
+    // Place "needle" straddling the 1 MiB chunk boundary, then open as text and
+    // toggle into hex so the chunked hex-text search path runs.
+    let mut content = vec![b'a'; CHUNK_SIZE - 3];
+    content.extend_from_slice(b"needle");
+    content.extend_from_slice(&[b'a'; 10]);
+
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(&content).unwrap();
+    let mut state = ViewerState::open(file.path()).unwrap();
+    state.toggle_hex_mode();
+    assert!(state.is_hex_mode());
+
+    state.search("needle", DEFAULT_PAGE_HEIGHT);
+
+    assert!(
+        !state.search_matches.is_empty(),
+        "match straddling the chunk boundary must still be found"
+    );
+    let expected_line = (CHUNK_SIZE - 3) / 16;
+    assert_eq!(state.search_matches[0].line, expected_line);
+}
+
+#[test]
+fn test_hex_text_search_no_duplicate_across_chunks() {
+    const CHUNK_SIZE: usize = 1024 * 1024;
+    // "needle" starts just past the boundary, inside chunk 0's *overlap* region
+    // (>= primary_end) and inside chunk 1's primary range. Chunk 0 sees it but
+    // must defer to chunk 1, so it is recorded exactly once — this exercises the
+    // `orig_byte >= primary_end` ownership guard.
+    let mut content = vec![b'a'; CHUNK_SIZE + 4];
+    content.splice((CHUNK_SIZE + 1)..(CHUNK_SIZE + 1), *b"needle");
+
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(&content).unwrap();
+    let mut state = ViewerState::open(file.path()).unwrap();
+    state.toggle_hex_mode();
+
+    state.search("needle", DEFAULT_PAGE_HEIGHT);
+
+    assert_eq!(
+        state.search_matches.len(),
+        1,
+        "the boundary match must be recorded exactly once"
+    );
+}
+
+#[test]
+fn test_hex_search_selects_match_at_or_after_current_line() {
+    let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+    // 0x00 forces hex; pattern 0xAB appears on hex line 0 and hex line 2.
+    let mut bytes = vec![0u8; 40];
+    bytes[1] = 0xAB; // line 0
+    bytes[33] = 0xAB; // line 2 (33 / 16 == 2)
+    file.write_all(&bytes).unwrap();
+    let mut state = ViewerState::open(file.path()).unwrap();
+    assert!(state.is_hex_mode());
+
+    state.scroll_offset = 2;
+    state.search("ab", DEFAULT_PAGE_HEIGHT);
+
+    assert_eq!(state.search_matches.len(), 2);
+    // With the viewport on line 2, the first selected match is the one on line 2.
+    let current = state.current_match.unwrap();
+    assert_eq!(state.search_matches[current].line, 2);
 }

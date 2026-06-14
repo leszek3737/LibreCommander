@@ -124,7 +124,7 @@ fn poll_viewer_loader(
         return false;
     };
     let mut changed = false;
-    match loader.receiver.try_recv() {
+    match loader.try_recv() {
         Ok(Ok(vs)) => {
             *viewer_state = Some(vs);
             *viewer_loader = None;

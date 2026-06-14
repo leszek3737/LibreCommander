@@ -36,9 +36,12 @@ impl ViewerState {
             return;
         }
         self.wrap_lines = !self.wrap_lines;
-        if self.wrap_lines {
-            self.horizontal_offset = 0;
-        }
+        // Reset horizontal scroll on every toggle, both directions. Wrap-mode
+        // rendering ignores `horizontal_offset`, but `scroll_right` keeps
+        // growing it while wrapped; without this reset the view would jump by
+        // that stale offset the moment wrap is turned back off. (Pairs with the
+        // `mode_dispatch` `scroll_right` wrap-guard tracked in PR8.)
+        self.horizontal_offset = 0;
         self.invalidate_visual_cache();
     }
 
@@ -47,22 +50,19 @@ impl ViewerState {
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
         self.clear_search_results();
+        // The wrap layout is mode- and line-count-specific; drop it so the new
+        // mode rebuilds it instead of reusing a stale (binary↔text) layout.
+        self.invalidate_visual_cache();
 
         if self.view_mode == ViewMode::Text && self.originally_binary {
-            self.line_offsets = Self::compute_line_offsets(&self.raw_bytes);
-            self.line_count = if self.raw_bytes.is_empty() {
-                1
-            } else {
-                self.line_offsets.len()
-            };
+            let (line_offsets, line_count, max_line_width) =
+                Self::compute_text_metrics(&self.raw_bytes);
+            self.line_offsets = line_offsets;
+            self.line_count = line_count;
+            self.max_line_width = max_line_width;
             self.render_cache
                 .cached_line_num_col_width
                 .set(line_number_column_width(self.line_count));
-            self.max_line_width = if self.raw_bytes.is_empty() {
-                0
-            } else {
-                Self::compute_max_line_width(&self.line_offsets, &self.raw_bytes)
-            };
         }
     }
 
@@ -86,21 +86,20 @@ impl ViewerState {
             0
         };
         let width = content_width.max(1);
-        /// Upper bound to prevent OOM on pathological input (e.g. a 4 GB
-        /// file with millions of short lines).  Lines beyond this limit are
-        /// truncated visually rather than fully laid out.
+        // Above this many logical lines, skip visual (wrapped) layout entirely
+        // and fall back to logical-line scrolling. Laying out every line builds
+        // two usize-per-line vectors; for a multi-million-line file that is both
+        // an OOM risk and -- because the result would otherwise be discarded and
+        // the cache left empty -- a full re-scan every frame. Short-circuit here
+        // so the per-frame cost stays O(1).
         const MAX_VISUAL_LINES: usize = 1_000_000;
-        let cap = self.line_count.min(MAX_VISUAL_LINES);
-        let mut new_heights = Vec::with_capacity(cap);
-        for i in (0..self.line_count).take(MAX_VISUAL_LINES) {
-            let line = self.get_line(i);
-            let text_width = unicode_width::UnicodeWidthStr::width(line.as_ref());
-            let total_width = line_num_width.saturating_add(text_width);
-            new_heights.push(total_width.div_ceil(width).max(1));
-        }
-        if new_heights.len() < self.line_count {
-            self.invalidate_visual_cache();
+        if self.line_count > MAX_VISUAL_LINES {
             return;
+        }
+        let mut new_heights = Vec::with_capacity(self.line_count);
+        for i in 0..self.line_count {
+            let total_width = line_num_width.saturating_add(self.line_width(i));
+            new_heights.push(total_width.div_ceil(width).max(1));
         }
         let mut new_offsets = Vec::with_capacity(new_heights.len());
         let mut acc = 0usize;
