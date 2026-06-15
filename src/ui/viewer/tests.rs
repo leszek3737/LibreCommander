@@ -19,7 +19,6 @@ use std::thread;
 use tempfile::NamedTempFile;
 
 const DEFAULT_PAGE_HEIGHT: usize = 20;
-const TEST_CHANNEL_TIMEOUT_SECS: u64 = 1;
 
 fn create_test_file(content: &str) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
@@ -89,9 +88,15 @@ fn test_viewer_loader_drop_cancels_worker() {
     drop(loader);
 
     assert!(cancel.load(Ordering::Relaxed));
+    // Drop stores `cancel` with `Release`; the worker loads it `Relaxed` in a
+    // `yield_now` loop, which still guarantees eventual visibility of the flag,
+    // so the worker is guaranteed to send. The generous 30s timeout (vs the old
+    // 1s) tolerates CPU starvation of the detached worker under heavy load, yet
+    // still bounds a genuine deadlock so CI fails fast instead of hanging the
+    // whole test binary.
     done_rx
-        .recv_timeout(std::time::Duration::from_secs(TEST_CHANNEL_TIMEOUT_SECS))
-        .unwrap();
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("worker should send done after observing cancel");
 }
 
 #[test]
