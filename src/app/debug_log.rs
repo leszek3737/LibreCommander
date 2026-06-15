@@ -231,15 +231,36 @@ mod tests {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        {
-            let mut f = std::fs::File::create(&path).expect("create oversized log");
-            std::io::Write::write_all(&mut f, &vec![b'X'; (MAX_LOG_SIZE_BYTES + 1) as usize])
-                .expect("write oversized log");
-        }
+        // The truncation guard only fires on a *freshly opened* file (or every
+        // CHECK_INTERVAL writes), so each attempt re-creates the oversized file
+        // and re-opens via `reset_for_test()` to genuinely exercise truncation.
+        // Creating it once before the loop would only test the first iteration:
+        // after any `log()` truncates, the file is small and later attempts just
+        // append, no longer exercising the truncation path.
+        //
+        // Cross-test interference is expected and the retry loop MUST NOT be
+        // collapsed into a single attempt. Production `log()` relies on
+        // PROCESS-GLOBAL statics: `CHECK_COUNTER` (AtomicU32), `LOG_FILE` (Mutex)
+        // and the `TEST_CACHE_HOME` redirect. `TEST_MUTEX` only serializes the two
+        // debug_log tests against each other; it does NOT exclude the hundreds of
+        // other tests on parallel threads that invoke the production
+        // `debug_log!`/`log()` macro. Once this test installs its tempdir into the
+        // process-global `TEST_CACHE_HOME`, those concurrent `log()` calls bump the
+        // shared `CHECK_COUNTER` and write to this test's tempdir, perturbing the
+        // size dance below. The retry loop tolerates that until one cycle wins.
+        //
+        // TODO(tech-debt): the principled fix is a per-test redirect gate that
+        // production `log()` consults first, isolating these globals; tracked as
+        // follow-up. Until then the test is empirically — not provably — robust.
 
+        // Empirically sufficient under N-way parallel `cargo test`; ~250ms worst
+        // case (RETRY_BUDGET iterations * the 5ms back-off below).
+        const RETRY_BUDGET: usize = 50;
         let mut truncated = false;
-        for attempt in 0..20 {
+        for attempt in 0..RETRY_BUDGET {
             reset_for_test();
+            std::fs::write(&path, vec![b'X'; (MAX_LOG_SIZE_BYTES + 1) as usize])
+                .expect("write oversized log");
             log(format_args!("attempt {attempt}"));
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             if len > 0 && len < MAX_LOG_SIZE_BYTES {
@@ -258,7 +279,7 @@ mod tests {
         reset_for_test();
         assert!(
             truncated,
-            "log() never acquired mutex to truncate oversized file after 20 retries"
+            "log() never truncated the oversized file within {RETRY_BUDGET} retries"
         );
     }
 }
