@@ -19,7 +19,6 @@ use std::thread;
 use tempfile::NamedTempFile;
 
 const DEFAULT_PAGE_HEIGHT: usize = 20;
-const TEST_CHANNEL_TIMEOUT_SECS: u64 = 1;
 
 fn create_test_file(content: &str) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
@@ -89,9 +88,12 @@ fn test_viewer_loader_drop_cancels_worker() {
     drop(loader);
 
     assert!(cancel.load(Ordering::Relaxed));
+    // Drop sets `cancel`, so the worker is guaranteed to send once it observes it.
+    // A blocking recv removes the arbitrary 1s deadline that made this test fail
+    // under heavy CPU load when the detached yield-looping worker got starved.
     done_rx
-        .recv_timeout(std::time::Duration::from_secs(TEST_CHANNEL_TIMEOUT_SECS))
-        .unwrap();
+        .recv()
+        .expect("worker should send done after observing cancel");
 }
 
 #[test]

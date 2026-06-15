@@ -237,8 +237,21 @@ mod tests {
                 .expect("write oversized log");
         }
 
+        // Cross-test interference is expected here and the retry loop below MUST
+        // NOT be collapsed into a single attempt. Production `log()` relies on
+        // PROCESS-GLOBAL statics: `CHECK_COUNTER` (AtomicU32), `LOG_FILE` (Mutex)
+        // and the `TEST_CACHE_HOME` redirect. `TEST_MUTEX` only serializes the two
+        // debug_log tests against each other; it does NOT exclude the hundreds of
+        // other tests running on parallel threads, many of which invoke the
+        // production `debug_log!`/`log()` macro. Once this test installs its
+        // tempdir into the process-global `TEST_CACHE_HOME`, those concurrent
+        // `log()` calls (a) bump the shared `CHECK_COUNTER` and (b) write to
+        // `log_path()`, which now points at THIS test's tempdir. So concurrent
+        // appends and counter bumps can perturb the careful size dance below.
+        // The retry loop tolerates that interference: we keep trying until one of
+        // our own `reset_for_test()` + `log()` cycles wins the size check.
         let mut truncated = false;
-        for attempt in 0..20 {
+        for attempt in 0..50 {
             reset_for_test();
             log(format_args!("attempt {attempt}"));
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -258,7 +271,7 @@ mod tests {
         reset_for_test();
         assert!(
             truncated,
-            "log() never acquired mutex to truncate oversized file after 20 retries"
+            "log() never acquired mutex to truncate oversized file after 50 retries"
         );
     }
 }
