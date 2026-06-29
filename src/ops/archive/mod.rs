@@ -649,4 +649,54 @@ mod tests {
         assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
         assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);
     }
+
+    // Regression: `.tar.zst` creation must finalize the zstd frame. Before the
+    // fix the encoder was dropped without `finish()`/`auto_finish()`, so the
+    // frame epilogue and the tar end-of-archive blocks were never written and
+    // every created archive was silently truncated/corrupt. This drives the full
+    // create -> extract round trip; extraction would fail (or lose contents) on a
+    // truncated frame.
+    #[test]
+    fn tar_zst_roundtrip_preserves_contents() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        let work = tempfile::tempdir().unwrap();
+        let src_dir = work.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        let f1 = src_dir.join("hello.txt");
+        let f2 = src_dir.join("data.bin");
+        let f1_content = b"hello tar zst world";
+        let f2_content: Vec<u8> = (0..8192u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&f1, f1_content).unwrap();
+        fs::write(&f2, &f2_content).unwrap();
+
+        let archive_path = work.path().join("out.tar.zst");
+        let (tx, _rx) = mpsc::channel();
+        crate::ops::archive::create::create_archive(
+            &[f1, f2],
+            &archive_path,
+            ArchiveFormat::TarZst,
+            &tx,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let (fmt, _file) = detect_format(&archive_path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarZst);
+
+        let dest = work.path().join("extract");
+        fs::create_dir(&dest).unwrap();
+        let (tx2, _rx2) = mpsc::channel();
+        crate::ops::archive::extract::extract_archive(
+            &archive_path,
+            &dest,
+            &tx2,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
+        assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);
+    }
 }

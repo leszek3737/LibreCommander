@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation
+    url: https://github.com/leszek3737/LibreCommander#readme
+    about: Install, keybindings, config, and FAQ — check the README first.
+  - name: 🔍 Search existing issues
+    url: https://github.com/leszek3737/LibreCommander/issues?q=is%3Aissue
+    about: Your question may already be answered in an open or closed issue.

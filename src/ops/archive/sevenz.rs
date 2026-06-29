@@ -58,7 +58,6 @@ struct SevenzEntryExtractor<'a> {
     progress: &'a Sender<u64>,
     cancel: &'a AtomicBool,
     error_slot: &'a Cell<Option<SevenzExtractError>>,
-    last_parent: Option<PathBuf>,
     total_size: super::TotalSizeGuard,
     extracted_paths: &'a mut Vec<PathBuf>,
 }
@@ -73,15 +72,16 @@ impl<'a> SevenzEntryExtractor<'a> {
     }
 
     fn create_parent_if_needed(&mut self, outpath: &Path) -> Result<(), sevenz_rust::Error> {
-        if let Some(parent) = outpath.parent()
-            && self.last_parent.as_deref() != Some(parent)
-        {
+        // Re-verify the parent on EVERY entry rather than caching the last one: a
+        // cached parent could be swapped for a symlink between entries (TOCTOU),
+        // and skipping `verify_inside` on a cache hit would let a later entry be
+        // written outside `canonical_dest`.
+        if let Some(parent) = outpath.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 self.error_slot.set(Some(SevenzExtractError::Io(e)));
                 return Err(sevenz_rust::Error::Other("create_dir_all failed".into()));
             }
             self.verify_inside(parent)?;
-            self.last_parent = Some(parent.to_path_buf());
         }
         Ok(())
     }
@@ -215,7 +215,6 @@ pub fn extract_7z(
             progress,
             cancel,
             error_slot: &error_slot,
-            last_parent: None,
             total_size: super::TotalSizeGuard::default(),
             extracted_paths: &mut extracted_paths,
         };

@@ -253,8 +253,22 @@ impl Watcher {
 
     fn remove_watched_dir_state(&mut self, path: &Path) {
         let clean = crate::fs::path::clean_path(path);
+        // A deleted symlink can no longer be resolved via `read_link`, so
+        // `path_points_to_missing_watch` cannot map it to its canonical watch key
+        // and the watcher would leak. Recover the key from `path_cache`, which
+        // recorded the symlink -> canonical mapping when the watch was added: any
+        // cached spelling that cleans to `clean` names the canonical entry to
+        // evict.
+        let cached_canonical: Vec<PathBuf> = self
+            .path_cache
+            .iter()
+            .filter(|(k, _)| crate::fs::path::clean_path(k) == clean)
+            .map(|(_, v)| v.clone())
+            .collect();
         self.watchers.retain(|watched, _| {
-            watched.as_path() != clean && !path_points_to_missing_watch(&clean, watched)
+            watched.as_path() != clean
+                && !cached_canonical.iter().any(|c| c == watched)
+                && !path_points_to_missing_watch(&clean, watched)
         });
         self.path_cache
             .retain(|_, v| self.watchers.contains_key(v.as_path()));
@@ -745,9 +759,15 @@ fn take_paired_from(
 ) -> Option<PendingFromEntry> {
     let entries = pending.get_mut(parent_key)?;
     let taken = match to_cookie {
+        // A cookie that matches no buffered From means there is genuinely no pair
+        // for this To (e.g. a move-in from outside the watched dir): return None
+        // so it surfaces as `Created` and the orphaned From times out to
+        // `Deleted`, rather than stealing an unrelated From via FIFO and emitting
+        // a bogus `Renamed`. FIFO is only the right heuristic when the backend
+        // gives no cookie at all (macOS FSEvents).
         Some(cookie) => match entries.iter().position(|e| e.cookie == Some(cookie)) {
             Some(idx) => entries.remove(idx),
-            None => entries.pop_front(),
+            None => None,
         },
         None => entries.pop_front(),
     };

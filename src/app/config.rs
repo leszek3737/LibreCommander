@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::paths;
 use crate::app::types::{ActivePanel, AppState, ListingMode, PanelState, SortMode, SortOptions};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedPanel {
     #[serde(default)]
     pub path: Option<String>,
@@ -22,6 +22,23 @@ pub struct PersistedPanel {
     pub show_hidden: bool,
     #[serde(default)]
     pub show_permissions: bool,
+}
+
+// Hand-written so the `Default` (used when a whole `[left]`/`[right]` table is
+// absent) agrees with the per-field `#[serde(default = "default_true")]` and the
+// runtime `PanelState` default. A derived `Default` would make `show_hidden`
+// false for a missing table but true for a present table with the field omitted.
+impl Default for PersistedPanel {
+    fn default() -> Self {
+        Self {
+            path: None,
+            listing_mode: ListingMode::default(),
+            sort_mode: SortMode::default(),
+            filter: String::new(),
+            show_hidden: true,
+            show_permissions: false,
+        }
+    }
 }
 
 fn default_true() -> bool {

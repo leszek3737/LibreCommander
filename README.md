@@ -1,91 +1,195 @@
-# Libre Commander (lc)
+<div align="center">
 
-A fast, Rust-based file manager inspired by Midnight Commander.
+# 🦀 Libre Commander
+
+**A fast, keyboard-driven, dual-panel terminal file manager — inspired by Midnight Commander.**
+
+[![CI](https://github.com/leszek3737/LibreCommander/actions/workflows/rust.yml/badge.svg)](https://github.com/leszek3737/LibreCommander/actions/workflows/rust.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust&style=flat-square)](https://www.rust-lang.org/)
+[![Edition](https://img.shields.io/badge/edition-2024-yellow?style=flat-square)](https://doc.rust-lang.org/edition-guide/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey?style=flat-square)](#supported-platforms)
+[![Built with Ratatui](https://img.shields.io/badge/built%20with-ratatui-red?style=flat-square)](https://ratatui.rs/)
+
+</div>
+
+Libre Commander (`lc`) brings the classic two-pane file-manager workflow to a
+modern, async-free Rust core. Copy, move, browse archives, preview images, and
+search files — all without leaving the keyboard. One static binary, fully
+offline, no runtime dependencies.
+
+> 💬 `lc` is short for **L**ibre **C**ommander.
+
+<!-- TODO(screenshot): drop a real demo here. Capture with `asciinema` or a GIF,
+     save to assets/lc-demo.png, then replace the mockup below with:
+     <p align="center"><img src="assets/lc-demo.png" alt="lc demo" width="720"></p> -->
+
+```
+ Left   ~/lc                      Right   ~/projects/LibreCommander
+┌────────────────────────────────────────┬────────────────────────────────────────┐
+│Permissions  Size    Modified    Name   │Permissions  Size    Modified    Name   │
+│──────────────────────────────────      │──────────────────────────────────      │
+│drwxr-xr-x          06-26 09:10 src ►   │-rw-r--r--  1.8K  06-14 23:18 Cargo     │
+│drwxr-xr-x          06-26 09:10 target  │-rw-r--r--   73K  06-15 00:52 Cargo     │
+│📁  app/                       12 files │📄  README.md            17 KiB         │
+│📁  ops/                        8 files │📜  LICENSE             1.0 KiB         │
+│📁  ui/                          9 files│⚙   .gitignore                          │
+│🦀  main.rs                  14 KiB     │📦  lc              3.2 MiB release     │
+│🦀  render.rs                 4 KiB     │🖼   logo.png           128 KiB          │
+│📜  AGENTS.md                9.4 KiB    │📜  CHANGELOG.md           —            │
+│...                                     │...                                     │
+├────────────────────────────────────────┴────────────────────────────────────────┤
+│1Help 2Menu 3View 4Edit 5Copy 6Move 7Mkdir 8Delete 9Menu 10Quit                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+  - [Install](#install)
+  - [First Run](#first-run)
+  - [30-Second Cheatsheet](#30-second-cheatsheet)
+- [Keyboard Reference](#keyboard-reference)
+- [Configuration](#configuration)
+- [Archives](#archives)
+- [File Viewer & Image Preview](#file-viewer--image-preview)
+- [Search & Filter](#search--filter)
+- [Sorting](#sorting)
+- [Directory Compare](#directory-compare)
+- [User Menu](#user-menu)
+- [FAQ & Troubleshooting](#faq--troubleshooting)
+- [Supported Platforms](#supported-platforms)
+- [Contributing](#contributing)
+- [Acknowledgments](#acknowledgments)
+- [License](#license)
+
+---
 
 ## Features
 
-- **Dual-panel interface** - Navigate and manage files in two panels side-by-side
-- **Async file operations** - Copy, move, delete, rename, chmod files and directories with background progress and cancellation
-- **Safe recursive copy/move/delete** - Handles directories with symlink preservation, no-clobber copy, cross-device fallback, partial-copy cleanup, and cancellation safeguards
-- **Archive support** - Browse, extract, and create archives (ZIP, TAR/GZ/BZ2/XZ/ZST, 7Z)
-- **Advanced search** - Incremental panel filter, recursive file search (glob patterns), content search (grep-like)
-- **File viewer** - Built-in text viewer with search, hex dump, line numbers, and word wrap
-- **Directory tree** - Interactive expandable directory tree view
-- **Directory compare** - Compare panels by name, size, or modification time (3 modes)
-- **Directory hotlist** - Bookmark directories for quick access via Alt+1 through Alt+9
-- **Directory history** - Navigate back with Alt+Backspace
-- **User menu** - Extensible menu system via `.mc.menu` or `~/.config/lc/menu` (MC-compatible)
-- **Sorting** - 12 sort modes: by name (standard & natural), size, modification time, creation time, or extension (ascending/descending)
-- **File watcher** - Automatic panel refresh on external filesystem changes while preserving filters, sorting, and selection
-- **Panel views** - Long (detailed) and Brief (compact) listing modes
-- **File type icons** - Emoji icons and color coding for archives, images, source code, audio, video, config files
-- **Mouse support** - Single click to select, double click to open/view, click to switch panels
-- **Keyboard-driven** - Rich keyboard shortcut set for power users
-- **Configurable** - Customizable settings stored in `~/.config/lc/config.toml`
-- **System protection** - Refuses to delete critical system directories (`/`, `/etc`, `/usr`, etc.)
+**Workflow**
+- **Dual-panel interface** — navigate and manage files in two panels side-by-side
+- **Directory tree** — interactive expandable tree view
+- **Directory compare** — diff panels by name, size, or modification time (3 modes)
+- **Directory hotlist** — bookmark directories via `Alt+1` … `Alt+9`
+- **Directory history** — jump back with `Alt+Backspace`
+- **Quick cd** — jump to any path with `Alt+C`
+- **Panel views** — Long (detailed) and Brief (compact) listing modes
+- **Mouse support** — click to select, double-click to open, drag to select ranges
 
-## Build Instructions
+**File operations**
+- **Async, cancellable jobs** — copy, move, delete, rename, `chmod` with live byte/item progress
+- **Safe recursive ops** — symlink preservation, no-clobber copy, cross-device fallback, partial-copy cleanup
+- **System protection** — refuses to delete critical directories (`/`, `/etc`, `/usr`, …)
+- **External editor** — `F4` opens files in `$EDITOR`
 
-### Prerequisites
+**Archives** — browse, extract, and create (see [Archives](#archives))
+- Read **and** write: `zip`, `tar`, `tar.gz`, `tar.bz2`, `tar.xz`, `tar.zst`
+- Read-only: `7z`
+- Zip-slip protection, size limits, symlink-safe extraction
 
-- Rust 1.95+ (edition 2024 support required)
-- Cargo
+**Search & view**
+- **Incremental filter** — type to filter the panel in real time (glob patterns)
+- **Recursive file search** — glob-pattern find with auto-navigation to first match
+- **Content search** — grep-like, line-by-line
+- **Built-in viewer** — text + hex dump + image preview, in-file search, word wrap, line numbers
 
-### Building from Source
+**Polish**
+- **File-type icons & colors** — emoji/ASCII/Nerd-Font themes for archives, images, code, audio, video, config
+- **File watcher** — auto-refresh on external changes, preserving filters, sort, and selection
+- **12 sort modes** — name, natural, size, mtime, btime, extension (asc/desc)
+- **MC-compatible user menu** — `.mc.menu` / `~/.config/lc/menu` with conditionals and substitution tokens
+
+<details>
+<summary><b>Why <code>lc</code> over ranger / yazi / mc?</b></summary>
+
+| | Libre Commander | Midnight Commander | ranger / yazi |
+|---|---|---|---|
+| Panel model | Dual-panel (MC-style) | Dual-panel | Single-pane + preview |
+| Runtime | Sync, no async runtime | C | ranger: Python · yazi: async Tokio |
+| Binary | One static binary | system pkg | ranger: script · yazi: binary |
+| Network | Offline by design | — | yazi: fetches previews |
+| `unsafe` | `forbid` crate-wide | — | — |
+| Config | TOML | INI | Python / TOML |
+
+`lc` is for people who want the **MC dual-panel muscle memory**, in a **single
+deterministic Rust binary** that runs offline and refuses to do anything unsafe.
+</details>
+
+---
+
+## Quick Start
+
+### Install
+
+**Option A — one command (any OS, from git):**
 
 ```bash
-cd ~/git/LibreCommander
-cargo build --release
+cargo install --git https://github.com/leszek3737/LibreCommander
 ```
 
-The binary will be located at `target/release/lc`.
+Puts the `lc` binary on your `PATH` (`~/.cargo/bin`). Requires Rust 1.95+.
 
-### Running
-
-```bash
-./target/release/lc
-```
-
-Or install system-wide:
+**Option B — build from source:**
 
 ```bash
+git clone https://github.com/leszek3737/LibreCommander.git
+cd LibreCommander
+cargo build --release    # binary: target/release/lc
+# or install it on your PATH:
 cargo install --path .
 ```
 
-### Dependencies
+> Prebuilt binaries and Homebrew/apt packages are not published yet — track
+> [issues](https://github.com/leszek3737/LibreCommander/issues) if you'd like to
+> help package `lc` for your distro.
 
-| Crate | Purpose |
-|-------|---------|
-| `ratatui` 0.30 | Terminal UI framework |
-| `crossterm` 0.29 | Cross-platform terminal I/O |
-| `serde` 1.0 | Config serialization |
-| `toml` 1 | Config file parsing |
-| `chrono` 0.4 | Date/time formatting |
-| `regex` 1.0 | User menu condition matching |
-| `unicode-width` 0.2 | Unicode character width for alignment |
-| `users` 0.11 | File owner/group lookup |
-| `notify` 8 | Filesystem watcher for auto-refresh (platform-conditional: macOS uses `macos_fsevent`) |
-| `bitflags` 2 | Bitflag types |
-| `dirs` 6 | XDG/user directories |
-| `rayon` 1 | Parallel iteration / background jobs |
-| `infer` 0.19 | MIME type detection |
-| `filetime` 0.2 | File modification time handling |
-| `ansi-to-tui` 8 | Parse ANSI sequences for image viewing |
-| `zip` 8.6 | ZIP archive support (bzip2, zstd, lzma, deflate64) |
-| `tar` 0.4 | TAR archive support |
-| `flate2` 1.1 | Gzip compression |
-| `zstd` 0.13 | Zstandard compression |
-| `ruzstd` 0.8 | Zstandard decompression |
-| `sevenz-rust` 0.6 | 7z archive support |
-| `bzip2` 0.6 | Bzip2 compression |
-| `lzma-rs` 0.3 | LZMA/XZ compression |
-| `memchr` 2 | Fast byte scanning for content detection/search |
-| `shlex` 2 | Shell-style splitting/quoting |
-| `unicode-segmentation` 1 | Unicode grapheme-aware text editing |
+### First Run
 
-Dev dependency: `tempfile` 3 (for tests).
+```bash
+lc
+```
 
-## Keyboard Shortcuts
+That's it — `lc` opens with both panels and a default config. There are no CLI
+flags to learn; everything is driven from the keyboard and `~/.config/lc/config.toml`.
+
+**Optional — enable image preview:** `lc` renders images as character art via
+[`chafa`](https://hpjansson.org/chafa/), which is **not** bundled:
+
+```bash
+# macOS
+brew install chafa
+# Debian / Ubuntu
+sudo apt install chafa
+# Fedora
+sudo dnf install chafa
+# Arch
+sudo pacman -S chafa
+```
+
+If `chafa` is missing, opening an image in the viewer shows
+`Failed to execute chafa (is it installed?)` — install it to enable preview.
+
+### 30-Second Cheatsheet
+
+| Key | Action | | Key | Action |
+|-----|--------|-|-----|--------|
+| `Tab` | Switch panel | | `F3` | View / preview |
+| `h j k l` / arrows | Move | | `F4` | Edit (`$EDITOR`) |
+| `Enter` | Open dir / archive | | `F5` | Copy |
+| `Alt+Backspace` | History back | | `F6` | Move |
+| `Ctrl+H` | Toggle hidden | | `F7` | Mkdir / extract |
+| `Alt+C` | Quick cd | | `F8` | Delete |
+| `Alt+1`…`Alt+9` | Hotlist | | `F10` / `q` | Quit |
+
+Press **`F1`** any time for the in-app help dialog.
+
+---
+
+## Keyboard Reference
 
 ### General
 
@@ -104,7 +208,7 @@ Dev dependency: `tempfile` 3 (for tests).
 | `Tab` | Switch between panels |
 | `↑` / `k` | Move up |
 | `↓` / `j` | Move down |
-| `Enter` | Open directory / Preview archive |
+| `Enter` | Open directory / preview archive |
 | `Alt+Backspace` | Go to previous directory (history) |
 | `Home` | Go to first entry |
 | `End` | Go to last entry |
@@ -116,11 +220,11 @@ Dev dependency: `tempfile` 3 (for tests).
 
 | Key | Action |
 |-----|--------|
-| `F3` | View file / Preview archive contents |
+| `F3` | View file / preview archive contents |
 | `F4` | Edit file (opens in `$EDITOR`) |
 | `F5` | Copy file(s) |
 | `F6` | Move file(s) |
-| `F7` | Create directory / Extract archive |
+| `F7` | Create directory / extract archive |
 | `F8` | Delete file(s) |
 | `F11` | Rename file or directory |
 | `F12` | Archive operations menu |
@@ -131,7 +235,7 @@ Dev dependency: `tempfile` 3 (for tests).
 | `Ctrl+R` | Refresh current panel |
 | `Ctrl+O` | External viewer (temporarily exit to shell) |
 
-Additional file actions are available from the F9 menu: File > Rename and File > Chmod.
+Additional actions are available from the `F9` menu: **File → Rename** and **File → Chmod**.
 
 ### Search & Filter
 
@@ -153,9 +257,9 @@ Additional file actions are available from the F9 menu: File > Rename and File >
 
 | Key | Action |
 |-----|--------|
-| `Alt+1` through `Alt+9` | Jump to directory hotlist slot 1-9 |
-| `Mouse Click` | Select file / Switch panel |
-| `Mouse Double-Click` | Open directory / View file |
+| `Alt+1` … `Alt+9` | Jump to directory hotlist slot 1–9 |
+| `Mouse click` | Select file / switch panel |
+| `Mouse double-click` | Open directory / view file |
 
 ### File Viewer Mode
 
@@ -180,11 +284,11 @@ Additional file actions are available from the F9 menu: File > Rename and File >
 | `Esc` | Exit tree |
 | `↑` / `↓` / `Home` / `End` / `PageUp` / `PageDown` | Navigate |
 | `Enter` | Expand/collapse directory or view file |
-| `c` | cd to selected directory |
+| `c` | `cd` to selected directory |
 
 ### Command Line Mode
 
-Enter command line mode with `Alt+X` or Menu: Command > Command line.
+Enter with `Alt+X` or **Menu → Command → Command line**.
 
 | Key | Action |
 |-----|--------|
@@ -198,7 +302,7 @@ Enter command line mode with `Alt+X` or Menu: Command > Command line.
 | `Ctrl+U` | Delete to line start |
 | `Ctrl+C` | Cancel command line |
 
-### Menu Bar (F9)
+### Menu Bar (`F9`)
 
 | Key | Action |
 |-----|--------|
@@ -217,8 +321,6 @@ Enter command line mode with `Alt+X` or Menu: Command > Command line.
 | `a` | Add to hotlist (hotlist picker only) |
 | `d` | Delete from hotlist (hotlist picker only) |
 
-Note: `a` (add) and `d` (delete) work only in the Hotlist picker.
-
 ### Mouse
 
 | Action | Effect |
@@ -227,83 +329,200 @@ Note: `a` (add) and `d` (delete) work only in the Hotlist picker.
 | Left double-click | Open directory or view file |
 | Left click on panel | Switch active panel |
 | Left drag in panel | Select range of entries |
-| Middle click | Copy (F5 equivalent) |
-| Right click | Cancel / close (Esc equivalent) |
+| Middle click | Copy (`F5` equivalent) |
+| Right click | Cancel / close (`Esc` equivalent) |
 | Scroll | Scroll panel cursor |
-| Click function bar (bottom) | F1-F10 actions |
+| Click function bar (bottom) | `F1`–`F10` actions |
+
+---
 
 ## Configuration
 
-Configuration file location: `~/.config/lc/config.toml`
-
-### Config Schema
+Config location: **`~/.config/lc/config.toml`**
 
 ```toml
-active_panel = "left"  # "left" or "right"
-dir_first = true       # directories before files in sort
-sort_sensitive = false # case-sensitive name sorting
+active_panel   = "left"   # "left" or "right"
+dir_first      = true     # directories before files in sort
+sort_sensitive = false    # case-sensitive name sorting
 
 [left]
-path = "/home/user"
-show_hidden = true
+path             = "/home/user"
+show_hidden      = true
 show_permissions = false
-listing_mode = "long"  # "long" or "brief"
-sort_mode = "name_asc" # see sort modes below
-filter = ""            # glob pattern, empty = no filter
+listing_mode     = "long"      # "long" or "brief"
+sort_mode        = "name_asc"  # see Sort Modes below
+filter           = ""          # glob pattern, empty = no filter
 
 [right]
-path = "/home/user/projects"
-show_hidden = true
+path             = "/home/user/projects"
+show_hidden      = true
 show_permissions = false
-listing_mode = "long"
-sort_mode = "name_asc"
-filter = ""
+listing_mode     = "long"
+sort_mode        = "name_asc"
+filter           = ""
 
 hotlist = ["/home/user", "/home/user/projects"]
 ```
 
 ### Sort Modes
 
-`name_asc`, `name_desc`, `natural_name_asc`, `natural_name_desc`, `size_asc`, `size_desc`, `mod_time_asc`, `mod_time_desc`, `btime_asc`, `btime_desc`, `extension_asc`, `extension_desc`
+`name_asc`, `name_desc`, `natural_name_asc`, `natural_name_desc`, `size_asc`,
+`size_desc`, `mod_time_asc`, `mod_time_desc`, `btime_asc`, `btime_desc`,
+`extension_asc`, `extension_desc`
 
-An optional `[theme]` section is supported for color customization; all fields have defaults.
+### Theming
+
+An optional `[theme]` section customizes colors. All fields have defaults.
 
 ```toml
 [theme]
-icon_theme = "emoji"      # "emoji", "ascii", or "nerd_font"
-panel_bg = "navy"
-panel_fg = "white"
+icon_theme   = "emoji"      # "emoji", "ascii", or "nerd_font"
+panel_bg     = "navy"
+panel_fg     = "white"
 highlight_bg = "cyan"
 highlight_fg = "black"
-directory = "white"
-executable = "green"
-symlink = "cyan"
-archive = "red"
-image = "magenta"
-video = "light_magenta"
-audio = "light_green"
-source_code = "yellow"
-config = "light_blue"
+directory    = "white"
+executable   = "green"
+symlink      = "cyan"
+archive      = "red"
+image        = "magenta"
+video        = "light_magenta"
+audio        = "light_green"
+source_code  = "yellow"
+config       = "light_blue"
 regular_file = "white"
 ```
 
-Color values accept named colors (`red`, `light_blue`, `navy`), hex colors (`#RRGGBB` or `#RGB`), or 0-255 ANSI color indexes.
+Color values accept **named colors** (`red`, `light_blue`, `navy`), **hex**
+(`#RRGGBB` or `#RGB`), or **0–255 ANSI** indexes.
 
 ### Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `EDITOR` | External editor for F4 | `vi` |
+| `EDITOR` | External editor for `F4` | `vi` |
 | `HOME` | Config/menu file location | (required) |
 | `XDG_CONFIG_HOME` | Config/menu file base directory | `$HOME/.config` |
+
+---
+
+## Archives
+
+`lc` browses, extracts, and creates archives.
+
+| Format | Extension | Read | Write |
+|--------|-----------|:----:|:-----:|
+| ZIP | `.zip` | ✅ | ✅ |
+| TAR | `.tar` | ✅ | ✅ |
+| TAR+Gzip | `.tar.gz`, `.tgz` | ✅ | ✅ |
+| TAR+Bzip2 | `.tar.bz2`, `.tbz`, `.tbz2` | ✅ | ✅ |
+| TAR+XZ | `.tar.xz`, `.txz` | ✅ | ✅ |
+| TAR+Zstd | `.tar.zst`, `.tzst` | ✅ | ✅ |
+| 7z | `.7z` | ✅ | ❌ |
+
+| Key | Action |
+|-----|--------|
+| `Enter` on archive | Preview archive contents |
+| `F3` on archive | Preview archive contents |
+| `F7` on archive | Extract archive |
+| `F12` | Archive menu (extract / create) |
+| `F12` with selected files | Create archive from selection |
+
+The extract dialog lists archive contents and asks for the destination; the
+create dialog picks the archive name and format (`zip`, `tar.gz`, `tar.xz`,
+`tar`). All archive operations run in the background with progress and
+cancellation.
+
+**Safety:** extraction validates paths against [zip-slip](https://snyk.io/research/zip-slip-vulnerability),
+enforces size limits, and handles symlinks safely.
+
+---
+
+## File Viewer & Image Preview
+
+The built-in viewer (`F3`) supports:
+
+- **Text mode** with word wrap (`w`)
+- **Line numbers** (`l`)
+- **Hex dump** (`h`) — standard hex+offset, 16 bytes per line
+- **Image preview** — auto-detected via MIME; rendered as character art through `chafa`
+- **In-file search** (`/` to search, `n` / `N` to navigate)
+- **Horizontal scrolling** for wide lines
+- **Unicode** — lossy UTF-8 display for binary files
+- **Auto content detection** — MIME-based with null-byte fallback
+
+Limits: files up to 100 MiB (larger are truncated).
+
+### Image preview in detail
+
+On first view (and on terminal resize), `lc` spawns `chafa --size WxH <file>`
+and parses its ANSI output into terminal cells via `ansi-to-tui`. The result is
+cached — subsequent frames only clone the cached buffer, keeping rendering at
+full speed. Preview size adapts to the terminal area.
+
+---
+
+## Search & Filter
+
+**Incremental filter** — type any character in normal mode to filter the panel
+in real time. Supports glob patterns (`*`, `?`), case-insensitive.
+
+**Find file** — **Menu → Command → Find file**. Recursive glob search from the
+active panel's directory; the first match is navigated to automatically.
+
+**Content search** — grep-like, line-by-line, case-insensitive. Limits: files
+over 10 MiB skipped, lines over 64 KiB skipped, max 1000 results, max depth 20,
+max 10 000 items scanned. *(Not yet wired to a UI action — see
+[issue tracker](https://github.com/leszek3737/LibreCommander/issues) for progress.)*
+
+---
+
+## Sorting
+
+Twelve sort modes, cycled via **Left/Right → Sort order**:
+
+| Mode | Key | Order |
+|------|-----|-------|
+| Name ↑ | `name_asc` | A–Z |
+| Name ↓ | `name_desc` | Z–A |
+| Nat ↑ | `natural_name_asc` | A–Z (digit-aware) |
+| Nat ↓ | `natural_name_desc` | Z–A (digit-aware) |
+| Size ↑ | `size_asc` | Smallest first |
+| Size ↓ | `size_desc` | Largest first |
+| Time ↑ | `mod_time_asc` | Oldest first |
+| Time ↓ | `mod_time_desc` | Newest first |
+| Created ↑ | `btime_asc` | Oldest first |
+| Created ↓ | `btime_desc` | Newest first |
+| Ext ↑ | `extension_asc` | A–Z |
+| Ext ↓ | `extension_desc` | Z–A |
+
+Rules: `..` always first, directories before files, case-insensitive. These
+defaults are configurable via `dir_first` and `sort_sensitive` in `config.toml`.
+Natural sort compares multi-digit runs numerically (`file9` < `file10`).
+
+---
+
+## Directory Compare
+
+**Command menu → Compare dirs.** Three modes:
+
+| Mode | Matching criteria |
+|------|-------------------|
+| Quick | Filename + entry type |
+| Size | Filename + size (dirs: name + type only) |
+| Thorough | Filename + size + modification time (dirs: name + type only) |
+
+Differing and unique entries are auto-selected in both panels.
+
+---
 
 ## User Menu
 
 Create custom menu entries in:
-- Local: `.mc.menu` in the active panel's directory
-- Global: `~/.config/lc/menu`
+- **Local:** `.mc.menu` in the active panel's directory
+- **Global:** `~/.config/lc/menu`
 
-### Menu Format
+### Format
 
 ```
 # Comment line
@@ -323,12 +542,11 @@ D  Diff panels
 	diff -rq %d %D
 ```
 
-### Entry Structure
-
-- **Hotkey**: First character of the line (single char)
-- **Title**: Rest of the hotkey line (display label)
-- **Body**: Indented lines (tab or space) as shell commands
-- **Condition**: `+ f <regex>` — only show entry when filename matches regex; multiple condition lines are OR'd together. Conditions can appear before or after the hotkey line.
+- **Hotkey:** first character of the line (single char)
+- **Title:** rest of the hotkey line (display label)
+- **Body:** indented lines (tab or space) as shell commands
+- **Condition:** `+ f <regex>` — only show the entry when the filename matches;
+  multiple condition lines are OR'd; may appear before or after the hotkey line
 
 ### Substitution Tokens
 
@@ -340,194 +558,105 @@ D  Diff panels
 | `%t` / `%s` | Tagged/selected files (space-separated, shell-quoted); `%s` is an alias for `%t` |
 | `%%` | Literal `%` |
 
-Commands are executed via `sh -c` with the active panel's directory as working directory.
+Commands run via `sh -c` with the active panel's directory as the working
+directory. Menu files are limited to 1 MiB.
 
-Menu files are limited to 1 MiB.
+---
 
-## File Operations
+## File Operation Safety
 
-Long-running copy, move, and delete operations run as background jobs with live item and byte progress. Operations can be canceled between safe boundaries; move operations finish cleanup after a successful cross-device copy so source and destination do not diverge unexpectedly.
+Long-running copy, move, and delete operations run as background jobs with live
+item and byte progress, and can be canceled between safe boundaries.
 
-Safety guarantees:
-
-- Existing destinations are not overwritten by chunked copies.
-- Copy/move conflicts show an overwrite confirmation before replacing existing entries.
-- Recursive directory copies publish through a temporary sibling and clean up partial output on failure or cancellation.
-- Symlinks are copied or deleted as symlinks rather than following their targets.
-- Cross-device moves fall back to copy-then-delete only after the copy succeeds.
+- Existing destinations are **not** overwritten by chunked copies.
+- Copy/move conflicts show an overwrite confirmation before replacing.
+- Recursive directory copies publish through a temporary sibling and clean up
+  partial output on failure or cancellation.
+- Symlinks are copied or deleted **as symlinks**, never by following their target.
+- Cross-device moves fall back to copy-then-delete **only after** the copy succeeds.
 - Critical system directories are protected from deletion.
+- Terminal state is always restored — even on panic.
 
-## File Viewer
+---
 
-The built-in viewer (F3) supports:
+## FAQ & Troubleshooting
 
-- **Text mode** with word wrap (toggle with `w`)
-- **Line numbers** (toggle with `l`)
-- **Hex dump** (toggle with `h`) — standard hex+offset format, 16 bytes per line
-- **Image preview** — automatic image preview rendering in character art using `chafa` (toggle with `h` to hex mode)
-- **In-file search** (`/` to search, `n`/`N` to navigate matches)
-- **Horizontal scrolling** for wide lines
-- **Unicode support** — lossy UTF-8 display for binary files
-- **Size limit** — files up to 100 MiB (larger files are truncated)
-- **Content detection** — auto-detection of text vs binary content (MIME-based with null-byte fallback)
+**Image preview shows "Failed to execute chafa".**
+Install [`chafa`](https://hpjansson.org/chafa/) (see [First Run](#first-run)).
+It is not bundled with `lc`.
 
-## Image Preview
+**Colors look wrong / no truecolor.**
+Set `COLORTERM=truecolor` in your shell. Most modern terminals enable it by
+default; legacy 8-color terminals will look flat.
 
-lc renders images as character art (ANSI TrueColor) using **chafa**. Open any
-image file with `F3` — the viewer auto-detects image MIME types and switches to
-Image mode.
+**Icons render as boxes / question marks.**
+Your font lacks the glyphs. Use the `ascii` icon theme (no font dependency) or
+install a [Nerd Font](https://www.nerdfonts.com/) and set `icon_theme = "nerd_font"`.
 
-### Requirements
+**Where is my config?**
+`~/.config/lc/config.toml` (or `$XDG_CONFIG_HOME/lc/config.toml`). Edit it
+directly — `lc` does not migrate config without your approval.
 
-```bash
-# macOS
-brew install chafa
+**Does `lc` support Windows?**
+Not yet. The CI matrix covers **Linux and macOS**. The file watcher uses a
+platform-specific `notify` backend (macOS: `macos_fsevent`).
 
-# Debian / Ubuntu
-sudo apt install chafa
+**Can I make `lc` my default file manager?**
+`lc` is a terminal application, not a desktop/GUI file manager. It is meant to
+be launched from a terminal, not wired into `xdg-open`.
 
-# Fedora
-sudo dnf install chafa
+**It crashed / did something wrong.**
+Please open an issue with the steps to reproduce, your OS, terminal, and Rust
+version — see [Contributing](#contributing).
 
-# Arch
-sudo pacman -S chafa
-```
+---
 
-chafa is not bundled with lc. If missing, the viewer shows
-"Failed to execute chafa (is it installed?)".
+## Supported Platforms
 
-### Controls in Image mode
+| OS | Status | Notes |
+|----|:------:|-------|
+| Linux | ✅ CI-tested | Primary target |
+| macOS | ✅ CI-tested | Watcher uses `macos_fsevent` backend |
+| Windows | ❌ Not yet | Help wanted — see issues |
+| BSDs | ⚠️ Untested | May work; please report |
 
-| Key | Action |
-|-----|--------|
-| `h` | Toggle between image preview and hex dump |
-| `Up` / `Down` / `k` / `j` | No-op (image fills available area) |
-| `Esc` / `F3` / `F10` / `q` | Close viewer |
+Requires **Rust 1.95+** (edition 2024).
 
-### How it works
+---
 
-- On first view or terminal resize, lc spawns `chafa --size WxH <file>` and
-  parses its ANSI output into terminal characters via `ansi-to-tui`.
-- The result is cached — subsequent frames only clone the cached `Text`,
-  keeping **60 FPS** rendering.
-- Preview size adapts to the terminal area, leaving one line for the status bar.
+## Contributing
 
-## Archive Support
+Contributions are welcome! Please read **[CONTRIBUTING.md](CONTRIBUTING.md)**
+for build steps, testing, code style, and the quality gate that must pass before
+merge.
 
-lc supports browsing, extracting, and creating archives. Supported formats:
-
-| Format | Extension | Read | Write |
-|--------|-----------|------|-------|
-| ZIP | `.zip` | Yes | Yes |
-| TAR | `.tar` | Yes | Yes |
-| TAR+Gzip | `.tar.gz`, `.tgz` | Yes | Yes |
-| TAR+Bzip2 | `.tar.bz2`, `.tbz`, `.tbz2` | Yes | Yes |
-| TAR+XZ | `.tar.xz`, `.txz` | Yes | Yes |
-| TAR+Zstd | `.tar.zst`, `.tzst` | Yes | Yes |
-| 7z | `.7z` | Yes | No |
-
-### Archive Operations
-
-| Key | Action |
-|-----|--------|
-| `Enter` on archive | Preview archive contents in viewer |
-| `F3` on archive | Preview archive contents in viewer |
-| `F7` on archive | Extract archive |
-| `F12` | Archive menu (extract/create) |
-| `F12` with selected files | Create archive from selection |
-
-Extract dialog shows archive contents and lets you specify the destination directory. Create dialog lets you choose the archive name and format (zip, tar.gz, tar.xz, tar).
-
-All archive operations run in the background with progress reporting and cancellation support.
-
-## Search
-
-### Incremental Search (Panel Filter)
-
-Type any character in normal mode to start filtering. The panel updates in real-time. Supports glob patterns (`*`, `?`). Case-insensitive.
-
-### File Search (Find File)
-
-Menu: Command > Find file. Recursive glob-pattern search from the active panel's directory. First match is navigated to automatically.
-
-### Content Search
-
-Available programmatically via `FileSearch::search_content()`. Searches file contents line-by-line. Case-insensitive. Content search limits: files over 10 MiB skipped, lines over 64 KiB skipped, max 1000 results, max depth 20, max 10000 items scanned. Not yet wired to a UI action.
-
-## Sorting
-
-Twelve sort modes, cycled via menu (Left/Right > Sort order):
-
-| Mode | Key | Order |
-|------|-----|-------|
-| Name ↑ | name_asc | A-Z |
-| Name ↓ | name_desc | Z-A |
-| Nat ↑ | natural_name_asc | A-Z (digit-aware) |
-| Nat ↓ | natural_name_desc | Z-A (digit-aware) |
-| Size ↑ | size_asc | Smallest first |
-| Size ↓ | size_desc | Largest first |
-| Time ↑ | mod_time_asc | Oldest first |
-| Time ↓ | mod_time_desc | Newest first |
-| Created ↑ | btime_asc | Oldest first |
-| Created ↓ | btime_desc | Newest first |
-| Ext ↑ | extension_asc | A-Z |
-| Ext ↓ | extension_desc | Z-A |
-
-Rules: `..` always first, directories before files, case-insensitive. These defaults are configurable via `dir_first` and `sort_sensitive` in `config.toml`. Natural sort compares multi-digit runs numerically (e.g. `file9` < `file10`).
-
-## Directory Compare
-
-Command menu > Compare dirs. Three modes:
-
-| Mode | Matching criteria |
-|------|-------------------|
-| Quick | Filename + entry type |
-| Size | Filename + size (dirs: name + type only) |
-| Thorough | Filename + size + modification time (dirs: name + type only) |
-
-Differing and unique entries are auto-selected in both panels.
-
-## Testing
-
-Run the test suite:
+The quick gate (run before declaring done):
 
 ```bash
-cargo test --locked
-```
-
-The test suite covers:
-- File operations (copy, move, delete, rename, chmod)
-- Search (incremental, glob, content, symlink safety)
-- Sorting (all 12 modes, edge cases)
-- UI rendering (colors, icons, formatting, truncation)
-- Config persistence (roundtrip serialization)
-- User menu parsing and substitution
-- Directory tree building and toggling
-- Viewer (scroll, search, hex mode, Unicode)
-- Batch operations (copy/move/delete with progress and cancellation)
-- File watcher events and debouncing
-
-## Quality Gates
-
-Run these checks before submitting changes:
-
-```bash
-cargo fmt --check
+cargo fmt
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --release --locked
 ```
 
-File operations include safety guards: system directories are protected from deletion, symlinks are handled correctly during copy/move/delete, and terminal state is always restored (even on panic).
+See the [open issues](https://github.com/leszek3737/LibreCommander/issues) for
+ideas, and please open an issue before starting large changes.
 
-## License
-
-MIT License
+---
 
 ## Acknowledgments
 
-Libre Commander is inspired by:
-- [Midnight Commander](https://midnight-commander.org/) - The original dual-panel file manager
-- [Yazi](https://github.com/sxyazi/yazi) - Some code components were adapted from this project by [Sxyazi](https://github.com/sxyazi) (MIT License)
-- [Rust](https://www.rust-lang.org/) - The programming language
-- [Ratatui](https://ratatui.rs/) - Terminal UI library
+Libre Commander stands on the shoulders of giants:
+
+- **[Midnight Commander](https://midnight-commander.org/)** — the original dual-panel file manager that defined the workflow
+- **[Yazi](https://github.com/sxyazi/yazi)** — some code components adapted by [Sxyazi](https://github.com/sxyazi) (MIT)
+- **[Rust](https://www.rust-lang.org/)** — the language
+- **[Ratatui](https://ratatui.rs/)** — the terminal UI library
+- **[Crossterm](https://github.com/crossterm-rs/crossterm)** — cross-platform terminal I/O
+- **[chafa](https://hpjansson.org/chafa/)** — image-to-character-art rendering
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Leszek3737

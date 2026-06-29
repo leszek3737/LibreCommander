@@ -27,9 +27,13 @@ const DEFAULT_DROPDOWN_WIDTH: usize = 10;
 /// (top border, header row, bottom border, function bar). Used by
 /// [`panel_bounds`] to derive the file-row range from the terminal height.
 const PANEL_CHROME_ROWS: u16 = 4;
-/// Minimum terminal height that can host at least one panel file row. Below
-/// this, [`panel_bounds`] yields an empty range and clicks/scrolls in the panel
-/// body are no-ops (see [`in_panel_file_rows`]).
+/// Smallest terminal height for which `height - PANEL_CHROME_ROWS` stays `>= 1`,
+/// i.e. the threshold below which [`panel_bounds`] would underflow into a
+/// malformed `(1, 0)` range. It is NOT the height needed to *display* a file
+/// row: the body has `height - LAYOUT_OVERHEAD_ROWS` (= 6) rows, so the first
+/// real file row only appears at `height >= 7`. For heights 5–6 the bounds are
+/// well-formed but the body is empty, which correctly matches the renderer
+/// (`panel_visible_height`), so clicks/scrolls in the body are no-ops.
 const MIN_PANEL_HEIGHT: u16 = PANEL_CHROME_ROWS + 1;
 /// The function bar is split into 10 equal-width F-key buttons (F1..=F10).
 const FUNCTION_BAR_BUTTONS: u32 = 10;
@@ -743,8 +747,13 @@ fn set_selection_range(
 }
 
 fn handle_mouse_up(state: &mut AppState) {
+    // Do NOT clear `last_click` here. crossterm reports a physical double-click as
+    // Down, Up, Down, Up (no native double-click event), so clearing it on the
+    // first Up would erase the timestamp the second Down needs, making
+    // double-click detection impossible. Stale entries are already invalidated by
+    // the `DOUBLE_CLICK_THRESHOLD_MS` timestamp check and reset on a successful
+    // double-click.
     state.interaction.drag_anchor_index = None;
-    state.interaction.last_click = None;
 }
 
 #[cfg(test)]

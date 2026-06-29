@@ -63,10 +63,28 @@ pub struct RunningJob {
 impl RunningJob {
     pub fn shutdown(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take()
-            && let Err(e) = handle.join()
-        {
-            debug_log!("worker thread panicked during shutdown: {:?}", e);
+        if let Some(handle) = self.handle.take() {
+            // Drain the channel we still own while waiting, bounded by the same
+            // deadline as the Drop reaper. The progress channel is a bounded
+            // `sync_channel`, so a worker blocked in `send()` on a full channel
+            // would never reach its next `cancel` check; an unbounded `join()`
+            // here would then deadlock teardown (we wait for the worker, the
+            // worker waits for a free slot). Draining lets it proceed and observe
+            // `cancel`.
+            let start = std::time::Instant::now();
+            while !handle.is_finished() && start.elapsed() < REAPER_JOIN_DEADLINE {
+                while self.receiver.try_recv().is_ok() {}
+                std::thread::sleep(REAPER_POLL_INTERVAL);
+            }
+            if handle.is_finished() {
+                if let Err(e) = handle.join() {
+                    debug_log!("worker thread panicked during shutdown: {:?}", e);
+                }
+            } else {
+                debug_log!(
+                    "worker thread did not finish within deadline during shutdown — detaching"
+                );
+            }
         }
     }
 }
@@ -223,19 +241,13 @@ pub fn poll_running_job(
                 latest_progress = Some(progress);
             }
             JobMessage::Finished { report } => {
-                // Show the final progress snapshot and prevent the
-                // second pass (lines below) from formatting the same
-                // progress message again.
-                if let Some(progress) = latest_progress.take() {
-                    let msg =
-                        format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
-                    state.mode = AppMode::Dialog(DialogKind::progress(
-                        msg,
-                        progress.byte_percent() / 100.0,
-                        true,
-                    ));
-                    dirty = true;
-                }
+                // `finish_running_job` (run unconditionally below when `finished`
+                // is set) switches the mode to `AppMode::Normal`, and the caller
+                // only renders after this function returns — so any progress
+                // dialog built here would be overwritten before it could be
+                // displayed. Just drop the pending progress so the second pass
+                // below also skips the now-pointless formatting.
+                latest_progress = None;
                 finished = Some(report);
             }
             JobMessage::SearchFinished { outcome, pattern } => {
@@ -244,10 +256,10 @@ pub fn poll_running_job(
         }
     }
 
-    // When `Finished` was the last message, `latest_progress` was already
-    // formatted inside the `Finished` arm above (via `take()`). This block
-    // handles the remaining case where Progress arrived but Finished did not
-    // (or arrived in a later poll cycle).
+    // Handles the case where Progress arrived but Finished did not (or arrives in
+    // a later poll cycle). When `Finished` was seen this cycle, the arm above
+    // cleared `latest_progress`, because `finish_running_job` owns the final mode
+    // and would overwrite any dialog built here before the next render.
     if let Some(progress) = latest_progress {
         let msg = format_progress_message(&progress, job.cancel.load(Ordering::Relaxed));
         state.mode = AppMode::Dialog(DialogKind::progress(
@@ -258,6 +270,12 @@ pub fn poll_running_job(
         dirty = true;
     }
 
+    // Handle `Finished` and `SearchFinished` as independent `if`s rather than an
+    // `if/else if` chain: a worker sends exactly one of them today, but should the
+    // protocol ever emit both in a single poll cycle, the second would otherwise
+    // be silently dropped. The `handled_final` flag keeps the no-report fallback
+    // below mutually exclusive with both terminal paths.
+    let mut handled_final = false;
     if let Some(report) = finished {
         if let Some(mut job) = running_job.take()
             && let Some(handle) = job.handle.take()
@@ -266,7 +284,9 @@ pub fn poll_running_job(
         }
         finish_running_job(state, &report, refresh_both);
         dirty = true;
-    } else if let Some((outcome, pattern)) = finished_search {
+        handled_final = true;
+    }
+    if let Some((outcome, pattern)) = finished_search {
         // Capture `search_origin` in a local before `take()` consumes the job.
         let search_origin = running_job.as_ref().and_then(|j| j.search_origin);
         if let Some(mut job) = running_job.take()
@@ -276,7 +296,9 @@ pub fn poll_running_job(
         }
         finish_search_job(state, &outcome, &pattern, search_origin, refresh_both);
         dirty = true;
-    } else if let Some(job) = running_job.as_mut() {
+        handled_final = true;
+    }
+    if !handled_final && let Some(job) = running_job.as_mut() {
         let worker_finished = job.handle.as_ref().is_some_and(JoinHandle::is_finished);
         if worker_finished && let Some(handle) = job.handle.take() {
             let exited_cleanly =

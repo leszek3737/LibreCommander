@@ -121,6 +121,18 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
     }
 }
 
+/// Reports which destination names already exist, so the caller can prompt
+/// before overwriting.
+///
+/// This is a pre-flight check only: the actual copy/move runs asynchronously in
+/// `job_runner`, so a file can appear (or vanish) in the window between this
+/// `symlink_metadata` probe and the operation. The check therefore drives the
+/// confirmation UX, not safety — atomicity is the operation layer's job:
+/// non-overwrite copies open the target with `create_new`/`O_NOFOLLOW` and moves
+/// call `ensure_destination_absent` immediately before `fs::rename`. A fully
+/// race-free guarantee would need OS-specific atomics (e.g. `renameat2` with
+/// `RENAME_NOREPLACE`), which the codebase's non-adversarial-filesystem contract
+/// deliberately does not pursue.
 pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> {
     let action = state.ui.pending_action.as_ref()?;
     match action {
@@ -193,6 +205,16 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
     }
 }
 
+/// Flip the two-button dialog selection (0 <-> 1). Shared by the confirmation
+/// and archive dialogs so the Left/Right toggle stays identical in both.
+fn toggle_dialog_selection(state: &mut AppState) {
+    state.input.dialog_selection = if state.input.dialog_selection == 0 {
+        1
+    } else {
+        0
+    };
+}
+
 fn confirm_dialog_key(state: &mut AppState, key: KeyCode) -> Option<bool> {
     match key {
         KeyCode::Char('y' | 'Y') => Some(true),
@@ -203,11 +225,7 @@ fn confirm_dialog_key(state: &mut AppState, key: KeyCode) -> Option<bool> {
             None
         }
         KeyCode::Left | KeyCode::Right => {
-            state.input.dialog_selection = if state.input.dialog_selection == 0 {
-                1
-            } else {
-                0
-            };
+            toggle_dialog_selection(state);
             None
         }
         _ => None,
@@ -328,6 +346,9 @@ fn input_action_viewer_search(
 }
 
 fn input_action_create_directory(state: &mut AppState, input: &str) -> InputOutcome {
+    // Clear any stale message up front so a success leaves no leftover error from
+    // a prior attempt; the validation/failure paths below set a fresh one.
+    state.ui.status_message = None;
     if let Err(msg) = validate_create_or_rename(input, "Directory name") {
         state.ui.status_message = Some(msg);
         return InputOutcome::Finalized;
@@ -340,6 +361,7 @@ fn input_action_create_directory(state: &mut AppState, input: &str) -> InputOutc
 }
 
 fn input_action_rename(state: &mut AppState, input: &str) -> InputOutcome {
+    state.ui.status_message = None;
     if let Err(msg) = validate_create_or_rename(input, "New name") {
         state.ui.status_message = Some(msg);
         return InputOutcome::Finalized;
@@ -354,6 +376,7 @@ fn input_action_rename(state: &mut AppState, input: &str) -> InputOutcome {
 }
 
 fn input_action_chmod(state: &mut AppState, input: &str) -> InputOutcome {
+    state.ui.status_message = None;
     let Some(mode) = parse_octal_mode(input) else {
         if input.trim().is_empty() {
             state.ui.status_message = Some("Octal mode cannot be empty".to_string());
@@ -565,11 +588,7 @@ fn archive_dialog_nav(state: &mut AppState, key: KeyCode) -> ArchiveNav {
             ArchiveNav::Dismissed
         }
         KeyCode::Left | KeyCode::Right => {
-            state.input.dialog_selection = if state.input.dialog_selection == 0 {
-                1
-            } else {
-                0
-            };
+            toggle_dialog_selection(state);
             ArchiveNav::Handled
         }
         KeyCode::Enter if state.input.dialog_selection == 1 => {

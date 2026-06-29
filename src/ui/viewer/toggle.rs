@@ -109,8 +109,21 @@ impl ViewerState {
         let mut new_offsets = Vec::with_capacity(new_heights.len());
         let mut acc = 0usize;
         for &h in &new_heights {
-            acc += h;
-            new_offsets.push(acc);
+            // Guard the cumulative offset against `usize` overflow (only reachable
+            // for absurd inputs). Storing a wrapped/partial offset would corrupt
+            // the binary search in `visual_row_to_logical`; instead drop the cache
+            // and fall back to logical-line scrolling, mirroring the `checked_add`
+            // guard on the linear-search path in `scroll.rs`.
+            match acc.checked_add(h) {
+                Some(v) => {
+                    acc = v;
+                    new_offsets.push(acc);
+                }
+                None => {
+                    self.invalidate_visual_cache();
+                    return;
+                }
+            }
         }
         *self.render_cache.visual_heights.borrow_mut() = new_heights;
         *self.render_cache.visual_offsets.borrow_mut() = new_offsets;

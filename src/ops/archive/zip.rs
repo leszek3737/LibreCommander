@@ -16,6 +16,22 @@ use crate::debug_log;
 
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
 
+/// Upper bound on the number of entries written into a created archive. Mirrors
+/// the tar create-side limit (`tar::MAX_CREATE_ENTRIES`) so both formats reject
+/// pathologically large directory trees instead of exhausting memory/CPU.
+const MAX_CREATE_ENTRIES: usize = 100_000;
+
+/// Increments `count` for one archive entry and errors if the limit is crossed.
+fn count_entry(count: &mut usize) -> Result<(), ArchiveError> {
+    *count = count.saturating_add(1);
+    if *count > MAX_CREATE_ENTRIES {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "too many entries (limit {MAX_CREATE_ENTRIES})"
+        )));
+    }
+    Ok(())
+}
+
 /// Removes a partially written temporary archive, logging any failure instead of
 /// silently dropping the error (mirrors the tar create path).
 fn cleanup_temp_file(path: &Path) {
@@ -75,13 +91,21 @@ fn extract_zip_entries(
     extracted_paths: &mut Vec<PathBuf>,
 ) -> Result<(), ArchiveError> {
     let entry_count = archive.len();
-    extracted_paths.reserve(entry_count.min(MAX_LIST_ENTRIES));
+    // Fail loudly instead of silently truncating: `.min(MAX_LIST_ENTRIES)` on the
+    // loop would extract only the first 100k entries yet still return `Ok`,
+    // reporting success on an incomplete extraction. The cap still guards against
+    // pathological entry counts — it just can no longer be mistaken for success.
+    if entry_count > MAX_LIST_ENTRIES {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "archive has {entry_count} entries, exceeding the maximum {MAX_LIST_ENTRIES}"
+        )));
+    }
+    extracted_paths.reserve(entry_count);
 
     fs::create_dir_all(dest)?;
     let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
-    let mut last_parent: Option<PathBuf> = None;
     let mut total_size = super::TotalSizeGuard::default();
-    for i in 0..entry_count.min(MAX_LIST_ENTRIES) {
+    for i in 0..entry_count {
         check_cancel(cancel)?;
 
         let mut entry = archive.by_index(i).map_err(map_zip_err)?;
@@ -115,12 +139,13 @@ fn extract_zip_entries(
                     entry.compressed_size()
                 )));
             }
-            if let Some(parent) = outpath.parent()
-                && last_parent.as_deref() != Some(parent)
-            {
+            // Re-verify the parent on EVERY entry rather than caching the last
+            // one: a cached parent could be swapped for a symlink between entries
+            // (TOCTOU), and skipping `verify_within_dest` on a cache hit would let
+            // a later entry be written outside `canonical_dest`.
+            if let Some(parent) = outpath.parent() {
                 fs::create_dir_all(parent)?;
                 super::verify_within_dest(&canonical_dest, parent)?;
-                last_parent = Some(parent.to_path_buf());
             }
             super::check_symlink_at_dest(&outpath)?;
             let mut outfile = super::open_outfile(&outpath)?;
@@ -168,6 +193,7 @@ fn add_sources_to_zip(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
+    let mut count: usize = 0;
     for source in sources {
         check_cancel(cancel)?;
 
@@ -176,8 +202,9 @@ fn add_sources_to_zip(
         // (add_dir_to_zip) and the final open is hardened with O_NOFOLLOW.
         let meta = fs::symlink_metadata(source)?;
         if meta.is_dir() {
-            add_dir_to_zip(zip, source, source, options, progress, cancel)?;
+            add_dir_to_zip(zip, source, source, options, progress, cancel, &mut count)?;
         } else {
+            count_entry(&mut count)?;
             let name = source
                 .file_name()
                 .ok_or_else(|| {
@@ -251,6 +278,7 @@ fn add_dir_to_zip(
     options: &SimpleFileOptions,
     progress: &Sender<u64>,
     cancel: &AtomicBool,
+    count: &mut usize,
 ) -> Result<(), ArchiveError> {
     for entry in fs::read_dir(dir)? {
         check_cancel(cancel)?;
@@ -276,9 +304,11 @@ fn add_dir_to_zip(
             continue;
         }
         if meta.is_dir() {
+            count_entry(count)?;
             zip.add_directory(&name, *options).map_err(map_zip_err)?;
-            add_dir_to_zip(zip, base, &path, options, progress, cancel)?;
+            add_dir_to_zip(zip, base, &path, options, progress, cancel, count)?;
         } else {
+            count_entry(count)?;
             add_file_to_zip(zip, &name, &path, options, progress)?;
         }
     }

@@ -58,10 +58,19 @@ impl PartialEq for MenuEntry {
 /// against option injection (filenames starting with `-`).
 /// Use `safe_file_arg` which prepends `./` to `-`-prefixed names.
 pub fn shell_quote(s: &str) -> String {
-    // Exact for the common quote-free case (content + two surrounding quotes);
-    // only the rare embedded-quote path triggers a reallocation.
-    let mut out = String::with_capacity(s.len() + 2);
+    shell_quote_prefixed("", s)
+}
+
+/// Single-quote-escape `s`, emitting `prefix` (already trusted, quote-free)
+/// inside the quotes before the escaped body. Fuses the `./` option-injection
+/// guard into the same allocation as the quoting, avoiding the intermediate
+/// `format!("./{s}")` string that `safe_file_arg` used to build.
+fn shell_quote_prefixed(prefix: &str, s: &str) -> String {
+    // Exact for the common quote-free case (prefix + content + two surrounding
+    // quotes); only the rare embedded-quote path triggers a reallocation.
+    let mut out = String::with_capacity(prefix.len() + s.len() + 2);
     out.push('\'');
+    out.push_str(prefix);
     for ch in s.chars() {
         if ch == '\'' {
             out.push_str("'\\''");
@@ -75,8 +84,9 @@ pub fn shell_quote(s: &str) -> String {
 
 fn safe_file_arg(s: &str) -> String {
     if s.starts_with('-') {
-        // format! + shell_quote = two String allocations; worth fusing later.
-        shell_quote(&format!("./{s}"))
+        // Prepend `./` so the shell cannot mistake a `-`-prefixed filename for an
+        // option, fused into a single allocation via `shell_quote_prefixed`.
+        shell_quote_prefixed("./", s)
     } else {
         shell_quote(s)
     }

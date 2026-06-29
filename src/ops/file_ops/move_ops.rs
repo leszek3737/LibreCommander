@@ -8,7 +8,7 @@ use super::common::{
     check_canceled, ensure_destination_absent, path_contains, remove_any, same_inode,
 };
 use super::copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
-use super::delete::delete_dir_recursive_cancelable;
+use super::delete::{delete_dir_recursive_cancelable, ensure_entry_not_critical};
 
 #[derive(Clone, Copy)]
 enum MoveKind {
@@ -63,8 +63,18 @@ impl MoveKind {
 
     fn remove_src(self, src: &Path, cancel: &AtomicBool) -> io::Result<()> {
         match self {
-            MoveKind::Symlink => remove_any(src),
-            MoveKind::File => fs::remove_file(src),
+            // Guard files and symlinks against critical-directory deletion to
+            // match the protection `delete_dir_recursive_cancelable` already gives
+            // directories; otherwise a cross-device move fallback could unlink a
+            // file/symlink in `/usr/bin`, `/etc`, … without any check.
+            MoveKind::Symlink => {
+                ensure_entry_not_critical(src)?;
+                remove_any(src)
+            }
+            MoveKind::File => {
+                ensure_entry_not_critical(src)?;
+                fs::remove_file(src)
+            }
             MoveKind::Directory => delete_dir_recursive_cancelable(src, cancel),
         }
     }
@@ -151,6 +161,7 @@ fn move_entry_impl(
                 src,
                 dest,
                 cancel,
+                overwrite,
                 || kind.copy(src, dest, progress_tx, cancel, overwrite),
                 || kind.remove_src(src, cancel),
                 || remove_any(dest),
@@ -161,17 +172,28 @@ fn move_entry_impl(
     }
 }
 
+// The 8 parameters are intrinsic: three injected closures (so tests can drive
+// the copy/remove/rollback steps independently) plus the data they report on.
+#[allow(clippy::too_many_arguments)]
 fn copy_then_remove_src(
     src: &Path,
     dest: &Path,
     cancel: &AtomicBool,
+    overwrite: bool,
     copy_fn: impl FnOnce() -> io::Result<()>,
     remove_src_fn: impl FnOnce() -> io::Result<()>,
     rollback_fn: impl FnOnce() -> io::Result<()>,
     entry_kind: &str,
 ) -> io::Result<()> {
     copy_fn()?;
-    if let Err(err) = check_canceled(cancel) {
+    // The dest-removing rollback is only safe when the destination did NOT
+    // previously exist (non-overwrite): there, removing the freshly-copied dest
+    // restores the pre-move state. For an overwrite move, `publish_temp_dir`/
+    // `swap_temp_to_dest` have already replaced and deleted the original dest by
+    // the time `copy_fn` returns `Ok`, so a completed copy is the point of no
+    // return — rolling back here would delete the only remaining copy and leave
+    // nothing. In that case skip the rollback and proceed to remove the source.
+    if !overwrite && let Err(err) = check_canceled(cancel) {
         if let Err(rollback_err) = rollback_fn() {
             return Err(io::Error::other(format!(
                 "cross-device move canceled after copy, rollback also failed: \
@@ -185,7 +207,7 @@ fn copy_then_remove_src(
         return Err(err);
     }
     if let Err(del_err) = remove_src_fn() {
-        if let Err(rollback_err) = rollback_fn() {
+        if !overwrite && let Err(rollback_err) = rollback_fn() {
             return Err(io::Error::other(format!(
                 "cross-device move: copied '{}' to '{}' but failed to remove source {}: {}. rollback also failed: {}",
                 src.display(),
@@ -227,6 +249,7 @@ mod tests {
             &src,
             &dest,
             &cancel,
+            false,
             || {
                 fs::copy(&src, &dest)?;
                 cancel.store(true, Ordering::Relaxed);
@@ -262,6 +285,7 @@ mod tests {
             &src,
             &dest,
             &cancel,
+            false,
             || fs::copy(&src, &dest).map(|_| ()),
             || fs::remove_file(&src),
             || {
