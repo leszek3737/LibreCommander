@@ -302,6 +302,53 @@ mod tests {
         assert!(!rollback_called.load(Ordering::Relaxed));
     }
 
+    #[test]
+    fn copy_then_remove_src_overwrite_cancel_after_copy_keeps_dest() {
+        // The headline data-safety fix: for an overwrite move the original
+        // destination is already replaced/deleted by the time `copy_fn` returns
+        // Ok, so a completed copy is the point of no return. A post-copy cancel
+        // must NOT roll back (delete) the freshly-copied dest — doing so would
+        // destroy the only surviving copy and leave nothing.
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src.txt");
+        let dest = temp.path().join("dest.txt");
+        fs::write(&src, b"source").unwrap();
+        fs::write(&dest, b"stale").unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let rollback_called = AtomicBool::new(false);
+
+        copy_then_remove_src(
+            &src,
+            &dest,
+            &cancel,
+            true,
+            || {
+                fs::copy(&src, &dest)?;
+                cancel.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+            || fs::remove_file(&src),
+            || {
+                rollback_called.store(true, Ordering::Relaxed);
+                fs::remove_file(&dest)
+            },
+            "file",
+        )
+        .unwrap();
+
+        assert!(
+            dest.exists(),
+            "a completed overwrite copy must survive a post-copy cancel"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"source");
+        assert!(!src.exists(), "source must still be removed after the copy");
+        assert!(
+            !rollback_called.load(Ordering::Relaxed),
+            "overwrite path must never invoke the dest-removing rollback"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_move_copy_checks_cancel_before_copy() {

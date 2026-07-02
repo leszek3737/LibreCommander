@@ -27,14 +27,20 @@ struct CappedWriter<W: Write> {
 
 impl<W: Write> Write for CappedWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written = self.written.saturating_add(buf.len() as u64);
+        // Count the bytes the inner writer actually committed, not the full
+        // `buf.len()`. On a short write the caller retries with the tail, so
+        // counting up front would double-count the retried bytes and trip the
+        // cap early. (`File` writes to a temp file essentially never short-write,
+        // but the precise accounting is cheap and correct regardless.)
+        let n = self.inner.write(buf)?;
+        self.written = self.written.saturating_add(n as u64);
         if self.written > super::MAX_TOTAL_ARCHIVE_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "decompressed xz exceeds maximum archive size",
             ));
         }
-        self.inner.write(buf)
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {

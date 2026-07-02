@@ -91,16 +91,14 @@ fn extract_zip_entries(
     extracted_paths: &mut Vec<PathBuf>,
 ) -> Result<(), ArchiveError> {
     let entry_count = archive.len();
-    // Fail loudly instead of silently truncating: `.min(MAX_LIST_ENTRIES)` on the
-    // loop would extract only the first 100k entries yet still return `Ok`,
-    // reporting success on an incomplete extraction. The cap still guards against
-    // pathological entry counts — it just can no longer be mistaken for success.
-    if entry_count > MAX_LIST_ENTRIES {
-        return Err(ArchiveError::InvalidArchive(format!(
-            "archive has {entry_count} entries, exceeding the maximum {MAX_LIST_ENTRIES}"
-        )));
-    }
-    extracted_paths.reserve(entry_count);
+    // No entry-count cap on extraction: it is bounded by the per-entry
+    // `MAX_FILE_SIZE` check and the cumulative `TotalSizeGuard` byte cap below,
+    // matching tar/7z. Capping at `MAX_LIST_ENTRIES` (a TUI listing limit) would
+    // reject legitimately large archives — e.g. a `node_modules` tree with more
+    // than 100k files — that the other formats extract without complaint. The
+    // reserve is clamped so a crafted central directory advertising a huge entry
+    // count can't force a giant up-front allocation.
+    extracted_paths.reserve(entry_count.min(MAX_LIST_ENTRIES));
 
     fs::create_dir_all(dest)?;
     let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
