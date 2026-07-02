@@ -20,28 +20,9 @@ offline, no runtime dependencies.
 
 > 💬 `lc` is short for **L**ibre **C**ommander.
 
-<!-- TODO(screenshot): drop a real demo here. Capture with `asciinema` or a GIF,
-     save to assets/lc-demo.png, then replace the mockup below with:
-     <p align="center"><img src="assets/lc-demo.png" alt="lc demo" width="720"></p> -->
-
-```
- Left   ~/lc                      Right   ~/projects/LibreCommander
-┌────────────────────────────────────────┬────────────────────────────────────────┐
-│Permissions  Size    Modified    Name   │Permissions  Size    Modified    Name   │
-│──────────────────────────────────      │──────────────────────────────────      │
-│drwxr-xr-x          06-26 09:10 src ►   │-rw-r--r--  1.8K  06-14 23:18 Cargo     │
-│drwxr-xr-x          06-26 09:10 target  │-rw-r--r--   73K  06-15 00:52 Cargo     │
-│📁  app/                       12 files │📄  README.md            17 KiB         │
-│📁  ops/                        8 files │📜  LICENSE             1.0 KiB         │
-│📁  ui/                          9 files│⚙   .gitignore                          │
-│🦀  main.rs                  14 KiB     │📦  lc              3.2 MiB release     │
-│🦀  render.rs                 4 KiB     │🖼   logo.png           128 KiB          │
-│📜  AGENTS.md                9.4 KiB    │📜  CHANGELOG.md           —            │
-│...                                     │...                                     │
-├────────────────────────────────────────┴────────────────────────────────────────┤
-│1Help 2Menu 3View 4Edit 5Copy 6Move 7Mkdir 8Delete 9Menu 10Quit                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/s1.png" alt="LibreCommander dual-panel file browser" width="900">
+</p>
 
 ---
 
@@ -439,6 +420,10 @@ enforces size limits, and handles symlinks safely.
 ---
 
 ## File Viewer & Image Preview
+
+<p align="center">
+  <img src="assets/s2.png" alt="LibreCommander image preview rendered as character art" width="900">
+</p>
 
 The built-in viewer (`F3`) supports:
 
