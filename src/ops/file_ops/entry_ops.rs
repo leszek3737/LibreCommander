@@ -58,9 +58,9 @@ fn validate_entry_name(new_name: &str) -> io::Result<()> {
 /// Renames a filesystem entry within its parent directory.
 ///
 /// Detects same-inode renames (e.g., case-only rename on case-insensitive FS).
-/// On POSIX, the `try_exists` guard is best-effort — `fs::rename` atomically
-/// replaces the destination; true atomic no-replace requires `RENAME_NOREPLACE`
-/// or `renamex_np`, which are out of stdlib.
+/// On POSIX, the `symlink_metadata` existence guard is best-effort — `fs::rename`
+/// atomically replaces the destination; true atomic no-replace requires
+/// `RENAME_NOREPLACE` or `renamex_np`, which are out of stdlib.
 pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
     validate_entry_name(new_name)?;
     let parent = old.parent().ok_or_else(|| {
@@ -73,14 +73,23 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
     if new_path == old {
         return Ok(());
     }
-    let same_file = match (fs::symlink_metadata(old), fs::symlink_metadata(&new_path)) {
-        (Ok(old_meta), Ok(new_meta)) => super::common::same_inode(&old_meta, &new_meta),
+    // Use `symlink_metadata` (not `try_exists`) for the existence check: a
+    // dangling symlink at `new_path` must count as "present" so we don't silently
+    // clobber it, but `try_exists` follows the broken link and reports `false`.
+    // This mirrors `common::ensure_destination_absent`.
+    let new_meta = match fs::symlink_metadata(&new_path) {
+        Ok(meta) => Some(meta),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
+    };
+    let same_file = match (fs::symlink_metadata(old), new_meta.as_ref()) {
+        (Ok(old_meta), Some(new_meta)) => super::common::same_inode(&old_meta, new_meta),
         _ => false,
     };
-    // TOCTOU: `try_exists` + `fs::rename` is non-atomic. On POSIX, rename
+    // TOCTOU: this check + `fs::rename` is non-atomic. On POSIX, rename
     // atomically replaces the destination regardless; on Windows it errors.
     // This check is best-effort — atomic no-replace requires OS-specific APIs.
-    if !same_file && new_path.try_exists()? {
+    if !same_file && new_meta.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             MSG_DEST_EXISTS,
@@ -119,4 +128,45 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(not(target_os = "macos"))]
     let result = fs::set_permissions(path, permissions);
     result
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    // Regression: a dangling symlink at the destination must count as "present"
+    // so `rename_entry` refuses rather than silently clobbering it. The old
+    // `try_exists()` guard followed the broken link and reported `false`.
+    #[test]
+    fn rename_refuses_to_clobber_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        fs::write(&src, b"data").unwrap();
+
+        let dangling = dir.path().join("dest.txt");
+        std::os::unix::fs::symlink(dir.path().join("missing-target"), &dangling).unwrap();
+
+        let err = rename_entry(&src, "dest.txt").expect_err("should refuse to clobber");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        // Source untouched and the dangling symlink still there.
+        assert!(src.exists());
+        assert!(
+            fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn rename_to_fresh_name_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        fs::write(&src, b"data").unwrap();
+
+        rename_entry(&src, "renamed.txt").unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read(dir.path().join("renamed.txt")).unwrap(), b"data");
+    }
 }

@@ -213,7 +213,12 @@ impl ViewerState {
             let hex_col =
                 HEX_OFFSET_PREFIX_WIDTH + byte_in_line * 3 + if byte_in_line >= 8 { 1 } else { 0 };
             let segment_len = remaining.min(bpl - byte_in_line);
-            let match_hex_len = segment_len * 3 - 1;
+            // Add one column when the highlighted run spans the 8-byte group gap:
+            // `format_hex_line_to_buffer` inserts an extra space after byte 8, so a
+            // match starting before it and ending at/after it must cover that gap
+            // column too (the start column at line 214 is already offset by it).
+            let crosses_gap = byte_in_line < 8 && byte_in_line + segment_len > 8;
+            let match_hex_len = segment_len * 3 - 1 + crosses_gap as usize;
 
             if first_segment {
                 self.search_matches.push(SearchMatch {

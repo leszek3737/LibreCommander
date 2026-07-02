@@ -4,8 +4,12 @@ use std::time::Duration;
 use crate::app::types::{CompareMode, FileEntry, PanelState};
 
 /// Cross-filesystem mtime resolution tolerance (e.g. FAT32 has 2s granularity,
-/// network filesystems may lose sub-second precision during sync).
-const MTIME_TOLERANCE: Duration = Duration::from_secs(2);
+/// network filesystems may lose sub-second precision during sync). Set slightly
+/// above FAT32's 2s granularity: when two filesystems round a timestamp in
+/// opposite directions the recorded values can differ by *just over* 2s for what
+/// is really the same modification, so an exact 2s bound would report a spurious
+/// difference. The extra 500ms absorbs that boundary rounding.
+const MTIME_TOLERANCE: Duration = Duration::from_millis(2500);
 
 /// The PARENT_DIR (parent directory) pseudo-entry — ignored during comparison.
 const PARENT_DIR: &str = "..";

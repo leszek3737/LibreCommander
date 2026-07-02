@@ -363,8 +363,11 @@ fn page_up(state: &mut AppState, visible: usize) {
 fn page_down(state: &mut AppState, visible: usize) {
     let len = state.active_panel().listing.filtered_len();
     let p = state.active_panel_mut();
-    p.cursor = (p.cursor + visible).min(len.saturating_sub(1));
-    p.scroll_offset = (p.scroll_offset + visible).min(len.saturating_sub(visible));
+    p.cursor = p.cursor.saturating_add(visible).min(len.saturating_sub(1));
+    p.scroll_offset = p
+        .scroll_offset
+        .saturating_add(visible)
+        .min(len.saturating_sub(visible));
 }
 
 fn switch_active_panel(state: &mut AppState, visible: usize) {
@@ -425,7 +428,7 @@ pub(crate) fn handle_enter_key<B: ratatui::backend::Backend>(
             None
         };
         let p = state.active_panel_mut();
-        if p.history().last().map(|p| p.as_path()) != Some(p.path()) {
+        if p.history().back().map(|p| p.as_path()) != Some(p.path()) {
             p.push_history(p.path().to_path_buf());
         }
         p.set_path(path);

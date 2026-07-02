@@ -15,6 +15,39 @@ use crate::debug_log;
 
 const MAX_CREATE_ENTRIES: usize = 100_000;
 
+/// Write adapter that aborts once cumulative output exceeds
+/// `MAX_TOTAL_ARCHIVE_SIZE`. Used to bound the xz -> temp-file materialization so
+/// the decompression-bomb guard applies before the whole payload is on disk
+/// (the streaming gz/bz2/zst decoders are already bounded lazily by the extract
+/// loop's `TotalSizeGuard`).
+struct CappedWriter<W: Write> {
+    inner: W,
+    written: u64,
+}
+
+impl<W: Write> Write for CappedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Count the bytes the inner writer actually committed, not the full
+        // `buf.len()`. On a short write the caller retries with the tail, so
+        // counting up front would double-count the retried bytes and trip the
+        // cap early. (`File` writes to a temp file essentially never short-write,
+        // but the precise accounting is cheap and correct regardless.)
+        let n = self.inner.write(buf)?;
+        self.written = self.written.saturating_add(n as u64);
+        if self.written > super::MAX_TOTAL_ARCHIVE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decompressed xz exceeds maximum archive size",
+            ));
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// Appends the contents of `src` into the tar builder under `dest_name`,
 /// counting entries against `count`. Returns an error if `MAX_CREATE_ENTRIES`
 /// would be exceeded, making the limit check and the append a single pass.
@@ -128,7 +161,6 @@ pub fn extract_tar(
 
     let result = (|| -> Result<(), ArchiveError> {
         let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
-        let mut last_parent: Option<PathBuf> = None;
         let mut total_size = super::TotalSizeGuard::default();
         for entry in archive.entries()? {
             super::check_cancel(cancel)?;
@@ -174,12 +206,13 @@ pub fn extract_tar(
                 extracted_paths.push(outpath);
                 let _ = progress.send(size);
             } else {
-                if let Some(parent) = outpath.parent()
-                    && last_parent.as_deref() != Some(parent)
-                {
+                // Re-verify the parent on EVERY entry rather than caching the last
+                // one: a cached parent could be swapped for a symlink between
+                // entries (TOCTOU), and skipping `verify_within_dest` on a cache hit
+                // would let a later entry be written outside `canonical_dest`.
+                if let Some(parent) = outpath.parent() {
                     fs::create_dir_all(parent)?;
                     super::verify_within_dest(&canonical_dest, parent)?;
-                    last_parent = Some(parent.to_path_buf());
                 }
                 // MITIGATION: TOCTOU symlink race — an attacker could replace a
                 // regular file with a symlink between the symlink_metadata check below
@@ -399,12 +432,23 @@ fn wrap_decompress(file: File, format: ArchiveFormat) -> Result<Box<dyn Read>, A
                 super::create_archive_temp_file("lc-xz-decompress", ".tar")
                     .map_err(ArchiveError::Io)?;
             let mut reader = io::BufReader::with_capacity(super::IO_BUFFER_SIZE, file);
-            if let Err(e) = lzma_rs::xz_decompress(&mut reader, &mut tmp_file) {
-                cleanup_temp_file(&tmp_path);
-                return Err(ArchiveError::Io(io::Error::other(e)));
+            {
+                // Inner scope so the `CappedWriter`'s `&mut tmp_file` borrow ends
+                // before we drop the file and reopen it for reading.
+                let mut capped = CappedWriter {
+                    inner: &mut tmp_file,
+                    written: 0,
+                };
+                if let Err(e) = lzma_rs::xz_decompress(&mut reader, &mut capped) {
+                    cleanup_temp_file(&tmp_path);
+                    return Err(ArchiveError::Io(io::Error::other(e)));
+                }
             }
             drop(tmp_file);
-            let tmp_file = File::open(&tmp_path)?;
+            // Clean up the temp file if the reopen fails, matching the
+            // xz_decompress error path above; otherwise it would be orphaned
+            // (the cleanup-on-drop `TempFileReader` is only built after this).
+            let tmp_file = File::open(&tmp_path).inspect_err(|_| cleanup_temp_file(&tmp_path))?;
             struct TempFileReader {
                 inner: File,
                 path: PathBuf,
@@ -449,8 +493,14 @@ fn wrap_compress(file: File, format: ArchiveFormat) -> Result<Box<dyn Write>, Ar
             Ok(Box::new(encoder))
         }
         ArchiveFormat::TarZst => {
+            // `auto_finish()` so the zstd frame epilogue (and any buffered tail,
+            // including the tar end-of-archive blocks) is written when the boxed
+            // writer is dropped. A plain `Encoder` requires an explicit
+            // `finish()` that `build_tar_into` never calls — it only drops the
+            // builder — which silently produced truncated, corrupt `.tar.zst`
+            // archives. Mirrors the drop-finalizing GzEncoder/BzEncoder branches.
             let encoder = zstd::stream::write::Encoder::new(file, 0)?;
-            Ok(Box::new(encoder))
+            Ok(Box::new(encoder.auto_finish()))
         }
         ArchiveFormat::TarXz | ArchiveFormat::Zip | ArchiveFormat::SevenZ => {
             Err(ArchiveError::UnsupportedFormat)

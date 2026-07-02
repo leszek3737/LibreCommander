@@ -12,3 +12,10 @@
 yazi
 .claude/worktrees/
 docs/pr-plan/
+.claude-flow/
+.claude/
+.mcp.json
+.swarm/
+ruvector.db
+
+.wayland/

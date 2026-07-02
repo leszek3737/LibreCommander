@@ -117,6 +117,9 @@ fn copy_to_temp(
         }
 
         if cancel.load(Ordering::Relaxed) {
+            // Best-effort final flush: the copy is being aborted anyway, so a
+            // disconnected receiver is not an error here (unlike the mid-loop
+            // send above, where it signals the UI is gone and we bail out).
             if pending_delta > 0 {
                 let _ = progress_tx.send(pending_delta);
             }
@@ -124,6 +127,8 @@ fn copy_to_temp(
         }
     }
 
+    // Best-effort: the copy has already completed, so a dropped receiver only
+    // means the last progress tick is not displayed — nothing left to interrupt.
     if pending_delta > 0 {
         let _ = progress_tx.send(pending_delta);
     }
@@ -142,8 +147,14 @@ fn publish_temp(
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<()> {
+    // Error-path temp cleanup is owned solely by the caller
+    // (`copy_with_progress`), which calls `cleanup_file(&temp_dest)` on any `Err`
+    // returned here. Cleaning up again in each error arm caused a double
+    // `remove_file` (the second failing `NotFound`) plus a misleading "failed to
+    // clean up" debug log. Only the hard_link success path below cleans up
+    // internally, because there the temp must be unlinked after it has been
+    // linked into place.
     if cancel.load(Ordering::Relaxed) {
-        cleanup_file(temp_dest);
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
     }
     if overwrite {
@@ -159,12 +170,10 @@ fn publish_temp(
             return Ok(());
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            cleanup_file(temp_dest);
             return Err(err);
         }
         Err(_) => {
             if fs::symlink_metadata(dest).is_ok() {
-                cleanup_file(temp_dest);
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!("destination appeared during copy: {}", dest.display()),
@@ -173,13 +182,7 @@ fn publish_temp(
         }
     }
 
-    match fs::rename(temp_dest, dest) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            cleanup_file(temp_dest);
-            Err(err)
-        }
-    }
+    fs::rename(temp_dest, dest)
 }
 
 fn temp_path_for(dest: &Path) -> std::path::PathBuf {

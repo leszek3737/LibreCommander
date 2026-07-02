@@ -14,7 +14,13 @@ use crate::debug_log;
 
 const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
 const PIPE_READ_LIMIT: u64 = 50 * 1024 * 1024;
-const PIPE_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Join budget for the background pipe readers, collected only after the chafa
+/// child has already exited (so the writers are closed and `read_to_end`
+/// returns as fast as the OS drains the buffers). Matched to `CHAFA_TIMEOUT`
+/// rather than a tight 2s so a large pipe or scheduling delay on the reader
+/// thread cannot truncate chafa's output into an empty preview. Runs on the
+/// background image-preview loader thread, never the UI event loop.
+const PIPE_JOIN_TIMEOUT: Duration = CHAFA_TIMEOUT;
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Owns a background worker plus its cancellation flag and result channel.

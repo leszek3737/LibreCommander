@@ -625,74 +625,36 @@ fn process_batch_entry<F>(
     report_transition(progress, ctx, idx + 1, state.bytes_done, state.bytes_total);
 }
 
-#[cfg(unix)]
-mod identity {
-    use std::io;
-    use std::os::unix::fs::MetadataExt;
-    use std::path::Path;
-
-    #[derive(Hash, Eq, PartialEq)]
-    pub struct Identity {
-        dev: u64,
-        ino: u64,
-    }
-
-    pub fn get_identity(path: &Path) -> io::Result<Identity> {
-        let meta = path.symlink_metadata()?;
-        Ok(Identity {
-            dev: meta.dev(),
-            ino: meta.ino(),
-        })
-    }
-}
-
-#[cfg(not(unix))]
-mod identity {
-    use std::fs;
-    use std::io;
-    use std::path::{Path, PathBuf};
-
-    #[derive(Hash, Eq, PartialEq)]
-    pub struct Identity {
-        path: PathBuf,
-    }
-
-    pub fn get_identity(path: &Path) -> io::Result<Identity> {
-        let _meta = path.symlink_metadata()?;
-        Ok(Identity {
-            path: path.to_path_buf(),
-        })
-    }
-}
-
-use identity::Identity;
-
 fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut seen_identities: HashSet<Identity> = HashSet::new();
-    let mut identity_ok: Vec<PathBuf> = Vec::new();
-    let mut identity_fail: Vec<PathBuf> = Vec::new();
+    // Dedup on the literal selected path (exact-duplicate selections only), NOT on
+    // (dev, ino): distinct directory entries that are hardlinks to the same inode
+    // — or a symlink and its target — are genuinely separate selections and must
+    // all be acted on. Inode-based dedup silently dropped a hardlinked sibling,
+    // reporting success on an incomplete delete. A path appears at most once in a
+    // panel listing, so a literal-path set is sufficient to collapse true
+    // duplicate selections.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut existing: Vec<PathBuf> = Vec::new();
+    let mut nonexistent: Vec<PathBuf> = Vec::new();
 
     for p in paths {
-        match identity::get_identity(p) {
-            Ok(id) => {
-                if !seen_identities.insert(id) {
-                    continue;
-                }
-                identity_ok.push(p.clone());
-            }
-            Err(_) => {
-                identity_fail.push(p.clone());
-            }
+        if !seen.insert(p.clone()) {
+            continue;
+        }
+        if p.symlink_metadata().is_ok() {
+            existing.push(p.clone());
+        } else {
+            nonexistent.push(p.clone());
         }
     }
 
     // PERF: sort + O(n·depth) ancestors check. For very large batches (100k+)
     // this may become a bottleneck; profile before considering a trie/hash
     // prefix tree to reduce worst-case from O(n·depth) to amortized O(n).
-    identity_ok.sort_by_key(|p| p.components().count());
+    existing.sort_by_key(|p| p.components().count());
     let mut filtered: Vec<PathBuf> = Vec::new();
-    let mut accepted: HashSet<&Path> = HashSet::with_capacity(identity_ok.len());
-    for p in &identity_ok {
+    let mut accepted: HashSet<&Path> = HashSet::with_capacity(existing.len());
+    for p in &existing {
         let dominated = p.ancestors().skip(1).any(|a| accepted.contains(a));
         if !dominated {
             accepted.insert(p);
@@ -700,9 +662,7 @@ fn dedup_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    identity_fail.sort();
-    identity_fail.dedup();
-    filtered.extend(identity_fail);
+    filtered.extend(nonexistent);
     filtered
 }
 

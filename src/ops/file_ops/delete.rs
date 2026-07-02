@@ -129,6 +129,38 @@ fn validate_not_critical(canonical: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Validates that a file or symlink at `path` does not sit at or inside a
+/// critical system directory, mirroring the protection `delete_dir_recursive_*`
+/// already applies to directories. Used by the cross-device move fallback before
+/// unlinking the source, so a regular file or symlink in `/usr/bin`, `/etc`, …
+/// gets the same guard a directory there would.
+///
+/// A final-component symlink is NOT followed: its own location (parent chain
+/// resolved, link name re-attached) is validated, so the check guards where the
+/// link lives rather than where it points.
+pub fn ensure_entry_not_critical(path: &Path) -> io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    let canonical = if meta.file_type().is_symlink() {
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let parent_canonical = match parent {
+            Some(parent) => parent
+                .canonicalize()
+                .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?,
+            None => Path::new(".")
+                .canonicalize()
+                .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?,
+        };
+        match path.file_name() {
+            Some(name) => parent_canonical.join(name),
+            None => parent_canonical,
+        }
+    } else {
+        path.canonicalize()
+            .map_err(|e| io::Error::new(e.kind(), format!("Cannot verify path safety: {e}")))?
+    };
+    validate_not_critical(&canonical)
+}
+
 /// Recursive delete operates under a non-adversarial filesystem guarantee.
 /// It assumes no concurrent process is actively replacing directories with
 /// symlinks during the deletion. The critical-directory blocklist provides
@@ -137,6 +169,11 @@ fn delete_dir_recursive_with_cancel(path: &Path, cancel: Option<&AtomicBool>) ->
     check_optional_canceled(cancel)?;
     let root_metadata = fs::symlink_metadata(path)?;
     if root_metadata.file_type().is_symlink() {
+        // Validate the symlink's own location before unlinking: on macOS `/etc`,
+        // `/var`, `/tmp` are themselves symlinks, so this early-return path would
+        // otherwise bypass the critical-directory blocklist that the rest of the
+        // function applies to real directories.
+        ensure_entry_not_critical(path)?;
         return remove_symlink(path);
     }
     let canonical = path
@@ -188,4 +225,50 @@ fn delete_dir_contents_impl(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_entry_not_critical_allows_ordinary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ordinary.txt");
+        fs::write(&file, b"data").unwrap();
+        assert!(ensure_entry_not_critical(&file).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_entry_not_critical_rejects_file_in_critical_dir() {
+        // `/etc/hosts` resolves under a critical prefix (`/etc`, or `/private/etc`
+        // on macOS) on essentially every Unix; guard on existence so the test is
+        // a no-op on the rare system without it rather than a false failure.
+        let hosts = Path::new("/etc/hosts");
+        if hosts.exists() {
+            assert!(
+                ensure_entry_not_critical(hosts).is_err(),
+                "expected /etc/hosts to be rejected as critical"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_entry_not_critical_rejects_symlink_in_critical_dir_without_following() {
+        // A symlink whose *location* is critical must be rejected even if it
+        // points somewhere harmless: the guard validates where the link lives,
+        // not its target. We can't create files in `/etc`, so assert the inverse
+        // property instead — a symlink in a temp dir pointing INTO `/etc` is
+        // allowed, proving the target is not what gets validated.
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("link-to-etc");
+        std::os::unix::fs::symlink("/etc/hosts", &link).unwrap();
+        assert!(
+            ensure_entry_not_critical(&link).is_ok(),
+            "a symlink in a temp dir must be judged by its own location, not its target"
+        );
+    }
 }

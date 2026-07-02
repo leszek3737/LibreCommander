@@ -67,23 +67,56 @@ static UID_CACHE: LazyLock<Mutex<UidCache>> = LazyLock::new(|| {
     })
 });
 
+/// Locks the global id->name cache, recovering from poisoning by clearing the
+/// (possibly inconsistent) cache and un-poisoning so normal caching resumes.
+#[cfg(unix)]
+fn lock_cache() -> std::sync::MutexGuard<'static, UidCache> {
+    match UID_CACHE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            // A previous holder panicked mid-mutation, so map/order may be out of
+            // sync. Take ownership, dump the suspect data, and rebuild from an
+            // empty, consistent state rather than trusting it.
+            let mut guard = poisoned.into_inner();
+            guard.clear();
+            UID_CACHE.clear_poison();
+            guard
+        }
+    }
+}
+
 #[cfg(unix)]
 fn get_or_insert_name(
-    cache: &mut NameMapCache,
+    select: impl Fn(&mut UidCache) -> &mut NameMapCache,
     id: u32,
     lookup: impl FnOnce(u32) -> Option<Arc<str>>,
 ) -> Arc<str> {
-    if let Some(name) = cache.map.get(&id) {
-        return name.clone();
-    }
-    if cache.map.len() >= CACHE_MAX_SIZE
-        && let Some(old) = cache.order.pop_front()
+    // Phase 1: fast cache hit, then DROP the lock before any lookup. The lookup
+    // (getpwuid/getgrgid via NSS) can block for hundreds of ms on networked
+    // backends (LDAP/AD/SSSD); holding the single global mutex across it would
+    // stall every other thread resolving metadata.
     {
-        cache.map.remove(&old);
+        let mut cache = lock_cache();
+        if let Some(name) = select(&mut cache).map.get(&id) {
+            return name.clone();
+        }
     }
-    cache.order.push_back(id);
+    // Phase 2: possibly-slow lookup with NO lock held.
     let name = lookup(id).unwrap_or_else(|| Arc::from(id.to_string()));
-    cache.map.insert(id, name.clone());
+    // Phase 3: re-acquire to insert; another thread may have resolved the same id
+    // meanwhile — prefer the existing entry so the cache stays single-valued.
+    let mut cache = lock_cache();
+    let map = select(&mut cache);
+    if let Some(existing) = map.map.get(&id) {
+        return existing.clone();
+    }
+    if map.map.len() >= CACHE_MAX_SIZE
+        && let Some(old) = map.order.pop_front()
+    {
+        map.map.remove(&old);
+    }
+    map.order.push_back(id);
+    map.map.insert(id, name.clone());
     name
 }
 
@@ -101,27 +134,16 @@ fn os_str_to_arc(s: &std::ffi::OsStr) -> Arc<str> {
 
 #[cfg(unix)]
 fn lookup_owner_group(uid: u32, gid: u32) -> (Arc<str>, Arc<str>) {
-    let mut cache = match UID_CACHE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            // A previous holder panicked mid-mutation, so map/order may be out
-            // of sync. Take ownership of the guard, dump the suspect data, and
-            // rebuild from an empty, consistent state rather than trusting it.
-            let mut guard = poisoned.into_inner();
-            guard.clear();
-            // Un-poison the lock so subsequent callers take the fast Ok path and
-            // normal caching resumes; otherwise every later lock would re-clear
-            // the (now-consistent) cache, degrading to no-cache mode forever.
-            UID_CACHE.clear_poison();
-            guard
-        }
-    };
-    let owner = get_or_insert_name(&mut cache.uid, uid, |id| {
-        users::get_user_by_uid(id).map(|u| os_str_to_arc(u.name()))
-    });
-    let group = get_or_insert_name(&mut cache.gid, gid, |id| {
-        users::get_group_by_gid(id).map(|g| os_str_to_arc(g.name()))
-    });
+    let owner = get_or_insert_name(
+        |c| &mut c.uid,
+        uid,
+        |id| users::get_user_by_uid(id).map(|u| os_str_to_arc(u.name())),
+    );
+    let group = get_or_insert_name(
+        |c| &mut c.gid,
+        gid,
+        |id| users::get_group_by_gid(id).map(|g| os_str_to_arc(g.name())),
+    );
     (owner, group)
 }
 
@@ -142,7 +164,13 @@ fn os_str_to_string(s: &std::ffi::OsStr) -> String {
 }
 
 fn file_name_from_path(path: &Path) -> String {
-    os_str_to_string(path.file_name().unwrap_or_default())
+    // `Path::file_name()` returns `None` for the filesystem root (`/`) and for
+    // paths ending in `..`; fall back to the whole path's display form so the
+    // root renders as `/` rather than an empty name.
+    match path.file_name() {
+        Some(name) => os_str_to_string(name),
+        None => path.as_os_str().to_string_lossy().into_owned(),
+    }
 }
 
 fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
@@ -308,12 +336,16 @@ pub fn get_file_info(path: &Path) -> io::Result<FileEntry> {
 /// the entry must not be a symlink — symlinks need their target metadata, which
 /// this fast path does not resolve.
 pub fn file_info_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> FileEntry {
-    debug_assert!(
-        !metadata.is_symlink(),
-        "file_info_from_metadata requires non-symlink metadata (symlinks need target metadata): {}",
-        path.display()
-    );
+    // The fast path (no target lookup) is only correct for non-symlink metadata.
+    // If a caller violates the precondition, resolve the target metadata here
+    // rather than silently rendering the symlink as a broken/orphan entry — the
+    // old `debug_assert` only caught this in debug builds and was a no-op in
+    // release, where the precondition matters most.
     let file_name = file_name_from_path(&path);
+    if metadata.is_symlink() {
+        let target_meta = fs::metadata(&path).ok();
+        return build_file_entry_from_metadata(path, file_name, metadata, target_meta.as_ref());
+    }
     build_file_entry_from_metadata(path, file_name, metadata, None)
 }
 

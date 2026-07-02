@@ -215,16 +215,15 @@ fn pre_draw(
     image_preview_loader: &mut Option<viewer::ImagePreviewLoader>,
     term_size: Size,
 ) {
-    let size = term_size;
     start_image_preview_if_needed(
         viewer_state,
         image_preview_loader,
-        (size.width, size.height),
+        (term_size.width, term_size.height),
     );
     if let Some(vs) = viewer_state
         && state.mode == AppMode::Viewing
     {
-        vs.update_wrap_layout(size.width as usize);
+        vs.update_wrap_layout(term_size.width as usize);
     }
 }
 
@@ -303,10 +302,18 @@ fn poll_async(
         state,
         &mut loop_state.watcher_sync_state,
     );
+    // Flush BEFORE polling, every iteration: debounced Created/Modified events
+    // sit in the watcher's debounce map and are only pushed onto the channel by
+    // `flush_pending`. If we only flushed after a non-empty poll, an event whose
+    // debounce window expired during a quiet period (no further filesystem
+    // activity) would never be delivered to the UI. Flushing unconditionally each
+    // ~33ms loop tick guarantees expired events surface within one debounce
+    // interval, and also drains entries left pending after `sync_watcher_paths`
+    // removed their watch.
+    if let Some(ref w) = loop_state.watcher {
+        w.flush_pending();
+    }
     if watcher_sync::poll_watcher_events(state, watch_rx) {
-        if let Some(ref w) = loop_state.watcher {
-            w.flush_pending();
-        }
         dirty = true;
     }
     if poll_running_job(state, &mut loop_state.running_job, panel_ops::refresh_both) {
@@ -393,7 +400,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             }
             dirty = false;
         }
-        if event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS))? {
+        let has_event = match event::poll(Duration::from_millis(EVENT_POLL_TIMEOUT_MS)) {
+            Ok(ready) => ready,
+            Err(e) => {
+                // Mirror the `event::read()` error path below: tear down any
+                // running job before propagating, instead of relying solely on
+                // the destructor's best-effort reaper.
+                shutdown_job(&mut loop_state.running_job);
+                return Err(e);
+            }
+        };
+        if has_event {
             let key = match event::read() {
                 Ok(k) => k,
                 Err(e) => {

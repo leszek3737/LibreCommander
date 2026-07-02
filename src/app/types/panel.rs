@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use super::file_entry::FileEntry;
@@ -203,8 +203,10 @@ impl PanelListing {
     /// Remove the entry at `path`, returning whether it existed. Uses
     /// `swap_remove` and repairs `path_index` for the moved tail entry.
     ///
-    /// `swap_remove` can leave indices in the filtered view stale; the caller
-    /// must mark the panel dirty so the view is rebuilt before the next read.
+    /// `swap_remove` can leave indices in the filtered view stale, so on a real
+    /// removal this self-marks the panel dirty (via [`mark_dirty`]) to enforce
+    /// the rebuild-before-next-read invariant instead of trusting every caller to
+    /// remember it.
     pub fn remove(&mut self, path: &Path) -> bool {
         if self.unfiltered_entries.is_empty() {
             return false;
@@ -221,6 +223,7 @@ impl PanelListing {
         } else {
             self.unfiltered_entries.pop();
         }
+        self.mark_dirty();
         true
     }
 
@@ -292,7 +295,7 @@ pub struct PanelState {
     pub listing: PanelListing,
     pub cursor: usize,
     pub scroll_offset: usize,
-    pub(crate) history: Vec<PathBuf>,
+    pub(crate) history: VecDeque<PathBuf>,
     pub(crate) sort_mode: SortMode,
     pub(crate) sort_options: SortOptions,
     pub(crate) listing_mode: ListingMode,
@@ -314,7 +317,7 @@ impl PanelState {
             listing: PanelListing::new(),
             cursor: 0,
             scroll_offset: 0,
-            history: Vec::new(),
+            history: VecDeque::new(),
             sort_mode: SortMode::default(),
             sort_options: SortOptions::default(),
             listing_mode: ListingMode::default(),
@@ -345,21 +348,23 @@ impl PanelState {
         self.canonical_path = canonical;
     }
 
-    pub fn history(&self) -> &[PathBuf] {
+    pub fn history(&self) -> &VecDeque<PathBuf> {
         &self.history
     }
 
     const MAX_HISTORY: usize = 256;
 
     pub fn push_history(&mut self, path: PathBuf) {
+        // `VecDeque` so the capacity cap evicts the oldest entry in O(1)
+        // (`pop_front`) instead of `Vec::remove(0)`'s O(n) element shift.
         if self.history.len() >= Self::MAX_HISTORY {
-            self.history.remove(0);
+            self.history.pop_front();
         }
-        self.history.push(path);
+        self.history.push_back(path);
     }
 
     pub fn pop_history(&mut self) -> Option<PathBuf> {
-        self.history.pop()
+        self.history.pop_back()
     }
 
     pub fn sort_mode(&self) -> SortMode {

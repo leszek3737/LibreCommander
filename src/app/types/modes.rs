@@ -119,3 +119,26 @@ impl PendingAction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Guards the hand-maintained `CompareMode::ALL` against drift. The inner
+    // `match` is exhaustive, so adding a new `CompareMode` variant breaks
+    // compilation here until the author updates both the match and `ALL`; the
+    // length assertion then catches a variant that was added to the enum but
+    // forgotten in the array (or vice versa).
+    #[test]
+    fn compare_mode_all_is_exhaustive_and_in_order() {
+        for (i, variant) in CompareMode::ALL.iter().enumerate() {
+            let expected = match variant {
+                CompareMode::Quick => 0,
+                CompareMode::Size => 1,
+                CompareMode::Thorough => 2,
+            };
+            assert_eq!(i, expected, "{variant:?} is out of position in ALL");
+        }
+        assert_eq!(CompareMode::ALL.len(), 3);
+    }
+}
