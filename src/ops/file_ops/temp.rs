@@ -148,9 +148,17 @@ fn recover_orphaned_backups(dest: &Path) {
                 cleanup_dir(&container);
                 return;
             }
-            // Empty container (crash before the original was moved in) or a
-            // transient failure: drop the empty shell, keep scanning.
-            Err(_) => cleanup_dir(&container),
+            // Rename failed. Drop the shell only when it is genuinely empty
+            // (crash before the original was moved in). If the stranded
+            // original is still inside — e.g. a transient EBUSY/EPERM — the
+            // container must be preserved; `cleanup_dir` is a non-recursive
+            // `remove_dir` and would fail on it anyway, but the explicit guard
+            // keeps the data-preserving intent independent of that detail.
+            Err(_) => {
+                if !container.join("dest").try_exists().unwrap_or(true) {
+                    cleanup_dir(&container);
+                }
+            }
         }
     }
 }

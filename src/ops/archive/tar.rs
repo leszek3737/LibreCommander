@@ -244,6 +244,13 @@ pub fn extract_tar(
             let is_hard_link = header.entry_type().is_hard_link();
             let size = entry.size();
 
+            // Skip symlinks BEFORE the size check: a skipped entry type must not
+            // be able to reject the whole archive via a bogus advertised size.
+            if is_symlink {
+                let _ = progress.send(size);
+                continue;
+            }
+
             if size > MAX_FILE_SIZE {
                 let path_bytes = entry.path_bytes();
                 // Preserve the full path structure on invalid UTF-8 by lossily
@@ -263,11 +270,6 @@ pub fn extract_tar(
 
             #[cfg(unix)]
             let unix_mode = header.mode().ok();
-
-            if is_symlink {
-                let _ = progress.send(size);
-                continue;
-            }
 
             if is_hard_link {
                 // A hard-link entry carries no data of its own; the tar crate

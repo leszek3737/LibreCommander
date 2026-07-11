@@ -242,10 +242,17 @@ pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
     let target = resolve_symlink_target(&path);
 
     // Stage the temp file in the target's own directory so `rename` stays on a
-    // single filesystem (and is therefore atomic).
+    // single filesystem (and is therefore atomic). Remove any stale leftover
+    // first (crash residue or a pre-planted symlink), then `create_new` so the
+    // open can neither truncate an existing file nor follow a symlink —
+    // matching the archive handlers' temp-file hardening.
     let temp_path = target.with_extension("toml.tmp");
+    let _ = fs::remove_file(&temp_path);
     {
-        let mut f = File::create(&temp_path)?;
+        let mut f = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
         // Config can hold user data: keep it private. Preserve an existing
         // file's mode, otherwise default new files to 0600.
         apply_config_permissions(&target, &f)?;
