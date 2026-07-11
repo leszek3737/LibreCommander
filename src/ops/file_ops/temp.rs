@@ -273,6 +273,9 @@ pub(super) fn move_existing_dest_to_backup(dest: &Path) -> io::Result<Option<Des
     }
 }
 
+// Production callers are unix-only (symlink swap in copy.rs); the cfg(test)
+// copy_file helpers use it on every platform.
+#[cfg(any(unix, test))]
 pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     if overwrite {
         replace_file_inner(temp, dest, "cannot replace a directory with a file")?;

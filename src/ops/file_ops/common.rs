@@ -14,18 +14,11 @@ pub(super) fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     a.dev() == b.dev() && a.ino() == b.ino()
 }
 
-#[cfg(windows)]
-pub(super) fn same_inode(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    let a_idx = a.file_index();
-    let b_idx = b.file_index();
-    let a_vol = a.volume_serial_number();
-    let b_vol = b.volume_serial_number();
-    a_vol.is_some() && a_vol == b_vol && a_idx.is_some() && a_idx == b_idx
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 pub(super) fn same_inode(_a: &fs::Metadata, _b: &fs::Metadata) -> bool {
+    // Windows' file_index()/volume_serial_number() need the unstable
+    // `windows_by_handle` feature (rust-lang/rust#63010); without a stable
+    // identity, conservatively report "not the same file".
     false
 }
 
@@ -214,6 +207,7 @@ pub(super) fn normalize_suffix(mut base: PathBuf, suffix: &Path) -> io::Result<P
 }
 
 pub const MSG_CRITICAL_DIR: &str = "refusing to delete critical system directory: ";
+#[cfg(unix)]
 pub const MSG_SYMLINK_CHMOD: &str = "cannot chmod a symlink, refuse to follow symlinks";
 
 /// Removes a filesystem entry by dispatching on file type.

@@ -395,10 +395,16 @@ fn input_action_chmod(state: &mut AppState, input: &str) -> InputOutcome {
         }
         return InputOutcome::Finalized;
     };
+    #[cfg(unix)]
     if let Some(entry) = state.active_panel().current_entry()
         && let Err(err) = ops::chmod(&entry.path, mode)
     {
         state.ui.status_message = Some(format!("Chmod failed: {err}"));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        state.ui.status_message = Some("Chmod is not supported on this platform".to_string());
     }
     InputOutcome::ResetWithRefresh
 }

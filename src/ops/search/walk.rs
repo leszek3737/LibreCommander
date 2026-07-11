@@ -145,9 +145,12 @@ pub(super) fn prepare_content_dir_scan<T>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    // Used only by the unix-gated inode-seeding test below.
+    #[cfg(unix)]
     use std::collections::HashSet;
     use std::fs;
 
+    #[cfg(unix)]
     use crate::ops::helpers::get_inode_key;
     use crate::ops::search::{search_content_with_diagnostics, search_files_with_diagnostics};
 

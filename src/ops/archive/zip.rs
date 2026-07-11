@@ -364,7 +364,10 @@ fn zip_datetime_to_system_time(dt: zip::DateTime) -> SystemTime {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::io::{self, Write};
+    use std::io;
+    // Used only by the unix-gated symlink tests below.
+    #[cfg(unix)]
+    use std::io::Write;
     use std::sync::mpsc;
 
     #[cfg(unix)]

@@ -697,6 +697,8 @@ mod tests {
         builder.append_data(&mut h, name, data).unwrap();
     }
 
+    // Used only by the unix-gated rollback test below.
+    #[cfg(unix)]
     fn add_dir(builder: &mut tar::Builder<File>, name: &str) {
         let mut h = tar::Header::new_gnu();
         h.set_size(0);

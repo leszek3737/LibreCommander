@@ -83,7 +83,6 @@ mod tests {
         std::fs::write(&src, b"hello world").unwrap();
 
         let bytes = copy::copy_file(&src, &dest, false).unwrap();
-        let _dest_mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(bytes, 11);
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "hello world");
 
@@ -102,6 +101,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_copy_file_preserves_permissions() {
         let tmp = unique_temp_dir();
