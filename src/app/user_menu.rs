@@ -52,20 +52,21 @@ impl PartialEq for MenuEntry {
     }
 }
 
-/// Shell-escape via single-quote wrapping.
+/// Shell-escape a substituted filename for the platform's shell.
 ///
 /// Prevents shell metacharacter injection but does NOT protect
 /// against option injection (filenames starting with `-`).
 /// Use `safe_file_arg` which prepends `./` to `-`-prefixed names.
-pub fn shell_quote(s: &str) -> String {
+pub fn shell_quote(s: &str) -> Result<String, String> {
     shell_quote_prefixed("", s)
 }
 
-/// Single-quote-escape `s`, emitting `prefix` (already trusted, quote-free)
-/// inside the quotes before the escaped body. Fuses the `./` option-injection
-/// guard into the same allocation as the quoting, avoiding the intermediate
-/// `format!("./{s}")` string that `safe_file_arg` used to build.
-fn shell_quote_prefixed(prefix: &str, s: &str) -> String {
+/// POSIX `sh` quoting: single-quote-wrap `s`, emitting `prefix` (already
+/// trusted, quote-free) inside the quotes before the escaped body. Fuses the
+/// `./` option-injection guard into the same allocation as the quoting, avoiding
+/// the intermediate `format!("./{s}")` string that `safe_file_arg` used to build.
+#[cfg(not(windows))]
+fn shell_quote_prefixed(prefix: &str, s: &str) -> Result<String, String> {
     // Exact for the common quote-free case (prefix + content + two surrounding
     // quotes); only the rare embedded-quote path triggers a reallocation.
     let mut out = String::with_capacity(prefix.len() + s.len() + 2);
@@ -79,10 +80,33 @@ fn shell_quote_prefixed(prefix: &str, s: &str) -> String {
         }
     }
     out.push('\'');
-    out
+    Ok(out)
 }
 
-fn safe_file_arg(s: &str) -> String {
+/// `cmd.exe` quoting (menu and interactive commands both run through `cmd /C`
+/// on Windows): wrap in double quotes so `& | < > ^ ( )` are treated as
+/// literals. `%` (environment-variable expansion) and `"` cannot be reliably
+/// escaped for `cmd /C`, so a name containing either — or a newline — is
+/// rejected rather than folded into an injectable command line.
+#[cfg(windows)]
+fn shell_quote_prefixed(prefix: &str, s: &str) -> Result<String, String> {
+    if let Some(bad) = s
+        .chars()
+        .find(|&c| c == '%' || c == '"' || c == '\n' || c == '\r')
+    {
+        return Err(format!(
+            "name contains a character that cannot be safely quoted for cmd.exe: {bad:?}"
+        ));
+    }
+    let mut out = String::with_capacity(prefix.len() + s.len() + 2);
+    out.push('"');
+    out.push_str(prefix);
+    out.push_str(s);
+    out.push('"');
+    Ok(out)
+}
+
+fn safe_file_arg(s: &str) -> Result<String, String> {
     if s.starts_with('-') {
         // Prepend `./` so the shell cannot mistake a `-`-prefixed filename for an
         // option, fused into a single allocation via `shell_quote_prefixed`.
@@ -135,21 +159,21 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
             None => out.push('%'),
             Some('%') => out.push('%'),
             Some('f') => {
-                out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?));
+                out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?)?);
             }
             Some('d') => {
                 out.push_str(&shell_quote(
                     ctx.active_dir.to_str().ok_or_else(non_utf8_err)?,
-                ));
+                )?);
             }
             Some('D') => {
                 out.push_str(&shell_quote(
                     ctx.other_dir.to_str().ok_or_else(non_utf8_err)?,
-                ));
+                )?);
             }
             Some('t' | 's') => {
                 if ctx.tagged.is_empty() {
-                    out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?));
+                    out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?)?);
                 } else {
                     // Write space-separated quoted names straight into `out`,
                     // avoiding an intermediate Vec<String> and its join().
@@ -157,7 +181,7 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
                         if i > 0 {
                             out.push(' ');
                         }
-                        out.push_str(&safe_file_arg(&tagged_name(p, ctx.active_dir)?));
+                        out.push_str(&safe_file_arg(&tagged_name(p, ctx.active_dir)?)?);
                     }
                 }
             }
@@ -427,11 +451,19 @@ pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<Loade
         )
     })?;
     let mut content = String::new();
+    // Read one byte past the limit so an oversize file is a hard error rather
+    // than a silently truncated (and possibly mis-parsed) prefix.
     File::open(&path)
         .map_err(|e| format!("Failed to open menu file {}: {e}", path.display()))?
-        .take(MAX_MENU_FILE_BYTES)
+        .take(MAX_MENU_FILE_BYTES + 1)
         .read_to_string(&mut content)
         .map_err(|e| format!("Failed to read menu file {}: {e}", path.display()))?;
+    if content.len() as u64 > MAX_MENU_FILE_BYTES {
+        return Err(format!(
+            "Menu file {} exceeds the {MAX_MENU_FILE_BYTES}-byte limit",
+            path.display()
+        ));
+    }
     let parsed = parse_menu_with_warnings(&content);
     let entries = filter_entries(&parsed.entries, filename)
         .into_iter()
@@ -469,25 +501,39 @@ mod tests {
         }
     }
 
-    // --- shell_quote ---
+    // --- shell_quote (POSIX single-quote form; asserted on non-Windows only) ---
 
+    #[cfg(not(windows))]
     #[test]
     fn test_shell_quote_simple() {
-        assert_eq!(shell_quote("hello"), "'hello'");
+        assert_eq!(shell_quote("hello").unwrap(), "'hello'");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_shell_quote_with_spaces() {
-        assert_eq!(shell_quote("my file.txt"), "'my file.txt'");
+        assert_eq!(shell_quote("my file.txt").unwrap(), "'my file.txt'");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_shell_quote_with_single_quote() {
-        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote("it's").unwrap(), "'it'\\''s'");
+    }
+
+    /// cmd.exe quoting wraps in double quotes and rejects unescapable
+    /// metacharacters (`%`, `"`).
+    #[cfg(windows)]
+    #[test]
+    fn test_cmd_quote_wraps_and_rejects() {
+        assert_eq!(shell_quote("a&b").unwrap(), "\"a&b\"");
+        assert!(shell_quote("%PATH%").is_err());
+        assert!(shell_quote("a\"b").is_err());
     }
 
     // --- apply_substitutions ---
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_f() {
         let active = PathBuf::from("/home/user");
@@ -499,6 +545,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_f_spaces() {
         let active = PathBuf::from("/home/user");
@@ -510,6 +557,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_d() {
         let active = PathBuf::from("/home/user/docs");
@@ -521,6 +569,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[allow(non_snake_case)]
     fn test_subst_percent_D() {
@@ -533,6 +582,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_t_no_tagged_falls_back_to_f() {
         let active = PathBuf::from("/a");
@@ -544,6 +594,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_s_is_alias_for_t() {
         let active = PathBuf::from("/a");
@@ -555,6 +606,7 @@ mod tests {
         assert!(result.contains("'y.txt'"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_t_multiple_files() {
         let active = PathBuf::from("/src");
@@ -565,6 +617,7 @@ mod tests {
         assert_eq!(result, "cp 'a b.txt' 'c.txt' /dst/");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn test_subst_percent_t_keeps_relative_paths_under_active_dir() {
         let active = PathBuf::from("/src");

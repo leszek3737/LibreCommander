@@ -106,14 +106,33 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
             }
         }
         KeyCode::Char('d') if state.ui.picker_selected < state.hotlist().len() => {
-            state.hotlist_remove(state.ui.picker_selected);
-            let hotlist_len = state.hotlist().len();
-            if state.ui.picker_selected > 0 && state.ui.picker_selected >= hotlist_len {
-                state.ui.picker_selected -= 1;
-            }
+            // Confirm before removing: the deletion has no undo.
+            state.ui.pending_hotlist_delete = Some(state.ui.picker_selected);
+            state.input.dialog_selection = 1; // default to "No"
+            state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
+                "Remove from hotlist?",
+                "Remove the selected directory from the hotlist?",
+            )));
         }
         _ => {}
     }
+}
+
+/// Resolve a pending hotlist deletion after the confirm dialog: remove the
+/// entry when `confirmed`, then return to the hotlist picker regardless.
+pub(crate) fn resolve_hotlist_delete(state: &mut AppState, confirmed: bool) {
+    if let Some(idx) = state.ui.pending_hotlist_delete.take()
+        && confirmed
+        && idx < state.hotlist().len()
+    {
+        state.hotlist_remove(idx);
+        let hotlist_len = state.hotlist().len();
+        if state.ui.picker_selected > 0 && state.ui.picker_selected >= hotlist_len {
+            state.ui.picker_selected -= 1;
+        }
+    }
+    state.input.dialog_selection = 0;
+    state.mode = AppMode::ListPicker(PickerKind::Hotlist);
 }
 
 fn handle_compare_mode_picker(state: &mut AppState, key: KeyCode) {
@@ -191,7 +210,9 @@ fn resolve_user_menu_command(state: &AppState, idx: usize) -> Option<Result<Stri
 fn dispatch_user_menu_command(state: &mut AppState, cmd: String) {
     if state.ui.user_menu_source == MenuSource::Local {
         state.ui.pending_menu_command = Some(cmd);
-        state.input.dialog_selection = 0;
+        // Default to "No": running attacker-controlled local-menu commands must
+        // require a deliberate choice, not two default-Enter presses.
+        state.input.dialog_selection = 1;
         state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
             "Trust Local Menu?",
             "This menu comes from the current directory.\n\
@@ -410,7 +431,30 @@ mod tests {
     }
 
     #[test]
-    fn hotlist_picker_delete_empty_after_delete() {
+    fn hotlist_picker_delete_prompts_then_deletes() {
+        let mut state = AppState {
+            mode: AppMode::ListPicker(PickerKind::Hotlist),
+            ui: UiState {
+                directory_hotlist: vec![PathBuf::from("/only")],
+                picker_selected: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // 'd' asks for confirmation (default "No") rather than deleting outright.
+        handle_list_picker(&mut state, KeyCode::Char('d'));
+        assert_eq!(state.ui.pending_hotlist_delete, Some(0));
+        assert_eq!(state.input.dialog_selection, 1);
+        assert_eq!(state.ui.directory_hotlist.len(), 1);
+        // Confirming removes it and returns to the hotlist picker.
+        resolve_hotlist_delete(&mut state, true);
+        assert!(state.ui.directory_hotlist.is_empty());
+        assert_eq!(state.ui.picker_selected, 0);
+        assert_eq!(state.mode, AppMode::ListPicker(PickerKind::Hotlist));
+    }
+
+    #[test]
+    fn hotlist_picker_delete_cancel_keeps_entry() {
         let mut state = AppState {
             mode: AppMode::ListPicker(PickerKind::Hotlist),
             ui: UiState {
@@ -421,7 +465,8 @@ mod tests {
             ..Default::default()
         };
         handle_list_picker(&mut state, KeyCode::Char('d'));
-        assert!(state.ui.directory_hotlist.is_empty());
-        assert_eq!(state.ui.picker_selected, 0);
+        resolve_hotlist_delete(&mut state, false);
+        assert_eq!(state.ui.directory_hotlist.len(), 1);
+        assert_eq!(state.ui.pending_hotlist_delete, None);
     }
 }

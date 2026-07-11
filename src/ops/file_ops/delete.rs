@@ -257,18 +257,80 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn ensure_entry_not_critical_rejects_symlink_in_critical_dir_without_following() {
-        // A symlink whose *location* is critical must be rejected even if it
-        // points somewhere harmless: the guard validates where the link lives,
-        // not its target. We can't create files in `/etc`, so assert the inverse
-        // property instead — a symlink in a temp dir pointing INTO `/etc` is
-        // allowed, proving the target is not what gets validated.
+    fn ensure_entry_not_critical_judges_symlink_by_location_not_target() {
+        // The guard validates where a symlink *lives*, not where it points: a
+        // link in a temp dir pointing INTO `/etc` is allowed, proving the target
+        // is not what gets validated. (We can't create a link inside `/etc` to
+        // assert the rejecting direction here; that is covered deterministically
+        // by `validate_not_critical_rejects_critical_paths`.)
         let dir = tempfile::tempdir().unwrap();
         let link = dir.path().join("link-to-etc");
         std::os::unix::fs::symlink("/etc/hosts", &link).unwrap();
         assert!(
             ensure_entry_not_critical(&link).is_ok(),
             "a symlink in a temp dir must be judged by its own location, not its target"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_not_critical_rejects_critical_paths() {
+        // Pure path check — no real filesystem entry required — so it exercises
+        // the rejection deterministically regardless of which system dirs exist.
+        assert!(
+            validate_not_critical(Path::new("/")).is_err(),
+            "root must be rejected"
+        );
+        assert!(
+            validate_not_critical(Path::new("/usr")).is_err(),
+            "an exact critical dir must be rejected"
+        );
+        assert!(
+            validate_not_critical(Path::new("/usr/bin/whatever")).is_err(),
+            "a path under a critical prefix must be rejected"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_symlink_deletes_file_link_preserving_target() {
+        use std::os::windows::fs::symlink_file;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, b"data").unwrap();
+        let link = dir.path().join("link.txt");
+        // Creating symlinks on Windows needs privilege (Developer Mode or admin);
+        // skip rather than fail where it is unavailable.
+        if symlink_file(&target, &link).is_err() {
+            return;
+        }
+        remove_symlink(&link).unwrap();
+        assert!(!link.exists(), "the symlink itself must be removed");
+        assert!(target.exists(), "the link target must be left intact");
+        assert_eq!(fs::read(&target).unwrap(), b"data");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remove_symlink_deletes_dir_link_preserving_target() {
+        use std::os::windows::fs::symlink_dir;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target_dir");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("inner.txt"), b"data").unwrap();
+        let link = dir.path().join("link_dir");
+        if symlink_dir(&target, &link).is_err() {
+            return;
+        }
+        remove_symlink(&link).unwrap();
+        assert!(
+            !link.exists(),
+            "the directory symlink itself must be removed"
+        );
+        assert!(target.exists(), "the link target dir must be left intact");
+        assert!(
+            target.join("inner.txt").exists(),
+            "target dir contents must be preserved"
         );
     }
 }

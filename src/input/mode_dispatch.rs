@@ -162,7 +162,12 @@ pub(crate) fn handle_viewer_mode(ctx: &mut EventContext, key: KeyCode) {
     }
 }
 
-pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_height: u16) {
+pub(crate) fn handle_search_mode(
+    state: &mut AppState,
+    key: KeyCode,
+    modifiers: KeyModifiers,
+    terminal_height: u16,
+) {
     let visible = panel_ops::panel_visible_height(terminal_height);
     match key {
         KeyCode::Esc => {
@@ -180,7 +185,9 @@ pub(crate) fn handle_search_mode(state: &mut AppState, key: KeyCode, terminal_he
                 apply_search_filter(state, visible);
             }
         }
-        KeyCode::Char(c) => {
+        // Only a bare (or Shift-ed) letter is query text; Ctrl/Alt+letter must
+        // not be appended to the search query.
+        KeyCode::Char(c) if modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
             state.input.search_query.push(c);
             state.input.search_cursor = state.input.search_query.len();
             apply_search_filter(state, visible);

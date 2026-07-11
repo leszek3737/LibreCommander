@@ -273,14 +273,129 @@ fn init_watcher(
 /// Long-lived loop state that the async-poll and render seams operate on. Groups
 /// the watcher bookkeeping + the per-frame viewer/job handles so the per-iter
 /// helpers take a small parameter list instead of a dozen `&mut` locals.
+/// Result of a background archive listing: `(source, dest, entries-or-error)`.
+type ArchiveListMsg = (
+    std::path::PathBuf,
+    String,
+    Result<Vec<lc::ops::archive::ArchiveEntry>, lc::ops::archive::ArchiveError>,
+);
+/// Result of a background directory-tree build: `(root, tree)`.
+type TreeBuildMsg = (std::path::PathBuf, app::dir_tree::TreeBuildResult);
+
 struct AppLoop {
     viewer_state: Option<viewer::ViewerState>,
     viewer_loader: Option<viewer::ViewerLoader>,
     image_preview_loader: Option<viewer::ImagePreviewLoader>,
     running_job: Option<RunningJob>,
+    /// In-flight background archive listing (P1.5), if any.
+    archive_list_load: Option<app::bg_load::BgLoad<ArchiveListMsg>>,
+    /// In-flight background directory-tree build (P1.6), if any.
+    tree_load: Option<app::bg_load::BgLoad<TreeBuildMsg>>,
     watcher: Option<fs::watcher::Watcher>,
     watcher_paused: bool,
     watcher_sync_state: watcher_sync::WatcherSyncState,
+}
+
+/// True while a background loading dialog ("Listing archive..." / "Building
+/// tree...") is the active mode. Used to tell a live load from one the user
+/// dismissed with Esc (which drops the loader, cancelling it).
+fn is_loading_dialog(state: &AppState) -> bool {
+    matches!(state.mode, AppMode::Dialog(DialogKind::Progress { .. }))
+}
+
+/// Start any pending background load requested by an input handler, and apply a
+/// finished load's result. Returns `true` if the frame must be redrawn.
+fn poll_background_loads(loop_state: &mut AppLoop, state: &mut AppState) -> bool {
+    let mut dirty = false;
+
+    // --- Archive listing (P1.5) ---
+    if let Some((source, dest)) = state.ui.pending_archive_list.take() {
+        let src = source.clone();
+        match app::bg_load::BgLoad::spawn("archive-list", move |_cancel| {
+            (source, dest, lc::ops::archive::list::list_archive(&src))
+        }) {
+            Ok(load) => loop_state.archive_list_load = Some(load),
+            Err(e) => {
+                state.ui.status_message = Some(format!("Failed to start archive listing: {e}"));
+                state.mode = AppMode::Normal;
+                dirty = true;
+            }
+        }
+    }
+    if let Some(load) = loop_state.archive_list_load.as_ref() {
+        match load.try_recv() {
+            Ok((source, dest, result)) => {
+                loop_state.archive_list_load = None;
+                // Discard the result if the user dismissed the loading dialog.
+                if is_loading_dialog(state) {
+                    input::normal::apply_archive_list_result(state, source, dest, result);
+                }
+                dirty = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // Dismissed via Esc: drop the loader (cancels + detaches).
+                if !is_loading_dialog(state) {
+                    loop_state.archive_list_load = None;
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                loop_state.archive_list_load = None;
+                if is_loading_dialog(state) {
+                    state.ui.status_message =
+                        Some("Archive listing failed: worker thread panicked".to_string());
+                    state.mode = AppMode::Normal;
+                }
+                dirty = true;
+            }
+        }
+    }
+
+    // --- Directory-tree build (P1.6) ---
+    if let Some((path, show_hidden)) = state.ui.pending_tree_build.take() {
+        let root = path.clone();
+        match app::bg_load::BgLoad::spawn("tree-build", move |_cancel| {
+            let tree = app::dir_tree::build_tree_with_diagnostics(
+                &path,
+                input::menu_actions::TREE_EXPAND_DEPTH,
+                show_hidden,
+            );
+            (root, tree)
+        }) {
+            Ok(load) => loop_state.tree_load = Some(load),
+            Err(e) => {
+                state.ui.status_message = Some(format!("Failed to start tree build: {e}"));
+                state.mode = AppMode::Normal;
+                dirty = true;
+            }
+        }
+    }
+    if let Some(load) = loop_state.tree_load.as_ref() {
+        match load.try_recv() {
+            Ok((root, tree)) => {
+                loop_state.tree_load = None;
+                if is_loading_dialog(state) {
+                    input::menu_actions::apply_tree_build_result(state, root, tree);
+                }
+                dirty = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                if !is_loading_dialog(state) {
+                    loop_state.tree_load = None;
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                loop_state.tree_load = None;
+                if is_loading_dialog(state) {
+                    state.ui.status_message =
+                        Some("Tree build failed: worker thread panicked".to_string());
+                    state.mode = AppMode::Normal;
+                }
+                dirty = true;
+            }
+        }
+    }
+
+    dirty
 }
 
 /// Drain every async source feeding the UI for one loop iteration: watcher
@@ -335,6 +450,9 @@ fn poll_async(
     ) {
         dirty = true;
     }
+    if poll_background_loads(loop_state, state) {
+        dirty = true;
+    }
     dirty
 }
 
@@ -374,6 +492,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         viewer_loader: None,
         image_preview_loader: None,
         running_job: None,
+        archive_list_load: None,
+        tree_load: None,
         watcher,
         watcher_paused: false,
         watcher_sync_state: watcher_sync::WatcherSyncState::default(),
@@ -426,13 +546,26 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 running_job: &mut loop_state.running_job,
                 term_size,
             };
-            dirty = dispatch_event(&mut ctx, terminal, &key)?;
+            dirty = match dispatch_event(&mut ctx, terminal, &key) {
+                Ok(d) => d,
+                Err(e) => {
+                    // Match the other loop exit paths: tear down a running job
+                    // before propagating instead of leaving it to the reaper.
+                    shutdown_job(ctx.running_job);
+                    return Err(e);
+                }
+            };
             // The dispatch may have processed a `Resize`, which lives only in
             // the context; carry it back so the next render uses the new size.
             term_size = ctx.term_size;
         }
 
         if state.should_quit() {
+            // Restore the terminal before reaping a running job so the user gets
+            // their shell back immediately instead of staring at a frozen TUI for
+            // up to the reaper's join deadline. The `TerminalGuard`'s leave on
+            // drop is idempotent, so doing it here too is safe.
+            let _ = leave_tui_stdout();
             shutdown_job(&mut loop_state.running_job);
             return Ok(());
         }
@@ -457,13 +590,16 @@ fn recover_terminal_state() -> io::Result<()> {
         // while the terminal is actually working would abort the app needlessly.
         let leave = leave_tui_stdout();
         let enter = enter_tui_stdout();
-        if let Err(e) = std::fs::remove_file(&terminal_state_file) {
-            lc::debug_log!("failed to remove terminal state file: {e}");
-        }
         if let Err(e) = leave {
             lc::debug_log!("failed to leave terminal during recovery: {e}");
         }
+        // Propagate a failed re-entry BEFORE clearing the marker, so a recovery
+        // that did not actually restore the terminal is retried on next launch
+        // instead of being silently forgotten.
         enter?;
+        if let Err(e) = std::fs::remove_file(&terminal_state_file) {
+            lc::debug_log!("failed to remove terminal state file: {e}");
+        }
     }
     Ok(())
 }
@@ -512,7 +648,7 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
             input::command_line::handle_command_line(ctx.state, *key);
         }
         AppMode::Dialog(_) => {
-            input::dialogs::handle_dialog(ctx, key.code);
+            input::dialogs::handle_dialog(ctx, key.code, key.modifiers);
         }
         AppMode::Search if matches!(key.code, KeyCode::F(_)) => {
             let visible = panel_ops::panel_visible_height(ctx.term_size.height);
@@ -520,7 +656,12 @@ fn dispatch_key_event<B: ratatui::backend::Backend>(
             input::mode_dispatch::handle_normal_mode(ctx, key.code, key.modifiers, terminal);
         }
         AppMode::Search => {
-            input::mode_dispatch::handle_search_mode(ctx.state, key.code, ctx.term_size.height);
+            input::mode_dispatch::handle_search_mode(
+                ctx.state,
+                key.code,
+                key.modifiers,
+                ctx.term_size.height,
+            );
         }
         AppMode::Menu => {
             input::mode_dispatch::handle_menu_mode(ctx, key.code, terminal);
@@ -561,7 +702,18 @@ fn key_repeat_allowed(mode: &AppMode, key: KeyCode) -> bool {
         return true;
     }
 
-    if is_text_edit && matches!(mode, AppMode::Dialog(DialogKind::Input { .. })) {
+    // The archive dialogs carry editable destination fields too, so held
+    // Backspace/character keys should repeat there like any other text input.
+    if is_text_edit
+        && matches!(
+            mode,
+            AppMode::Dialog(
+                DialogKind::Input { .. }
+                    | DialogKind::ArchiveExtract(_)
+                    | DialogKind::ArchiveCreate(_)
+            )
+        )
+    {
         return true;
     }
 

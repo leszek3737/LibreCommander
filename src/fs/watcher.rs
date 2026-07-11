@@ -279,21 +279,26 @@ impl Watcher {
     }
 
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
+        // Set the flag while holding the debounce lock: the event handler
+        // re-checks `paused` under this same lock before emitting, so once
+        // `pause()` has returned no in-flight callback can send an event past
+        // it (the check-then-send is serialized by the lock).
+        {
+            let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
+            self.paused.store(true, Ordering::Release);
+            if !debounce.is_empty() {
+                debug_log!(
+                    "watcher paused: clearing {} debounce entries",
+                    debounce.len()
+                );
+            }
+            debounce.clear();
+        }
         let mut pending = lock_or_recover(&self.pending_from, "pending_from");
         if !pending.is_empty() {
             debug_log!("watcher paused: clearing stale pending_from entries");
         }
         pending.clear();
-        drop(pending);
-        let mut debounce = lock_or_recover(&self.debounce_state, "watcher");
-        if !debounce.is_empty() {
-            debug_log!(
-                "watcher paused: clearing {} debounce entries",
-                debounce.len()
-            );
-        }
-        debounce.clear();
     }
 
     pub fn resume(&self) {
@@ -416,11 +421,23 @@ fn make_handler(
         for watch_event in convert_event_with_rename_pairing(event, &pending_from) {
             match watch_event {
                 WatchEvent::Renamed { .. } => {
-                    handle_rename_event(&event_tx, &debounce_state, &overflow_pending, watch_event);
+                    handle_rename_event(
+                        &event_tx,
+                        &debounce_state,
+                        &overflow_pending,
+                        &paused,
+                        watch_event,
+                    );
                 }
                 WatchEvent::Overflow => send_overflow_or_flag(&event_tx, &overflow_pending),
                 WatchEvent::Created(_) | WatchEvent::Deleted(_) | WatchEvent::Modified(_) => {
-                    handle_path_event(&event_tx, &debounce_state, &overflow_pending, watch_event);
+                    handle_path_event(
+                        &event_tx,
+                        &debounce_state,
+                        &overflow_pending,
+                        &paused,
+                        watch_event,
+                    );
                 }
             }
         }
@@ -432,10 +449,17 @@ fn handle_rename_event(
     event_tx: &SyncSender<WatchEvent>,
     debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
     overflow_pending: &AtomicBool,
+    paused: &AtomicBool,
     event: WatchEvent,
 ) {
     if let WatchEvent::Renamed { from, to } = &event {
         let mut debounce = lock_or_recover(debounce_state, "watcher");
+        // Re-check under the debounce lock: `pause()` sets the flag while
+        // holding this lock and clears the map, so a `true` here means we must
+        // not emit anything past the pause.
+        if paused.load(Ordering::Acquire) {
+            return;
+        }
         let (_, flushed) =
             process_debounce(&mut debounce, &[from.as_path(), to.as_path()], None, true);
         send_expired_events(event_tx, &mut debounce, flushed);
@@ -452,6 +476,7 @@ fn handle_path_event(
     event_tx: &SyncSender<WatchEvent>,
     debounce_state: &Mutex<HashMap<PathBuf, PendingEntry>>,
     overflow_pending: &AtomicBool,
+    paused: &AtomicBool,
     event: WatchEvent,
 ) {
     let skip_debounce = matches!(&event, WatchEvent::Deleted(_));
@@ -464,6 +489,11 @@ fn handle_path_event(
             _ => return,
         };
         let mut debounce = lock_or_recover(debounce_state, "watcher");
+        // Re-check under the debounce lock so a `pause()` that has completed
+        // (flag set + map cleared under this lock) cannot be raced by a send.
+        if paused.load(Ordering::Acquire) {
+            return;
+        }
         let (emit, flushed) = process_debounce(
             &mut debounce,
             &[path],

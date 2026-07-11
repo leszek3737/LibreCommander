@@ -142,7 +142,7 @@ pub fn dialog_key(state: &mut AppState, key: KeyCode, size: Size) {
         running_job: &mut running_job,
         term_size: size,
     };
-    crate::input::dialogs::handle_dialog(&mut ctx, key);
+    crate::input::dialogs::handle_dialog(&mut ctx, key, crossterm::event::KeyModifiers::NONE);
 }
 
 pub fn dummy_tree_entries(count: usize) -> Vec<TreeEntry> {

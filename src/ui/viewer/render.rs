@@ -324,11 +324,9 @@ pub fn render_hex_view_with_colors(
         Paragraph::new(lines).scroll((0, paragraph_horizontal_scroll(state.horizontal_offset)));
     f.render_widget(paragraph, content_area);
 
-    let current_line = if total_lines == 0 {
-        0
-    } else {
-        state.scroll_offset + 1
-    };
+    // Report the *clamped* line so the footer matches what is on screen; the
+    // raw `scroll_offset` can exceed `total_lines` (e.g. "101/10").
+    let current_line = if total_lines == 0 { 0 } else { start_line + 1 };
     let position_text = format!("Offset: {current_line}/{total_lines}");
     let size_label = format_size(state.file_size as u64);
     render_viewer_status(

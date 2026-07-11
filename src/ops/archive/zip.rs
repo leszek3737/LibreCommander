@@ -1,5 +1,4 @@
 use std::fs::{self, File};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -114,7 +113,7 @@ fn extract_zip_entries(
             continue;
         }
 
-        let outpath = super::sanitize_entry_path(&canonical_dest, entry.name())?;
+        let outpath = super::sanitize_entry_path(&canonical_dest, Path::new(entry.name()))?;
 
         if entry.size() > MAX_FILE_SIZE {
             return Err(ArchiveError::InvalidArchive(format!(
@@ -125,9 +124,15 @@ fn extract_zip_entries(
         }
 
         if entry.is_dir() {
+            // Only track directories THIS operation actually creates, so a later
+            // rollback never `remove_dir_all`s a pre-existing user directory that
+            // `create_dir_all` merely succeeded on idempotently.
+            let newly_created = fs::symlink_metadata(&outpath).is_err();
             fs::create_dir_all(&outpath)?;
             super::verify_within_dest(&canonical_dest, &outpath)?;
-            extracted_paths.push(outpath);
+            if newly_created {
+                extracted_paths.push(outpath);
+            }
             let _ = progress.send(entry.size());
         } else {
             if entry.compressed_size() > MAX_FILE_SIZE {
@@ -147,6 +152,10 @@ fn extract_zip_entries(
             }
             super::check_symlink_at_dest(&outpath)?;
             let mut outfile = super::open_outfile(&outpath)?;
+            // Register the file for rollback BEFORE copying: a mid-copy failure
+            // (cancel / size-limit / IO error) must still clean up the partial
+            // file, which pushing only after the copy would miss.
+            extracted_paths.push(outpath.clone());
             let written = copy_with_progress(&mut entry, &mut outfile, progress, cancel)?;
             total_size.add(written)?;
 
@@ -158,8 +167,6 @@ fn extract_zip_entries(
                     fs::set_permissions(&outpath, fs::Permissions::from_mode(safe_mode))?;
                 }
             }
-
-            extracted_paths.push(outpath);
         }
     }
     Ok(())
@@ -212,7 +219,7 @@ fn add_sources_to_zip(
                     ))
                 })?
                 .to_string_lossy();
-            add_file_to_zip(zip, &name, source, options, progress)?;
+            add_file_to_zip(zip, &name, source, options, progress, cancel)?;
         }
     }
 
@@ -225,6 +232,7 @@ fn add_file_to_zip(
     source: &Path,
     options: &SimpleFileOptions,
     progress: &Sender<u64>,
+    cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
     // Open with O_NOFOLLOW before creating the entry so a symlink swapped in
     // after the create-side filter (TOCTOU) is skipped without leaving an empty
@@ -233,8 +241,9 @@ fn add_file_to_zip(
         return Ok(());
     };
     zip.start_file(name, *options).map_err(map_zip_err)?;
-    let bytes = io::copy(&mut file, zip)?;
-    let _ = progress.send(bytes);
+    // `copy_with_progress` checks `cancel` every chunk, so a single large file is
+    // interruptible mid-copy — plain `io::copy` would run to completion first.
+    copy_with_progress(&mut file, zip, progress, cancel)?;
     Ok(())
 }
 
@@ -244,8 +253,12 @@ pub fn create_zip(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> Result<(), ArchiveError> {
-    let tmp_dest = dest.with_extension("zip.tmp");
-    let file = File::create(&tmp_dest)?;
+    // Stage next to the destination (same filesystem for an atomic rename) using
+    // `create_new` so we never truncate an existing file or follow a symlink
+    // planted at a predictable `dest.zip.tmp` path.
+    let dest_dir = dest.parent().unwrap_or_else(|| Path::new("."));
+    let (file, tmp_dest) =
+        super::create_temp_file_in(dest_dir, ".lc-zip", ".tmp").map_err(ArchiveError::Io)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
@@ -263,7 +276,12 @@ pub fn create_zip(
                 cleanup_temp_file(&tmp_dest);
                 return Err(e);
             }
-            fs::rename(&tmp_dest, dest)?;
+            // Clean up the staged archive if the final rename fails, instead of
+            // orphaning it next to the destination.
+            if let Err(e) = fs::rename(&tmp_dest, dest) {
+                cleanup_temp_file(&tmp_dest);
+                return Err(ArchiveError::Io(e));
+            }
             Ok(())
         }
     }
@@ -307,7 +325,7 @@ fn add_dir_to_zip(
             add_dir_to_zip(zip, base, &path, options, progress, cancel, count)?;
         } else {
             count_entry(count)?;
-            add_file_to_zip(zip, &name, &path, options, progress)?;
+            add_file_to_zip(zip, &name, &path, options, progress, cancel)?;
         }
     }
     Ok(())
@@ -346,7 +364,7 @@ fn zip_datetime_to_system_time(dt: zip::DateTime) -> SystemTime {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::sync::mpsc;
 
     #[cfg(unix)]

@@ -11,6 +11,14 @@ use super::hex::HEX_BYTES_PER_LINE;
 use super::mime::{is_image_mime, should_open_as_text};
 use super::scroll::line_number_column_width;
 
+/// Maximum bytes the viewer will materialize for any file — and the cap on the
+/// generated archive-listing string. Larger inputs are truncated.
+const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
+
+/// Maximum number of archive entries rendered into a listing. Bounds output for
+/// crafted archives with a huge entry count.
+const MAX_ARCHIVE_ENTRIES: usize = 100_000;
+
 pub(crate) struct ViewerRenderCache {
     pub(crate) visual_heights: RefCell<Vec<usize>>,
     pub(crate) visual_offsets: RefCell<Vec<usize>>,
@@ -300,7 +308,6 @@ impl ViewerState {
     }
 
     pub(crate) fn open_with_cancel(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<Self> {
-        const MAX_VIEW_SIZE: usize = 100 * 1024 * 1024;
         const READ_CHUNK: usize = 64 * 1024;
 
         let meta = fs::metadata(path)?;
@@ -309,6 +316,24 @@ impl ViewerState {
                 io::ErrorKind::IsADirectory,
                 format!("cannot open directory as viewer file: {}", path.display()),
             ));
+        }
+        // Reject non-regular special files (FIFO/socket/block/char device)
+        // *before* the blocking `open()` below. `open()` on a FIFO or a hung
+        // device blocks indefinitely and the detached loader worker cannot be
+        // interrupted mid-`open()`; `stat()` never blocks, so filter them here.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            let ft = meta.file_type();
+            if ft.is_fifo() || ft.is_socket() || ft.is_block_device() || ft.is_char_device() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "cannot open special file as viewer file: {}",
+                        path.display()
+                    ),
+                ));
+            }
         }
         let file_size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
 
@@ -387,6 +412,10 @@ impl ViewerState {
             )
         })?;
         let mut out = String::new();
+        // A crafted archive can hold millions of entries; bound both the number
+        // of rows rendered and the total string size so the listing can't
+        // exhaust memory. `truncated` records whether either cap was hit.
+        let mut truncated = false;
 
         let mut write_section = || -> Result<(), std::fmt::Error> {
             writeln!(out, "Archive: {}", path.display())?;
@@ -394,7 +423,11 @@ impl ViewerState {
             writeln!(out)?;
             writeln!(out, "  {:<8} {:<20} Name", "Size", "Modified")?;
             writeln!(out, "  {:<8} {:<20} ----", "----", "--------")?;
-            for entry in &entries {
+            for entry in entries.iter().take(MAX_ARCHIVE_ENTRIES) {
+                if out.len() >= MAX_VIEW_SIZE {
+                    truncated = true;
+                    break;
+                }
                 let size = if entry.is_dir {
                     "<DIR>".to_string()
                 } else {
@@ -410,6 +443,12 @@ impl ViewerState {
                     entry.name.to_string()
                 };
                 writeln!(out, "  {size:<8} {mtime:<20} {name}")?;
+            }
+            if entries.len() > MAX_ARCHIVE_ENTRIES {
+                truncated = true;
+            }
+            if truncated {
+                writeln!(out, "[TRUNCATED]")?;
             }
             Ok(())
         };

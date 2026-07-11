@@ -9,7 +9,9 @@ pub(crate) use copy::preserve_timestamps;
 // copy/delete/move are only consumed inside `ops::batch` (and the file_ops
 // submodules); they are not part of the public `ops` facade. Kept crate-visible.
 pub(crate) use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
-pub(crate) use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
+pub(crate) use delete::{
+    delete_dir_recursive, delete_dir_recursive_cancelable, delete_file, ensure_entry_not_critical,
+};
 #[cfg(unix)]
 pub use entry_ops::chmod;
 pub use entry_ops::{create_directory, rename_entry};

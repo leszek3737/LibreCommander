@@ -1,3 +1,4 @@
+pub mod bg_load;
 pub mod config;
 pub mod debug_log;
 pub mod dir_tree;

@@ -74,7 +74,17 @@ pub fn sync_watcher_paths(
 fn canonical_desired_paths(left: &Path, right: &Path) -> HashSet<PathBuf> {
     let mut desired = HashSet::with_capacity(2);
     for path in [left, right] {
-        desired.insert(crate::fs::path::clean_path(path));
+        // Match the representation `Watcher::watch` stores as its key
+        // (canonicalized, so symlinks are resolved). Using the lexical clean
+        // path here instead would make a symlinked panel dir permanently differ
+        // from the watched key, so every sync would unwatch+rewatch it and open
+        // a window where its events are lost. Fall back to the clean path only
+        // when canonicalization fails (e.g. the directory was just removed),
+        // which mirrors what `watch()` would do (fail) for the same input.
+        let key = path
+            .canonicalize()
+            .unwrap_or_else(|_| crate::fs::path::clean_path(path));
+        desired.insert(key);
     }
     desired
 }

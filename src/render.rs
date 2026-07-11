@@ -39,13 +39,7 @@ pub(crate) fn render_ui(
     match &state.mode {
         AppMode::Viewing => {
             if let Some(vs) = viewer_state {
-                match vs.view_mode {
-                    ViewMode::Hex => viewer::render_hex_view_with_colors(f, f.area(), vs, colors),
-                    ViewMode::Image => {
-                        viewer::render_image_view_with_colors(f, f.area(), vs, colors)
-                    }
-                    ViewMode::Text => viewer::render_viewer_with_colors(f, f.area(), vs, colors),
-                }
+                render_active_viewer(f, vs, colors);
                 return;
             }
             if let Some(loader) = viewer_loader {
@@ -73,6 +67,16 @@ pub(crate) fn render_ui(
             return;
         }
         _ => {}
+    }
+
+    // A modal overlay can be open while the viewer is still active (e.g. the
+    // viewer search dialog, which switches `mode` to `Dialog`). Draw the viewer
+    // as the background so the overlay sits over the file being viewed rather
+    // than over the panels.
+    if let Some(vs) = viewer_state {
+        render_active_viewer(f, vs, colors);
+        render_overlays(f, state, f.area(), colors);
+        return;
     }
 
     let size = f.area();
@@ -145,6 +149,16 @@ pub(crate) fn render_ui(
     panels::render_function_bar_with_colors(f, main_layout[4], colors);
 
     render_overlays(f, state, main_layout[0], colors);
+}
+
+/// Renders the active viewer full-screen, dispatching on its view mode. Shared
+/// by the `Viewing` mode and by the overlay-over-viewer background path.
+fn render_active_viewer(f: &mut Frame, vs: &viewer::ViewerState, colors: &ColorPalette) {
+    match vs.view_mode {
+        ViewMode::Hex => viewer::render_hex_view_with_colors(f, f.area(), vs, colors),
+        ViewMode::Image => viewer::render_image_view_with_colors(f, f.area(), vs, colors),
+        ViewMode::Text => viewer::render_viewer_with_colors(f, f.area(), vs, colors),
+    }
 }
 
 fn render_overlays(f: &mut Frame, state: &AppState, menu_bar_area: Rect, colors: &ColorPalette) {

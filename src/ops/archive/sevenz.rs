@@ -96,7 +96,8 @@ impl<'a> SevenzEntryExtractor<'a> {
             return Err(sevenz_rust::Error::Other("Operation canceled".into()));
         }
 
-        let outpath = match super::sanitize_entry_path(self.canonical_dest, entry.name()) {
+        let outpath = match super::sanitize_entry_path(self.canonical_dest, Path::new(entry.name()))
+        {
             Ok(p) => p,
             Err(e) => {
                 self.error_slot
@@ -119,12 +120,18 @@ impl<'a> SevenzEntryExtractor<'a> {
         }
 
         if entry.is_directory() {
+            // Only track directories THIS operation actually creates, so a
+            // rollback never `remove_dir_all`s a pre-existing user directory that
+            // `create_dir_all` merely succeeded on idempotently.
+            let newly_created = fs::symlink_metadata(&outpath).is_err();
             if let Err(e) = fs::create_dir_all(&outpath) {
                 self.error_slot.set(Some(SevenzExtractError::Io(e)));
                 return Err(sevenz_rust::Error::Other("create_dir_all failed".into()));
             }
             self.verify_inside(&outpath)?;
-            self.extracted_paths.push(outpath);
+            if newly_created {
+                self.extracted_paths.push(outpath);
+            }
         } else {
             self.create_parent_if_needed(&outpath)?;
             super::check_symlink_at_dest(&outpath).map_err(|e| {
@@ -139,6 +146,10 @@ impl<'a> SevenzEntryExtractor<'a> {
                     return Err(sevenz_rust::Error::Other("open_outfile failed".into()));
                 }
             };
+            // Register the file for rollback BEFORE copying: a mid-copy failure
+            // (cancel / size-limit / IO error) must still clean up the partial
+            // file, which pushing only after the copy would miss.
+            self.extracted_paths.push(outpath);
             match copy_with_progress(reader, &mut outfile, self.progress, self.cancel) {
                 Ok(written) => {
                     self.total_size.add(written).map_err(|e| {
@@ -146,7 +157,6 @@ impl<'a> SevenzEntryExtractor<'a> {
                             .set(Some(SevenzExtractError::InvalidArchive(e.to_string())));
                         sevenz_rust::Error::Other("total size limit exceeded".into())
                     })?;
-                    self.extracted_paths.push(outpath);
                 }
                 Err(e) => {
                     if e.kind() == io::ErrorKind::Interrupted && self.cancel.load(Ordering::Relaxed)
@@ -270,7 +280,7 @@ mod tests {
     fn sanitize_rejects_absolute_path() {
         let dest = PathBuf::from("/tmp");
         let canonical = dest.canonicalize().unwrap();
-        let result = super::super::sanitize_entry_path(&canonical, "/etc/passwd");
+        let result = super::super::sanitize_entry_path(&canonical, Path::new("/etc/passwd"));
         assert!(result.is_err());
     }
 
@@ -278,7 +288,178 @@ mod tests {
     fn sanitize_rejects_parent_dir() {
         let dest = PathBuf::from("/tmp");
         let canonical = dest.canonicalize().unwrap();
-        let result = super::super::sanitize_entry_path(&canonical, "../passwd");
+        let result = super::super::sanitize_entry_path(&canonical, Path::new("../passwd"));
         assert!(result.is_err());
+    }
+
+    // Real-archive round trip: `sevenz_rust` can WRITE (LZMA2) so we build a
+    // genuine `.7z` fixture in-test rather than embedding opaque bytes. This
+    // exercises `extract_7z` -> `for_each_entries` -> `process_entry` end to end,
+    // including nested directories. Traversal/symlink/cancel/rollback below drive
+    // `process_entry` directly with synthetic entries because a filesystem-sourced
+    // fixture cannot carry `../` or symlink-escape names.
+    #[test]
+    fn extract_7z_roundtrip_preserves_contents() {
+        let work = tempfile::tempdir().unwrap();
+        let src = work.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), b"alpha").unwrap();
+        let sub = src.join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("b.txt"), b"beta").unwrap();
+
+        let archive = work.path().join("out.7z");
+        sevenz_rust::compress_to_path(&src, &archive).unwrap();
+
+        let dest = work.path().join("extract");
+        let (tx, _rx) = mpsc::channel();
+        extract_7z(&archive, &dest, &tx, &AtomicBool::new(false)).unwrap();
+
+        assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(fs::read(dest.join("sub").join("b.txt")).unwrap(), b"beta");
+    }
+
+    /// Builds an extractor over `canonical_dest` sharing `extracted`/`slot`.
+    /// Inlined per test elsewhere would repeat five borrows; this keeps the
+    /// synthetic-entry tests readable.
+    fn run_entry(
+        canonical_dest: &Path,
+        slot: &Cell<Option<SevenzExtractError>>,
+        cancel: &AtomicBool,
+        extracted: &mut Vec<PathBuf>,
+        entry: &sevenz_rust::SevenZArchiveEntry,
+        reader: &mut dyn io::Read,
+    ) -> Result<bool, sevenz_rust::Error> {
+        let (tx, _rx) = mpsc::channel();
+        let mut extractor = SevenzEntryExtractor {
+            canonical_dest,
+            progress: &tx,
+            cancel,
+            error_slot: slot,
+            total_size: super::super::TotalSizeGuard::default(),
+            extracted_paths: extracted,
+        };
+        extractor.process_entry(entry, reader)
+    }
+
+    fn file_entry(name: &str, size: u64) -> sevenz_rust::SevenZArchiveEntry {
+        let mut entry = sevenz_rust::SevenZArchiveEntry::new();
+        entry.name = name.to_string();
+        entry.has_stream = true;
+        entry.size = size;
+        entry
+    }
+
+    #[test]
+    fn process_entry_rejects_path_traversal() {
+        let dest = tempfile::tempdir().unwrap();
+        let canonical = dest.path().canonicalize().unwrap();
+        let slot = Cell::new(None);
+        let cancel = AtomicBool::new(false);
+        let mut extracted = Vec::new();
+        let entry = file_entry("../escape.txt", 3);
+        let mut reader = io::Cursor::new(b"abc".to_vec());
+        let res = run_entry(
+            &canonical,
+            &slot,
+            &cancel,
+            &mut extracted,
+            &entry,
+            &mut reader,
+        );
+        assert!(res.is_err());
+        assert!(matches!(
+            slot.take(),
+            Some(SevenzExtractError::PathTraversal(_))
+        ));
+        assert!(extracted.is_empty());
+    }
+
+    #[test]
+    fn process_entry_cancel_aborts() {
+        let dest = tempfile::tempdir().unwrap();
+        let canonical = dest.path().canonicalize().unwrap();
+        let slot = Cell::new(None);
+        let cancel = AtomicBool::new(true);
+        let mut extracted = Vec::new();
+        let entry = file_entry("f.txt", 3);
+        let mut reader = io::Cursor::new(b"abc".to_vec());
+        let res = run_entry(
+            &canonical,
+            &slot,
+            &cancel,
+            &mut extracted,
+            &entry,
+            &mut reader,
+        );
+        assert!(res.is_err());
+        assert!(matches!(slot.take(), Some(SevenzExtractError::Canceled)));
+    }
+
+    // P0.1: a directory entry that already exists on disk must NOT be scheduled
+    // for rollback, so a later failure never `remove_dir_all`s a user's
+    // pre-existing directory (and its unrelated contents).
+    #[test]
+    fn rollback_preserves_preexisting_dir() {
+        let dest = tempfile::tempdir().unwrap();
+        let canonical = dest.path().canonicalize().unwrap();
+        let keep = canonical.join("keep");
+        fs::create_dir(&keep).unwrap();
+        let data = keep.join("data.txt");
+        fs::write(&data, b"precious").unwrap();
+
+        let slot = Cell::new(None);
+        let cancel = AtomicBool::new(false);
+        let mut extracted = Vec::new();
+        let mut entry = sevenz_rust::SevenZArchiveEntry::new();
+        entry.name = "keep".to_string();
+        entry.is_directory = true;
+        let mut empty = io::Cursor::new(Vec::new());
+        run_entry(
+            &canonical,
+            &slot,
+            &cancel,
+            &mut extracted,
+            &entry,
+            &mut empty,
+        )
+        .unwrap();
+
+        assert!(
+            !extracted.contains(&keep),
+            "pre-existing dir must not be tracked for rollback"
+        );
+        // Simulate the failure-path rollback; pre-existing data must survive.
+        super::super::cleanup_extracted(&extracted);
+        assert!(data.exists(), "rollback deleted pre-existing data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_entry_rejects_symlink_at_dest() {
+        let dest = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let canonical = dest.path().canonicalize().unwrap();
+        // Pre-plant a symlink where the entry would be written.
+        std::os::unix::fs::symlink(outside.path().join("target"), canonical.join("f.txt")).unwrap();
+
+        let slot = Cell::new(None);
+        let cancel = AtomicBool::new(false);
+        let mut extracted = Vec::new();
+        let entry = file_entry("f.txt", 3);
+        let mut reader = io::Cursor::new(b"abc".to_vec());
+        let res = run_entry(
+            &canonical,
+            &slot,
+            &cancel,
+            &mut extracted,
+            &entry,
+            &mut reader,
+        );
+        assert!(res.is_err());
+        assert!(
+            !outside.path().join("target").exists(),
+            "extraction escaped through a pre-planted symlink"
+        );
     }
 }

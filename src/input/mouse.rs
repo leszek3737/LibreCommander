@@ -13,13 +13,18 @@ use crate::ui::dialogs;
 use crate::ui::viewer;
 
 use super::EventContext;
-use super::dialogs::{check_overwrite_conflict, dismiss_dialog, finish_confirmed_action};
+use super::dialogs::{
+    check_overwrite_conflict, commit_archive_dialog, dismiss_dialog, finish_confirmed_action,
+};
 use crate::app::panel_ops::{refresh_active, refresh_both, refresh_panel};
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
 const ARCHIVE_EXTRACT_INPUT_ROW_OFFSET: u16 = 3;
 const ARCHIVE_CREATE_INPUT_ROW_OFFSET: u16 = 4;
+// OK/Cancel button row, in rows below the archive dialog's top border.
+const ARCHIVE_EXTRACT_BUTTON_ROW_OFFSET: u16 = 5;
+const ARCHIVE_CREATE_BUTTON_ROW_OFFSET: u16 = 6;
 
 /// Fallback dropdown width (in cells) when a menu has no items to measure.
 const DEFAULT_DROPDOWN_WIDTH: usize = 10;
@@ -296,24 +301,35 @@ fn handle_mouse_dialog(
         Progress,
         Confirm,
         Overwrite,
+        ArchiveButton { is_extract: bool },
     }
 
     let delegate = match kind {
         DialogKind::ArchiveExtract(details) => {
-            position_text_input_cursor(
-                &mut details.dest_input,
-                pos,
-                archive_input_rect(pos, ARCHIVE_EXTRACT_INPUT_ROW_OFFSET),
-            );
-            return Some(MouseOutcome::Consumed);
+            // A click on the OK/Cancel row activates the button; anywhere else in
+            // the dialog positions the destination-input cursor.
+            if hit_archive_button_row(pos, ARCHIVE_EXTRACT_BUTTON_ROW_OFFSET) {
+                Delegate::ArchiveButton { is_extract: true }
+            } else {
+                position_text_input_cursor(
+                    &mut details.dest_input,
+                    pos,
+                    archive_input_rect(pos, ARCHIVE_EXTRACT_INPUT_ROW_OFFSET),
+                );
+                return Some(MouseOutcome::Consumed);
+            }
         }
         DialogKind::ArchiveCreate(details) => {
-            position_text_input_cursor(
-                &mut details.dest_input,
-                pos,
-                archive_input_rect(pos, ARCHIVE_CREATE_INPUT_ROW_OFFSET),
-            );
-            return Some(MouseOutcome::Consumed);
+            if hit_archive_button_row(pos, ARCHIVE_CREATE_BUTTON_ROW_OFFSET) {
+                Delegate::ArchiveButton { is_extract: false }
+            } else {
+                position_text_input_cursor(
+                    &mut details.dest_input,
+                    pos,
+                    archive_input_rect(pos, ARCHIVE_CREATE_INPUT_ROW_OFFSET),
+                );
+                return Some(MouseOutcome::Consumed);
+            }
         }
         DialogKind::Progress { .. } => Delegate::Progress,
         DialogKind::Confirm(_) => Delegate::Confirm,
@@ -326,6 +342,9 @@ fn handle_mouse_dialog(
         Delegate::Progress => handle_progress_click(state, running_job, pos),
         Delegate::Confirm => handle_confirm_click(state, running_job, pos),
         Delegate::Overwrite => handle_overwrite_click(state, running_job, pos),
+        Delegate::ArchiveButton { is_extract } => {
+            handle_archive_button_click(state, running_job, pos, is_extract)
+        }
     }
 }
 
@@ -338,6 +357,42 @@ fn archive_input_rect(pos: &MousePosition, row_offset: u16) -> Rect {
         dialog.width.saturating_sub(4),
         1,
     )
+}
+
+/// True if `pos` falls on an archive dialog's OK/Cancel button row (the row is
+/// `row_offset` below the dialog's top border; see the layout in
+/// `ui/dialogs/archive.rs`).
+fn hit_archive_button_row(pos: &MousePosition, row_offset: u16) -> bool {
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let dialog = dialogs::centered_rect(50, 40, area);
+    pos.row == dialog.y.saturating_add(row_offset)
+        && pos.col >= dialog.x
+        && pos.col < dialog.x.saturating_add(dialog.width)
+}
+
+/// Handle a click on an archive dialog's button row: first click selects the
+/// OK/Cancel button under the cursor, a second click on the already-selected
+/// button activates it (matching the Confirm/Overwrite dialogs).
+fn handle_archive_button_click(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    pos: &MousePosition,
+    is_extract: bool,
+) -> Option<MouseOutcome> {
+    let area = Rect::new(0, 0, pos.width, pos.height);
+    let dialog = dialogs::centered_rect(50, 40, area);
+    let center = dialog.x + dialog.width / 2;
+    let new_sel = if pos.col < center { 0 } else { 1 };
+    if state.input.dialog_selection == new_sel {
+        if new_sel == 0 {
+            commit_archive_dialog(state, running_job, is_extract);
+        } else {
+            dismiss_dialog(state);
+        }
+    } else {
+        state.input.dialog_selection = new_sel;
+    }
+    Some(MouseOutcome::Consumed)
 }
 
 fn position_text_input_cursor(input: &mut TextInput, pos: &MousePosition, rect: Rect) {
@@ -412,6 +467,10 @@ fn handle_confirm_click(
     if geo.hit_button_row(pos) {
         let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
         if state.input.dialog_selection == new_sel {
+            if state.ui.pending_hotlist_delete.is_some() {
+                super::pickers::resolve_hotlist_delete(state, new_sel == 0);
+                return Some(MouseOutcome::Consumed);
+            }
             if new_sel == 0 {
                 if state.ui.pending_action.is_some() {
                     if let Some(conflicting) = check_overwrite_conflict(state) {
@@ -481,9 +540,19 @@ fn handle_progress_click(
     running_job: &mut Option<RunningJob>,
     pos: &MousePosition,
 ) -> Option<MouseOutcome> {
+    // A non-cancellable progress dialog draws no Cancel button, so a click on
+    // its button row must not request cancellation.
+    let cancellable = matches!(
+        &state.mode,
+        AppMode::Dialog(DialogKind::Progress {
+            cancellable: true,
+            ..
+        })
+    );
     let geo = dialog_geometry(pos);
 
-    if geo.hit_button_row(pos)
+    if cancellable
+        && geo.hit_button_row(pos)
         && let Some(job) = running_job.as_ref()
     {
         job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);

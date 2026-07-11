@@ -717,12 +717,16 @@ fn batch_delete(
             },
         );
         let result = match classify_entry(path) {
-            Ok(EntryKind::Symlink) => file_ops::delete_file(path),
             Ok(EntryKind::Dir) => match cancel.as_deref() {
                 Some(cancel) => file_ops::delete_dir_recursive_cancelable(path, cancel),
                 None => file_ops::delete_dir_recursive(path),
             },
-            Ok(EntryKind::File) => file_ops::delete_file(path),
+            // Files and symlinks go through the same critical-path guard the Dir
+            // branch gets (via `delete_dir_recursive`), so a raw `delete_file`
+            // cannot unlink an entry sitting in `/etc`, `/usr/bin`, etc.
+            Ok(EntryKind::File) | Ok(EntryKind::Symlink) => {
+                file_ops::ensure_entry_not_critical(path).and_then(|()| file_ops::delete_file(path))
+            }
             Err(e) => Err(e),
         };
         if let Err(e) = result {

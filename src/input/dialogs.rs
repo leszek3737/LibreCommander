@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 
 use lc::app::job_runner::{RunningJob, start_confirmed_action, start_search_job};
@@ -66,6 +66,9 @@ fn reset_dialog_state(state: &mut AppState) {
     state.mode = AppMode::Normal;
     state.ui.pending_action = None;
     state.ui.pending_menu_command = None;
+    state.ui.pending_hotlist_delete = None;
+    state.ui.pending_archive_list = None;
+    state.ui.pending_tree_build = None;
     state.ui.status_message = None;
     state.input.dialog_selection = 0;
     if let Some(panel) = state.ui.menu_restore_panel.take() {
@@ -237,6 +240,12 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
         return;
     };
 
+    // A pending hotlist deletion returns to the hotlist picker either way.
+    if state.ui.pending_hotlist_delete.is_some() {
+        super::pickers::resolve_hotlist_delete(state, confirmed);
+        return;
+    }
+
     if confirmed {
         if state.ui.pending_action.is_some() {
             dispatch_with_overwrite_check(state, running_job);
@@ -310,7 +319,8 @@ fn handle_quick_cd(state: &mut AppState, input: &str) {
         panel.set_path(expanded.clone());
         panel.cursor = 0;
         panel.scroll_offset = 0;
-        refresh_active(state);
+        // The input epilogue (ResetWithRefresh) refreshes the active panel, so
+        // no explicit refresh here — it would double the directory read.
         if !state.hotlist().iter().any(|p| p == &expanded) {
             state.hotlist_push(expanded);
         }
@@ -499,11 +509,27 @@ fn handle_error_dialog(state: &mut AppState, key: KeyCode) {
 }
 
 fn handle_progress_dialog(state: &mut AppState, running_job: &Option<RunningJob>, key: KeyCode) {
-    if key == KeyCode::Esc
-        && let Some(job) = running_job.as_ref()
-    {
+    // Only a cancellable progress dialog reacts to Esc; a non-cancellable one
+    // (the renderer hides the "Cancel" hint for it) must ignore the request.
+    let cancellable = matches!(
+        &state.mode,
+        AppMode::Dialog(DialogKind::Progress {
+            cancellable: true,
+            ..
+        })
+    );
+    if !cancellable || key != KeyCode::Esc {
+        return;
+    }
+    if let Some(job) = running_job.as_ref() {
+        // A batch/search job: request cooperative cancellation.
         job.cancel.store(true, Ordering::Relaxed);
         state.ui.status_message = Some("Cancel requested".to_string());
+    } else {
+        // A background loading dialog (archive listing / tree build) has no job
+        // here: dismiss it. The main loop then drops the in-flight loader,
+        // which cancels and detaches it.
+        dismiss_dialog(state);
     }
 }
 
@@ -650,6 +676,21 @@ fn commit_archive_create(state: &mut AppState, running_job: &mut Option<RunningJ
     dispatch_with_overwrite_check(state, running_job);
 }
 
+/// Mouse entry point: activate the OK button of whichever archive dialog is
+/// active, committing the extract/create action. Mirrors the keyboard
+/// `ArchiveNav::Commit` path.
+pub(crate) fn commit_archive_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    is_extract: bool,
+) {
+    if is_extract {
+        commit_archive_extract(state, running_job);
+    } else {
+        commit_archive_create(state, running_job);
+    }
+}
+
 /// Borrow the destination text input of whichever archive dialog is active.
 fn active_archive_dest_input(state: &mut AppState) -> Option<&mut TextInput> {
     match &mut state.mode {
@@ -719,7 +760,13 @@ fn handle_copymove_dialog(
     }
 }
 
-pub(crate) fn handle_dialog(ctx: &mut EventContext, key: KeyCode) {
+pub(crate) fn handle_dialog(ctx: &mut EventContext, key: KeyCode, modifiers: KeyModifiers) {
+    // A Char with Ctrl/Alt/Super held is not literal text for any dialog;
+    // swallow it so it never lands in a text field as a stray letter. Bare or
+    // Shift-ed chars, and all non-Char keys, fall through to the handlers.
+    if matches!(key, KeyCode::Char(_)) && !modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+        return;
+    }
     let terminal_size = ctx.term_size;
     let state = &mut *ctx.state;
     let viewer_state = &mut *ctx.viewer_state;

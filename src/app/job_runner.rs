@@ -153,18 +153,29 @@ pub fn start_confirmed_action(state: &mut AppState, running_job: &mut Option<Run
     let (sender, receiver) = mpsc::sync_channel(128);
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_worker = Arc::clone(&cancel);
-    let handle = thread::spawn(move || {
-        let progress_sender = sender.clone();
-        let report = ops::batch::execute_batch_with_byte_progress(
-            action,
-            move |progress| {
-                let _ = progress_sender.send(JobMessage::Progress(progress));
-            },
-            &Some(cancel_for_worker),
-            action_label,
-        );
-        let _ = sender.send(JobMessage::Finished { report });
-    });
+    let handle = match thread::Builder::new()
+        .name("batch-worker".into())
+        .spawn(move || {
+            let progress_sender = sender.clone();
+            let report = ops::batch::execute_batch_with_byte_progress(
+                action,
+                move |progress| {
+                    let _ = progress_sender.send(JobMessage::Progress(progress));
+                },
+                &Some(cancel_for_worker),
+                action_label,
+            );
+            let _ = sender.send(JobMessage::Finished { report });
+        }) {
+        Ok(handle) => handle,
+        Err(e) => {
+            // OS refused a new thread (resource exhaustion): report and bail
+            // instead of panicking as bare `thread::spawn` would.
+            debug_log!("failed to spawn batch worker: {e}");
+            state.ui.status_message = Some(format!("Failed to start {action_label}: {e}"));
+            return;
+        }
+    };
 
     state.active_panel_mut().clear_selection();
     state.ui.status_message = None;
@@ -192,19 +203,28 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
 
-    let handle = thread::spawn(move || {
-        let outcome = ops::search_files_with_diagnostics_cancellable(
-            &dir,
-            &pattern_owned,
-            true,
-            false,
-            &cancel_clone,
-        );
-        let _ = sender.send(JobMessage::SearchFinished {
-            outcome: Box::new(outcome),
-            pattern: pattern_owned,
-        });
-    });
+    let handle = match thread::Builder::new()
+        .name("search-worker".into())
+        .spawn(move || {
+            let outcome = ops::search_files_with_diagnostics_cancellable(
+                &dir,
+                &pattern_owned,
+                true,
+                false,
+                &cancel_clone,
+            );
+            let _ = sender.send(JobMessage::SearchFinished {
+                outcome: Box::new(outcome),
+                pattern: pattern_owned,
+            });
+        }) {
+        Ok(handle) => handle,
+        Err(e) => {
+            debug_log!("failed to spawn search worker: {e}");
+            state.ui.status_message = Some(format!("Failed to start search: {e}"));
+            return;
+        }
+    };
 
     let search_origin = state.active_panel;
     state.ui.status_message = None;

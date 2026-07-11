@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -175,9 +175,12 @@ fn active_panel_from_wire(s: &str) -> ActivePanel {
 /// Resolves persisted hotlist strings to canonical paths. Each unique cleaned
 /// path is canonicalized at most once — the `fs::canonicalize` syscall result is
 /// cached so repeated entries skip redundant I/O. Empty/whitespace strings are
-/// dropped; duplicate inputs are preserved in the output.
+/// dropped, and duplicates (including distinct inputs resolving to the same
+/// canonical path) are collapsed to first occurrence, matching the runtime
+/// `hotlist_push` API which rejects duplicates.
 fn canonicalize_hotlist(raw: &[String]) -> Vec<PathBuf> {
     let mut cache: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     raw.iter()
         .filter(|s| !s.trim().is_empty())
         .map(|s| {
@@ -187,6 +190,7 @@ fn canonicalize_hotlist(raw: &[String]) -> Vec<PathBuf> {
                 .or_insert_with(|| fs::canonicalize(&path).unwrap_or_else(|_| path.clone()))
                 .clone()
         })
+        .filter(|canonical| seen.insert(canonical.clone()))
         .collect()
 }
 
@@ -233,15 +237,75 @@ pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
     let content = toml::to_string_pretty(&setup)
         .map_err(|e| io::Error::other(format!("serialize config: {e}")))?;
 
-    let temp_path = path.with_extension("toml.tmp");
+    // Follow a symlinked config to its target so the atomic replace updates the
+    // pointed-to file rather than clobbering the symlink with a regular file.
+    let target = resolve_symlink_target(&path);
+
+    // Stage the temp file in the target's own directory so `rename` stays on a
+    // single filesystem (and is therefore atomic).
+    let temp_path = target.with_extension("toml.tmp");
     {
         let mut f = File::create(&temp_path)?;
+        // Config can hold user data: keep it private. Preserve an existing
+        // file's mode, otherwise default new files to 0600.
+        apply_config_permissions(&target, &f)?;
         f.write_all(content.as_bytes())?;
         f.sync_all()?;
     }
-    fs::rename(&temp_path, &path)?;
+    fs::rename(&temp_path, &target)?;
+    // Flush the directory entry so the rename survives a crash/power loss that
+    // the success return value would otherwise have promised through.
+    sync_parent_dir(&target);
     Ok(path)
 }
+
+/// Resolve a (possibly relative) symlink at `path` to its target one level deep,
+/// so we write through the link instead of replacing it. Non-symlinks and
+/// unreadable links resolve to `path` itself.
+fn resolve_symlink_target(path: &Path) -> PathBuf {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => match fs::read_link(path) {
+            Ok(target) if target.is_absolute() => target,
+            Ok(target) => path
+                .parent()
+                .map(|parent| parent.join(&target))
+                .unwrap_or(target),
+            Err(_) => path.to_path_buf(),
+        },
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Give the staged config file 0600, or the existing target's mode if it already
+/// exists, so an atomic replace never widens permissions. No-op off Unix.
+#[cfg(unix)]
+fn apply_config_permissions(target: &Path, file: &File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(target)
+        .map(|m| m.permissions().mode() & 0o777)
+        .unwrap_or(0o600);
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn apply_config_permissions(_target: &Path, _file: &File) -> io::Result<()> {
+    Ok(())
+}
+
+/// Best-effort fsync of the directory holding `target` so a completed rename is
+/// durable. No-op off Unix (where directory fsync is neither portable nor
+/// required for the atomic-replace semantics `rename` already provides).
+#[cfg(unix)]
+fn sync_parent_dir(target: &Path) {
+    if let Some(parent) = target.parent()
+        && let Ok(dir) = File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_target: &Path) {}
 
 pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
     let Some(raw) = read_config_raw_with_env(&paths::ProcessEnv)? else {

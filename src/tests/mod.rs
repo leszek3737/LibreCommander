@@ -22,6 +22,8 @@
 //! - `user_menu` — user-defined (config-driven) menu entries.
 //! - `viewer` — internal file viewer and image-preview loaders.
 
+// Background-load offload: archive-listing and tree-build result application.
+mod background_load;
 // `compare_directories` op: summary counts and unique-entry selection marking.
 mod compare;
 // Dialog input handling plus rendered-buffer assertions.
