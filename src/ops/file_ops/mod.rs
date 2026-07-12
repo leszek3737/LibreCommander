@@ -396,7 +396,16 @@ mod tests {
         let perms = std::fs::metadata(&temp).unwrap().permissions();
         let err = temp::publish_temp_dir(&temp, &blocked_dest, true, perms).unwrap_err();
 
-        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        // Unix reports ENOTDIR; Windows maps the same condition to
+        // ERROR_DIRECTORY/InvalidInput.
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::NotADirectory | std::io::ErrorKind::InvalidInput
+            ),
+            "unexpected error kind: {:?}",
+            err.kind()
+        );
         assert_eq!(
             std::fs::read_to_string(&blocked_parent).unwrap(),
             "not a directory"
@@ -871,6 +880,9 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
+    // The critical-path list holds Unix system roots; on Windows the path
+    // simply does not exist, so the guard is exercised on Unix only.
+    #[cfg(unix)]
     #[test]
     fn test_delete_dir_recursive_rejects_critical_dir_prefix() {
         let err = delete_dir_recursive(std::path::Path::new("/usr/local/share")).unwrap_err();

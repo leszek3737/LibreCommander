@@ -278,16 +278,16 @@ mod tests {
 
     #[test]
     fn sanitize_rejects_absolute_path() {
-        let dest = PathBuf::from("/tmp");
-        let canonical = dest.canonicalize().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let canonical = dest.path().canonicalize().unwrap();
         let result = super::super::sanitize_entry_path(&canonical, Path::new("/etc/passwd"));
         assert!(result.is_err());
     }
 
     #[test]
     fn sanitize_rejects_parent_dir() {
-        let dest = PathBuf::from("/tmp");
-        let canonical = dest.canonicalize().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let canonical = dest.path().canonicalize().unwrap();
         let result = super::super::sanitize_entry_path(&canonical, Path::new("../passwd"));
         assert!(result.is_err());
     }

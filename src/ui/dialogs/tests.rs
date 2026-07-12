@@ -162,7 +162,9 @@ fn truncate_path_keeps_short_utf8_path() {
 
 #[test]
 fn truncate_path_truncates_utf8_suffix_safely() {
-    assert_eq!(text::truncate_path("/tmp/zażółć/plik", 9), "...ć/plik");
+    // The dir/file parts are re-joined with the platform separator.
+    let expected = format!("...ć{}plik", std::path::MAIN_SEPARATOR);
+    assert_eq!(text::truncate_path("/tmp/zażółć/plik", 9), expected);
 }
 
 #[test]
@@ -172,9 +174,11 @@ fn truncate_path_truncates_tiny_utf8_width_safely() {
 
 #[test]
 fn truncate_path_preserves_filename() {
+    // The dir/file parts are re-joined with the platform separator.
+    let expected = format!("...ath{}file.txt", std::path::MAIN_SEPARATOR);
     assert_eq!(
         text::truncate_path("/very/long/directory/path/file.txt", 15),
-        "...ath/file.txt"
+        expected
     );
 }
 

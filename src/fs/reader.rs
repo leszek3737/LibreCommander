@@ -533,6 +533,9 @@ mod tests {
         assert_eq!(FileEntry::display_permissions_raw(0o777), "rwxrwxrwx");
     }
 
+    // Unix permission-bit semantics; on Windows is_executable has no mode bits
+    // to inspect.
+    #[cfg(unix)]
     #[test]
     fn test_is_executable() {
         assert!(is_executable(0o100));
