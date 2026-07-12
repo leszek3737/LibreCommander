@@ -47,8 +47,15 @@ pub fn copy_with_progress(
     }
 
     let src_file = File::open(src)?;
-    let temp_dest = temp_path_for(dest);
-    let result = copy_to_temp(src_file, &temp_dest, &metadata, progress_tx, cancel);
+    let (temp_dest, dest_file) = create_temp_file(dest)?;
+    let result = copy_to_temp(
+        src_file,
+        dest_file,
+        &temp_dest,
+        &metadata,
+        progress_tx,
+        cancel,
+    );
 
     match result {
         Ok(total_written) => {
@@ -56,12 +63,14 @@ pub fn copy_with_progress(
                 cleanup_file(&temp_dest);
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
+            // Timestamps are set on the temp file inside `copy_to_temp`, before
+            // this publish, so a metadata failure aborts before `dest` exists —
+            // never after a fully completed copy (which would report a spurious
+            // error and leave the batch to retry into an `AlreadyExists`).
             if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
                 cleanup_file(&temp_dest);
                 return Err(err);
             }
-
-            super::file_ops::preserve_timestamps(dest, &metadata)?;
 
             Ok(total_written)
         }
@@ -72,15 +81,37 @@ pub fn copy_with_progress(
     }
 }
 
+/// Creates the temp destination file, regenerating its unique name on collision.
+/// `File::create_new` refuses to clobber an existing entry, so a stale temp (or a
+/// racing sibling copy) that happens to reuse the same name is retried a few
+/// times rather than aborting the whole copy with `AlreadyExists`.
+fn create_temp_file(dest: &Path) -> io::Result<(std::path::PathBuf, File)> {
+    const MAX_ATTEMPTS: u32 = 8;
+    let mut last_err = None;
+    for _ in 0..MAX_ATTEMPTS {
+        let temp_dest = temp_path_for(dest);
+        match File::create_new(&temp_dest) {
+            Ok(file) => return Ok((temp_dest, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => last_err = Some(err),
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve a unique temp file name",
+        )
+    }))
+}
+
 fn copy_to_temp(
     src_file: File,
+    dest_file: File,
     temp_dest: &Path,
     metadata: &fs::Metadata,
     progress_tx: &std::sync::mpsc::Sender<u64>,
     cancel: &AtomicBool,
 ) -> io::Result<u64> {
-    let dest_file = File::create_new(temp_dest)?;
-
     let mut reader = src_file;
     let mut writer = dest_file;
     let mut buf = vec![0_u8; BUFFER_SIZE];
@@ -137,6 +168,10 @@ fn copy_to_temp(
     writer.sync_all()?;
 
     preserve_permissions(temp_dest, metadata)?;
+    // Set timestamps on the temp file, before it is published, so a metadata
+    // failure surfaces while the copy is still uncommitted rather than after
+    // `dest` already holds the finished data.
+    super::file_ops::preserve_timestamps(temp_dest, metadata)?;
 
     Ok(total_written)
 }

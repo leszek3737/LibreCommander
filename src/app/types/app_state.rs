@@ -46,6 +46,14 @@ pub struct UiState {
     pub cached_hotlist_strings: Vec<String>,
     pub cached_user_menu_strings: Vec<String>,
     pub pending_menu_command: Option<String>,
+    /// Hotlist index awaiting a "Remove from hotlist?" confirmation, if any.
+    pub pending_hotlist_delete: Option<usize>,
+    /// Archive `(source, dest)` awaiting a background listing, if any. The main
+    /// loop picks this up, spawns the read off the event thread, and shows a
+    /// loading dialog until it completes (see `bg_load`).
+    pub pending_archive_list: Option<(PathBuf, String)>,
+    /// Directory-tree `(root, show_hidden)` awaiting a background build, if any.
+    pub pending_tree_build: Option<(PathBuf, bool)>,
     pub menu_restore_panel: Option<ActivePanel>,
     pub directory_hotlist: Vec<PathBuf>,
     pub pending_action: Option<PendingAction>,
@@ -65,6 +73,9 @@ impl Default for UiState {
             cached_hotlist_strings: Vec::new(),
             cached_user_menu_strings: Vec::new(),
             pending_menu_command: None,
+            pending_hotlist_delete: None,
+            pending_archive_list: None,
+            pending_tree_build: None,
             menu_restore_panel: None,
             directory_hotlist: Vec::new(),
             pending_action: None,

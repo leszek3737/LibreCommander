@@ -248,14 +248,17 @@ fn watcher_remove_handles_deleted_child_path() {
 }
 
 #[test]
-fn canonical_desired_paths_normalizes_paths_without_io() {
+fn canonical_desired_paths_matches_watch_key_representation() {
     let dir = tempfile::tempdir().unwrap();
-    let other = dir.path().join("other");
+    let other = dir.path().join("other"); // does not exist
 
     let desired = canonical_desired_paths(dir.path(), &other);
 
     assert_eq!(desired.len(), 2);
-    assert!(desired.contains(&crate::fs::path::clean_path(dir.path())));
+    // An existing directory is canonicalized, matching the key `Watcher::watch`
+    // stores, so a symlinked panel dir is not perpetually unwatched+rewatched.
+    assert!(desired.contains(&dir.path().canonicalize().unwrap()));
+    // A non-existent path falls back to the lexical clean path.
     assert!(desired.contains(&crate::fs::path::clean_path(&other)));
 }
 

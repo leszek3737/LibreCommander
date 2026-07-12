@@ -15,22 +15,11 @@ fn file_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     Some((metadata.dev(), metadata.ino()))
 }
 
-#[cfg(windows)]
-fn file_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    // Called once per entry during the symlink-loop walk — keep it allocation-
-    // and lock-free (debug_log would take a blocking mutex + file I/O on this
-    // hot path). When either identifier is unavailable we return `None` so the
-    // caller skips cycle detection; a `(0, 0)` fallback would collide and make
-    // distinct directories falsely register as a cycle.
-    let volume = metadata.volume_serial_number()?;
-    let index = metadata.file_index()?;
-    Some((u64::from(volume), index))
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn file_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
-    // No stable identifiers on this platform: skip cycle detection entirely.
+    // No STABLE identifiers off Unix: Windows' volume_serial_number()/
+    // file_index() need the unstable `windows_by_handle` feature
+    // (rust-lang/rust#63010), so cycle detection is skipped entirely.
     None
 }
 
@@ -568,6 +557,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn build_tree_keeps_broken_symlink_as_symlink_not_file() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,6 @@
 use super::helpers::*;
 use crate::input::dialogs;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use lc::app::job_runner::RunningJob;
 use lc::app::types::{
     ActivePanel, AppMode, AppState, DialogKind, InputAction, InputState, TextInput, ViewMode,
@@ -175,7 +175,7 @@ fn viewer_search_esc_keeps_viewer_previous_mode() {
             running_job: &mut job,
             term_size: TEST_VIEWPORT,
         };
-        dialogs::handle_dialog(&mut ctx, KeyCode::Esc);
+        dialogs::handle_dialog(&mut ctx, KeyCode::Esc, KeyModifiers::NONE);
     }
 
     assert!(matches!(state.mode, AppMode::Viewing));

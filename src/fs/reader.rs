@@ -1,14 +1,17 @@
 //! Filesystem reader module.
-//! Note: This module uses Unix-specific APIs (MetadataExt, uid/gid lookups)
-//! and will only compile on Unix platforms.
+//! Note: uid/gid owner-name lookups use Unix-specific APIs and are
+//! `cfg(unix)`-gated; other platforms get empty owner/group names.
 
 #[cfg(test)]
 use chrono::{DateTime, Local};
+#[cfg(unix)]
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::{LazyLock, Mutex};
 #[cfg(test)]
 use std::time::SystemTime;
 
@@ -17,6 +20,7 @@ use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
 /// 1024 covers typical multi-user systems; oldest entries are evicted (FIFO) when exceeded.
+#[cfg(unix)]
 const CACHE_MAX_SIZE: usize = 1024;
 
 const INITIAL_DIR_CAPACITY: usize = 256;
@@ -529,6 +533,9 @@ mod tests {
         assert_eq!(FileEntry::display_permissions_raw(0o777), "rwxrwxrwx");
     }
 
+    // Unix permission-bit semantics; on Windows is_executable has no mode bits
+    // to inspect.
+    #[cfg(unix)]
     #[test]
     fn test_is_executable() {
         assert!(is_executable(0o100));

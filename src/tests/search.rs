@@ -1,7 +1,7 @@
 use super::helpers::*;
 use crate::apply_search_filter;
 use crate::input::mode_dispatch::handle_search_mode;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use lc::app;
 use lc::app::types::{AppMode, AppState, InputState};
 
@@ -48,7 +48,12 @@ fn search_enter_preserves_current_entry_focus() {
         .set_filtered(&[TestEntry::new("beta.txt").path(&beta).file(1).build()]);
     state.left_panel.set_filter(Some("beta".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     assert_eq!(
         state
@@ -79,7 +84,12 @@ fn search_enter_refreshes_when_unfiltered_cache_is_dirty() {
     state.left_panel.mark_unfiltered_dirty();
     state.left_panel.set_filter(Some("fresh".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     assert!(
         state
@@ -120,7 +130,12 @@ fn search_enter_clears_filter_and_restores_unfiltered_entries() {
         .set_filtered(&[entry("alpha.txt").file(1).build()]);
     state.left_panel.set_filter(Some("alpha".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     assert_eq!(state.mode, AppMode::Normal);
     assert_eq!(state.input.search_query, "");
@@ -162,7 +177,12 @@ fn search_mode_with_empty_panel_handles_enter_gracefully() {
     state.left_panel.set_path(tmp.path().to_path_buf());
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
-    handle_search_mode(&mut state, KeyCode::Enter, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
     assert_eq!(state.mode, AppMode::Normal);
 }
 
@@ -173,7 +193,12 @@ fn search_mode_with_empty_panel_handles_esc_gracefully() {
     state.left_panel.set_path(tmp.path().to_path_buf());
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
-    handle_search_mode(&mut state, KeyCode::Esc, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
     assert_eq!(state.mode, AppMode::Normal);
 }
 
@@ -184,7 +209,12 @@ fn search_mode_with_empty_panel_handles_char_gracefully() {
     state.left_panel.set_path(tmp.path().to_path_buf());
     state.active_panel = app::types::ActivePanel::Left;
     state.mode = AppMode::Search;
-    handle_search_mode(&mut state, KeyCode::Char('x'), TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Char('x'),
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
     assert_eq!(state.input.search_query, "x");
 }
 
@@ -334,7 +364,12 @@ fn search_esc_restores_entries_documents_cursor() {
     state.input.search_cursor = 4;
     state.mode = AppMode::Search;
 
-    handle_search_mode(&mut state, KeyCode::Esc, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     assert_eq!(state.mode, AppMode::Normal);
     assert!(state.left_panel.filter().is_none());
@@ -381,7 +416,12 @@ fn search_backspace_shortens_query_and_cursor() {
     );
     state.left_panel.set_filter(Some("alp".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Backspace, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     assert_eq!(state.input.search_query, "al");
     assert_eq!(
@@ -415,7 +455,12 @@ fn search_backspace_to_empty_clears_search() {
     setup_entries(&mut state, vec![entry("alpha.txt").file(1).build()]);
     state.left_panel.set_filter(Some("a".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Backspace, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     assert_eq!(
         state.mode,
@@ -450,7 +495,12 @@ fn search_clear_resets_scroll_offset() {
     state.left_panel.scroll_offset = 10;
     state.left_panel.set_filter(Some("a".to_string()));
 
-    handle_search_mode(&mut state, KeyCode::Esc, TERMINAL_HEIGHT);
+    handle_search_mode(
+        &mut state,
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+        TERMINAL_HEIGHT,
+    );
 
     // The pre-clear scroll (10) was past the end; clearing must pull it back
     // into bounds and never leave it ahead of the cursor.

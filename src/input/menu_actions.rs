@@ -187,27 +187,46 @@ fn execute_panel_config_action(
     }
 }
 
+/// Depth the directory-tree view initially expands to. Exposed for the
+/// background tree builder in the main loop.
+pub(crate) const TREE_EXPAND_DEPTH: usize = TREE_INITIAL_EXPAND_DEPTH;
+
+/// Enter the directory-tree view from a completed background build. Called by
+/// the main loop when the `bg_load` finishes.
+pub(crate) fn apply_tree_build_result(
+    state: &mut AppState,
+    root: std::path::PathBuf,
+    tree: dir_tree::TreeBuildResult,
+) {
+    state.tree.root = root;
+    state.tree.entries = tree.entries;
+    state.tree.selected = 0;
+    state.tree.scroll = 0;
+    state.mode = AppMode::DirectoryTree;
+    set_tree_diagnostic_status(&mut state.ui.status_message, &tree.diagnostics);
+}
+
 fn execute_nav_action(
     state: &mut AppState,
     action: MenuAction,
 ) -> Option<(KeyCode, KeyModifiers, bool)> {
     match action {
         MenuAction::DirectoryTree => {
+            // The recursive tree build can be slow on a wide/NFS tree, so it runs
+            // off the event thread. Capture the target panel's path here (still
+            // under `with_menu_panel`, which restores the original active panel
+            // because the mode is not yet a dialog), then show a loading dialog;
+            // the main loop builds the tree and enters DirectoryTree on completion.
             with_menu_panel(state, |state| {
                 let path = state.active_panel().path().to_path_buf();
                 let show_hidden = state.active_panel().show_hidden();
-                let tree = dir_tree::build_tree_with_diagnostics(
-                    &path,
-                    TREE_INITIAL_EXPAND_DEPTH,
-                    show_hidden,
-                );
-                state.tree.root = path;
-                state.tree.entries = tree.entries;
-                state.tree.selected = 0;
-                state.tree.scroll = 0;
-                state.mode = AppMode::DirectoryTree;
-                set_tree_diagnostic_status(&mut state.ui.status_message, &tree.diagnostics);
+                state.ui.pending_tree_build = Some((path, show_hidden));
             });
+            state.mode = AppMode::Dialog(DialogKind::progress(
+                "Building tree...".to_string(),
+                0.0,
+                true,
+            ));
             None
         }
         MenuAction::FindFile => {

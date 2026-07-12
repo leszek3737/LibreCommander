@@ -140,7 +140,10 @@ macro_rules! platform_home {
 platform_home!(platform_config_home, dirs::config_dir);
 platform_home!(platform_cache_home, dirs::cache_dir);
 
-#[cfg(test)]
+// XDG/HOME semantics under test are Unix-shaped (absolute `/...` paths, no
+// platform fallback); on Windows the same inputs are rejected as relative and
+// the AppData fallback (tested below) takes over.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::ffi::OsStr;
@@ -249,5 +252,20 @@ mod tests {
     fn terminal_state_path_rejects_relative_home() {
         let env = env(&[("HOME", "relative/home")]);
         assert_eq!(terminal_state_file_path_with_env(&env), None);
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used)]
+mod windows_tests {
+    use super::*;
+
+    /// With no HOME/XDG in the environment, Windows falls back to the OS
+    /// config dir (AppData) instead of returning None.
+    #[test]
+    fn config_path_falls_back_to_platform_dir_without_env() {
+        let env = MapEnv::default();
+        let path = config_file_path_with_env(&env).expect("AppData fallback");
+        assert!(path.ends_with("lc\\config.toml") || path.ends_with("lc/config.toml"));
     }
 }

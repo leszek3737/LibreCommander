@@ -38,18 +38,10 @@ pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> 
     Some((metadata.dev(), metadata.ino()))
 }
 
-#[cfg(windows)]
-/// Return a stable filesystem identity for cycle detection.
-#[inline]
-pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let vol = metadata.volume_serial_number()? as u64;
-    let idx = metadata.file_index()?;
-    Some((vol, idx))
-}
-
-#[cfg(not(any(unix, windows)))]
-/// Platforms without inode-like identifiers.
+#[cfg(not(unix))]
+/// Platforms without STABLE inode-like identifiers (Windows'
+/// file_index()/volume_serial_number() need the unstable `windows_by_handle`
+/// feature, rust-lang/rust#63010): cycle detection is skipped.
 #[inline]
 pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     None

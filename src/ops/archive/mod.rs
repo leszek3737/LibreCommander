@@ -78,7 +78,9 @@ impl std::error::Error for ArchiveError {
     }
 }
 
-const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
+const ZIP_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04]; // local file header
+const ZIP_EOCD_MAGIC: [u8; 4] = [0x50, 0x4B, 0x05, 0x06]; // end of central directory (empty archive)
+const ZIP_SPANNED_MAGIC: [u8; 4] = [0x50, 0x4B, 0x07, 0x08]; // spanned/split archive marker
 const SEVENZ_MAGIC: [u8; 6] = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
 const GZ_MAGIC: [u8; 2] = [0x1F, 0x8B];
 const BZ2_MAGIC: [u8; 3] = [0x42, 0x5A, 0x68];
@@ -90,16 +92,20 @@ const USTAR_MAGIC: &[u8] = b"ustar";
 
 static ARCHIVE_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Creates a new temporary file with a unique name in the system temp directory.
-/// Used by archive handlers for intermediate decompression buffers.
-pub(crate) fn create_archive_temp_file(
+/// Creates a new temporary file with a unique name in `dir`, opened with
+/// `create_new` (O_EXCL) so it never truncates an existing file or follows a
+/// pre-planted symlink. Final-archive staging passes the destination's parent so
+/// the subsequent rename stays on one filesystem; scratch buffers pass the
+/// system temp dir (see [`create_archive_temp_file`]).
+pub(crate) fn create_temp_file_in(
+    dir: &Path,
     prefix: &str,
     suffix: &str,
 ) -> io::Result<(fs::File, PathBuf)> {
     let pid = std::process::id();
     for _ in 0..128 {
         let count = ARCHIVE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{prefix}-{pid}-{count}{suffix}"));
+        let path = dir.join(format!("{prefix}-{pid}-{count}{suffix}"));
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -114,6 +120,15 @@ pub(crate) fn create_archive_temp_file(
         io::ErrorKind::AlreadyExists,
         "failed to create unique archive temp file after 128 attempts",
     ))
+}
+
+/// Creates a new temporary file with a unique name in the system temp directory.
+/// Used by archive handlers for intermediate decompression buffers.
+pub(crate) fn create_archive_temp_file(
+    prefix: &str,
+    suffix: &str,
+) -> io::Result<(fs::File, PathBuf)> {
+    create_temp_file_in(&std::env::temp_dir(), prefix, suffix)
 }
 
 /// Checks whether `path` is already a symlink and returns an error if so.
@@ -236,27 +251,32 @@ pub(crate) fn open_source_nofollow(path: &Path) -> Result<Option<fs::File>, Arch
 
 pub(crate) fn sanitize_entry_path(
     canonical_dest: &Path,
-    entry_name: &str,
+    entry_path: &Path,
 ) -> Result<PathBuf, ArchiveError> {
-    let entry_path = Path::new(entry_name);
+    // Operates on the raw `Path`/`OsStr` without a lossy UTF-8 conversion so two
+    // distinct non-UTF-8 entry names can't collapse to the same string and let a
+    // later entry silently overwrite an earlier one.
     if entry_path.is_absolute() {
         return Err(ArchiveError::InvalidArchive(format!(
-            "absolute path: {entry_name}"
+            "absolute path: {}",
+            entry_path.display()
         )));
     }
     for component in entry_path.components() {
         if let std::path::Component::ParentDir = component {
             return Err(ArchiveError::InvalidArchive(format!(
-                "path traversal: {entry_name}"
+                "path traversal: {}",
+                entry_path.display()
             )));
         }
     }
-    let outpath = canonical_dest.join(entry_name);
+    let outpath = canonical_dest.join(entry_path);
 
     let normalized_out = normalize_path(&outpath);
     if !normalized_out.starts_with(canonical_dest) {
         return Err(ArchiveError::InvalidArchive(format!(
-            "path traversal: {entry_name}"
+            "path traversal: {}",
+            entry_path.display()
         )));
     }
     Ok(outpath)
@@ -380,7 +400,10 @@ pub fn detect_format(path: &Path) -> Result<(ArchiveFormat, Option<std::fs::File
     {
         let mut header = [0u8; 8];
         if f.read_exact(&mut header).is_ok() {
-            if header[..4] == ZIP_MAGIC {
+            if header[..4] == ZIP_MAGIC
+                || header[..4] == ZIP_EOCD_MAGIC
+                || header[..4] == ZIP_SPANNED_MAGIC
+            {
                 return Ok((ArchiveFormat::Zip, Some(seek_to_start(f)?)));
             }
             if header[..6] == SEVENZ_MAGIC {

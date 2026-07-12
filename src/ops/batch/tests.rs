@@ -771,7 +771,9 @@ fn batch_copy_error_has_expected_kind() {
     assert!(
         report.errors[0].contains("entity not found")
             || report.errors[0].contains("No such file")
-            || report.errors[0].contains("Not Found"),
+            || report.errors[0].contains("Not Found")
+            // Windows wording for ERROR_FILE_NOT_FOUND (os error 2).
+            || report.errors[0].contains("cannot find the file"),
         "expected not-found error, got: {}",
         report.errors[0]
     );

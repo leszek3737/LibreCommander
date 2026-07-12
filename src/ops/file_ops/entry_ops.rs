@@ -1,4 +1,6 @@
-use super::common::{MSG_DEST_EXISTS, MSG_SYMLINK_CHMOD};
+use super::common::MSG_DEST_EXISTS;
+#[cfg(unix)]
+use super::common::MSG_SYMLINK_CHMOD;
 
 use std::fs;
 use std::io;

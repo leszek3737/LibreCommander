@@ -37,6 +37,26 @@ fn archive_input_row(height: u16, offset: u16) -> u16 {
     (height.saturating_sub(dialog_height)) / 2 + offset
 }
 
+/// Horizontal centre of the archive dialog (splits OK|Cancel on the button row),
+/// mirroring `dialog.x + dialog.width / 2` in the mouse handler.
+fn archive_btn_center(width: u16) -> u16 {
+    let dialog_width = (width * 50 / 100).max(30).min(width);
+    (width.saturating_sub(dialog_width)) / 2 + dialog_width / 2
+}
+
+fn extract_dialog_state() -> AppState {
+    AppState {
+        mode: AppMode::Dialog(DialogKind::ArchiveExtract(Box::new(
+            ArchiveExtractDetails {
+                source: std::path::PathBuf::from("archive.zip"),
+                entries: Vec::new(),
+                dest_input: text_input("target-dir", 10),
+            },
+        ))),
+        ..Default::default()
+    }
+}
+
 fn text_input(text: &str, cursor: usize) -> TextInput {
     let mut input = TextInput::new();
     input.set_text(text.to_string());
@@ -169,6 +189,56 @@ fn mouse_archive_extract_input_click_positions_cursor() {
         assert_eq!(details.dest_input.text(), "target-dir");
         assert_eq!(details.dest_input.cursor(), 3);
     }
+}
+
+#[test]
+fn mouse_archive_extract_button_cancel_dismisses() {
+    // Cancel is already selected; a click on the Cancel half of the button row
+    // activates it and dismisses the dialog.
+    let mut state = extract_dialog_state();
+    state.input.dialog_selection = 1;
+    let mut running_job = None;
+
+    let outcome = handle_mouse_dialog(
+        &mut state,
+        &mut running_job,
+        &mp(
+            archive_btn_center(100) + 2,
+            archive_input_row(40, ARCHIVE_EXTRACT_BUTTON_ROW_OFFSET),
+            100,
+            40,
+        ),
+    );
+
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
+    assert_eq!(state.mode, AppMode::Normal);
+}
+
+#[test]
+fn mouse_archive_extract_button_click_selects_ok() {
+    // With Cancel selected, a click on the OK half of the button row moves the
+    // selection to OK (first click selects; it does not yet commit).
+    let mut state = extract_dialog_state();
+    state.input.dialog_selection = 1;
+    let mut running_job = None;
+
+    let outcome = handle_mouse_dialog(
+        &mut state,
+        &mut running_job,
+        &mp(
+            archive_btn_center(100).saturating_sub(2),
+            archive_input_row(40, ARCHIVE_EXTRACT_BUTTON_ROW_OFFSET),
+            100,
+            40,
+        ),
+    );
+
+    assert!(matches!(outcome, Some(MouseOutcome::Consumed)));
+    assert_eq!(state.input.dialog_selection, 0);
+    assert!(matches!(
+        state.mode,
+        AppMode::Dialog(DialogKind::ArchiveExtract(..))
+    ));
 }
 
 #[test]

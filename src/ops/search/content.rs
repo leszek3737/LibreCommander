@@ -186,30 +186,39 @@ fn process_content_entry(
             search_content_recursive_inner(&entry_path, depth + 1, ctx);
         }
     } else {
-        let target_meta = match std::fs::metadata(&entry_path) {
-            Ok(meta) => meta,
-            Err(err) => {
-                ctx.outcome.errors.push(SearchError {
-                    path: Some(entry_path.clone()),
-                    kind: SearchErrorKind::Metadata,
-                    message: err.to_string(),
-                });
-                return false;
-            }
-        };
-        if target_meta.is_file() {
-            search_in_file(
-                &entry_path,
-                ctx.pattern,
-                ctx.case_sensitive,
-                ctx.pattern_bytes,
-                target_meta.len(),
-                ctx.outcome,
-                ctx.cancel,
-            );
-        }
+        // `search_in_file` opens with O_NOFOLLOW and validates the type/size from
+        // the opened handle (fstat), so we do not stat the path separately here:
+        // a path swapped to a symlink after this dirent read cannot slip a stat
+        // past the open and get read.
+        search_in_file(
+            &entry_path,
+            ctx.pattern,
+            ctx.case_sensitive,
+            ctx.pattern_bytes,
+            ctx.outcome,
+            ctx.cancel,
+        );
     }
     false
+}
+
+/// Opens `path` for reading without following a final-component symlink. On Unix
+/// this passes `O_NOFOLLOW` (a symlink swapped in makes `open` fail rather than
+/// silently redirect) plus `O_NONBLOCK` (so opening a FIFO/device the dirent
+/// mislabeled cannot block). Elsewhere it falls back to a plain open; the
+/// following fstat type check still rejects anything that is not a regular file.
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 fn search_in_file(
@@ -217,21 +226,14 @@ fn search_in_file(
     pattern: &str,
     case_sensitive: bool,
     pattern_bytes: &[u8],
-    file_len: u64,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
     cancel: Option<&AtomicBool>,
 ) {
     if pattern.is_empty() {
         return;
     }
-    if file_len > MAX_CONTENT_FILE_BYTES {
-        if outcome.truncated.is_none() {
-            outcome.truncated = Some(TruncationReason::FileTooLarge);
-        }
-        return;
-    }
 
-    let file = match File::open(path) {
+    let file = match open_no_follow(path) {
         Ok(f) => f,
         Err(err) => {
             outcome.errors.push(SearchError {
@@ -242,6 +244,30 @@ fn search_in_file(
             return;
         }
     };
+
+    // Validate the type and size from the SAME handle we will read from (fstat),
+    // not a separate path stat, so a symlink swapped in after the dirent read
+    // cannot redirect the read outside the search tree.
+    let meta = match file.metadata() {
+        Ok(meta) => meta,
+        Err(err) => {
+            outcome.errors.push(SearchError {
+                path: Some(path.to_path_buf()),
+                kind: SearchErrorKind::Metadata,
+                message: err.to_string(),
+            });
+            return;
+        }
+    };
+    if !meta.file_type().is_file() {
+        return;
+    }
+    if meta.len() > MAX_CONTENT_FILE_BYTES {
+        if outcome.truncated.is_none() {
+            outcome.truncated = Some(TruncationReason::FileTooLarge);
+        }
+        return;
+    }
 
     let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES, file);
     let mut ctx = ScanContext {
@@ -297,19 +323,32 @@ fn line_contains_needle(
 
 /// Consume the remainder of an over-long line (past `MAX_CONTENT_LINE_BYTES`)
 /// up to and including the next newline, leaving `buf` empty for the next line.
-fn skip_rest_of_long_line(reader: &mut BufReader<File>, buf: &mut Vec<u8>) {
-    buf.clear();
-    while reader
-        .by_ref()
-        .take(MAX_CONTENT_LINE_BYTES as u64)
-        .read_until(b'\n', buf)
-        .is_ok()
-    {
-        if buf.last() == Some(&b'\n') || buf.is_empty() {
+fn skip_rest_of_long_line(reader: &mut BufReader<File>, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    loop {
+        buf.clear();
+        let bytes = reader
+            .by_ref()
+            .take(MAX_CONTENT_LINE_BYTES as u64)
+            .read_until(b'\n', buf)?;
+        if bytes == 0 || buf.last() == Some(&b'\n') {
             break;
         }
-        buf.clear();
     }
+    buf.clear();
+    Ok(())
+}
+
+/// Record an I/O read failure for `path` on `outcome`.
+fn push_read_error(
+    outcome: &mut SearchOutcome<ContentMatch, SearchError>,
+    path: &Path,
+    err: &std::io::Error,
+) {
+    outcome.errors.push(SearchError {
+        path: Some(path.to_path_buf()),
+        kind: SearchErrorKind::ReadFile,
+        message: err.to_string(),
+    });
 }
 
 fn scan_lines(
@@ -339,7 +378,10 @@ fn scan_lines(
                     if outcome.truncated.is_none() {
                         outcome.truncated = Some(TruncationReason::LineTooLong);
                     }
-                    skip_rest_of_long_line(reader, &mut ctx.bufs.line_buf);
+                    if let Err(err) = skip_rest_of_long_line(reader, &mut ctx.bufs.line_buf) {
+                        push_read_error(outcome, ctx.path, &err);
+                        return;
+                    }
                     continue;
                 }
                 let line = if found_newline {
@@ -399,11 +441,7 @@ fn scan_lines(
                     .push((Arc::clone(&file_path), line_no, line_text.to_owned()));
             }
             Err(err) => {
-                outcome.errors.push(SearchError {
-                    path: Some(ctx.path.to_path_buf()),
-                    kind: SearchErrorKind::ReadFile,
-                    message: err.to_string(),
-                });
+                push_read_error(outcome, ctx.path, &err);
                 return;
             }
         }

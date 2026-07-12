@@ -1,6 +1,10 @@
 use crate::debug_log;
 use crate::ops::chunk_copy;
-use crate::ops::helpers::{cleanup_file, lexical_path_starts_with};
+// Production callers are unix-only (copy_symlink); the cfg(test) copy_file
+// helpers use it on every platform.
+#[cfg(any(unix, test))]
+use crate::ops::helpers::cleanup_file;
+use crate::ops::helpers::lexical_path_starts_with;
 
 use std::fs;
 use std::io;
@@ -16,7 +20,9 @@ use super::common::{
 };
 #[cfg(test)]
 use super::temp::reserve_temp_file_for;
-use super::temp::{publish_temp_dir, reserve_temp_dir_for, swap_temp_to_dest};
+#[cfg(any(unix, test))]
+use super::temp::swap_temp_to_dest;
+use super::temp::{publish_temp_dir, reserve_temp_dir_for};
 
 #[cfg(test)]
 fn copy_file_to_temp(src: &Path, dest: &Path) -> io::Result<(std::path::PathBuf, u64)> {
@@ -206,7 +212,13 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
     }
 
     let target = fs::read_link(src)?;
-    #[cfg(unix)]
+    create_symlink_at(&target, dest, overwrite)
+}
+
+/// Platform-specific tail of [`copy_symlink`]: create a symlink to `target` at
+/// `dest` (atomically swapping via a temp link when overwriting).
+#[cfg(unix)]
+fn create_symlink_at(target: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     {
         if overwrite {
             let dest_dir = dest.parent().ok_or_else(|| {
@@ -224,7 +236,7 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
                 let mut chosen = None;
                 for counter in 0u32..1024 {
                     let path = dest_dir.join(format!("{base}.{pid}.{counter}.lc-symlink.tmp"));
-                    match std::os::unix::fs::symlink(&target, &path) {
+                    match std::os::unix::fs::symlink(target, &path) {
                         Ok(()) => {
                             chosen = Some(path);
                             break;
@@ -245,18 +257,21 @@ pub fn copy_symlink(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> 
                 return Err(err);
             }
         } else {
-            std::os::unix::fs::symlink(&target, dest)?;
+            std::os::unix::fs::symlink(target, dest)?;
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (target, dest, overwrite);
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "symlinks not supported on this platform",
-        ));
-    }
     Ok(())
+}
+
+/// Platform-specific tail of [`copy_symlink`]: symlink creation is not
+/// supported off Unix (Windows would need per-type symlink APIs and elevated
+/// privileges), so the copy is rejected explicitly.
+#[cfg(not(unix))]
+fn create_symlink_at(_target: &Path, _dest: &Path, _overwrite: bool) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symlinks not supported on this platform",
+    ))
 }
 
 pub(crate) fn preserve_timestamps(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {

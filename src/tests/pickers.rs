@@ -63,12 +63,17 @@ fn hotlist_picker_delete_middle_and_last() {
     let mut state = hotlist_state(&["/a", "/b", "/c"]);
     state.ui.picker_selected = 1;
 
+    // 'd' now prompts for confirmation; `resolve_hotlist_delete` applies it.
     pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
+    assert_eq!(state.ui.pending_hotlist_delete, Some(1));
+    assert_eq!(state.hotlist().len(), 3);
+    pickers::resolve_hotlist_delete(&mut state, true);
     assert_eq!(state.hotlist().len(), 2);
     assert!(!state.hotlist().contains(&PathBuf::from("/b")));
 
     state.ui.picker_selected = state.hotlist().len() - 1;
     pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
+    pickers::resolve_hotlist_delete(&mut state, true);
     assert_eq!(state.hotlist().len(), 1);
     assert_eq!(state.ui.picker_selected, 0);
 }

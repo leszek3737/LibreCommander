@@ -1,5 +1,5 @@
 use crate::input::dialogs;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 use lc::app::types::{
     ActivePanel, AppMode, AppState, ArchiveExtractDetails, DialogKind, InputState, PendingAction,
     TextInput, TransferAction, UiState,
@@ -528,7 +528,7 @@ fn archive_extract_enter_with_conflict_shows_overwrite_dialog_without_starting_a
             running_job: &mut running_job,
             term_size: Size::new(80, 24),
         };
-        dialogs::handle_dialog(&mut ctx, KeyCode::Enter);
+        dialogs::handle_dialog(&mut ctx, KeyCode::Enter, KeyModifiers::NONE);
     }
 
     assert!(matches!(
@@ -589,7 +589,7 @@ fn archive_extract_left_toggles_selection_without_moving_text_cursor() {
             running_job: &mut running_job,
             term_size: Size::new(80, 24),
         };
-        dialogs::handle_dialog(&mut ctx, KeyCode::Left);
+        dialogs::handle_dialog(&mut ctx, KeyCode::Left, KeyModifiers::NONE);
     }
 
     // Selection toggled (0 -> 1): Left/Right was consumed as button navigation.

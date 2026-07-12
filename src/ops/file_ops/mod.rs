@@ -9,7 +9,9 @@ pub(crate) use copy::preserve_timestamps;
 // copy/delete/move are only consumed inside `ops::batch` (and the file_ops
 // submodules); they are not part of the public `ops` facade. Kept crate-visible.
 pub(crate) use copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
-pub(crate) use delete::{delete_dir_recursive, delete_dir_recursive_cancelable, delete_file};
+pub(crate) use delete::{
+    delete_dir_recursive, delete_dir_recursive_cancelable, delete_file, ensure_entry_not_critical,
+};
 #[cfg(unix)]
 pub use entry_ops::chmod;
 pub use entry_ops::{create_directory, rename_entry};
@@ -81,7 +83,6 @@ mod tests {
         std::fs::write(&src, b"hello world").unwrap();
 
         let bytes = copy::copy_file(&src, &dest, false).unwrap();
-        let _dest_mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(bytes, 11);
         assert_eq!(std::fs::read_to_string(&dest).unwrap(), "hello world");
 
@@ -100,6 +101,7 @@ mod tests {
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_copy_file_preserves_permissions() {
         let tmp = unique_temp_dir();
@@ -394,7 +396,16 @@ mod tests {
         let perms = std::fs::metadata(&temp).unwrap().permissions();
         let err = temp::publish_temp_dir(&temp, &blocked_dest, true, perms).unwrap_err();
 
-        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        // Unix reports ENOTDIR; Windows maps the same condition to
+        // ERROR_DIRECTORY/InvalidInput.
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::NotADirectory | std::io::ErrorKind::InvalidInput
+            ),
+            "unexpected error kind: {:?}",
+            err.kind()
+        );
         assert_eq!(
             std::fs::read_to_string(&blocked_parent).unwrap(),
             "not a directory"
@@ -869,6 +880,9 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
+    // The critical-path list holds Unix system roots; on Windows the path
+    // simply does not exist, so the guard is exercised on Unix only.
+    #[cfg(unix)]
     #[test]
     fn test_delete_dir_recursive_rejects_critical_dir_prefix() {
         let err = delete_dir_recursive(std::path::Path::new("/usr/local/share")).unwrap_err();

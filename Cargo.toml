@@ -30,7 +30,6 @@ serde = { version = "1.0", features = ["derive"] }
 tar = "0.4"
 toml = "1"
 unicode-width = "0.2"
-users = "0.11.0"
 unicode-segmentation = "1"
 ansi-to-tui = "8.0.1"
 zip = "8"
@@ -53,6 +52,11 @@ opt-level = 1
 
 [target.'cfg(target_os = "macos")'.dependencies]
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+# NSS user/group name lookups are Unix-only; the crate does not compile on
+# Windows (raw libc getpwuid_r etc.), and all its call sites are cfg(unix).
+[target.'cfg(unix)'.dependencies]
+users = "0.11.0"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 notify = "8"

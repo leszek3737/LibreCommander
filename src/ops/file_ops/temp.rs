@@ -44,7 +44,7 @@ impl Drop for TempDirGuard {
 
 pub(super) static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn parent_and_filename(path: &Path) -> io::Result<(&Path, &OsStr)> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -67,7 +67,7 @@ fn suffixed_path(dest: &Path, tag: &str, seq: u64) -> PathBuf {
     dest.with_file_name(name)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn temp_dir_path_for(dest: &Path, seq: u64) -> PathBuf {
     suffixed_path(dest, "copy", seq)
 }
@@ -103,6 +103,66 @@ pub(super) struct DestBackup {
     pub(super) entry: PathBuf,
 }
 
+/// Is `fname` a backup container this module created for `dest_name`?
+/// Containers are named `<dest_name>.lc-dir-backup-<pid>-<seq>.tmp`. Compared on
+/// raw bytes so a non-UTF-8 destination name is still matched.
+fn is_backup_container_for(fname: &OsStr, dest_name: &OsStr) -> bool {
+    let Some(rest) = fname
+        .as_encoded_bytes()
+        .strip_prefix(dest_name.as_encoded_bytes())
+    else {
+        return false;
+    };
+    rest.starts_with(b".lc-dir-backup-") && rest.ends_with(b".tmp")
+}
+
+/// Best-effort recovery of an orphaned backup left when a crash interrupts
+/// [`publish_temp_dir`] between moving `dest` to a backup and renaming the temp
+/// into place — the exact state in which `dest` is missing and the original is
+/// stranded in a `.lc-dir-backup-*.tmp` dir. The stranded original is renamed
+/// back to `dest` and the empty container removed.
+///
+/// Only runs when `dest` is missing: if `dest` is present nothing is stranded,
+/// and touching backups could race a concurrent publish, so it does nothing.
+fn recover_orphaned_backups(dest: &Path) {
+    if dest.try_exists().unwrap_or(true) {
+        return;
+    }
+    let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return;
+    };
+    let Some(dest_name) = dest.file_name() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !is_backup_container_for(&entry.file_name(), dest_name) {
+            continue;
+        }
+        let container = entry.path();
+        match fs::rename(container.join("dest"), dest) {
+            // Original restored — done; only one backup can hold it.
+            Ok(()) => {
+                cleanup_dir(&container);
+                return;
+            }
+            // Rename failed. Drop the shell only when it is genuinely empty
+            // (crash before the original was moved in). If the stranded
+            // original is still inside — e.g. a transient EBUSY/EPERM — the
+            // container must be preserved; `cleanup_dir` is a non-recursive
+            // `remove_dir` and would fail on it anyway, but the explicit guard
+            // keeps the data-preserving intent independent of that detail.
+            Err(_) => {
+                if !container.join("dest").try_exists().unwrap_or(true) {
+                    cleanup_dir(&container);
+                }
+            }
+        }
+    }
+}
+
 /// Two-phase atomic directory replace.
 ///
 /// Phase 1: move existing dest → backup (if `overwrite` && dest exists).
@@ -110,8 +170,11 @@ pub(super) struct DestBackup {
 /// On phase 2 failure: restore backup → dest.
 ///
 /// # Crash safety
-/// Crash between phases leaves an orphan `.lc-dir-backup-*.tmp` dir.
-/// Next run self-heals — `reserve_unique_name` ignores existing backups.
+/// A crash between phase 1 and phase 2 strands the original data inside an
+/// orphaned `.lc-dir-backup-*.tmp` dir with `dest` missing. That is recovered by
+/// [`recover_orphaned_backups`], called at the top of this function: the next
+/// publish targeting the same `dest` restores the stranded original before
+/// proceeding.
 ///
 /// # TOCTOU
 /// When `overwrite=false`, dest existence is re-checked right before rename
@@ -123,6 +186,7 @@ pub(super) fn publish_temp_dir(
     overwrite: bool,
     src_perms: fs::Permissions,
 ) -> io::Result<()> {
+    recover_orphaned_backups(dest);
     if let Err(e) = fs::set_permissions(temp_dest, src_perms) {
         cleanup_dir_all(temp_dest);
         return Err(e);
@@ -209,6 +273,9 @@ pub(super) fn move_existing_dest_to_backup(dest: &Path) -> io::Result<Option<Des
     }
 }
 
+// Production callers are unix-only (symlink swap in copy.rs); the cfg(test)
+// copy_file helpers use it on every platform.
+#[cfg(any(unix, test))]
 pub(super) fn swap_temp_to_dest(temp: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     if overwrite {
         replace_file_inner(temp, dest, "cannot replace a directory with a file")?;

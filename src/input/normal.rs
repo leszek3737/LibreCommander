@@ -447,23 +447,43 @@ pub(crate) fn show_archive_dialog(state: &mut AppState) {
         None => return,
     };
     let source = entry.path.clone();
-    let entries = match archive::list::list_archive(&source) {
-        Ok(list) => list,
+    let dest = state.active_panel().path().display().to_string();
+    // Listing a large or corrupt archive can be slow, so it runs off the event
+    // thread: record the request and show a loading dialog. The main loop spawns
+    // the read and builds the extract dialog when it completes (see `bg_load`).
+    state.ui.pending_archive_list = Some((source, dest));
+    state.mode = AppMode::Dialog(lc::app::types::DialogKind::progress(
+        "Listing archive...".to_string(),
+        0.0,
+        true,
+    ));
+}
+
+/// Build the extract dialog from a completed background archive listing, or
+/// report the failure. Called by the main loop when the `bg_load` finishes.
+pub(crate) fn apply_archive_list_result(
+    state: &mut AppState,
+    source: PathBuf,
+    dest: String,
+    result: Result<Vec<archive::ArchiveEntry>, archive::ArchiveError>,
+) {
+    match result {
+        Ok(entries) => {
+            let mut dest_input = lc::app::types::TextInput::new();
+            dest_input.set_text_at_end(dest);
+            state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveExtract(Box::new(
+                lc::app::types::ArchiveExtractDetails {
+                    source,
+                    entries,
+                    dest_input,
+                },
+            )));
+        }
         Err(e) => {
             state.ui.status_message = Some(format!("Failed to list archive: {e}"));
-            return;
+            state.mode = AppMode::Normal;
         }
-    };
-    let path_str = state.active_panel().path().display().to_string();
-    let mut dest_input = lc::app::types::TextInput::new();
-    dest_input.set_text_at_end(path_str);
-    state.mode = AppMode::Dialog(lc::app::types::DialogKind::ArchiveExtract(Box::new(
-        lc::app::types::ArchiveExtractDetails {
-            source,
-            entries,
-            dest_input,
-        },
-    )));
+    }
 }
 
 pub(crate) fn handle_ctrl_keys(state: &mut AppState, key: KeyCode, terminal_height: u16) {

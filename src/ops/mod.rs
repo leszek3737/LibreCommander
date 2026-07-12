@@ -17,7 +17,9 @@ pub(crate) mod sorting;
 
 pub use archive::{ArchiveEntry, ArchiveError, ArchiveFormat, detect_format};
 pub use compare::{CompareReport, apply_compare_to_panels, compare_entries};
-pub use file_ops::{chmod, create_directory, rename_entry};
+#[cfg(unix)]
+pub use file_ops::chmod;
+pub use file_ops::{create_directory, rename_entry};
 pub use search::{
     CompiledPattern, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
     search_content_with_diagnostics, search_content_with_diagnostics_cancellable, search_files,
