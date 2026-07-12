@@ -221,7 +221,9 @@ fn alt_enter_on_dotdot_does_nothing() {
 #[test]
 fn alt_backspace_navigates_to_parent() {
     let mut state = AppState::default();
-    let parent = PathBuf::from("/tmp");
+    // The handler only navigates to a history entry that exists (`is_dir`), so
+    // use the platform temp dir rather than a Unix-only literal like /tmp.
+    let parent = std::env::temp_dir();
     state.left_panel.push_history(parent.clone());
     state.active_panel = ActivePanel::Left;
     handle_alt_keys(&mut state, KeyCode::Backspace, VISIBLE_HEIGHT);
