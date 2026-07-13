@@ -85,9 +85,11 @@ pub const KNOWN_BINARY_PREFIXES: &[&str] = &[
     "application/vnd.ms-",
 ];
 
-/// Extension-based MIME for the viewer (content sniffing dropped — NUL scan
-/// + known binary tables cover open-as-text).
-pub fn detect_mime_from_bytes(path: &Path, _bytes: &[u8]) -> Option<&'static str> {
+/// Extension-based MIME for the viewer (filename only; no content sniff).
+/// Text vs hex still uses NUL scan + [`KNOWN_BINARY_MIMES`] in the viewer.
+/// Images without a known extension open as hex/text, not Image mode.
+#[must_use]
+pub fn mime_from_path(path: &Path) -> Option<&'static str> {
     path.file_name()
         .and_then(|name| name.to_str())
         .and_then(extension_mime)

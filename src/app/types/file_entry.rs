@@ -9,7 +9,11 @@ use unicode_width::UnicodeWidthStr;
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
 
 /// Strip C0 controls / DEL from filenames for TUI display.
-/// `\n` → ⏎, `\t` → two spaces, `\r` dropped, other controls → ·.
+///
+/// - `\n` → ⏎, `\t` → two spaces, `\r` dropped, other C0/DEL → ·
+/// - **Not** a full ANSI CSI/OSC stripper: `ESC` becomes · and the following
+///   payload (`[31m…`) stays visible. Filenames with real escape sequences are
+///   rare; a full state machine was removed deliberately (ponytail audit).
 pub(crate) fn sanitize_for_display(s: &str) -> Cow<'_, str> {
     if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) {
         return Cow::Borrowed(s);
@@ -197,12 +201,8 @@ impl FileEntryBuilder {
     /// `currently` of this type, it is demoted back to a regular file.
     fn set_type(mut self, enable: bool, type_bits: u32, currently: bool) -> Self {
         let perms = self.cha.mode.permissions();
-        if enable {
-            self.cha.mode = ChaMode::new(type_bits | perms);
-            self.cha.kind.dir_target = false;
-            self.cha.kind.follow = false;
-        } else if currently {
-            self.cha.mode = ChaMode::new(MODE_FILE | perms);
+        if enable || currently {
+            self.cha.mode = ChaMode::new(if enable { type_bits } else { MODE_FILE } | perms);
             self.cha.kind.dir_target = false;
             self.cha.kind.follow = false;
         }

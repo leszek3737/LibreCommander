@@ -363,8 +363,7 @@ impl ViewerState {
         if file_truncated {
             raw_bytes.truncate(MAX_VIEW_SIZE);
         }
-        let mime =
-            crate::app::mime::detect_mime_from_bytes(path, &raw_bytes[..raw_bytes.len().min(8192)]);
+        let mime = crate::app::mime::mime_from_path(path);
 
         let open_as_text = should_open_as_text(path, mime, &raw_bytes);
         let is_image = is_image_mime(mime);

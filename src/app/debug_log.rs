@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -7,13 +7,20 @@ use chrono::Local;
 
 const MIB: u64 = 1024 * 1024;
 const MAX_LOG_SIZE_BYTES: u64 = 10 * MIB;
-/// Re-check on-disk size every N writes so a long session cannot grow forever.
+/// Re-open / size-check every N writes: enforces the cap and follows logrotate
+/// (rename/delete of the path) without statting the stale handle.
 const SIZE_CHECK_INTERVAL: u32 = 256;
+/// Batch flushes so BufWriter can coalesce syscalls; small enough that a crash
+/// loses only a handful of lines.
+const FLUSH_INTERVAL: u32 = 16;
 
 /// File-based debug logger for TUI runtime diagnostics.
 /// Location: XDG_CACHE_HOME/lc/debug.log (or ~/.cache/lc/debug.log).
 /// Usage: `debug_log!("message: {}", value)`.
-static LOG_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+///
+/// Per-write flush is intentionally *not* used: `FLUSH_INTERVAL` amortizes
+/// syscalls. Acceptable for a best-effort diagnostic channel, not a hot path.
+static LOG_FILE: Mutex<Option<BufWriter<std::fs::File>>> = Mutex::new(None);
 static WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(test)]
@@ -45,29 +52,37 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     })
 }
 
-fn open_log() -> std::io::Result<std::fs::File> {
+fn open_log() -> std::io::Result<BufWriter<std::fs::File>> {
     let path = log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     // Truncate when oversized so a stuck session cannot fill the disk.
-    if std::fs::metadata(&path)
+    // `create(true)` covers a race where the file disappears between the
+    // metadata check and open (gemini finding).
+    let file = if std::fs::metadata(&path)
         .map(|m| m.len() > MAX_LOG_SIZE_BYTES)
         .unwrap_or(false)
     {
-        OpenOptions::new().write(true).truncate(true).open(&path)
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)?
     } else {
-        OpenOptions::new().create(true).append(true).open(&path)
-    }
+        OpenOptions::new().create(true).append(true).open(&path)?
+    };
+    Ok(BufWriter::new(file))
 }
 
-fn reopen_if_needed(guard: &mut Option<std::fs::File>) -> bool {
-    let oversized = guard
-        .as_ref()
-        .and_then(|f| f.metadata().ok())
-        .is_some_and(|m| m.len() > MAX_LOG_SIZE_BYTES);
-    if !oversized {
-        return true;
+/// Close and reopen via the *path* (not the open handle).
+///
+/// Stats on the handle would keep writing to a renamed/unlinked inode after
+/// logrotate; reopening by path always attaches to the live cache file and
+/// re-applies the size cap.
+fn reopen(guard: &mut Option<BufWriter<std::fs::File>>) -> bool {
+    if let Some(bw) = guard.as_mut() {
+        let _ = bw.flush();
     }
     *guard = None;
     match open_log() {
@@ -85,27 +100,23 @@ fn reopen_if_needed(guard: &mut Option<std::fs::File>) -> bool {
 #[inline(never)]
 pub fn log(args: std::fmt::Arguments<'_>) {
     let mut guard = lock_recover(&LOG_FILE);
-    if guard.is_none() {
-        match open_log() {
-            Ok(file) => *guard = Some(file),
-            Err(e) => {
-                report_error("open_error", &e);
-                return;
-            }
-        }
-    }
-    let count = WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
-    if count.is_multiple_of(SIZE_CHECK_INTERVAL) && !reopen_if_needed(&mut guard) {
+    if guard.is_none() && !reopen(&mut guard) {
         return;
     }
-    if let Some(file) = guard.as_mut() {
+    let count = WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count.is_multiple_of(SIZE_CHECK_INTERVAL) && !reopen(&mut guard) {
+        return;
+    }
+    if let Some(bw) = guard.as_mut() {
         let stamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-        if let Err(e) = writeln!(file, "[{stamp}] {args}") {
+        if let Err(e) = writeln!(bw, "[{stamp}] {args}") {
             report_error("write_error", &e);
             *guard = None;
             return;
         }
-        let _ = file.flush();
+        if count.is_multiple_of(FLUSH_INTERVAL) {
+            let _ = bw.flush();
+        }
     }
 }
 
@@ -156,6 +167,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         log(format_args!("test message"));
+        // Force flush of BufWriter so the test can read the line.
+        if let Some(bw) = lock_recover(&LOG_FILE).as_mut() {
+            let _ = bw.flush();
+        }
 
         let mut file = std::fs::File::open(&path).expect("open debug log from test cache");
         let mut contents = String::new();
@@ -186,6 +201,9 @@ mod tests {
             std::fs::write(&path, vec![b'X'; (MAX_LOG_SIZE_BYTES + 1) as usize])
                 .expect("write oversized log");
             log(format_args!("after truncate {attempt}"));
+            if let Some(bw) = lock_recover(&LOG_FILE).as_mut() {
+                let _ = bw.flush();
+            }
             let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             if len > 0 && len < MAX_LOG_SIZE_BYTES {
                 let mut contents = String::new();
