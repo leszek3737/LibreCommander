@@ -31,12 +31,10 @@ fn entry_with(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool, size: u
     if name.starts_with('.') {
         e = e.hidden();
     }
-    let mut entry = e.build();
     if is_exec {
-        entry.cha.set_executable(true);
-        entry.category = crate::app::types::compute_category(&entry.cha, &entry.name);
+        e = e.executable(true);
     }
-    entry
+    e.build()
 }
 
 fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {

@@ -29,9 +29,13 @@ pub struct TestEntry {
     raw_mode: Option<u32>,
     /// Override `cha.len` after kind is applied (e.g. directory size in compare).
     len: Option<u64>,
+    executable: Option<bool>,
 }
 
-// Setters used à la carte across the suite — any given one can be unused here.
+// Mounted into both the library `#[cfg(test)]` tree and the binary integration
+// suite via `#[path = ".../test_helpers.rs"]` in `src/tests/helpers.rs`. A
+// setter used only in one of those crates looks dead to the other, so
+// `dead_code` is allowed on the whole impl (not a production path).
 #[allow(dead_code)]
 impl TestEntry {
     pub fn new(name: impl Into<String>) -> Self {
@@ -51,6 +55,7 @@ impl TestEntry {
             group: None,
             raw_mode: None,
             len: None,
+            executable: None,
         }
     }
 
@@ -112,6 +117,13 @@ impl TestEntry {
 
     pub fn len(mut self, size: u64) -> Self {
         self.len = Some(size);
+        self
+    }
+
+    /// Set or clear the execute permission bits before the entry is built, so
+    /// the cached `category` reflects executable status.
+    pub fn executable(mut self, v: bool) -> Self {
+        self.executable = Some(v);
         self
     }
 
@@ -181,6 +193,10 @@ impl TestEntry {
             cha.mode = ChaMode::new(MODE_SYMLINK | perms);
             cha.kind.dir_target = false;
             cha.kind.follow = false;
+        }
+
+        if let Some(exec) = self.executable {
+            cha.set_executable(exec);
         }
 
         let hidden = self.hidden.unwrap_or_else(|| self.name.starts_with('.'));

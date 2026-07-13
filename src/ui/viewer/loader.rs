@@ -79,9 +79,13 @@ impl ImagePreviewLoader {
             let text = run_chafa(&path, width, height, Some(cancel));
             (width, height, text)
         })
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|e| {
             let (tx, rx) = mpsc::channel();
-            let _ = tx.send((width, height, Text::raw("")));
+            let _ = tx.send((
+                width,
+                height,
+                Text::raw(format!("Failed to start image preview: {e}")),
+            ));
             BgLoad::from_parts(rx, Arc::new(AtomicBool::new(false)), None)
         });
         Self { file_path, inner }
