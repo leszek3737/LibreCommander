@@ -59,20 +59,20 @@ impl EnvProvider for MapEnv {
     }
 }
 
-/// Generate a zero-arg public accessor that delegates to its `*_with_env`
-/// counterpart using the real process environment.
-macro_rules! process_env_accessor {
-    ($(#[$meta:meta])* $vis:vis fn $name:ident -> $with_env:ident) => {
-        $(#[$meta])*
-        $vis fn $name() -> Option<PathBuf> {
-            $with_env(&ProcessEnv)
-        }
-    };
+#[must_use]
+pub fn config_file_path() -> Option<PathBuf> {
+    config_file_path_with_env(&ProcessEnv)
 }
 
-process_env_accessor!(#[must_use] pub fn config_file_path -> config_file_path_with_env);
-process_env_accessor!(#[must_use] pub fn user_menu_path -> user_menu_path_with_env);
-process_env_accessor!(#[must_use] pub fn terminal_state_file_path -> terminal_state_file_path_with_env);
+#[must_use]
+pub fn user_menu_path() -> Option<PathBuf> {
+    user_menu_path_with_env(&ProcessEnv)
+}
+
+#[must_use]
+pub fn terminal_state_file_path() -> Option<PathBuf> {
+    terminal_state_file_path_with_env(&ProcessEnv)
+}
 
 #[must_use]
 pub fn config_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {

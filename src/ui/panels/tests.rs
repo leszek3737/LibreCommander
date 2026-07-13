@@ -864,8 +864,9 @@ fn test_sanitize_tab_replaced() {
 
 #[test]
 fn test_sanitize_ansi_escape_stripped() {
+    // ESC becomes ·; remaining CSI body stays (no full ANSI state machine).
     let result = sanitize_for_display("\x1b[31mred\x1b[0m");
-    assert_eq!(&*result, "red");
+    assert_eq!(&*result, "·[31mred·[0m");
 }
 
 #[test]
@@ -895,7 +896,7 @@ fn test_sanitize_del_replaced() {
 #[test]
 fn test_sanitize_mixed_control_chars() {
     let result = sanitize_for_display("a\nb\rc\x1b[32md\x00e\tf");
-    assert_eq!(&*result, "a⏎bcd·e  f");
+    assert_eq!(&*result, "a⏎bc·[32md·e  f");
 }
 
 #[test]

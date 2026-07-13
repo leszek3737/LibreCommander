@@ -46,7 +46,7 @@ fn entry_to_meta(entry: &FileEntry) -> EntryMeta {
     EntryMeta {
         is_dir: entry.is_dir(),
         size: entry.size(),
-        mtime: entry.cha.mtime(),
+        mtime: entry.cha.mtime,
     }
 }
 

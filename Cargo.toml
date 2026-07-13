@@ -9,7 +9,6 @@ readme = "README.md"
 repository = "https://github.com/leszek3737/LibreCommander"
 
 [dependencies]
-bitflags = "2"
 bzip2 = "0.6"
 chrono = "0.4.44"
 dirs = "6"
@@ -17,11 +16,9 @@ flate2 = "1"
 libc = "0.2"
 lzma-rs = "0.3"
 memchr = "2"
-rayon = { version = "1", optional = true }
-smallvec = "1"
+rayon = "1"
 crossterm = "0.29.0"
 filetime = "0.2"
-infer = "0.19"
 ratatui = "0.30.0"
 regex = "1"
 sevenz-rust = "0.6"
@@ -60,10 +57,6 @@ users = "0.11.0"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 notify = "8"
-
-[features]
-default = ["parallel"]
-parallel = ["dep:rayon"]
 
 [lints.clippy]
 too_many_lines = "warn"

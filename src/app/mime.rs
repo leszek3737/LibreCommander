@@ -2,18 +2,12 @@ use std::path::Path;
 
 use crate::app::types::FileCategory;
 
-// Shared MIME literals: single source of truth for strings that appear both in
-// the public classification tables below and in `mime_to_category`'s match arms.
-// Naming them once stops the tables and the match from silently drifting apart
-// (e.g. a value fixed in one place but forgotten in the other).
-//
-// MIME prefixes (tested with `str::starts_with`).
+// MIME prefixes / literals for viewer binary/text tables and extension_mime.
 const PREFIX_IMAGE: &str = "image/";
 const PREFIX_AUDIO: &str = "audio/";
 const PREFIX_VIDEO: &str = "video/";
 const PREFIX_OPENDOCUMENT: &str = "application/vnd.oasis.opendocument.";
 const PREFIX_OOXML: &str = "application/vnd.openxmlformats-officedocument.";
-//
 // Text-bearing `application/*` MIME types.
 const MIME_JSON: &str = "application/json";
 const MIME_TOML: &str = "application/toml";
@@ -91,116 +85,21 @@ pub const KNOWN_BINARY_PREFIXES: &[&str] = &[
     "application/vnd.ms-",
 ];
 
-pub fn detect_mime_from_bytes(path: &Path, bytes: &[u8]) -> Option<&'static str> {
-    // Both sources already yield `&'static str` (`infer` returns static MIME
-    // strings, `extension_mime` returns table literals), so no allocation is
-    // needed.
-    infer::get(bytes).map(|kind| kind.mime_type()).or_else(|| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .and_then(extension_mime)
-    })
+/// Extension-based MIME for the viewer (content sniffing dropped — NUL scan
+/// + known binary tables cover open-as-text).
+pub fn detect_mime_from_bytes(path: &Path, _bytes: &[u8]) -> Option<&'static str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(extension_mime)
 }
 
-#[must_use]
-pub fn mime_to_category(mime: &str) -> FileCategory {
-    if mime == "inode/directory" {
-        return FileCategory::Dir;
-    }
-    if mime.starts_with(PREFIX_IMAGE) {
-        return if mime == "image/vnd.djvu" {
-            FileCategory::Document
-        } else {
-            FileCategory::Image
-        };
-    }
-    if mime.starts_with(PREFIX_AUDIO) {
-        return FileCategory::Audio;
-    }
-    if mime.starts_with(PREFIX_VIDEO) {
-        return FileCategory::Video;
-    }
-    if mime.starts_with("text/") {
-        return match mime {
-            "text/plain"
-            | "text/markdown"
-            | "text/csv"
-            | "text/tab-separated-values"
-            | "text/x-rst" => FileCategory::Document,
-            "text/x-asciidoc" => FileCategory::Document,
-            "text/xml" | "text/yaml" | "text/config" | "text/x-makefile" | "text/x-dockerfile"
-            | "text/x-justfile" | "text/x-groovy" => FileCategory::Config,
-            _ => FileCategory::Code,
-        };
-    }
-    if mime.starts_with("application/") {
-        return match mime {
-            MIME_JSON | MIME_TOML | MIME_YAML | MIME_X_YAML | MIME_XML => FileCategory::Config,
-            MIME_PDF
-            | MIME_MSWORD
-            | MIME_RTF
-            | MIME_EPUB
-            | "application/x-mobipocket-ebook"
-            | "application/vnd.amazon.ebook"
-            | "application/vnd.ms-htmlhelp"
-            | "application/x-tex" => FileCategory::Document,
-            m if m.starts_with(PREFIX_OPENDOCUMENT) => FileCategory::Document,
-            m if m.starts_with(PREFIX_OOXML) => FileCategory::Document,
-            MIME_JAVASCRIPT | MIME_TYPESCRIPT | MIME_ECMASCRIPT | MIME_SQL | MIME_WASM
-            | MIME_PHP | MIME_SH => FileCategory::Code,
-            "application/vnd.ms-fontobject" => FileCategory::Font,
-            // NOTE: phf/trie intentionally avoided here — a linear match is fine
-            // at TUI scale. Shared MIME constants keep these arms in sync with
-            // the public tables above.
-            MIME_ZIP
-            | MIME_TAR
-            | MIME_GZIP
-            | MIME_X_GZIP
-            | MIME_BZIP2
-            | MIME_XZ
-            | MIME_7Z
-            | MIME_RAR
-            | MIME_RAR_COMPRESSED
-            | MIME_ZSTD
-            | "application/x-lzma"
-            | "application/vnd.ms-cab-compressed"
-            | "application/x-iso9660-image"
-            | "application/x-apple-diskimage"
-            | "application/x-debian-package"
-            | "application/x-rpm"
-            | "application/vnd.android.package-archive"
-            | "application/x-unix-archive"
-            | "application/x-cpio"
-            | "application/java-archive"
-            | "application/x-xar"
-            | "application/x-ace"
-            | "application/x-arj"
-            | "application/x-lzop"
-            | "application/x-brotli" => FileCategory::Archive,
-            "application/vnd.rn-realmedia" => FileCategory::Video,
-            "application/x-plist" => FileCategory::Config,
-            "application/postscript" => FileCategory::Image,
-            _ => FileCategory::Other,
-        };
-    }
-    if mime.starts_with("font/") {
-        return FileCategory::Font;
-    }
-    FileCategory::Other
-}
-/// Determine [`FileCategory`] from a filename (basename or full path).
-///
-/// Tries MIME detection first via [`extension_mime`], then falls back to
-/// [`file_type::category`](crate::app::file_type::category).
+/// Panel/category coloring lives in [`file_type`]; this is a thin alias.
 #[must_use]
 pub fn category_from_ext(name: &str) -> FileCategory {
     let basename = Path::new(name)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or_default();
-    if let Some(mime) = extension_mime(basename) {
-        return mime_to_category(mime);
-    }
     crate::app::file_type::category(basename, false, false, false)
 }
 
@@ -543,76 +442,6 @@ mod tests {
         assert_eq!(category_from_ext("font.ttf"), FileCategory::Font);
         assert_eq!(category_from_ext("font.woff2"), FileCategory::Font);
         assert_eq!(category_from_ext("font.eot"), FileCategory::Font);
-    }
-
-    #[test]
-    fn mime_to_category_maps_primary_types() {
-        assert_eq!(mime_to_category("inode/directory"), FileCategory::Dir);
-        assert_eq!(mime_to_category("image/png"), FileCategory::Image);
-        assert_eq!(mime_to_category("image/heic"), FileCategory::Image);
-        assert_eq!(mime_to_category("audio/mpeg"), FileCategory::Audio);
-        assert_eq!(mime_to_category("video/mp4"), FileCategory::Video);
-        assert_eq!(mime_to_category("text/x-rust"), FileCategory::Code);
-        assert_eq!(mime_to_category("text/plain"), FileCategory::Document);
-        assert_eq!(mime_to_category("text/markdown"), FileCategory::Document);
-        assert_eq!(mime_to_category("text/xml"), FileCategory::Config);
-        assert_eq!(mime_to_category("text/yaml"), FileCategory::Config);
-        assert_eq!(mime_to_category("text/csv"), FileCategory::Document);
-        assert_eq!(
-            mime_to_category("text/tab-separated-values"),
-            FileCategory::Document
-        );
-        assert_eq!(
-            mime_to_category("application/epub+zip"),
-            FileCategory::Document
-        );
-        assert_eq!(mime_to_category("image/vnd.djvu"), FileCategory::Document);
-        assert_eq!(mime_to_category("font/ttf"), FileCategory::Font);
-        assert_eq!(
-            mime_to_category("application/vnd.ms-fontobject"),
-            FileCategory::Font
-        );
-    }
-
-    #[test]
-    fn mime_to_category_maps_structured_application_types() {
-        assert_eq!(mime_to_category("application/json"), FileCategory::Config);
-        assert_eq!(mime_to_category("application/zip"), FileCategory::Archive);
-        assert_eq!(mime_to_category("application/pdf"), FileCategory::Document);
-        assert_eq!(mime_to_category("application/wasm"), FileCategory::Code);
-        assert_eq!(
-            mime_to_category("application/octet-stream"),
-            FileCategory::Other
-        );
-        assert_eq!(
-            mime_to_category("application/x-debian-package"),
-            FileCategory::Archive
-        );
-        assert_eq!(mime_to_category("application/x-rpm"), FileCategory::Archive);
-        assert_eq!(
-            mime_to_category("application/java-archive"),
-            FileCategory::Archive
-        );
-        assert_eq!(
-            mime_to_category("application/x-iso9660-image"),
-            FileCategory::Archive
-        );
-        assert_eq!(
-            mime_to_category("application/x-apple-diskimage"),
-            FileCategory::Archive
-        );
-        assert_eq!(
-            mime_to_category("application/vnd.rn-realmedia"),
-            FileCategory::Video
-        );
-        assert_eq!(
-            mime_to_category("application/postscript"),
-            FileCategory::Image
-        );
-        assert_eq!(
-            mime_to_category("application/x-plist"),
-            FileCategory::Config
-        );
     }
 
     #[test]
