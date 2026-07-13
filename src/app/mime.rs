@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use crate::app::types::FileCategory;
-
 // MIME prefixes / literals for viewer binary/text tables and extension_mime.
 const PREFIX_IMAGE: &str = "image/";
 const PREFIX_AUDIO: &str = "audio/";
@@ -93,16 +91,6 @@ pub fn mime_from_path(path: &Path) -> Option<&'static str> {
     path.file_name()
         .and_then(|name| name.to_str())
         .and_then(extension_mime)
-}
-
-/// Panel/category coloring lives in [`file_type`]; this is a thin alias.
-#[must_use]
-pub fn category_from_ext(name: &str) -> FileCategory {
-    let basename = Path::new(name)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    crate::app::file_type::category(basename, false, false, false)
 }
 
 fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
@@ -389,62 +377,6 @@ fn font_mime(ext: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn category_from_ext_maps_common_media() {
-        assert_eq!(category_from_ext("photo.JPG"), FileCategory::Image);
-        assert_eq!(category_from_ext("movie.webm"), FileCategory::Video);
-        assert_eq!(category_from_ext("song.flac"), FileCategory::Audio);
-        assert_eq!(category_from_ext("icon.heic"), FileCategory::Image);
-        assert_eq!(category_from_ext("photo.heif"), FileCategory::Image);
-        assert_eq!(category_from_ext("logo.icns"), FileCategory::Image);
-    }
-
-    #[test]
-    fn category_from_ext_maps_archives_documents_config_and_code() {
-        assert_eq!(category_from_ext("backup.tar.gz"), FileCategory::Archive);
-        assert_eq!(category_from_ext("report.pdf"), FileCategory::Document);
-        assert_eq!(category_from_ext("config.toml"), FileCategory::Config);
-        assert_eq!(category_from_ext("settings.ini"), FileCategory::Config);
-        assert_eq!(category_from_ext("main.rs"), FileCategory::Code);
-        assert_eq!(category_from_ext("readme.txt"), FileCategory::Document);
-        assert_eq!(category_from_ext("unknown.bin"), FileCategory::Other);
-        assert_eq!(category_from_ext("movie.rm"), FileCategory::Video);
-        assert_eq!(category_from_ext("movie.rmvb"), FileCategory::Video);
-        assert_eq!(category_from_ext("logo.ai"), FileCategory::Image);
-        assert_eq!(category_from_ext("logo.eps"), FileCategory::Image);
-        assert_eq!(category_from_ext("settings.plist"), FileCategory::Config);
-    }
-
-    #[test]
-    fn category_from_ext_new_document_types() {
-        assert_eq!(category_from_ext("data.csv"), FileCategory::Document);
-        assert_eq!(category_from_ext("data.tsv"), FileCategory::Document);
-        assert_eq!(category_from_ext("book.epub"), FileCategory::Document);
-        assert_eq!(category_from_ext("scan.djvu"), FileCategory::Document);
-    }
-
-    #[test]
-    fn category_from_ext_new_archive_types() {
-        assert_eq!(category_from_ext("pkg.deb"), FileCategory::Archive);
-        assert_eq!(category_from_ext("pkg.rpm"), FileCategory::Archive);
-        assert_eq!(category_from_ext("app.apk"), FileCategory::Archive);
-        assert_eq!(category_from_ext("disk.iso"), FileCategory::Archive);
-        assert_eq!(category_from_ext("disk.dmg"), FileCategory::Archive);
-        assert_eq!(category_from_ext("lib.jar"), FileCategory::Archive);
-    }
-
-    #[test]
-    fn category_from_ext_config_types() {
-        assert_eq!(category_from_ext("tsconfig.jsonc"), FileCategory::Config);
-    }
-
-    #[test]
-    fn category_from_ext_font_types() {
-        assert_eq!(category_from_ext("font.ttf"), FileCategory::Font);
-        assert_eq!(category_from_ext("font.woff2"), FileCategory::Font);
-        assert_eq!(category_from_ext("font.eot"), FileCategory::Font);
-    }
 
     #[test]
     fn extension_mime_image_document_config() {

@@ -1,6 +1,13 @@
 use crate::app::types::FileEntry;
+use crate::fs::cha::{Cha, ChaKind, ChaMode};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const MODE_FILE: u32 = 0o100000;
+const MODE_DIR: u32 = 0o040000;
+const MODE_SYMLINK: u32 = 0o120000;
+const MODE_TYPE_MASK: u32 = 0o170000;
+const DEFAULT_FILE_MODE: u32 = 0o100644;
 
 enum EntryKind {
     Directory,
@@ -20,12 +27,15 @@ pub struct TestEntry {
     owner: Option<String>,
     group: Option<String>,
     raw_mode: Option<u32>,
+    /// Override `cha.len` after kind is applied (e.g. directory size in compare).
+    len: Option<u64>,
+    executable: Option<bool>,
 }
 
-// `#[allow(dead_code)]` is hoisted to the impl block (collapsed from 11
-// per-method attributes): this shared test builder exposes setters that are used
-// à la carte across the whole suite, so any given setter can be legitimately
-// unused in a single compilation unit.
+// Mounted into both the library `#[cfg(test)]` tree and the binary integration
+// suite via `#[path = ".../test_helpers.rs"]` in `src/tests/helpers.rs`. A
+// setter used only in one of those crates looks dead to the other, so
+// `dead_code` is allowed on the whole impl (not a production path).
 #[allow(dead_code)]
 impl TestEntry {
     pub fn new(name: impl Into<String>) -> Self {
@@ -44,6 +54,8 @@ impl TestEntry {
             owner: None,
             group: None,
             raw_mode: None,
+            len: None,
+            executable: None,
         }
     }
 
@@ -52,9 +64,7 @@ impl TestEntry {
         self
     }
 
-    /// Marks the entry as a regular file of `size` bytes. This is the canonical
-    /// size setter; the former identical `.size()` alias and the no-op `.dir()`
-    /// (the default kind is already `Directory`) were removed as redundant.
+    /// Marks the entry as a regular file of `size` bytes.
     pub fn file(mut self, size: u64) -> Self {
         self.kind = EntryKind::File(size);
         self
@@ -105,6 +115,18 @@ impl TestEntry {
         self
     }
 
+    pub fn len(mut self, size: u64) -> Self {
+        self.len = Some(size);
+        self
+    }
+
+    /// Set or clear the execute permission bits before the entry is built, so
+    /// the cached `category` reflects executable status.
+    pub fn executable(mut self, v: bool) -> Self {
+        self.executable = Some(v);
+        self
+    }
+
     pub fn build(self) -> FileEntry {
         let path = self.path.unwrap_or_else(|| {
             #[allow(clippy::panic)]
@@ -115,72 +137,74 @@ impl TestEntry {
 
         let default_mtime = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
         let mtime = self.modified.unwrap_or(default_mtime);
-        let btime = self.created.unwrap_or(default_mtime);
 
-        let mut builder = FileEntry::builder()
-            .name(&self.name)
-            .path(path)
-            .modified(mtime)
-            .created(btime);
+        let mut cha = Cha {
+            kind: ChaKind::default(),
+            mode: ChaMode::new(DEFAULT_FILE_MODE),
+            len: 0,
+            mtime: Some(mtime),
+            // Only set birth time when the test asks for it — leave `None` so
+            // sort-by-btime tests can distinguish "unknown" from "epoch".
+            btime: self.created,
+            ctime: None,
+            atime: None,
+            uid: 0,
+            gid: 0,
+            dev: 0,
+            nlink: 0,
+        };
 
-        if let Some(owner) = self.owner {
-            builder = builder.owner(owner);
-        }
-        if let Some(group) = self.group {
-            builder = builder.group(group);
-        }
-
-        // File type + permission bits.
-        //
-        // Precedence: an explicit `raw_mode` is the authoritative source for the
-        // type (dir/symlink/regular) and the permission bits, since it mirrors a
-        // real `stat()` `st_mode`. Without it, the type comes from `kind` (file vs
-        // directory) and permissions from an explicit `.permissions(..)`.
         if let Some(mode) = self.raw_mode {
-            let is_link = (mode & 0o170000) == 0o120000;
-            let is_directory = (mode & 0o170000) == 0o040000;
+            let is_link = (mode & MODE_TYPE_MASK) == MODE_SYMLINK;
+            let is_directory = (mode & MODE_TYPE_MASK) == MODE_DIR;
             let perms = mode & 0o7777;
-            builder = builder
-                .is_dir(is_directory)
-                .is_symlink(is_link)
-                .permissions(perms);
+            let type_bits = if is_link {
+                MODE_SYMLINK
+            } else if is_directory {
+                MODE_DIR
+            } else {
+                MODE_FILE
+            };
+            cha.mode = ChaMode::new(type_bits | perms);
         } else {
             match self.kind {
                 EntryKind::File(_) => {
-                    builder = builder.is_dir(false);
+                    cha.mode = ChaMode::new(MODE_FILE | cha.mode.permissions());
                 }
                 EntryKind::Directory => {
-                    builder = builder.is_dir(true);
+                    cha.mode = ChaMode::new(MODE_DIR | cha.mode.permissions());
                 }
             }
             if let Some(perms) = self.permissions {
-                builder = builder.permissions(perms);
+                let file_type = cha.mode.mode_u32() & MODE_TYPE_MASK;
+                cha.mode = ChaMode::new(file_type | (perms & 0o7777));
             }
         }
 
-        // Byte size composes independently of the type source: `raw_mode` carries
-        // no length, so `.file(size)` is always honored, even alongside `raw_mode`
-        // (WS-C fix: previously `.raw_mode(..).file(N)` silently dropped the size).
-        // A `Directory` kind keeps size 0 (a listing's directory size is
-        // meaningless here).
         if let EntryKind::File(size) = self.kind {
-            builder = builder.size(size);
+            cha.len = size;
+        }
+        if let Some(size) = self.len {
+            cha.len = size;
         }
 
-        // Symlink precedence: an explicit `.symlink()` is a hard override that
-        // upgrades the entry to a symlink even when `raw_mode` encoded a
-        // non-symlink type. It only ever upgrades — it never downgrades a symlink
-        // that `raw_mode` already established.
         if self.symlink {
-            builder = builder.is_symlink(true);
+            let perms = cha.mode.permissions();
+            cha.mode = ChaMode::new(MODE_SYMLINK | perms);
+            cha.kind.dir_target = false;
+            cha.kind.follow = false;
+        }
+
+        if let Some(exec) = self.executable {
+            cha.set_executable(exec);
         }
 
         let hidden = self.hidden.unwrap_or_else(|| self.name.starts_with('.'));
-        builder = builder.is_hidden(hidden).selected(self.selected);
+        cha.set_hidden(hidden);
 
-        // `TestEntry::build` keeps returning `FileEntry` (not `Result`): test code
-        // always supplies a non-empty name, so the only `BuildError` is unreachable
-        // here and is surfaced as a panic with a clear message.
-        builder.build().expect("valid test entry")
+        let owner = self.owner.as_deref().unwrap_or("");
+        let group = self.group.as_deref().unwrap_or("");
+
+        FileEntry::new(self.name, path, cha, owner, group, self.selected, None)
     }
 }

@@ -7,9 +7,6 @@ mod sorting;
 mod text_input;
 
 #[cfg(test)]
-// `TestEntry::build` surfaces the (unreachable for tests) `BuildError` via
-// `.expect`; allow the restriction lint for this test-only helper module.
-#[allow(clippy::expect_used)]
 pub(crate) mod test_helpers;
 
 #[cfg(test)]
@@ -30,9 +27,8 @@ pub use dialogs::{
     DialogKind, FileKind, InputAction, OverwriteConfirmDetails, PickerKind, PropertiesDetails,
 };
 
-// File-entry data types. `BuildError` is the error half of the now fallible
-// `FileEntryBuilder::build` and is re-exported so callers can name it.
-pub use file_entry::{BuildError, FileCategory, FileEntry, FileEntryBuilder, FileSize};
+// File-entry data types.
+pub use file_entry::{FileCategory, FileEntry};
 
 // Modes & actions.
 pub use modes::{AppMode, CompareMode, PendingAction, TransferAction, ViewMode};
@@ -55,9 +51,6 @@ pub use text_input::TextInput;
 // callers use `FileEntry::display_permissions_raw` directly.
 pub use file_entry::{compute_category, format_size, format_time};
 
-// cfg(test) asymmetry (intentional, do not collapse): `sanitize_for_display` is
-// only needed by test helpers, so it is gated to test builds; `sanitize_name` is
-// used in production file-entry construction and must always be available.
+// `sanitize_for_display` is only needed by test helpers.
 #[cfg(test)]
 pub(crate) use file_entry::sanitize_for_display;
-pub(crate) use file_entry::sanitize_name;

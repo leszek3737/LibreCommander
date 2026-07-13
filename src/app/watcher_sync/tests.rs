@@ -15,14 +15,12 @@ fn test_panel(path: &Path) -> PanelState {
 }
 
 fn parent_entry(path: &Path) -> reader::FileEntry {
-    reader::FileEntry::builder()
-        .name("..")
+    use crate::app::types::test_helpers::TestEntry;
+    // 0o755 already includes execute bits; no post-build mutation needed.
+    TestEntry::new("..")
         .path(path.parent().unwrap_or(path))
-        .is_dir(true)
-        .is_executable(true)
         .permissions(0o755)
         .build()
-        .expect("valid test entry")
 }
 
 fn select_entry_by_name(entries: &mut [reader::FileEntry], name: &str) {

@@ -69,7 +69,7 @@ pub fn test_terminal() -> Terminal<TestBackend> {
 }
 
 // `TestEntry` is defined under `src/app/types/` because it builds a
-// `crate::app::types::FileEntry` via the lib-private `FileEntry::builder()` —
+// `crate::app::types::FileEntry` via `FileEntry::new` / `TestEntry` —
 // machinery only reachable from inside the `lc` library crate under `cfg(test)`.
 // This integration suite is a *separate* test crate, so it cannot name that
 // module directly. The `#[path]` attribute mounts the very same source file into

@@ -119,23 +119,6 @@ fn render_tree_scrollbar(
     }
 }
 
-pub fn render_directory_tree(
-    f: &mut Frame,
-    tree_root: &Path,
-    entries: &[TreeEntry],
-    selected: usize,
-    scroll: usize,
-) {
-    render_directory_tree_with_colors(
-        f,
-        tree_root,
-        entries,
-        selected,
-        scroll,
-        &ColorPalette::default(),
-    );
-}
-
 fn render_tree_entries(
     f: &mut Frame,
     entries: &[TreeEntry],
@@ -321,7 +304,14 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                render_directory_tree(f, Path::new("/test"), entries, selected, scroll);
+                render_directory_tree_with_colors(
+                    f,
+                    Path::new("/test"),
+                    entries,
+                    selected,
+                    scroll,
+                    &crate::ui::theme::ColorPalette::default(),
+                );
             })
             .unwrap();
         terminal

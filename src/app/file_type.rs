@@ -111,9 +111,9 @@ const CONFIG_EXACT_NAMES: &[&str] = &[
 ];
 
 /// Dotless basenames matched case-insensitively on every platform (same set as
-/// the former `mime::dotless_config_mime` path). On Linux `CONFIG_EXACT_NAMES`
-/// alone is case-sensitive, so bare `makefile` / `dockerfile` would otherwise
-/// fall through to Other after category_from_ext stopped routing through MIME.
+/// `mime::dotless_config_mime`). On Linux `CONFIG_EXACT_NAMES` alone is
+/// case-sensitive, so bare `makefile` / `dockerfile` would otherwise fall
+/// through to Other; this table closes that gap for icon/color category only.
 const CONFIG_DOTLESS_CASEFOLD: &[&str] = &[
     "makefile",
     "dockerfile",

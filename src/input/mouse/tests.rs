@@ -83,21 +83,17 @@ fn setup_copy_dirs() -> TestDirs {
     }
 }
 
-/// A regular-file `FileEntry` at `/{name}`. Built via the production
-/// `FileEntry::builder()` rather than a hand-rolled struct literal so it tracks
-/// the real field set.
-///
-/// (The richer `TestEntry` builder lives behind `#[cfg(test)]` in the *library*
-/// crate and is not reachable from these binary-side unit tests, so the plain
-/// `FileEntry::builder()` is used here.)
+/// A regular-file `FileEntry` at `/{name}`.
 fn mk_entry(name: &str) -> crate::app::types::FileEntry {
-    crate::app::types::FileEntry::builder()
-        .name(name)
-        .path(std::path::PathBuf::from(format!("/{name}")))
-        .is_dir(false)
-        .size(0)
-        .build()
-        .expect("valid test file entry")
+    crate::app::types::FileEntry::new(
+        name.to_string(),
+        std::path::PathBuf::from(format!("/{name}")),
+        crate::fs::cha::Cha::regular_file(0),
+        "",
+        "",
+        false,
+        None,
+    )
 }
 
 #[test]

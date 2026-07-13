@@ -15,7 +15,7 @@ use std::sync::{LazyLock, Mutex};
 #[cfg(test)]
 use std::time::SystemTime;
 
-use crate::app::types::{PanelState, compute_category, sanitize_name};
+use crate::app::types::PanelState;
 use crate::fs::cha::Cha;
 
 /// Maximum number of uid/gid name mappings to keep per cache.
@@ -213,27 +213,15 @@ fn build_file_entry_from_metadata(
     let (uid, gid) = (cha.uid, cha.gid);
     let (owner, group) = lookup_owner_group(uid, gid);
 
-    let (time_str, size_str, name_width, size_width, time_width) =
-        FileEntry::cached_fields(&cha, &file_name);
-    let category = compute_category(&cha, &file_name);
-
-    let sanitized = sanitize_name(&file_name);
-    FileEntry {
-        name: file_name,
+    FileEntry::new(
+        file_name,
         path,
         cha,
-        owner,
-        group,
-        selected: false,
-        mime_type: None,
-        time_str,
-        size_str,
-        name_width,
-        size_width,
-        time_width,
-        category,
-        sanitized_name: sanitized,
-    }
+        owner.as_ref(),
+        group.as_ref(),
+        false,
+        None,
+    )
 }
 
 pub fn ensure_path_index(panel: &mut PanelState) {
@@ -262,25 +250,15 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             })
             .unwrap_or_default();
         let dummy_cha = Cha::dummy_dir();
-        let (time_str, size_str, name_width, size_width, time_width) =
-            FileEntry::cached_fields(&dummy_cha, "..");
-        let category = compute_category(&dummy_cha, "..");
-        entries.push(FileEntry {
-            name: "..".to_string(),
-            path: parent_path.to_path_buf(),
-            cha: dummy_cha,
-            owner,
-            group,
-            selected: false,
-            mime_type: None,
-            time_str,
-            size_str,
-            name_width,
-            size_width,
-            time_width,
-            category,
-            sanitized_name: None,
-        });
+        entries.push(FileEntry::new(
+            "..".to_string(),
+            parent_path.to_path_buf(),
+            dummy_cha,
+            owner.as_ref(),
+            group.as_ref(),
+            false,
+            None,
+        ));
     }
 
     // read_dir is intentionally sequential. Parallel iteration via rayon
@@ -395,39 +373,35 @@ pub fn is_executable(_mode: u32) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::app::types::FileEntry as CanonicalFileEntry;
+    use crate::app::types::format_size;
     use std::fs::{self, File};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::TempDir;
 
     fn test_entry(name: &str, selected: bool) -> FileEntry {
-        FileEntry::builder()
-            .name(name)
+        use crate::app::types::test_helpers::TestEntry;
+        let mut e = TestEntry::new(name)
             .path(std::env::temp_dir().join(name))
-            .size(10)
-            .modified(SystemTime::now())
-            .created(SystemTime::now())
-            .is_hidden(name.starts_with('.'))
+            .file(10)
             .owner("user")
             .group("group")
-            .selected(selected)
-            .build()
-            .expect("valid test entry")
+            .modified(SystemTime::now())
+            .created(SystemTime::now());
+        if selected {
+            e = e.selected();
+        }
+        e.build()
     }
 
     fn parent_entry() -> FileEntry {
-        FileEntry::builder()
-            .name("..")
+        use crate::app::types::test_helpers::TestEntry;
+        TestEntry::new("..")
             .path(std::env::temp_dir())
-            .is_dir(true)
-            .is_executable(true)
-            .modified(SystemTime::now())
             .permissions(0o755)
+            .modified(SystemTime::now())
             .build()
-            .expect("valid test entry")
     }
 
     fn test_panel(entries: Vec<FileEntry>) -> PanelState {
@@ -438,90 +412,32 @@ mod tests {
 
     #[test]
     fn test_format_size_zero() {
-        let entry = CanonicalFileEntry::builder()
-            .name("test")
-            .path(PathBuf::from("test"))
-            .size(0)
-            .modified(SystemTime::now())
-            .owner("user")
-            .group("group")
-            .build()
-            .expect("valid test entry");
-        assert_eq!(entry.display_size(), "   0 B");
+        assert_eq!(FileEntry::format_size(0), "   0 B");
     }
 
     #[test]
     fn test_format_size_bytes() {
-        let entry = CanonicalFileEntry::builder()
-            .name("test")
-            .path(PathBuf::from("test"))
-            .size(500)
-            .modified(SystemTime::now())
-            .owner("user")
-            .group("group")
-            .build()
-            .expect("valid test entry");
-        assert_eq!(entry.display_size(), " 500 B");
+        assert_eq!(FileEntry::format_size(500), " 500 B");
     }
 
     #[test]
     fn test_format_size_kilobytes() {
-        let entry = CanonicalFileEntry::builder()
-            .name("test")
-            .path(PathBuf::from("test"))
-            .size(1536)
-            .modified(SystemTime::now())
-            .owner("user")
-            .group("group")
-            .build()
-            .expect("valid test entry");
-        let result = entry.display_size();
-        assert!(result.contains("KB"));
+        assert!(format_size(1536).contains("KB"));
     }
 
     #[test]
     fn test_format_size_megabytes() {
-        let entry = CanonicalFileEntry::builder()
-            .name("test")
-            .path(PathBuf::from("test"))
-            .size(1024 * 1024)
-            .modified(SystemTime::now())
-            .owner("user")
-            .group("group")
-            .build()
-            .expect("valid test entry");
-        let result = entry.display_size();
-        assert!(result.contains("MB"));
+        assert!(format_size(1024 * 1024).contains("MB"));
     }
 
     #[test]
     fn test_format_size_gigabytes() {
-        let entry = CanonicalFileEntry::builder()
-            .name("test")
-            .path(PathBuf::from("test"))
-            .size(1024 * 1024 * 1024)
-            .modified(SystemTime::now())
-            .owner("user")
-            .group("group")
-            .build()
-            .expect("valid test entry");
-        let result = entry.display_size();
-        assert!(result.contains("GB"));
+        assert!(format_size(1024 * 1024 * 1024).contains("GB"));
     }
 
     #[test]
     fn test_format_size_terabytes() {
-        let entry = CanonicalFileEntry::builder()
-            .name("test")
-            .path(PathBuf::from("test"))
-            .size(1024u64.pow(4))
-            .modified(SystemTime::now())
-            .owner("user")
-            .group("group")
-            .build()
-            .expect("valid test entry");
-        let result = entry.display_size();
-        assert!(result.contains("TB"));
+        assert!(format_size(1024u64.pow(4)).contains("TB"));
     }
 
     #[test]

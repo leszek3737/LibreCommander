@@ -381,8 +381,9 @@ impl CompiledPattern {
     }
 }
 
-/// Convenience one-shot: compile `pattern` and test `name` against it.
-pub fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {
+/// Convenience one-shot for tests: compile `pattern` and test `name` against it.
+#[cfg(test)]
+fn matches_pattern(name: &str, pattern: &str, case_sensitive: bool) -> bool {
     let compiled = CompiledPattern::new(pattern, case_sensitive);
     compiled.matches(name)
 }

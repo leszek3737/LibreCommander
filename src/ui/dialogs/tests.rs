@@ -187,12 +187,13 @@ fn overwrite_dialog_empty_files_returns_early() {
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
     terminal
         .draw(|f| {
-            render_dialog(
+            render_dialog_with_colors(
                 f,
                 &DialogKind::OverwriteConfirm {
                     selection: 0,
                     files: Cow::Borrowed(&[]),
                 },
+                &DEFAULT_COLORS,
             );
         })
         .unwrap();
@@ -214,12 +215,13 @@ fn overwrite_dialog_empty_files_returns_early() {
     let mut terminal2 = Terminal::new(TestBackend::new(40, 12)).unwrap();
     terminal2
         .draw(|f| {
-            render_dialog(
+            render_dialog_with_colors(
                 f,
                 &DialogKind::OverwriteConfirm {
                     selection: 0,
                     files: Cow::Borrowed(files.as_slice()),
                 },
+                &DEFAULT_COLORS,
             );
         })
         .unwrap();
@@ -240,7 +242,16 @@ fn list_picker_keeps_selected_visible() {
     let selected = items.len() - 1;
 
     terminal
-        .draw(|f| render_list_picker(f, "Pick", &items, selected, "hint"))
+        .draw(|f| {
+            render_list_picker_with_colors(
+                f,
+                "Pick",
+                &items,
+                selected,
+                "hint",
+                &crate::ui::theme::ColorPalette::default(),
+            )
+        })
         .unwrap();
 
     // Mirror the picker geometry (centered_rect + bordered block + vertical

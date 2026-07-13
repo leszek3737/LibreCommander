@@ -21,8 +21,7 @@ pub use compare::{CompareReport, apply_compare_to_panels, compare_entries};
 pub use file_ops::chmod;
 pub use file_ops::{create_directory, rename_entry};
 pub use search::{
-    CompiledPattern, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
-    search_content_with_diagnostics, search_content_with_diagnostics_cancellable, search_files,
-    search_files_with_diagnostics, search_files_with_diagnostics_cancellable,
+    CompiledPattern, SearchError, SearchErrorKind, SearchOutcome, TruncationReason, search_content,
+    search_files,
 };
 pub use sorting::{cmp_ignore_case, cycle_sort_mode, sort_entries};

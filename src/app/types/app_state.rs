@@ -171,12 +171,6 @@ impl AppState {
         self.panel_mut(which)
     }
 
-    // --- Core invariant accessors -------------------------------------------
-    // Added incrementally (highest-risk migration): callers still touch the
-    // `pub` core fields directly today. New code should prefer these so the
-    // invariants live in one place; the fields can be made private in a later
-    // wave once callers have moved over.
-
     /// Switch keyboard focus to an explicit panel.
     pub fn set_active_panel(&mut self, panel: ActivePanel) {
         self.active_panel = panel;
@@ -185,16 +179,6 @@ impl AppState {
     /// Toggle keyboard focus between the left and right panel.
     pub fn toggle_active_panel(&mut self) {
         self.active_panel = self.active_panel.toggle();
-    }
-
-    pub fn mode(&self) -> &AppMode {
-        &self.mode
-    }
-
-    /// Set the current mode. Centralized so mode-transition invariants can be
-    /// enforced here later (e.g. clearing per-mode scratch state).
-    pub fn set_mode(&mut self, mode: AppMode) {
-        self.mode = mode;
     }
 
     pub fn should_quit(&self) -> bool {
@@ -277,7 +261,7 @@ impl AppState {
         self.input.command_line.clear();
         self.input.history_index = None;
         self.prev_mode = None;
-        self.set_mode(AppMode::CommandLine);
+        self.mode = AppMode::CommandLine;
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {

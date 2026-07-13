@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use chrono::{DateTime, Local};
 use unicode_width::UnicodeWidthStr;
 
-use crate::fs::cha::{Cha, ChaKind, ChaMode};
+use crate::fs::cha::Cha;
 
 /// Strip C0 controls / DEL from filenames for TUI display.
 ///
@@ -38,44 +38,7 @@ pub(crate) fn sanitize_name(name: &str) -> Option<String> {
     }
 }
 
-const MODE_FILE: u32 = 0o100000;
-const MODE_DIR: u32 = 0o040000;
-const MODE_SYMLINK: u32 = 0o120000;
-
-const MODE_TYPE_MASK: u32 = 0o170000;
-
-const DEFAULT_FILE_MODE: u32 = 0o100644;
 const BYTES_PER_UNIT: f64 = 1024.0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileSize(pub u64);
-
-impl std::fmt::Display for FileSize {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let size = self.0;
-        let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
-        let mut size_f = size as f64;
-        let mut unit_idx = 0;
-        while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
-            size_f /= BYTES_PER_UNIT;
-            unit_idx += 1;
-        }
-        if unit_idx > 0 {
-            size_f = (size_f * 10.0).round() / 10.0;
-            // Rounding can push the value to at most exactly BYTES_PER_UNIT
-            // (e.g. 1023.95 -> 1024.0), so a single extra step is sufficient.
-            if size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
-                size_f /= BYTES_PER_UNIT;
-                unit_idx += 1;
-            }
-        }
-        if unit_idx == 0 {
-            write!(f, "{} {}", size, units[unit_idx])
-        } else {
-            write!(f, "{:.1} {}", size_f, units[unit_idx])
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileCategory {
@@ -94,13 +57,28 @@ pub enum FileCategory {
 }
 
 pub fn format_size(size: u64) -> String {
-    FileSize(size).to_string()
+    let units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+    let mut size_f = size as f64;
+    let mut unit_idx = 0;
+    while size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
+        size_f /= BYTES_PER_UNIT;
+        unit_idx += 1;
+    }
+    if unit_idx > 0 {
+        size_f = (size_f * 10.0).round() / 10.0;
+        // Rounding can push the value to at most exactly BYTES_PER_UNIT
+        // (e.g. 1023.95 -> 1024.0), so a single extra step is sufficient.
+        if size_f >= BYTES_PER_UNIT && unit_idx < units.len() - 1 {
+            size_f /= BYTES_PER_UNIT;
+            unit_idx += 1;
+        }
+    }
+    if unit_idx == 0 {
+        format!("{} {}", size, units[unit_idx])
+    } else {
+        format!("{:.1} {}", size_f, units[unit_idx])
+    }
 }
-
-// PR-07 WS-B: the trivial free `format_permissions` wrapper was removed.
-// Callers must call `FileEntry::display_permissions_raw(mode)` directly.
-// Wave 2 migrates `ui/panels/mod.rs`, `fs/reader.rs`, and the
-// `crate::app::types::mod.rs` re-export accordingly.
 
 pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
     let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -121,16 +99,6 @@ pub fn compute_category(cha: &Cha, name: &str) -> FileCategory {
     crate::app::file_type::category(name, cha.is_dir(), cha.is_executable(), cha.is_link())
 }
 
-/// Interns a string into an `Arc<str>`.
-///
-/// Taking `impl AsRef<str>` and building the `Arc` from the `&str` performs a
-/// single allocation here (the `Arc` buffer). Compared to a `&str` -> `String`
-/// -> `Arc` chain it avoids an intermediate owned `String`; when the caller
-/// already owns a `String`, that buffer is simply dropped after the copy.
-fn intern_str(value: impl AsRef<str>) -> Arc<str> {
-    Arc::from(value.as_ref())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
     pub name: String,
@@ -149,135 +117,29 @@ pub struct FileEntry {
     pub sanitized_name: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct FileEntryBuilder {
-    name: String,
-    path: PathBuf,
-    cha: Cha,
-    owner: Arc<str>,
-    group: Arc<str>,
-    selected: bool,
-    mime_type: Option<String>,
-}
-
-/// Error returned by [`FileEntryBuilder::build`] when the accumulated
-/// configuration cannot produce a valid [`FileEntry`].
-///
-/// Validation is deferred to `build` so that chaining setters never panics on
-/// partially-built input; the public builder therefore reports misuse as a
-/// recoverable error instead of aborting the process.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BuildError {
-    /// `name` was never set, or was set to an empty string. Every directory
-    /// entry must carry a non-empty file name.
-    EmptyName,
-}
-
-impl std::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyName => write!(f, "FileEntry name must not be empty"),
-        }
-    }
-}
-
-impl std::error::Error for BuildError {}
-
-impl FileEntryBuilder {
-    pub fn name(mut self, v: impl Into<String>) -> Self {
-        self.name = v.into();
-        self
-    }
-    pub fn path(mut self, v: impl Into<PathBuf>) -> Self {
-        self.path = v.into();
-        self
-    }
-    pub fn cha(mut self, v: Cha) -> Self {
-        self.cha = v;
-        self
-    }
-    /// Applies file-type bits while preserving permission bits and clearing
-    /// resolved-symlink-target flags. When `enable` is false and the entry is
-    /// `currently` of this type, it is demoted back to a regular file.
-    fn set_type(mut self, enable: bool, type_bits: u32, currently: bool) -> Self {
-        let perms = self.cha.mode.permissions();
-        if enable || currently {
-            self.cha.mode = ChaMode::new(if enable { type_bits } else { MODE_FILE } | perms);
-            self.cha.kind.dir_target = false;
-            self.cha.kind.follow = false;
-        }
-        self
-    }
-    pub fn is_dir(self, v: bool) -> Self {
-        let currently = self.cha.is_dir();
-        self.set_type(v, MODE_DIR, currently)
-    }
-    pub fn is_symlink(self, v: bool) -> Self {
-        let currently = self.cha.is_link();
-        self.set_type(v, MODE_SYMLINK, currently)
-    }
-    pub fn is_executable(mut self, v: bool) -> Self {
-        self.cha.set_executable(v);
-        self
-    }
-    pub fn size(mut self, v: u64) -> Self {
-        self.cha.len = v;
-        self
-    }
-    pub fn modified(mut self, v: SystemTime) -> Self {
-        self.cha.mtime = Some(v);
-        self
-    }
-    pub fn created(mut self, v: SystemTime) -> Self {
-        self.cha.btime = Some(v);
-        self
-    }
-    pub fn permissions(mut self, v: u32) -> Self {
-        let file_type = self.cha.mode.mode_u32() & MODE_TYPE_MASK;
-        self.cha.mode = ChaMode::new(file_type | (v & 0o7777));
-        self
-    }
-    pub fn owner(mut self, v: impl AsRef<str>) -> Self {
-        self.owner = intern_str(v);
-        self
-    }
-    pub fn group(mut self, v: impl AsRef<str>) -> Self {
-        self.group = intern_str(v);
-        self
-    }
-    pub fn selected(mut self, v: bool) -> Self {
-        self.selected = v;
-        self
-    }
-    pub fn is_hidden(mut self, v: bool) -> Self {
-        self.cha.set_hidden(v);
-        self
-    }
-    pub fn mime_type(mut self, v: Option<String>) -> Self {
-        self.mime_type = v;
-        self
-    }
-    /// Finalizes the builder into a [`FileEntry`].
-    ///
-    /// Returns [`BuildError::EmptyName`] if `name` was never set (or set to an
-    /// empty string) instead of panicking, so callers control how invalid input
-    /// is handled.
-    pub fn build(self) -> Result<FileEntry, BuildError> {
-        if self.name.is_empty() {
-            return Err(BuildError::EmptyName);
-        }
+impl FileEntry {
+    /// Build a fully cached listing entry from core fields.
+    pub fn new(
+        name: String,
+        path: PathBuf,
+        cha: Cha,
+        owner: impl AsRef<str>,
+        group: impl AsRef<str>,
+        selected: bool,
+        mime_type: Option<String>,
+    ) -> Self {
         let (time_str, size_str, name_width, size_width, time_width) =
-            FileEntry::cached_fields(&self.cha, &self.name);
-        let category = compute_category(&self.cha, &self.name);
-        let sanitized_name = sanitize_name(&self.name);
-        Ok(FileEntry {
-            name: self.name,
-            path: self.path,
-            cha: self.cha,
-            owner: self.owner,
-            group: self.group,
-            selected: self.selected,
-            mime_type: self.mime_type,
+            Self::cached_fields(&cha, &name);
+        let category = compute_category(&cha, &name);
+        let sanitized_name = sanitize_name(&name);
+        Self {
+            name,
+            path,
+            cha,
+            owner: Arc::from(owner.as_ref()),
+            group: Arc::from(group.as_ref()),
+            selected,
+            mime_type,
             time_str,
             size_str,
             name_width,
@@ -285,16 +147,9 @@ impl FileEntryBuilder {
             time_width,
             category,
             sanitized_name,
-        })
+        }
     }
-}
 
-impl FileEntry {
-    // SCOPE-OUT (PR-07 WS-B): the precomputed display fields below
-    // (`time_str`, `size_str`, `*_width`, `category`, `sanitized_name`) are an
-    // eagerly materialized cache stored per entry. A field-cache/storage
-    // redesign (e.g. lazy or columnar storage) is intentionally deferred to a
-    // later PR and is NOT part of this change.
     pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize, usize, usize) {
         let time_str = format_time(cha.mtime.unwrap_or(std::time::UNIX_EPOCH));
         let size_str = if cha.is_dir() {
@@ -306,30 +161,6 @@ impl FileEntry {
         let size_width = UnicodeWidthStr::width(size_str.as_str());
         let time_width = UnicodeWidthStr::width(time_str.as_str());
         (time_str, size_str, name_width, size_width, time_width)
-    }
-
-    pub fn builder() -> FileEntryBuilder {
-        FileEntryBuilder {
-            name: String::new(),
-            path: PathBuf::new(),
-            cha: Cha {
-                kind: ChaKind::default(),
-                mode: ChaMode::new(DEFAULT_FILE_MODE),
-                len: 0,
-                mtime: None,
-                btime: None,
-                ctime: None,
-                atime: None,
-                uid: 0,
-                gid: 0,
-                dev: 0,
-                nlink: 0,
-            },
-            owner: Arc::from(""),
-            group: Arc::from(""),
-            selected: false,
-            mime_type: None,
-        }
     }
 
     pub fn size(&self) -> u64 {
@@ -385,9 +216,7 @@ impl FileEntry {
     }
 
     pub fn format_size(size: u64) -> String {
-        // Right-align to width 6. The padding must be applied to the formatted
-        // `String` (via the free `format_size`): `FileSize`'s Display impl writes
-        // its parts directly and ignores the formatter's width/fill flags.
+        // Right-align to width 6 for the properties dialog.
         format!("{:>6}", format_size(size))
     }
 
