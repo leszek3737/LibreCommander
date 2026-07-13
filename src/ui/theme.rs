@@ -13,27 +13,17 @@ pub enum IconTheme {
 }
 
 impl IconTheme {
-    fn from_config_str(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "emoji" => Some(Self::Emoji),
-            "ascii" => Some(Self::Ascii),
-            "nerdfont" | "nerd_font" | "nerd-font" => Some(Self::NerdFont),
-            _ => None,
-        }
-    }
-
-    /// Resolve an icon theme from a raw TOML value, falling back to the default
-    /// (`Emoji`) and logging when the value is missing/non-string or names an
-    /// unknown theme. Shared by the `Deserialize` impl and the borrowed
-    /// `[theme]` table reader so both code paths behave identically.
+    /// Parse config string / TOML value; unknown → `Emoji`.
     fn from_value(value: &toml::Value) -> Self {
         let Some(s) = value.as_str() else {
             crate::debug_log!("config: non-string value for icon_theme, using emoji");
             return Self::Emoji;
         };
-        match Self::from_config_str(s) {
-            Some(theme) => theme,
-            None => {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "emoji" => Self::Emoji,
+            "ascii" => Self::Ascii,
+            "nerdfont" | "nerd_font" | "nerd-font" => Self::NerdFont,
+            _ => {
                 crate::debug_log!("config: invalid value for icon_theme, using emoji");
                 Self::Emoji
             }
@@ -46,8 +36,7 @@ impl<'de> Deserialize<'de> for IconTheme {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = toml::Value::deserialize(deserializer)?;
-        Ok(Self::from_value(&value))
+        Ok(Self::from_value(&toml::Value::deserialize(deserializer)?))
     }
 }
 

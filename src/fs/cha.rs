@@ -68,14 +68,12 @@ cfg_trivial!(fn metadata_gid(meta: &fs::Metadata) -> u32, gid);
 cfg_trivial!(fn metadata_dev(meta: &fs::Metadata) -> u64, dev);
 cfg_trivial!(fn metadata_nlink(meta: &fs::Metadata) -> u64, nlink);
 
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct ChaKind: u8 {
-        const FOLLOW = 0b0000_0001;
-        const HIDDEN = 0b0000_0010;
-        // Bit 3 unused. Bit 4 = DIR_TARGET. Bits 5-7 reserved for future flags.
-        const DIR_TARGET = 0b0001_0000;
-    }
+/// Symlink/hidden flags for a [`Cha`]. Plain bools — three flags do not need bitflags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ChaKind {
+    pub follow: bool,
+    pub hidden: bool,
+    pub dir_target: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,12 +181,6 @@ pub struct Cha {
     pub kind: ChaKind,
     pub mode: ChaMode,
     pub len: u64,
-    // Time-API duality: these fields stay `pub` so existing field-readers and
-    // struct-literal constructors keep compiling, but the **canonical read API is
-    // the getters** (`mtime()`/`btime()`/`ctime()`/`atime()`), which simply
-    // return these fields. Prefer the getters for reads. Full convergence to a
-    // single access path is a cross-file follow-up (callers in `ops/sorting.rs`
-    // still read the field directly).
     pub mtime: Option<SystemTime>,
     pub btime: Option<SystemTime>,
     pub ctime: Option<SystemTime>,
@@ -219,7 +211,7 @@ impl Cha {
     }
 
     pub fn new(meta: &fs::Metadata) -> Self {
-        Self::from_meta_base(meta, ChaKind::empty(), ChaMode::new(file_mode(meta)))
+        Self::from_meta_base(meta, ChaKind::default(), ChaMode::new(file_mode(meta)))
     }
 
     pub fn from_link_metadata(
@@ -233,17 +225,21 @@ impl Cha {
         if let Some(target) = target_meta {
             // Resolved link: use the *target's* metadata for size/times/ownership
             // but keep the symlink mode so the UI shows it as a link.
-            let mut kind = ChaKind::FOLLOW;
-            if target.is_dir() {
-                kind.insert(ChaKind::DIR_TARGET);
-            }
-            Self::from_meta_base(target, kind, link_mode)
+            Self::from_meta_base(
+                target,
+                ChaKind {
+                    follow: true,
+                    dir_target: target.is_dir(),
+                    ..ChaKind::default()
+                },
+                link_mode,
+            )
         } else {
             // Orphan/broken symlink: fall back to link's own metadata and strip
             // execute bits — we can't know the target's true permissions.
             Self::from_meta_base(
                 link_meta,
-                ChaKind::empty(),
+                ChaKind::default(),
                 ChaMode::new(link_mode.mode_u32() & !0o111),
             )
         }
@@ -251,7 +247,7 @@ impl Cha {
 
     pub fn regular_file(size: u64) -> Self {
         Self {
-            kind: ChaKind::empty(),
+            kind: ChaKind::default(),
             mode: ChaMode::new(0o100644),
             len: size,
             mtime: Some(UNIX_EPOCH),
@@ -267,7 +263,7 @@ impl Cha {
 
     pub fn dummy_dir() -> Self {
         Self {
-            kind: ChaKind::empty(),
+            kind: ChaKind::default(),
             mode: ChaMode::new(0o040755),
             len: 0,
             mtime: Some(DIR_SENTINEL_MTIME),
@@ -287,7 +283,7 @@ impl Cha {
     /// from mode bits alone — so this is intentionally *not* a bare passthrough.
     #[inline]
     pub fn is_dir(&self) -> bool {
-        self.mode.is_dir() || (self.mode.is_link() && self.kind.contains(ChaKind::DIR_TARGET))
+        self.mode.is_dir() || (self.mode.is_link() && self.kind.dir_target)
     }
 
     /// Delegates to [`ChaMode::is_file`] (the canonical type predicate).
@@ -324,12 +320,12 @@ impl Cha {
 
     #[inline]
     pub fn is_orphan(&self) -> bool {
-        self.is_link() && !self.kind.contains(ChaKind::FOLLOW)
+        self.is_link() && !self.kind.follow
     }
 
     #[inline]
     pub fn is_hidden(&self) -> bool {
-        self.kind.contains(ChaKind::HIDDEN)
+        self.kind.hidden
     }
 
     #[inline]
@@ -340,39 +336,6 @@ impl Cha {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
-    }
-
-    // Canonical read API for timestamps. These delegate to the same-named public
-    // fields; reads should go through these getters (the field is kept public only
-    // for backwards compatibility / struct-literal construction).
-    #[inline]
-    pub fn mtime(&self) -> Option<SystemTime> {
-        self.mtime
-    }
-
-    #[inline]
-    pub fn btime(&self) -> Option<SystemTime> {
-        self.btime
-    }
-
-    #[inline]
-    pub fn atime(&self) -> Option<SystemTime> {
-        self.atime
-    }
-
-    #[inline]
-    pub fn ctime(&self) -> Option<SystemTime> {
-        self.ctime
-    }
-
-    #[inline]
-    pub fn dev(&self) -> u64 {
-        self.dev
-    }
-
-    #[inline]
-    pub fn nlink(&self) -> u64 {
-        self.nlink
     }
 
     /// Compares file metadata for change detection (cache invalidation).
@@ -395,7 +358,7 @@ impl Cha {
     }
 
     pub fn set_hidden(&mut self, hidden: bool) {
-        self.kind.set(ChaKind::HIDDEN, hidden);
+        self.kind.hidden = hidden;
     }
 
     pub fn set_executable(&mut self, executable: bool) {
@@ -500,12 +463,12 @@ mod tests {
 
     #[test]
     fn cha_kind_flags() {
-        let mut kind = ChaKind::empty();
-        assert!(!kind.contains(ChaKind::HIDDEN));
-        kind.insert(ChaKind::HIDDEN);
-        assert!(kind.contains(ChaKind::HIDDEN));
-        kind.insert(ChaKind::FOLLOW);
-        assert!(kind.contains(ChaKind::FOLLOW | ChaKind::HIDDEN));
+        let mut kind = ChaKind::default();
+        assert!(!kind.hidden);
+        kind.hidden = true;
+        assert!(kind.hidden);
+        kind.follow = true;
+        assert!(kind.follow && kind.hidden);
     }
 
     #[test]
@@ -524,7 +487,7 @@ mod tests {
         assert!(cha.is_link());
         assert!(cha.is_orphan());
 
-        cha.kind.insert(ChaKind::FOLLOW);
+        cha.kind.follow = true;
         assert!(!cha.is_orphan());
     }
 
@@ -573,7 +536,7 @@ mod tests {
         let cha = Cha::from_link_metadata(&link_meta, Some(&target_meta));
 
         assert!(cha.is_link());
-        assert!(cha.kind.contains(ChaKind::FOLLOW));
+        assert!(cha.kind.follow);
         assert!(!cha.is_orphan());
         assert_eq!(cha.len, 5);
         assert_eq!(cha.mode.permissions(), link_meta.mode() & 0o7777);
@@ -591,7 +554,7 @@ mod tests {
 
         assert!(cha.is_link());
         assert!(cha.is_orphan());
-        assert!(!cha.kind.contains(ChaKind::FOLLOW));
+        assert!(!cha.kind.follow);
         assert!(!cha.is_executable());
         assert_eq!(cha.mode.permissions(), link_meta.mode() & 0o7777 & !0o111);
     }
@@ -649,9 +612,9 @@ mod tests {
     #[test]
     fn cha_accessors_for_dead_fields() {
         let cha = Cha::dummy_dir();
-        assert_eq!(cha.dev(), 0);
-        assert_eq!(cha.nlink(), 0);
-        assert!(cha.atime().is_none());
+        assert_eq!(cha.dev, 0);
+        assert_eq!(cha.nlink, 0);
+        assert!(cha.atime.is_none());
     }
 
     #[test]
@@ -669,8 +632,8 @@ mod tests {
 
         assert!(cha.is_dir());
         assert!(cha.is_link());
-        assert!(cha.kind.contains(ChaKind::DIR_TARGET));
-        assert!(cha.kind.contains(ChaKind::FOLLOW));
+        assert!(cha.kind.dir_target);
+        assert!(cha.kind.follow);
     }
 
     #[test]
@@ -688,7 +651,7 @@ mod tests {
 
         assert!(!cha.is_dir());
         assert!(cha.is_link());
-        assert!(!cha.kind.contains(ChaKind::DIR_TARGET));
+        assert!(!cha.kind.dir_target);
     }
 
     #[test]

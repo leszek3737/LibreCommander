@@ -22,7 +22,6 @@ fn cursor_line(prefix: &str, text: &str, byte_pos: usize) -> String {
 use lc::{app, ui};
 
 use app::types::{ActivePanel, AppMode, AppState, PickerKind, ViewMode};
-use smallvec::SmallVec;
 use std::borrow::Cow;
 use ui::theme::{ColorPalette, Theme};
 use ui::{dialogs, panels, viewer};
@@ -212,10 +211,9 @@ fn render_list_picker_overlay(
     let selected = state.ui.picker_selected;
     match kind {
         PickerKind::History => {
-            // command_history is mutable state stored newest-last in a VecDeque,
-            // so a reversed contiguous slice doesn't exist; we materialize per
-            // frame. SmallVec keeps typical histories off the heap (no alloc).
-            let items: SmallVec<[&str; 32]> = state
+            // command_history is newest-last in a VecDeque; reverse materializes
+            // per frame (no contiguous reversed slice).
+            let items: Vec<&str> = state
                 .input
                 .command_history
                 .iter()

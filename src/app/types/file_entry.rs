@@ -8,82 +8,26 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::fs::cha::{Cha, ChaKind, ChaMode};
 
+/// Strip C0 controls / DEL from filenames for TUI display.
+///
+/// - `\n` → ⏎, `\t` → two spaces, `\r` dropped, other C0/DEL → ·
+/// - **Not** a full ANSI CSI/OSC stripper: `ESC` becomes · and the following
+///   payload (`[31m…`) stays visible. Filenames with real escape sequences are
+///   rare; a full state machine was removed deliberately (ponytail audit).
 pub(crate) fn sanitize_for_display(s: &str) -> Cow<'_, str> {
     if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) {
         return Cow::Borrowed(s);
     }
-
     let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            0x1B => {
-                if i + 1 < bytes.len() {
-                    match bytes[i + 1] {
-                        b'[' => {
-                            let mut j = i + 2;
-                            while j < bytes.len() {
-                                let b = bytes[j];
-                                if (b'@'..=b'~').contains(&b) {
-                                    j += 1;
-                                    break;
-                                }
-                                if b <= 0x1F {
-                                    break;
-                                }
-                                j += 1;
-                            }
-                            i = j;
-                            continue;
-                        }
-                        b']' | b'P' | b'_' | b'^' => {
-                            let mut j = i + 2;
-                            while j < bytes.len() {
-                                if bytes[j] == 0x07 {
-                                    j += 1;
-                                    break;
-                                }
-                                if bytes[j] == 0x1B && j + 1 < bytes.len() && bytes[j + 1] == b'\\'
-                                {
-                                    j += 2;
-                                    break;
-                                }
-                                j += 1;
-                            }
-                            i = j;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-                result.push('\u{00b7}');
-                i += 1;
-            }
-            b'\n' => {
-                result.push('\u{23ce}');
-                i += 1;
-            }
-            b'\r' => {
-                i += 1;
-            }
-            b'\t' => {
-                result.push_str("  ");
-                i += 1;
-            }
-            0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1A | 0x1C..=0x1F | 0x7F => {
-                result.push('\u{00b7}');
-                i += 1;
-            }
-            _ => {
-                let ch = s[i..].chars().next().unwrap_or('\u{fffd}');
-                result.push(ch);
-                i += ch.len_utf8();
-            }
+    for ch in s.chars() {
+        match ch {
+            '\n' => result.push('\u{23ce}'),
+            '\r' => {}
+            '\t' => result.push_str("  "),
+            c if (c as u32) <= 0x1F || c == '\u{7F}' => result.push('\u{00b7}'),
+            c => result.push(c),
         }
     }
-
     Cow::Owned(result)
 }
 
@@ -257,12 +201,10 @@ impl FileEntryBuilder {
     /// `currently` of this type, it is demoted back to a regular file.
     fn set_type(mut self, enable: bool, type_bits: u32, currently: bool) -> Self {
         let perms = self.cha.mode.permissions();
-        if enable {
-            self.cha.mode = ChaMode::new(type_bits | perms);
-            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
-        } else if currently {
-            self.cha.mode = ChaMode::new(MODE_FILE | perms);
-            self.cha.kind.remove(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
+        if enable || currently {
+            self.cha.mode = ChaMode::new(if enable { type_bits } else { MODE_FILE } | perms);
+            self.cha.kind.dir_target = false;
+            self.cha.kind.follow = false;
         }
         self
     }
@@ -354,7 +296,7 @@ impl FileEntry {
     // redesign (e.g. lazy or columnar storage) is intentionally deferred to a
     // later PR and is NOT part of this change.
     pub fn cached_fields(cha: &Cha, name: &str) -> (String, String, usize, usize, usize) {
-        let time_str = format_time(cha.mtime().unwrap_or(std::time::UNIX_EPOCH));
+        let time_str = format_time(cha.mtime.unwrap_or(std::time::UNIX_EPOCH));
         let size_str = if cha.is_dir() {
             "     <DIR>".to_string()
         } else {
@@ -371,7 +313,7 @@ impl FileEntry {
             name: String::new(),
             path: PathBuf::new(),
             cha: Cha {
-                kind: ChaKind::empty(),
+                kind: ChaKind::default(),
                 mode: ChaMode::new(DEFAULT_FILE_MODE),
                 len: 0,
                 mtime: None,
@@ -395,11 +337,11 @@ impl FileEntry {
     }
 
     pub fn mtime(&self) -> SystemTime {
-        self.cha.mtime().unwrap_or(std::time::UNIX_EPOCH)
+        self.cha.mtime.unwrap_or(std::time::UNIX_EPOCH)
     }
 
     pub fn btime(&self) -> SystemTime {
-        self.cha.btime().unwrap_or(std::time::UNIX_EPOCH)
+        self.cha.btime.unwrap_or(std::time::UNIX_EPOCH)
     }
 
     pub fn mode_bits(&self) -> u32 {

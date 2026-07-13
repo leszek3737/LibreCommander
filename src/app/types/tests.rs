@@ -9,7 +9,6 @@ use super::test_helpers::TestEntry;
 use super::text_input::TextInput;
 
 use crate::app::types::app_state::AppState;
-use crate::fs::cha::ChaKind;
 
 fn test_path(name: impl AsRef<std::path::Path>) -> PathBuf {
     PathBuf::from("/lc-test-fixtures").join(name)
@@ -762,9 +761,10 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .build()
         .expect("valid test entry");
     let mut cha = dir_entry.cha;
-    cha.kind.insert(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
-    assert!(cha.kind.contains(ChaKind::DIR_TARGET));
-    assert!(cha.kind.contains(ChaKind::FOLLOW));
+    cha.kind.dir_target = true;
+    cha.kind.follow = true;
+    assert!(cha.kind.dir_target);
+    assert!(cha.kind.follow);
 
     let cleared = FileEntry::builder()
         .name("d")
@@ -773,8 +773,8 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .is_dir(false)
         .build()
         .expect("valid test entry");
-    assert!(!cleared.cha.kind.contains(ChaKind::DIR_TARGET));
-    assert!(!cleared.cha.kind.contains(ChaKind::FOLLOW));
+    assert!(!cleared.cha.kind.dir_target);
+    assert!(!cleared.cha.kind.follow);
 
     let link_entry = FileEntry::builder()
         .name("l")
@@ -783,9 +783,10 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .build()
         .expect("valid test entry");
     let mut cha = link_entry.cha;
-    cha.kind.insert(ChaKind::DIR_TARGET | ChaKind::FOLLOW);
-    assert!(cha.kind.contains(ChaKind::DIR_TARGET));
-    assert!(cha.kind.contains(ChaKind::FOLLOW));
+    cha.kind.dir_target = true;
+    cha.kind.follow = true;
+    assert!(cha.kind.dir_target);
+    assert!(cha.kind.follow);
 
     let cleared = FileEntry::builder()
         .name("l")
@@ -794,8 +795,8 @@ fn builder_clears_dir_target_follow_on_type_change() {
         .is_symlink(false)
         .build()
         .expect("valid test entry");
-    assert!(!cleared.cha.kind.contains(ChaKind::DIR_TARGET));
-    assert!(!cleared.cha.kind.contains(ChaKind::FOLLOW));
+    assert!(!cleared.cha.kind.dir_target);
+    assert!(!cleared.cha.kind.follow);
 }
 
 #[test]

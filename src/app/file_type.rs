@@ -110,6 +110,22 @@ const CONFIG_EXACT_NAMES: &[&str] = &[
     "Jenkinsfile",
 ];
 
+/// Dotless basenames matched case-insensitively on every platform (same set as
+/// the former `mime::dotless_config_mime` path). On Linux `CONFIG_EXACT_NAMES`
+/// alone is case-sensitive, so bare `makefile` / `dockerfile` would otherwise
+/// fall through to Other after category_from_ext stopped routing through MIME.
+const CONFIG_DOTLESS_CASEFOLD: &[&str] = &[
+    "makefile",
+    "dockerfile",
+    "containerfile",
+    "vagrantfile",
+    "rakefile",
+    "gemfile",
+    "justfile",
+    "brewfile",
+    "jenkinsfile",
+];
+
 const CONFIG_PREFIXES: &[&str] = &[".env."];
 
 const FONT_SUFFIXES: &[&str] = &[".ttf", ".otf", ".woff", ".woff2", ".eot"];
@@ -201,6 +217,9 @@ pub fn is_config(name: &str) -> bool {
     CONFIG_EXACT_NAMES
         .iter()
         .any(|&n| exact_name_match(name, n))
+        || CONFIG_DOTLESS_CASEFOLD
+            .iter()
+            .any(|&n| name.eq_ignore_ascii_case(n))
         || CONFIG_PREFIXES.iter().any(|&p| prefix_match(name, p))
         || has_any_suffix(name, CONFIG_SUFFIXES)
 }
@@ -342,6 +361,19 @@ mod tests {
         assert!(is_config("settings.jsonc"));
         assert!(is_config(".editorconfig"));
         assert!(is_config("ignore.DOCKERIGNORE"));
+    }
+
+    #[test]
+    fn test_dotless_config_casefold() {
+        assert!(is_config("makefile"));
+        assert!(is_config("Makefile"));
+        assert!(is_config("MAKEFILE"));
+        assert!(is_config("dockerfile"));
+        assert!(is_config("Dockerfile"));
+        assert_eq!(
+            category("makefile", false, false, false),
+            FileCategory::Config
+        );
     }
 
     #[test]

@@ -177,22 +177,10 @@ fn path_size_or_zero(path: &Path) -> u64 {
 /// Best-effort size computation for multiple paths.
 ///
 /// Individual failures are logged and reported as 0 so that batch progress
-/// can still proceed. The parallel and sequential variants differ only in the
-/// iterator used; the per-path logic lives in [`path_size_or_zero`].
-#[cfg(feature = "parallel")]
+/// can still proceed.
 pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
     use rayon::prelude::*;
-
     paths.par_iter().map(|p| path_size_or_zero(p)).collect()
-}
-
-/// Best-effort size computation for multiple paths.
-///
-/// See the `parallel` variant; this sequential build maps with [`Iterator`]
-/// instead of rayon. Shared per-path logic lives in [`path_size_or_zero`].
-#[cfg(not(feature = "parallel"))]
-pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    paths.iter().map(|p| path_size_or_zero(p)).collect()
 }
 
 pub(crate) fn sum_sizes(sizes: &[u64]) -> u64 {
