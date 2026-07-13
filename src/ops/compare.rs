@@ -162,25 +162,21 @@ fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
 mod tests {
     use super::*;
     use crate::app::types::FileEntry;
+    use crate::app::types::test_helpers::TestEntry;
     use std::path::PathBuf;
 
     fn entry(name: &str, size: u64) -> FileEntry {
-        FileEntry::builder()
-            .name(name)
+        TestEntry::new(name)
             .path(format!("/tmp/{name}"))
-            .size(size)
+            .file(size)
             .build()
-            .expect("valid test entry")
     }
 
     fn dir_entry(name: &str) -> FileEntry {
-        FileEntry::builder()
-            .name(name)
+        TestEntry::new(name)
             .path(format!("/tmp/{name}"))
-            .is_dir(true)
             .permissions(0o755)
             .build()
-            .expect("valid test entry")
     }
 
     fn panel_with_entries(entries: Vec<FileEntry>) -> PanelState {
@@ -220,24 +216,20 @@ mod tests {
     fn thorough_mode_matches_on_size_and_mtime() {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let left = vec![
-            FileEntry::builder()
-                .name("a.txt")
+            TestEntry::new("a.txt")
                 .path("/tmp/a.txt")
-                .size(100)
+                .file(100)
                 .modified(t)
                 .created(std::time::SystemTime::UNIX_EPOCH)
-                .build()
-                .expect("valid test entry"),
+                .build(),
         ];
         let right = vec![
-            FileEntry::builder()
-                .name("a.txt")
+            TestEntry::new("a.txt")
                 .path("/tmp/a.txt")
-                .size(100)
+                .file(100)
                 .modified(t + std::time::Duration::from_secs(3))
                 .created(std::time::SystemTime::UNIX_EPOCH)
-                .build()
-                .expect("valid test entry"),
+                .build(),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -248,13 +240,10 @@ mod tests {
     #[test]
     fn dotdot_entries_are_ignored() {
         let left = vec![
-            FileEntry::builder()
-                .name(PARENT_DIR)
+            TestEntry::new(PARENT_DIR)
                 .path("/tmp/..")
-                .is_dir(true)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .build(),
         ];
         let right = vec![];
 
@@ -280,24 +269,18 @@ mod tests {
     #[test]
     fn dirs_ignore_filesystem_size_in_size_mode() {
         let left = vec![
-            FileEntry::builder()
-                .name("src")
+            TestEntry::new("src")
                 .path("/tmp/src")
-                .is_dir(true)
-                .size(4096)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(4096)
+                .build(),
         ];
         let right = vec![
-            FileEntry::builder()
-                .name("src")
+            TestEntry::new("src")
                 .path("/tmp/src")
-                .is_dir(true)
-                .size(8192)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(8192)
+                .build(),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Size);
@@ -310,24 +293,18 @@ mod tests {
     #[test]
     fn dirs_match_in_size_mode_when_equal() {
         let left = vec![
-            FileEntry::builder()
-                .name("src")
+            TestEntry::new("src")
                 .path("/tmp/src")
-                .is_dir(true)
-                .size(4096)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(4096)
+                .build(),
         ];
         let right = vec![
-            FileEntry::builder()
-                .name("src")
+            TestEntry::new("src")
                 .path("/tmp/src")
-                .is_dir(true)
-                .size(4096)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(4096)
+                .build(),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Size);
@@ -341,26 +318,20 @@ mod tests {
     fn dirs_ignore_filesystem_size_and_mtime_in_thorough_mode() {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let left = vec![
-            FileEntry::builder()
-                .name("lib")
+            TestEntry::new("lib")
                 .path("/tmp/lib")
-                .is_dir(true)
-                .size(4096)
-                .modified(t)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(4096)
+                .modified(t)
+                .build(),
         ];
         let right = vec![
-            FileEntry::builder()
-                .name("lib")
+            TestEntry::new("lib")
                 .path("/tmp/lib")
-                .is_dir(true)
-                .size(8192)
-                .modified(t + std::time::Duration::from_secs(60))
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(8192)
+                .modified(t + std::time::Duration::from_secs(60))
+                .build(),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -374,26 +345,20 @@ mod tests {
     fn dirs_match_in_thorough_mode_when_identical() {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let left = vec![
-            FileEntry::builder()
-                .name("lib")
+            TestEntry::new("lib")
                 .path("/tmp/lib")
-                .is_dir(true)
-                .size(4096)
-                .modified(t)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(4096)
+                .modified(t)
+                .build(),
         ];
         let right = vec![
-            FileEntry::builder()
-                .name("lib")
+            TestEntry::new("lib")
                 .path("/tmp/lib")
-                .is_dir(true)
-                .size(4096)
-                .modified(t)
                 .permissions(0o755)
-                .build()
-                .expect("valid test entry"),
+                .len(4096)
+                .modified(t)
+                .build(),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -420,14 +385,12 @@ mod tests {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let left = vec![entry("a.txt", 100)];
         let right = vec![
-            FileEntry::builder()
-                .name("a.txt")
+            TestEntry::new("a.txt")
                 .path("/tmp/a.txt")
-                .size(100)
+                .file(100)
                 .modified(t)
                 .created(std::time::SystemTime::UNIX_EPOCH)
-                .build()
-                .expect("valid test entry"),
+                .build(),
         ];
 
         let report = compare_entries(&left, &right, CompareMode::Thorough);
@@ -441,14 +404,12 @@ mod tests {
     fn thorough_mtime_within_tolerance_matches() {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let make = |delta: u64| {
-            FileEntry::builder()
-                .name("a.txt")
+            TestEntry::new("a.txt")
                 .path("/tmp/a.txt")
-                .size(100)
+                .file(100)
                 .modified(t + std::time::Duration::from_secs(delta))
                 .created(std::time::SystemTime::UNIX_EPOCH)
                 .build()
-                .expect("valid test entry")
         };
         let left = vec![make(0)];
         let right = vec![make(2)];
@@ -463,14 +424,12 @@ mod tests {
     fn thorough_mtime_outside_tolerance_differs() {
         let t = std::time::SystemTime::UNIX_EPOCH;
         let make = |delta: u64| {
-            FileEntry::builder()
-                .name("a.txt")
+            TestEntry::new("a.txt")
                 .path("/tmp/a.txt")
-                .size(100)
+                .file(100)
                 .modified(t + std::time::Duration::from_secs(delta))
                 .created(std::time::SystemTime::UNIX_EPOCH)
                 .build()
-                .expect("valid test entry")
         };
         let left = vec![make(0)];
         let right = vec![make(3)];

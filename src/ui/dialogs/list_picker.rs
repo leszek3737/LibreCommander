@@ -14,22 +14,6 @@ const EMPTY_PLACEHOLDER: &str = "(empty)";
 /// Prefix drawn in front of the currently selected row.
 const HIGHLIGHT_SYMBOL: &str = "> ";
 
-/// Default-palette convenience wrapper over [`render_list_picker_with_colors`].
-///
-/// Kept as a separate public entry point because callers (e.g. tests) use the
-/// default palette while `render.rs` always passes an explicit `ColorPalette`
-/// via [`render_list_picker_with_colors`]. Both are part of the public API, so
-/// they are not collapsed into one.
-pub fn render_list_picker<T: AsRef<str>>(
-    f: &mut Frame,
-    title: &str,
-    items: &[T],
-    selected: usize,
-    hint: &str,
-) {
-    render_list_picker_with_colors(f, title, items, selected, hint, &ColorPalette::default());
-}
-
 pub fn render_list_picker_with_colors<T: AsRef<str>>(
     f: &mut Frame,
     title: &str,
@@ -107,7 +91,16 @@ mod tests {
     fn render(items: &[&str], selected: usize, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|f| render_list_picker(f, "Pick", items, selected, "hint"))
+            .draw(|f| {
+                render_list_picker_with_colors(
+                    f,
+                    "Pick",
+                    items,
+                    selected,
+                    "hint",
+                    &crate::ui::theme::ColorPalette::default(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let mut out = String::new();

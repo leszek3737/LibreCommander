@@ -4,6 +4,7 @@ use super::*;
 use crate::app::file_type::*;
 use crate::app::types::format_time;
 use crate::app::types::sanitize_for_display;
+use crate::ui::theme::{DEFAULT_COLORS, IconTheme};
 use ratatui::style::Color;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -13,19 +14,29 @@ fn test_timestamp() -> SystemTime {
 }
 
 fn entry_with(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool, size: u64) -> FileEntry {
-    FileEntry::builder()
-        .name(name)
+    use crate::app::types::test_helpers::TestEntry;
+    let mut e = TestEntry::new(name)
         .path(name)
-        .is_dir(is_dir)
-        .is_symlink(is_symlink)
-        .is_executable(is_exec)
-        .size(size)
         .modified(test_timestamp())
         .owner("user")
-        .group("group")
-        .is_hidden(name.starts_with('.'))
-        .build()
-        .expect("valid test entry")
+        .group("group");
+    if is_dir {
+        e = e.len(size);
+    } else {
+        e = e.file(size);
+    }
+    if is_symlink {
+        e = e.symlink();
+    }
+    if name.starts_with('.') {
+        e = e.hidden();
+    }
+    let mut entry = e.build();
+    if is_exec {
+        entry.cha.set_executable(true);
+        entry.category = crate::app::types::compute_category(&entry.cha, &entry.name);
+    }
+    entry
 }
 
 fn create_test_entry(name: &str, is_dir: bool, is_exec: bool, is_symlink: bool) -> FileEntry {
@@ -251,7 +262,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             case.size,
         );
         let bold = entry.is_dir() || entry.is_executable();
-        let style = get_file_color(&entry.category(), bold);
+        let style = get_file_color_with_palette(&entry.category(), bold, &DEFAULT_COLORS);
         assert_eq!(style.fg, Some(case.fg), "fg mismatch for {:?}", case.name);
         assert_eq!(
             style.add_modifier.contains(Modifier::BOLD),
@@ -805,7 +816,14 @@ fn test_render_panel_no_panic() {
         create_test_entry("mydir", true, false, false),
     ]);
     let content = render_to_string(80, 24, |f| {
-        render_panel(f, f.area(), &panel, true);
+        render_panel_with_colors(
+            f,
+            f.area(),
+            &panel,
+            true,
+            &DEFAULT_COLORS,
+            IconTheme::default(),
+        );
     });
     assert!(content.contains("file.txt"));
 }
@@ -814,7 +832,14 @@ fn test_render_panel_no_panic() {
 fn test_render_panel_empty_no_panic() {
     let panel = PanelState::new(PathBuf::from("/test"));
     let content = render_to_string(80, 24, |f| {
-        render_panel(f, f.area(), &panel, false);
+        render_panel_with_colors(
+            f,
+            f.area(),
+            &panel,
+            false,
+            &DEFAULT_COLORS,
+            IconTheme::default(),
+        );
     });
     assert!(content.contains("/test"));
 }
@@ -824,7 +849,7 @@ fn test_render_status_bar_no_panic() {
     let mut panel = PanelState::new(PathBuf::from("/test"));
     panel.set_entries(vec![create_test_entry("file.txt", false, false, false)]);
     let content = render_to_string(80, 2, |f| {
-        render_status_bar(f, f.area(), &panel);
+        render_status_bar_with_colors(f, f.area(), &panel, &DEFAULT_COLORS);
     });
     assert!(content.contains("file.txt"));
 }
@@ -832,7 +857,7 @@ fn test_render_status_bar_no_panic() {
 #[test]
 fn test_render_function_bar_no_panic() {
     let content = render_to_string(80, 1, |f| {
-        render_function_bar(f, f.area());
+        render_function_bar_with_colors(f, f.area(), &DEFAULT_COLORS);
     });
     assert!(content.contains("F1"));
 }

@@ -3,13 +3,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::thread::{self, JoinHandle};
+use std::thread;
+#[cfg(test)]
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ansi_to_tui::IntoText;
 use ratatui::text::Text;
 
 use super::open::ViewerState;
+use crate::app::bg_load::BgLoad;
 use crate::debug_log;
 
 const CHAFA_TIMEOUT: Duration = Duration::from_secs(10);
@@ -23,85 +26,8 @@ const PIPE_READ_LIMIT: u64 = 50 * 1024 * 1024;
 const PIPE_JOIN_TIMEOUT: Duration = CHAFA_TIMEOUT;
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Owns a background worker plus its cancellation flag and result channel.
-///
-/// Held as a field by the public loaders rather than unpacked into them, so the
-/// cancel/result plumbing and the drop semantics live in one place.
-struct CancellableLoader<T> {
-    receiver: mpsc::Receiver<T>,
-    cancel: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl<T: Send + 'static> CancellableLoader<T> {
-    fn spawn<F>(work: F) -> Self
-    where
-        F: FnOnce(&AtomicBool, mpsc::Sender<T>) + Send + 'static,
-    {
-        let (tx, rx) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_flag = Arc::clone(&cancel);
-        let handle = thread::spawn(move || work(&cancel_flag, tx));
-        Self {
-            receiver: rx,
-            cancel,
-            handle: Some(handle),
-        }
-    }
-
-    fn try_recv(&self) -> Result<T, mpsc::TryRecvError> {
-        self.receiver.try_recv()
-    }
-
-    fn cancel(&self) {
-        self.cancel.store(true, Ordering::Release);
-    }
-
-    #[cfg(test)]
-    fn from_parts(
-        receiver: mpsc::Receiver<T>,
-        cancel: Arc<AtomicBool>,
-        handle: Option<JoinHandle<()>>,
-    ) -> Self {
-        Self {
-            receiver,
-            cancel,
-            handle,
-        }
-    }
-}
-
-impl<T> Drop for CancellableLoader<T> {
-    fn drop(&mut self) {
-        // Signal cancellation and *detach* the worker — deliberately not join.
-        // Drops run on the event thread (e.g. when the viewer closes), which
-        // must never block; a worker can be mid-`read()` on a slow device.
-        // Every worker polls `cancel` between units of work and will not send a
-        // stale result once it is set, so detaching is deterministic: the thread
-        // observes the flag and terminates on its own.
-        self.cancel.store(true, Ordering::Release);
-        drop(self.handle.take());
-    }
-}
-
-/// Shared guard around a worker body: skip the work if cancellation already
-/// happened, and only publish the result if cancellation has not happened by
-/// the time the work finishes.
-fn run_guarded<T, F>(cancel: &AtomicBool, tx: &mpsc::Sender<T>, work: F)
-where
-    F: FnOnce(&AtomicBool) -> T,
-{
-    if cancel.load(Ordering::Acquire) {
-        return;
-    }
-    let result = work(cancel);
-    if !cancel.load(Ordering::Acquire) {
-        let _ = tx.send(result);
-    }
-}
-
 pub struct ViewerLoader {
-    inner: CancellableLoader<std::io::Result<ViewerState>>,
+    inner: BgLoad<std::io::Result<ViewerState>>,
     pub path: Arc<Path>,
 }
 
@@ -111,10 +37,14 @@ impl ViewerLoader {
         // cloning the path into a second owned `PathBuf` before spawning.
         let path: Arc<Path> = Arc::from(path);
         let worker_path = Arc::clone(&path);
-        let inner = CancellableLoader::spawn(move |cancel, tx| {
-            run_guarded(cancel, &tx, |c| {
-                ViewerState::open_with_cancel(&worker_path, Some(c))
-            });
+        let inner = BgLoad::spawn("viewer-load", move |cancel| {
+            ViewerState::open_with_cancel(&worker_path, Some(cancel))
+        })
+        .unwrap_or_else(|e| {
+            // OS refused the thread — surface as a failed load on try_recv.
+            let (tx, rx) = mpsc::channel();
+            let _ = tx.send(Err(e));
+            BgLoad::from_parts(rx, Arc::new(AtomicBool::new(false)), None)
         });
         Self { inner, path }
     }
@@ -131,7 +61,7 @@ impl ViewerLoader {
         handle: Option<JoinHandle<()>>,
     ) -> Self {
         Self {
-            inner: CancellableLoader::from_parts(receiver, cancel, handle),
+            inner: BgLoad::from_parts(receiver, cancel, handle),
             path: Arc::from(path),
         }
     }
@@ -139,17 +69,20 @@ impl ViewerLoader {
 
 pub struct ImagePreviewLoader {
     pub file_path: PathBuf,
-    inner: CancellableLoader<(u16, u16, Text<'static>)>,
+    inner: BgLoad<(u16, u16, Text<'static>)>,
 }
 
 impl ImagePreviewLoader {
     pub fn start(path: PathBuf, width: u16, height: u16) -> Self {
         let file_path = path.clone();
-        let inner = CancellableLoader::spawn(move |cancel, tx| {
-            run_guarded(cancel, &tx, |c| {
-                let text = run_chafa(&path, width, height, Some(c));
-                (width, height, text)
-            });
+        let inner = BgLoad::spawn("image-preview", move |cancel| {
+            let text = run_chafa(&path, width, height, Some(cancel));
+            (width, height, text)
+        })
+        .unwrap_or_else(|_| {
+            let (tx, rx) = mpsc::channel();
+            let _ = tx.send((width, height, Text::raw("")));
+            BgLoad::from_parts(rx, Arc::new(AtomicBool::new(false)), None)
         });
         Self { file_path, inner }
     }
@@ -171,7 +104,7 @@ impl ImagePreviewLoader {
     ) -> Self {
         Self {
             file_path,
-            inner: CancellableLoader::from_parts(receiver, cancel, handle),
+            inner: BgLoad::from_parts(receiver, cancel, handle),
         }
     }
 }

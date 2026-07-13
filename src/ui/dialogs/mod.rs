@@ -25,7 +25,7 @@ pub use layout::{
     HelpGeometry, centered_rect, help_dialog_geometry, help_message_width, help_visible_height,
     input_dialog_rect,
 };
-pub use list_picker::{render_list_picker, render_list_picker_with_colors};
+pub use list_picker::render_list_picker_with_colors;
 pub use simple::{render_error_dialog, render_progress_dialog, render_properties_dialog};
 pub use text::wrapped_line_count;
 
@@ -90,10 +90,6 @@ pub enum DialogKind<'a> {
         dest_cursor: usize,
         selection: usize,
     },
-}
-
-pub fn render_dialog(f: &mut Frame, dialog: &DialogKind<'_>) {
-    render_dialog_with_colors(f, dialog, &ColorPalette::default());
 }
 
 pub fn render_dialog_with_colors(f: &mut Frame, dialog: &DialogKind<'_>, colors: &ColorPalette) {

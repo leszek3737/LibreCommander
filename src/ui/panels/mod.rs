@@ -28,10 +28,6 @@ const fn icon_display_width(theme: IconTheme) -> usize {
     }
 }
 
-pub fn get_file_color(category: &FileCategory, bold: bool) -> Style {
-    get_file_color_with_palette(category, bold, &ColorPalette::default())
-}
-
 pub fn get_file_color_with_palette(
     category: &FileCategory,
     bold: bool,
@@ -39,10 +35,6 @@ pub fn get_file_color_with_palette(
 ) -> Style {
     let color = Theme::category_color_with_colors(*category, colors);
     Theme::panel_item_with_colors(color, bold, colors)
-}
-
-pub fn get_file_icon(category: &FileCategory) -> &'static str {
-    get_file_icon_with_theme(category, IconTheme::default())
 }
 
 pub fn get_file_icon_with_theme(category: &FileCategory, theme: IconTheme) -> &'static str {
@@ -123,11 +115,6 @@ fn truncate_to_width<'a>(s: &'a str, max_width: usize) -> Cow<'a, str> {
 
 fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     truncate_to_width(name, max_width)
-}
-
-pub fn render_panel(f: &mut Frame, area: Rect, panel: &PanelState, is_active: bool) {
-    let ctx = ColorCtx::defaults();
-    render_panel_with_colors(f, area, panel, is_active, ctx.colors, ctx.icon_theme);
 }
 
 pub fn render_panel_with_colors(
@@ -506,10 +493,6 @@ pub fn panel_status_summary(panel: &PanelState, buf: &mut String) -> usize {
     UnicodeWidthStr::width(buf.as_str())
 }
 
-pub fn render_status_bar(f: &mut Frame, area: Rect, panel: &PanelState) {
-    render_status_bar_with_colors(f, area, panel, &ColorPalette::default());
-}
-
 pub fn render_status_bar_with_colors(
     f: &mut Frame,
     area: Rect,
@@ -570,10 +553,6 @@ pub fn render_status_bar_with_colors(
         .block(Block::default());
 
     f.render_widget(paragraph, area);
-}
-
-pub fn render_function_bar(f: &mut Frame, area: Rect) {
-    render_function_bar_with_colors(f, area, &ColorPalette::default());
 }
 
 fn function_bar_styles(colors: &ColorPalette) -> (Style, Style) {
@@ -637,10 +616,6 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
     for (i, chunk) in chunks.iter().enumerate() {
         f.render_widget(make_function_bar_cell(i, key_style, label_style), *chunk);
     }
-}
-
-pub fn render_menu_bar(f: &mut Frame, area: Rect) {
-    render_menu_bar_with_colors(f, area, &ColorPalette::default());
 }
 
 pub fn render_menu_bar_with_colors(f: &mut Frame, area: Rect, colors: &ColorPalette) {

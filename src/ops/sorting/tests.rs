@@ -19,19 +19,22 @@ fn make_entry(
     modified_secs: u64,
     btime_secs: Option<u64>,
 ) -> FileEntry {
+    use crate::app::types::test_helpers::TestEntry;
     let ts = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(modified_secs);
-    let mut builder = FileEntry::builder()
-        .name(name)
+    let mut e = TestEntry::new(name)
         .path(name)
-        .is_dir(is_dir)
-        .size(size)
         .modified(ts)
         .owner("testuser")
         .group("testgroup");
-    if let Some(btime) = btime_secs {
-        builder = builder.created(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(btime));
+    if is_dir {
+        e = e.len(size);
+    } else {
+        e = e.file(size);
     }
-    builder.build().expect("valid test entry")
+    if let Some(btime) = btime_secs {
+        e = e.created(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(btime));
+    }
+    e.build()
 }
 
 fn create_test_entry(name: &str, is_dir: bool, size: u64, modified_secs: u64) -> FileEntry {
@@ -897,17 +900,19 @@ fn test_sort_entries_unicode() {
 
 #[test]
 fn test_sort_mtime_none_after_known() {
-    let no_mtime = FileEntry::builder()
-        .name("unknown.txt")
+    use crate::app::types::test_helpers::TestEntry;
+    let mut no_mtime = TestEntry::new("unknown.txt")
         .path("unknown.txt")
-        .build()
-        .expect("valid test entry");
-    let with_mtime = FileEntry::builder()
-        .name("known.txt")
+        .file(0)
+        .build();
+    no_mtime.cha.mtime = None;
+    let (time_str, _, _, _, _) = FileEntry::cached_fields(&no_mtime.cha, &no_mtime.name);
+    no_mtime.time_str = time_str;
+    let with_mtime = TestEntry::new("known.txt")
         .path("known.txt")
+        .file(0)
         .modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
-        .build()
-        .expect("valid test entry");
+        .build();
 
     let mut entries = vec![no_mtime, with_mtime];
     sort_entries(

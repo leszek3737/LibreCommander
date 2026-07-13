@@ -22,34 +22,25 @@ use crate::ops::search::{
 /// shares one allocation instead of cloning a `PathBuf` per hit.
 type ContentMatch = (Arc<Path>, usize, String);
 
-#[cfg(test)]
-fn search_content(
+/// Search file contents for `pattern`.
+///
+/// When `cancel` is `None`, a fresh never-set flag is used (uncancellable run).
+pub fn search_content(
     path: &Path,
     pattern: &str,
     recursive: bool,
     case_sensitive: bool,
-) -> Vec<ContentMatch> {
-    search_content_with_diagnostics(path, pattern, recursive, case_sensitive).matches
-}
-
-pub fn search_content_with_diagnostics(
-    path: &Path,
-    pattern: &str,
-    recursive: bool,
-    case_sensitive: bool,
+    cancel: Option<&AtomicBool>,
 ) -> SearchOutcome<ContentMatch, SearchError> {
-    with_fresh_cancel(|cancel| {
-        search_content_with_diagnostics_cancellable(
-            path,
-            pattern,
-            recursive,
-            case_sensitive,
-            cancel,
-        )
-    })
+    match cancel {
+        Some(c) => search_content_inner(path, pattern, recursive, case_sensitive, c),
+        None => {
+            with_fresh_cancel(|c| search_content_inner(path, pattern, recursive, case_sensitive, c))
+        }
+    }
 }
 
-pub fn search_content_with_diagnostics_cancellable(
+fn search_content_inner(
     path: &Path,
     pattern: &str,
     recursive: bool,
@@ -486,7 +477,7 @@ mod tests {
         writeln!(file2, "This is a test too").unwrap();
         drop(file2);
 
-        let results = search_content(&dir, "test", true, false);
+        let results = search_content(&dir, "test", true, false, None).matches;
         assert_eq!(results.len(), 2);
 
         let _ = fs::remove_dir_all(dir);
@@ -497,7 +488,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc_test_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
-        let results = search_content(&dir, "", true, false);
+        let results = search_content(&dir, "", true, false, None).matches;
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -520,7 +511,7 @@ mod tests {
         let content = std::iter::repeat_n("needle\n", MAX_CONTENT_RESULTS + 1).collect::<String>();
         fs::write(dir.join("many.txt"), content).unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content(&dir, "needle", false, false, None);
 
         assert_eq!(outcome.matches.len(), MAX_CONTENT_RESULTS);
         assert_eq!(
@@ -549,7 +540,7 @@ mod tests {
         let file = File::create(dir.join("large.txt")).unwrap();
         file.set_len(MAX_CONTENT_FILE_BYTES + 1).unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content(&dir, "needle", false, false, None);
 
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::FileTooLarge));
@@ -574,7 +565,7 @@ mod tests {
 
         fs::write(dir.join("binary.bin"), b"needle\0needle\n").unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content(&dir, "needle", false, false, None);
 
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::BinaryFile));
@@ -598,7 +589,7 @@ mod tests {
         content.extend_from_slice(b"\nneedle\n");
         fs::write(dir.join("long_line.txt"), content).unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content(&dir, "needle", false, false, None);
 
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 2);
@@ -620,7 +611,7 @@ mod tests {
 
         fs::write(dir.join("crlf.txt"), b"hello world\r\nfoo bar\r\n").unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "world", false, false);
+        let outcome = search_content(&dir, "world", false, false, None);
 
         assert_eq!(outcome.matches.len(), 1);
         assert!(!outcome.matches[0].2.contains('\r'));
@@ -649,7 +640,7 @@ mod tests {
 
         fs::write(dir.join("bbb_binary.bin"), b"needle\0needle\n").unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content(&dir, "needle", false, false, None);
 
         assert!(outcome.matches.is_empty());
         let reason = outcome.truncated.unwrap();
@@ -680,7 +671,7 @@ mod tests {
             fs::write(dir.join(format!("bbb_match_{i}.txt")), "needle\n").unwrap();
         }
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", false, false);
+        let outcome = search_content(&dir, "needle", false, false, None);
 
         assert!(outcome.truncated.is_some());
         assert_ne!(
@@ -711,7 +702,7 @@ mod tests {
         fs::write(dir.join("outside/target.txt"), "needle").unwrap();
         symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
 
-        let results = search_content(&dir.join("root"), "needle", true, false);
+        let results = search_content(&dir.join("root"), "needle", true, false, None).matches;
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -733,16 +724,16 @@ mod tests {
 
         fs::write(dir.join("hello.txt"), "Hello World\naŻółć gęślą\n").unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "hello", false, false);
+        let outcome = search_content(&dir, "hello", false, false, None);
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 1);
         assert!(outcome.errors.is_empty());
 
-        let outcome = search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, true);
+        let outcome = search_content(&dir, "ŻÓŁĆ", false, true, None);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
 
-        let outcome = search_content_with_diagnostics(&dir, "ŻÓŁĆ", false, false);
+        let outcome = search_content(&dir, "ŻÓŁĆ", false, false, None);
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 2);
         assert!(outcome.errors.is_empty());
@@ -766,7 +757,7 @@ mod tests {
 
         fs::write(dir.join("hello.txt"), "Hello World\n").unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "hello", false, true);
+        let outcome = search_content(&dir, "hello", false, true, None);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
 
@@ -792,7 +783,7 @@ mod tests {
         fs::write(dir.join("real.txt"), "needle\n").unwrap();
         symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let results = search_content(&dir, "needle", false, false);
+        let results = search_content(&dir, "needle", false, false, None).matches;
         assert_eq!(results.len(), 1);
         assert!(results[0].0.ends_with("real.txt"));
 
@@ -813,7 +804,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", true, false);
+        let outcome = search_content(&dir, "needle", true, false, None);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.truncated, None);

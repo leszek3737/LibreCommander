@@ -206,13 +206,7 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
     let handle = match thread::Builder::new()
         .name("search-worker".into())
         .spawn(move || {
-            let outcome = ops::search_files_with_diagnostics_cancellable(
-                &dir,
-                &pattern_owned,
-                true,
-                false,
-                &cancel_clone,
-            );
+            let outcome = ops::search_files(&dir, &pattern_owned, true, false, Some(&cancel_clone));
             let _ = sender.send(JobMessage::SearchFinished {
                 outcome: Box::new(outcome),
                 pattern: pattern_owned,

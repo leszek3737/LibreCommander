@@ -19,27 +19,25 @@ use crate::ops::search::{
 /// 256 entries; this avoids reallocations for typical workloads while staying small.
 const VISITED_INODE_CAP: usize = 256;
 
+/// Search for files by name pattern.
+///
+/// When `cancel` is `None`, a fresh never-set flag is used (uncancellable run).
 pub fn search_files(
     path: &Path,
     pattern: &str,
     recursive: bool,
     case_sensitive: bool,
-) -> Vec<FileEntry> {
-    search_files_with_diagnostics(path, pattern, recursive, case_sensitive).matches
-}
-
-pub fn search_files_with_diagnostics(
-    path: &Path,
-    pattern: &str,
-    recursive: bool,
-    case_sensitive: bool,
+    cancel: Option<&AtomicBool>,
 ) -> SearchOutcome<FileEntry, SearchError> {
-    with_fresh_cancel(|cancel| {
-        search_files_with_diagnostics_cancellable(path, pattern, recursive, case_sensitive, cancel)
-    })
+    match cancel {
+        Some(c) => search_files_inner(path, pattern, recursive, case_sensitive, c),
+        None => {
+            with_fresh_cancel(|c| search_files_inner(path, pattern, recursive, case_sensitive, c))
+        }
+    }
 }
 
-pub fn search_files_with_diagnostics_cancellable(
+fn search_files_inner(
     path: &Path,
     pattern: &str,
     recursive: bool,
@@ -193,12 +191,12 @@ mod tests {
             drop(f3);
         }
 
-        let results = search_files(dir_path, "*.txt", true, false);
+        let results = search_files(dir_path, "*.txt", true, false, None).matches;
         assert_eq!(results.len(), 2, "Expected 2 results, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
         assert!(results.iter().any(|e| e.name == "test3.txt"));
 
-        let results = search_files(dir_path, "*.txt", false, false);
+        let results = search_files(dir_path, "*.txt", false, false, None).matches;
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
 
@@ -218,7 +216,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("target.txt"), "metadata").unwrap();
 
-        let results = search_files(&dir, "target.txt", false, false);
+        let results = search_files(&dir, "target.txt", false, false, None).matches;
 
         assert_eq!(results.len(), 1);
         assert!(!results[0].owner.is_empty());
@@ -237,7 +235,7 @@ mod tests {
             std::env::temp_dir().join(format!("lc_search_missing_{}_{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&dir);
 
-        let outcome = search_files_with_diagnostics(&dir, "*.txt", true, false);
+        let outcome = search_files(&dir, "*.txt", true, false, None);
 
         assert!(outcome.matches.is_empty());
         assert!(!outcome.errors.is_empty());
@@ -259,7 +257,7 @@ mod tests {
             File::create(dir.join(format!("file_{i}.txt"))).unwrap();
         }
 
-        let outcome = search_files_with_diagnostics(&dir, "*.txt", false, false);
+        let outcome = search_files(&dir, "*.txt", false, false, None);
 
         assert_eq!(outcome.matches.len(), MAX_SEARCH_ITEMS);
         assert_eq!(outcome.truncated, Some(TruncationReason::ItemLimit));
@@ -287,7 +285,7 @@ mod tests {
         fs::write(dir.join("outside/target.txt"), "x").unwrap();
         symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
 
-        let results = search_files(&dir.join("root"), "target.txt", true, false);
+        let results = search_files(&dir.join("root"), "target.txt", true, false, None).matches;
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -315,7 +313,7 @@ mod tests {
         fs::write(dir.join("real.txt"), "x").unwrap();
         symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let results = search_files(&dir, "*.txt", false, false);
+        let results = search_files(&dir, "*.txt", false, false, None).matches;
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"real.txt"));
@@ -335,7 +333,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let outcome = search_files_with_diagnostics(&dir, "*.txt", true, false);
+        let outcome = search_files(&dir, "*.txt", true, false, None);
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.truncated, None);

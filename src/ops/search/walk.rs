@@ -46,7 +46,7 @@ impl SearchContext for ContentSearchContext<'_> {
 /// Run `f` with a fresh, never-cancelled flag.
 ///
 /// Collapses the boilerplate in the two non-cancellable entry points
-/// (`search_files_with_diagnostics` / `search_content_with_diagnostics`), which
+/// (`search_files` / `search_content`), which
 /// each forward to their `*_cancellable` counterpart with a throwaway flag.
 pub(super) fn with_fresh_cancel<T>(f: impl FnOnce(&AtomicBool) -> T) -> T {
     let cancel = AtomicBool::new(false);
@@ -152,7 +152,7 @@ mod tests {
 
     #[cfg(unix)]
     use crate::ops::helpers::get_inode_key;
-    use crate::ops::search::{search_content_with_diagnostics, search_files_with_diagnostics};
+    use crate::ops::search::{search_content, search_files};
 
     #[cfg(unix)]
     #[test]
@@ -194,7 +194,7 @@ mod tests {
         }
         fs::write(deep.join("deep.txt"), "found").unwrap();
 
-        let outcome = search_files_with_diagnostics(&dir, "*.txt", true, false);
+        let outcome = search_files(&dir, "*.txt", true, false, None);
         assert!(!outcome.matches.iter().any(|e| e.name == "deep.txt"));
         assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
 
@@ -222,7 +222,7 @@ mod tests {
         }
         fs::write(deep.join("deep.txt"), "needle\n").unwrap();
 
-        let outcome = search_content_with_diagnostics(&dir, "needle", true, false);
+        let outcome = search_content(&dir, "needle", true, false, None);
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
 

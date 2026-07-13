@@ -753,59 +753,19 @@ fn test_panel_state_scroll_offset_with_many_entries() {
 }
 
 #[test]
-fn builder_clears_dir_target_follow_on_type_change() {
-    let dir_entry = FileEntry::builder()
-        .name("d")
-        .path(PathBuf::from("d"))
-        .is_dir(true)
-        .build()
-        .expect("valid test entry");
-    let mut cha = dir_entry.cha;
-    cha.kind.dir_target = true;
-    cha.kind.follow = true;
-    assert!(cha.kind.dir_target);
-    assert!(cha.kind.follow);
-
-    let cleared = FileEntry::builder()
-        .name("d")
-        .path(PathBuf::from("d"))
-        .cha(cha)
-        .is_dir(false)
-        .build()
-        .expect("valid test entry");
-    assert!(!cleared.cha.kind.dir_target);
-    assert!(!cleared.cha.kind.follow);
-
-    let link_entry = FileEntry::builder()
-        .name("l")
-        .path(PathBuf::from("l"))
-        .is_symlink(true)
-        .build()
-        .expect("valid test entry");
-    let mut cha = link_entry.cha;
-    cha.kind.dir_target = true;
-    cha.kind.follow = true;
-    assert!(cha.kind.dir_target);
-    assert!(cha.kind.follow);
-
-    let cleared = FileEntry::builder()
-        .name("l")
-        .path(PathBuf::from("l"))
-        .cha(cha)
-        .is_symlink(false)
-        .build()
-        .expect("valid test entry");
-    assert!(!cleared.cha.kind.dir_target);
-    assert!(!cleared.cha.kind.follow);
-}
-
-#[test]
 fn mtime_none_displays_unknown() {
-    let no_mtime = FileEntry::builder()
-        .name("unknown.txt")
-        .path(PathBuf::from("unknown.txt"))
-        .build()
-        .expect("valid test entry");
+    use crate::fs::cha::Cha;
+    let mut cha = Cha::regular_file(0);
+    cha.mtime = None;
+    let no_mtime = FileEntry::new(
+        "unknown.txt".into(),
+        PathBuf::from("unknown.txt"),
+        cha,
+        "",
+        "",
+        false,
+        None,
+    );
     let expected_epoch = chrono::DateTime::from_timestamp(0, 0)
         .expect("valid timestamp")
         .with_timezone(&chrono::Local)

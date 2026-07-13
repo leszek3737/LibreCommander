@@ -148,21 +148,6 @@ fn render_menu_dropdown(
     }
 }
 
-pub fn render_menu_bar(
-    f: &mut Frame,
-    menu_bar_area: Rect,
-    selected_menu: usize,
-    selected_item: usize,
-) {
-    render_menu_bar_with_colors(
-        f,
-        menu_bar_area,
-        selected_menu,
-        selected_item,
-        &ColorPalette::default(),
-    );
-}
-
 pub fn render_menu_bar_with_colors(
     f: &mut Frame,
     menu_bar_area: Rect,
@@ -189,7 +174,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 80, 1);
-                render_menu_bar(f, menu_bar, menu, item);
+                render_menu_bar_with_colors(f, menu_bar, menu, item, &ColorPalette::default());
             })
             .unwrap();
     }
@@ -231,7 +216,7 @@ mod tests {
         let completed = terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 30, 1);
-                render_menu_bar(f, menu_bar, 1, 8);
+                render_menu_bar_with_colors(f, menu_bar, 1, 8, &ColorPalette::default());
             })
             .unwrap();
         let buf = completed.buffer;
@@ -268,7 +253,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let menu_bar = Rect::new(0, 0, 20, 1);
-                render_menu_bar(f, menu_bar, 1, 5);
+                render_menu_bar_with_colors(f, menu_bar, 1, 5, &ColorPalette::default());
             })
             .unwrap();
     }

@@ -1,13 +1,13 @@
-//! A minimal cancel-on-drop background computation used to keep expensive,
-//! user-initiated reads (archive listing, directory-tree building) off the
-//! event thread so the TUI never freezes on a large/slow/NFS input.
+//! Cancel-on-drop background computation. Keeps expensive user-initiated reads
+//! (archive listing, directory-tree building, viewer open, image preview) off
+//! the event thread so the TUI never freezes on a large/slow/NFS input.
 //!
-//! Mirrors the viewer's `CancellableLoader`: the worker publishes at most one
-//! result and only if it has not been cancelled; dropping the handle signals
-//! cancellation and detaches the worker (the event thread never blocks on a
-//! join). Because the underlying reads are not themselves interruptible,
-//! "cancel" means the result is discarded, not that the worker is killed — the
-//! detached thread finishes on its own and the process reclaims it.
+//! The worker publishes at most one result and only if it has not been
+//! cancelled; dropping the handle signals cancellation and detaches the worker
+//! (the event thread never blocks on a join). Because the underlying reads are
+//! not themselves interruptible, "cancel" means the result is discarded, not
+//! that the worker is killed — the detached thread finishes on its own and the
+//! process reclaims it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -34,6 +34,9 @@ impl<T: Send + 'static> BgLoad<T> {
         let handle = thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
+                if cancel_flag.load(Ordering::Acquire) {
+                    return;
+                }
                 let result = work(&cancel_flag);
                 if !cancel_flag.load(Ordering::Acquire) {
                     let _ = tx.send(result);
@@ -48,6 +51,22 @@ impl<T: Send + 'static> BgLoad<T> {
 
     pub fn try_recv(&self) -> Result<T, mpsc::TryRecvError> {
         self.receiver.try_recv()
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn from_parts(
+        receiver: mpsc::Receiver<T>,
+        cancel: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    ) -> Self {
+        Self {
+            receiver,
+            cancel,
+            handle,
+        }
     }
 }
 
@@ -64,13 +83,10 @@ impl<T> Drop for BgLoad<T> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     #[test]
     fn publishes_result_when_not_cancelled() {
         let load = BgLoad::spawn("test-ok", |_cancel| 42u32).unwrap();
-        // Poll for the result, yielding to let the worker run (bounded so a
-        // genuinely stuck worker fails the test rather than hanging).
         let mut got = None;
         for _ in 0..2000 {
             if let Ok(v) = load.try_recv() {
@@ -84,7 +100,6 @@ mod tests {
 
     #[test]
     fn cancelled_worker_suppresses_result() {
-        // Cancel before the worker checks the flag: it must not publish.
         let cancel = Arc::new(AtomicBool::new(true));
         let c = Arc::clone(&cancel);
         let (tx, rx) = mpsc::channel::<u32>();

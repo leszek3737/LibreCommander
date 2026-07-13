@@ -15,14 +15,13 @@ fn test_panel(path: &Path) -> PanelState {
 }
 
 fn parent_entry(path: &Path) -> reader::FileEntry {
-    reader::FileEntry::builder()
-        .name("..")
+    use crate::app::types::test_helpers::TestEntry;
+    let mut e = TestEntry::new("..")
         .path(path.parent().unwrap_or(path))
-        .is_dir(true)
-        .is_executable(true)
         .permissions(0o755)
-        .build()
-        .expect("valid test entry")
+        .build();
+    e.cha.set_executable(true);
+    e
 }
 
 fn select_entry_by_name(entries: &mut [reader::FileEntry], name: &str) {
