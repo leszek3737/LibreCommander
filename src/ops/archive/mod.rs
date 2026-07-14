@@ -7,9 +7,6 @@ use std::time::SystemTime;
 
 use crate::debug_log;
 
-pub mod create;
-pub mod extract;
-pub mod list;
 pub mod sevenz;
 pub mod tar;
 pub mod zip;
@@ -75,6 +72,106 @@ impl std::error::Error for ArchiveError {
             | ArchiveError::InvalidArchive(_)
             | ArchiveError::NoValidSources => None,
         }
+    }
+}
+
+pub fn create_archive(
+    sources: &[PathBuf],
+    dest: &Path,
+    format: ArchiveFormat,
+    progress: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), ArchiveError> {
+    let non_symlink_sources: Vec<PathBuf> = sources
+        .iter()
+        .filter(|s| {
+            if is_symlink_source(s) {
+                debug_log!("create_archive: skipping symlink {}", s.display());
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+
+    if non_symlink_sources.is_empty() {
+        return Err(ArchiveError::NoValidSources);
+    }
+
+    match format {
+        ArchiveFormat::Zip => zip::create_zip(&non_symlink_sources, dest, progress, cancel),
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarBz2
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZst => {
+            tar::create_tar(&non_symlink_sources, dest, format, progress, cancel)
+        }
+        ArchiveFormat::SevenZ => Err(ArchiveError::InvalidArchive(
+            "7z archive creation is not supported. Use zip or tar format instead.".into(),
+        )),
+    }
+}
+
+/// Reuses the file handle opened by `detect_format` when present, otherwise
+/// opens `path` fresh. Centralizes the handle-or-open fallback shared by the
+/// Zip and Tar extraction arms.
+fn reuse_or_open(opt: Option<fs::File>, path: &Path) -> io::Result<fs::File> {
+    match opt {
+        Some(f) => Ok(f),
+        None => fs::File::open(path),
+    }
+}
+
+pub fn extract_archive(
+    path: &Path,
+    dest: &Path,
+    progress: &Sender<u64>,
+    cancel: &AtomicBool,
+) -> Result<(), ArchiveError> {
+    let (format, file_opt) = detect_format(path)?;
+    match format {
+        ArchiveFormat::Zip => {
+            let file = reuse_or_open(file_opt, path)?;
+            zip::extract_zip(file, dest, progress, cancel)
+        }
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarBz2
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZst => {
+            let file = reuse_or_open(file_opt, path)?;
+            tar::extract_tar(file, dest, format, progress, cancel)
+        }
+        ArchiveFormat::SevenZ => {
+            // sevenz_rust reader API requires a path — cannot reuse the file handle
+            drop(file_opt);
+            sevenz::extract_7z(path, dest, progress, cancel)
+        }
+    }
+}
+
+/// List entries in an archive file.
+///
+/// Detects the archive format from magic bytes or file extension,
+/// then returns metadata for every entry (name, size, is_dir, etc.).
+///
+/// # Errors
+///
+/// Returns [`ArchiveError::UnsupportedFormat`] if the format cannot be determined,
+/// [`ArchiveError::InvalidArchive`] for corrupt archives, or [`ArchiveError::Io`]
+/// on filesystem errors.
+pub fn list_archive(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+    let (format, _file) = detect_format(path)?;
+    match format {
+        ArchiveFormat::Zip => zip::list_zip(path),
+        ArchiveFormat::Tar
+        | ArchiveFormat::TarGz
+        | ArchiveFormat::TarBz2
+        | ArchiveFormat::TarXz
+        | ArchiveFormat::TarZst => tar::list_tar(path, format),
+        ArchiveFormat::SevenZ => sevenz::list_7z(path),
     }
 }
 
@@ -644,7 +741,7 @@ mod tests {
 
         let archive_path = work.path().join("out.tar");
         let (tx, _rx) = mpsc::channel();
-        crate::ops::archive::create::create_archive(
+        create_archive(
             &[f1, f2],
             &archive_path,
             ArchiveFormat::Tar,
@@ -660,13 +757,7 @@ mod tests {
         let dest = work.path().join("extract");
         fs::create_dir(&dest).unwrap();
         let (tx2, _rx2) = mpsc::channel();
-        crate::ops::archive::extract::extract_archive(
-            &archive_path,
-            &dest,
-            &tx2,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        extract_archive(&archive_path, &dest, &tx2, &AtomicBool::new(false)).unwrap();
 
         assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
         assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);
@@ -695,7 +786,7 @@ mod tests {
 
         let archive_path = work.path().join("out.tar.zst");
         let (tx, _rx) = mpsc::channel();
-        crate::ops::archive::create::create_archive(
+        create_archive(
             &[f1, f2],
             &archive_path,
             ArchiveFormat::TarZst,
@@ -710,13 +801,7 @@ mod tests {
         let dest = work.path().join("extract");
         fs::create_dir(&dest).unwrap();
         let (tx2, _rx2) = mpsc::channel();
-        crate::ops::archive::extract::extract_archive(
-            &archive_path,
-            &dest,
-            &tx2,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        extract_archive(&archive_path, &dest, &tx2, &AtomicBool::new(false)).unwrap();
 
         assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
         assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);

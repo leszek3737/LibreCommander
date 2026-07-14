@@ -54,7 +54,7 @@ pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)>
 /// undetected. Inserting the root key up front closes that one-level gap.
 /// `symlink_metadata` (not `metadata`) is used so the root itself is never
 /// followed through a symlink.
-fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
+pub(crate) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) => {

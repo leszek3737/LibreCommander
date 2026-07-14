@@ -242,39 +242,11 @@ pub fn extract_7z(
     result
 }
 
-/// 7z archive creation is not supported.
-///
-/// The `sevenz_rust` crate provides read-only access to 7z archives.
-/// Use zip or tar format for creating archives instead.
-pub fn create_7z(
-    _sources: &[PathBuf],
-    _dest: &Path,
-    _progress: &Sender<u64>,
-    _cancel: &AtomicBool,
-) -> Result<(), ArchiveError> {
-    Err(ArchiveError::InvalidArchive(
-        "7z archive creation is not supported. Use zip or tar format instead.".into(),
-    ))
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::mpsc;
-
-    #[test]
-    fn create_7z_returns_unsupported() {
-        let (tx, _rx) = mpsc::channel();
-        let result = create_7z(
-            &[],
-            PathBuf::from("test.7z").as_path(),
-            &tx,
-            &AtomicBool::new(false),
-        );
-        assert!(result.is_err());
-    }
 
     #[test]
     fn sanitize_rejects_absolute_path() {

@@ -402,7 +402,7 @@ impl ViewerState {
     }
 
     fn format_archive_listing(path: &Path) -> io::Result<String> {
-        use crate::ops::archive::list::list_archive;
+        use crate::ops::archive::list_archive;
         use std::fmt::Write;
 
         let entries = list_archive(path).map_err(|e| {

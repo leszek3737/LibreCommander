@@ -1,16 +1,13 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use crate::app::types::FileEntry;
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::{SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
 
-#[inline]
-pub(super) fn is_cancelled(cancel: &AtomicBool) -> bool {
-    cancel.load(Ordering::Relaxed)
-}
+pub(super) use crate::ops::helpers::seed_visited_dir;
 
 pub(super) struct FileSearchContext<'a> {
     pub(super) outcome: &'a mut SearchOutcome<FileEntry, SearchError>,
@@ -28,16 +25,6 @@ pub(super) struct ContentSearchContext<'a> {
     pub(super) cancel: &'a AtomicBool,
 }
 
-/// Run `f` with a fresh, never-cancelled flag.
-///
-/// Collapses the boilerplate in the two non-cancellable entry points
-/// (`search_files` / `search_content`), which
-/// each forward to their `*_cancellable` counterpart with a throwaway flag.
-pub(super) fn with_fresh_cancel<T>(f: impl FnOnce(&AtomicBool) -> T) -> T {
-    let cancel = AtomicBool::new(false);
-    f(&cancel)
-}
-
 /// Decide whether to descend into a directory given its already-fetched `lstat`
 /// result. A fresh inode → recurse; a previously seen inode → cycle, skip. If
 /// the metadata could not be read we still recurse (without cycle detection),
@@ -50,15 +37,6 @@ pub(super) fn should_recurse(
     match meta {
         Ok(meta) => get_inode_key(&meta).is_none_or(|key| visited.insert(key)),
         Err(_) => true,
-    }
-}
-
-pub(super) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
-    if let Ok(meta) = std::fs::symlink_metadata(path)
-        && meta.is_dir()
-        && let Some(key) = get_inode_key(&meta)
-    {
-        visited.insert(key);
     }
 }
 
@@ -138,6 +116,7 @@ mod tests {
     #[cfg(unix)]
     use crate::ops::helpers::get_inode_key;
     use crate::ops::search::{search_content, search_files};
+    use std::sync::atomic::AtomicBool;
 
     #[cfg(unix)]
     #[test]
@@ -179,7 +158,7 @@ mod tests {
         }
         fs::write(deep.join("deep.txt"), "found").unwrap();
 
-        let outcome = search_files(&dir, "*.txt", true, false, None);
+        let outcome = search_files(&dir, "*.txt", true, false, &AtomicBool::new(false));
         assert!(!outcome.matches.iter().any(|e| e.name == "deep.txt"));
         assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
 
@@ -207,7 +186,7 @@ mod tests {
         }
         fs::write(deep.join("deep.txt"), "needle\n").unwrap();
 
-        let outcome = search_content(&dir, "needle", true, false, None);
+        let outcome = search_content(&dir, "needle", true, false, &AtomicBool::new(false));
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::DepthLimit));
 

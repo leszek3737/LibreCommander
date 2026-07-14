@@ -13,7 +13,7 @@ use lc::ui::{dialogs, viewer};
 
 use super::EventContext;
 use crate::app::panel_ops::{
-    panel_visible_height, rebuild_visible_entries, refresh_active, refresh_both, set_active_panel,
+    panel_visible_height, rebuild_visible_entries, refresh_active, refresh_both,
 };
 
 /// Upper bound on the byte length of any dialog text field (paths, names, octal
@@ -72,7 +72,7 @@ fn reset_dialog_state(state: &mut AppState) {
     state.ui.status_message = None;
     state.input.dialog_selection = 0;
     if let Some(panel) = state.ui.menu_restore_panel.take() {
-        set_active_panel(state, panel);
+        state.set_active_panel(panel);
     }
 }
 
@@ -185,7 +185,7 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
             if *overwrite {
                 return None;
             }
-            let entries = ops::archive::list::list_archive(source).ok()?;
+            let entries = ops::archive::list_archive(source).ok()?;
             let mut seen = std::collections::HashSet::new();
             let conflicting: Vec<String> = entries
                 .iter()
@@ -463,7 +463,7 @@ fn handle_input_action(
         refresh_active(state);
     }
     if let Some(panel) = state.ui.menu_restore_panel.take() {
-        set_active_panel(state, panel);
+        state.set_active_panel(panel);
     }
 }
 
@@ -499,7 +499,7 @@ fn handle_input_dialog(
             }
             state.input.dialog_input.clear();
             if let Some(panel) = state.ui.menu_restore_panel.take() {
-                set_active_panel(state, panel);
+                state.set_active_panel(panel);
             }
         }
         _ => {

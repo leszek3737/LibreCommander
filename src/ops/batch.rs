@@ -789,12 +789,8 @@ fn batch_extract_archive(
 
     thread::scope(|scope| {
         scope.spawn(|| {
-            let result = archive::extract::extract_archive(
-                &source_buf,
-                &dest_buf,
-                &progress_tx,
-                &cancel_clone,
-            );
+            let result =
+                archive::extract_archive(&source_buf, &dest_buf, &progress_tx, &cancel_clone);
             let _ = result_tx.send(result);
         });
 
@@ -884,7 +880,7 @@ fn batch_create_archive(
 
     thread::scope(|scope| {
         scope.spawn(|| {
-            let result = archive::create::create_archive(
+            let result = archive::create_archive(
                 &sources_buf,
                 &dest_buf,
                 format,

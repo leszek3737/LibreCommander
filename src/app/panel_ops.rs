@@ -204,10 +204,6 @@ pub fn refresh_both(state: &mut AppState) {
     refresh_panel(&mut state.right_panel, visible);
 }
 
-pub fn set_active_panel(state: &mut AppState, panel: ActivePanel) {
-    state.set_active_panel(panel);
-}
-
 // Indices into the top menu bar (`crate::menu::MENUS`):
 // 0:Left 1:File 2:Command 3:Options 4:Right. The "Left"/"Right" menus drive the
 // panel of the same name, so their selection maps onto the matching `ActivePanel`.
@@ -217,15 +213,15 @@ const MENU_ITEM_RIGHT_PANEL: usize = 4;
 pub fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
     let original = state.active_panel;
     match state.ui.menu_selected {
-        MENU_ITEM_LEFT_PANEL => set_active_panel(state, ActivePanel::Left),
-        MENU_ITEM_RIGHT_PANEL => set_active_panel(state, ActivePanel::Right),
+        MENU_ITEM_LEFT_PANEL => state.set_active_panel(ActivePanel::Left),
+        MENU_ITEM_RIGHT_PANEL => state.set_active_panel(ActivePanel::Right),
         _ => {}
     }
     let result = f(state);
     if matches!(state.mode, AppMode::Dialog(_)) {
         state.ui.menu_restore_panel = Some(original);
     } else {
-        set_active_panel(state, original);
+        state.set_active_panel(original);
     }
     result
 }
@@ -273,9 +269,9 @@ mod tests {
     #[test]
     fn test_set_active_panel() {
         let mut state = AppState::default();
-        set_active_panel(&mut state, ActivePanel::Right);
+        state.set_active_panel(ActivePanel::Right);
         assert_eq!(state.active_panel, ActivePanel::Right);
-        set_active_panel(&mut state, ActivePanel::Left);
+        state.set_active_panel(ActivePanel::Left);
         assert_eq!(state.active_panel, ActivePanel::Left);
     }
 }
