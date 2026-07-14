@@ -32,7 +32,7 @@ fn log_path() -> std::path::PathBuf {
         return cache_dir.join("lc").join("debug.log");
     }
 
-    super::paths::cache_home(&super::paths::ProcessEnv)
+    super::paths::cache_home(&|k| std::env::var_os(k))
         .map(|dir| dir.join("debug.log"))
         .unwrap_or_else(|| std::env::temp_dir().join("lc_debug.log"))
 }

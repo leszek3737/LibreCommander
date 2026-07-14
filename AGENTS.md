@@ -72,8 +72,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - `unsafe_code = "forbid"` — don't attempt unsafe code
 - NEVER `println!`/`eprintln!`/`dbg!` in committed code — corrupts TUI display, denied by clippy. Use `app::debug_log!` macro instead
 - NEVER mutate state from `ui::*` draw code — rendering is a pure function of `AppState`; only `input::*` handlers mutate
-- NEVER block the event thread — work > 50ms MUST go to `rayon` or `app::job_runner`
-- NEVER introduce tokio — project is intentionally sync; use rayon for parallelism, `mpsc` channels for progress
+- NEVER block the event thread — work > 50ms MUST go to `app::job_runner` (or a dedicated worker thread)
+- NEVER introduce tokio — project is intentionally sync; use threads/`job_runner` for offload, `mpsc` channels for progress
 - Delete/move/overwrite MUST have explicit user confirmation unless already confirmed in current flow
 - Symlinks are data — don't follow during chmod/copy/delete unless the operation explicitly requires it
 - Cross-device moves MUST use copy+delete fallback with cancellation and no-clobber preserved
@@ -106,7 +106,7 @@ CI: GitHub Actions (`.github/workflows/rust.yml`), ubuntu + macos matrix. Must b
 | `src/app/` | State types, config, keymaps, job runner, watcher sync | `types/app_state.rs` (~36 fields) |
 | `src/ops/` | File operations — copy, move, delete, search, archive, sort | MUST be cancellable |
 | `src/ui/` | Pure rendering — **never mutates state** | `panels/`, `dialogs/`, `viewer/` |
-| `src/fs/` | Directory reads (rayon), `notify` watcher, path helpers, chafa CLI | |
+| `src/fs/` | Directory reads, `notify` watcher, path helpers, chafa CLI | |
 | `src/tests/` | Integration tests: keybinds, search, dialogs, viewer, etc. (14 files) | |
 | `src/menu.rs` | F9 menu bar definitions | |
 
@@ -150,7 +150,7 @@ Largest production files: `ops/file_ops/mod.rs` (~990), `ops/batch.rs` (~930), `
 
 ## Architecture (At a Glance)
 
-- Sync event loop + rayon offloading (no async/tokio)
+- Sync event loop + job_runner offloading (no async/tokio)
 - Single `AppState` struct as source of truth → pure rendering
 - Ratatui immediate-mode + crossterm backend + double-buffered diff
 

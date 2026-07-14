@@ -8,11 +8,7 @@
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 
-pub use crate::app::types::Direction;
-pub use crate::app::types::FileEntry;
-pub use crate::app::types::SortField;
-pub use crate::app::types::SortMode;
-pub use crate::app::types::SortOptions;
+use crate::app::types::{Direction, FileEntry, SortField, SortMode, SortOptions};
 
 use crate::ops::natsort;
 

@@ -477,7 +477,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let archive_path = work.path().join("empty.zip");
         let (tx, _rx) = mpsc::channel();
-        let result = super::super::create::create_archive(
+        let result = super::super::create_archive(
             &[],
             &archive_path,
             super::super::ArchiveFormat::Zip,

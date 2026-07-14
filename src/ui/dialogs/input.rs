@@ -73,15 +73,14 @@ pub fn render_input_dialog(
 
 /// Result of horizontally scrolling an input value into a fixed-width viewport.
 ///
-/// Internal type: not part of any public API. `render_input_dialog` consumes it
-/// to render the text slice and position the terminal cursor.
-struct VisibleWindow {
+/// Shared by input and archive dialogs for grapheme-aware horizontal scroll.
+pub(crate) struct VisibleWindow {
     /// The substring that fits within the viewport, ready to render.
-    text: String,
+    pub text: String,
     /// Cursor column (0-based, terminal cells) relative to the visible slice.
-    cursor_col: usize,
+    pub cursor_col: usize,
     /// Total display width (terminal cells) occupied by `text`.
-    width: usize,
+    pub width: usize,
 }
 
 /// A single grapheme cluster of an input value: its byte range within the
@@ -140,7 +139,11 @@ thread_local! {
     };
 }
 
-fn compute_visible_window(value: &str, cursor_pos: usize, visible_width: usize) -> VisibleWindow {
+pub(crate) fn compute_visible_window(
+    value: &str,
+    cursor_pos: usize,
+    visible_width: usize,
+) -> VisibleWindow {
     SEGMENT_CACHE.with(|cell| {
         let mut cache = cell.borrow_mut();
         cache.refresh(value);
@@ -222,10 +225,6 @@ mod tests {
     use crate::ui::theme::DEFAULT_COLORS;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-
-    // Task 5 note: `collect_visible_graphemes` / `collect_graphemes_up_to_width`
-    // are NOT defined in this module, so the requested unicode cases are instead
-    // exercised against the real helpers here (`compute_visible_window`).
 
     #[test]
     fn ascii_window_fits_whole_value() {

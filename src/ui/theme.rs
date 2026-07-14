@@ -155,32 +155,6 @@ define_theme_colors! {
     (regular_file => Color::White),
 }
 
-/// Borrowed rendering context: bundles the active [`ColorPalette`] with the
-/// [`IconTheme`] so panel render helpers can take a single argument instead of
-/// threading the palette and icon theme separately. Cheap to copy (one shared
-/// reference plus a `Copy` enum).
-#[derive(Clone, Copy)]
-pub struct ColorCtx<'a> {
-    pub colors: &'a ColorPalette,
-    pub icon_theme: IconTheme,
-}
-
-impl<'a> ColorCtx<'a> {
-    pub fn new(colors: &'a ColorPalette, icon_theme: IconTheme) -> Self {
-        Self { colors, icon_theme }
-    }
-}
-
-impl ColorCtx<'static> {
-    /// Context backed by the built-in palette and its icon theme.
-    pub fn defaults() -> Self {
-        ColorCtx {
-            colors: &DEFAULT_COLORS,
-            icon_theme: DEFAULT_COLORS.icon_theme,
-        }
-    }
-}
-
 pub struct Theme;
 
 fn parse_color(s: &str) -> Option<Color> {
@@ -277,18 +251,12 @@ fn parse_color_field(field: &str, value: Option<&str>, default: Color) -> Color 
     }
 }
 
-/// Generates the paired `name()` / `name_with_colors(colors)` style accessors.
-/// `name()` resolves against the built-in palette; `name_with_colors` builds the
-/// style from the supplied palette. Collapses the repetitive delegation
-/// boilerplate while keeping every public method name and signature stable.
+/// Style accessors from a palette. Collapses repetitive `Style::default().fg/bg`
+/// boilerplate while keeping public method names stable.
 macro_rules! theme_styles {
-    ($($name:ident, $with_colors:ident => |$c:ident| $body:expr);* $(;)?) => {
+    ($($with_colors:ident => |$c:ident| $body:expr);* $(;)?) => {
         impl Theme {
             $(
-                pub fn $name() -> Style {
-                    Self::$with_colors(&DEFAULT_COLORS)
-                }
-
                 pub fn $with_colors($c: &ColorPalette) -> Style {
                     $body
                 }
@@ -298,35 +266,29 @@ macro_rules! theme_styles {
 }
 
 theme_styles! {
-    panel_bg, panel_bg_with_colors => |c| Style::default().bg(c.panel_bg);
-    panel_fg, panel_fg_with_colors => |c| Style::default().fg(c.panel_fg);
-    panel, panel_with_colors => |c| Style::default().fg(c.panel_fg).bg(c.panel_bg);
-    status_bar, status_bar_with_colors =>
+    panel_bg_with_colors => |c| Style::default().bg(c.panel_bg);
+    panel_fg_with_colors => |c| Style::default().fg(c.panel_fg);
+    panel_with_colors => |c| Style::default().fg(c.panel_fg).bg(c.panel_bg);
+    status_bar_with_colors =>
         |c| Style::default().fg(c.status_bar_fg).bg(c.status_bar_bg);
-    menu_bar, menu_bar_with_colors =>
+    menu_bar_with_colors =>
         |c| Style::default().fg(c.menu_bar_fg).bg(c.menu_bar_bg);
-    dialog, dialog_with_colors => |c| Style::default().fg(c.dialog_fg).bg(c.dialog_bg);
-    highlight, highlight_with_colors =>
+    dialog_with_colors => |c| Style::default().fg(c.dialog_fg).bg(c.dialog_bg);
+    highlight_with_colors =>
         |c| Style::default().fg(c.highlight_fg).bg(c.highlight_bg);
-    error_dialog, error_dialog_with_colors => |c| Style::default().fg(c.error).bg(c.dialog_bg);
-    help_dialog, help_dialog_with_colors => |c| Style::default().fg(c.info).bg(c.dialog_bg);
-    warning_dialog, warning_dialog_with_colors =>
+    error_dialog_with_colors => |c| Style::default().fg(c.error).bg(c.dialog_bg);
+    help_dialog_with_colors => |c| Style::default().fg(c.info).bg(c.dialog_bg);
+    warning_dialog_with_colors =>
         |c| Style::default().fg(c.warning).bg(c.dialog_bg);
-    border_active, border_active_with_colors => |c| Style::default().fg(c.border_active);
-    border_inactive, border_inactive_with_colors => |c| Style::default().fg(c.border_inactive);
-    title, title_with_colors => |c| Style::default().fg(c.title);
-    error, error_with_colors => |c| Style::default().fg(c.error);
-    warning, warning_with_colors => |c| Style::default().fg(c.warning);
-    info, info_with_colors => |c| Style::default().fg(c.info);
+    border_active_with_colors => |c| Style::default().fg(c.border_active);
+    border_inactive_with_colors => |c| Style::default().fg(c.border_inactive);
+    title_with_colors => |c| Style::default().fg(c.title);
+    error_with_colors => |c| Style::default().fg(c.error);
+    warning_with_colors => |c| Style::default().fg(c.warning);
+    info_with_colors => |c| Style::default().fg(c.info);
 }
 
 impl Theme {
-    pub fn apply_from_value(raw: &toml::Value) -> Result<ColorPalette, String> {
-        let mut colors = DEFAULT_COLORS;
-        Self::apply_from_value_to_palette(raw, &mut colors)?;
-        Ok(colors)
-    }
-
     pub fn apply_from_value_to_palette(
         raw: &toml::Value,
         colors: &mut ColorPalette,
@@ -344,27 +306,8 @@ impl Theme {
         Ok(())
     }
 
-    // Methods below take extra arguments or compose other styles, so they stay
-    // hand-written rather than going through `theme_styles!`.
-
-    pub fn highlight_bold() -> Style {
-        Self::highlight_bold_with_colors(&DEFAULT_COLORS)
-    }
-
     pub fn highlight_bold_with_colors(colors: &ColorPalette) -> Style {
         Self::highlight_with_colors(colors).add_modifier(Modifier::BOLD)
-    }
-
-    pub fn progress_bar() -> Style {
-        Self::progress_bar_with_colors(&DEFAULT_COLORS)
-    }
-
-    pub fn progress_bar_with_colors(colors: &ColorPalette) -> Style {
-        Self::help_dialog_with_colors(colors)
-    }
-
-    pub fn selected_error() -> Style {
-        Self::selected_error_with_colors(&DEFAULT_COLORS)
     }
 
     pub fn selected_error_with_colors(colors: &ColorPalette) -> Style {
@@ -373,16 +316,8 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn panel_file(color: Color) -> Style {
-        Self::panel_file_with_colors(color, &DEFAULT_COLORS)
-    }
-
     pub fn panel_file_with_colors(color: Color, colors: &ColorPalette) -> Style {
         Style::default().fg(color).bg(colors.panel_bg)
-    }
-
-    pub fn category_color(category: FileCategory) -> Color {
-        Self::category_color_with_colors(category, &DEFAULT_COLORS)
     }
 
     pub fn category_color_with_colors(category: FileCategory, colors: &ColorPalette) -> Color {
@@ -400,10 +335,6 @@ impl Theme {
             FileCategory::Symlink => colors.symlink,
             FileCategory::Other => colors.regular_file,
         }
-    }
-
-    pub fn panel_item(color: Color, bold: bool) -> Style {
-        Self::panel_item_with_colors(color, bold, &DEFAULT_COLORS)
     }
 
     pub fn panel_item_with_colors(color: Color, bold: bool, colors: &ColorPalette) -> Style {
@@ -438,7 +369,10 @@ mod tests {
         ];
 
         for (category, color) in cases {
-            assert_eq!(Theme::category_color(category), color);
+            assert_eq!(
+                Theme::category_color_with_colors(category, &DEFAULT_COLORS),
+                color
+            );
         }
     }
 
@@ -560,24 +494,6 @@ mod tests {
 
         assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(colors.icon_theme(), IconTheme::Emoji);
-    }
-
-    #[test]
-    #[allow(clippy::unwrap_used)]
-    fn apply_from_value_returns_palette() {
-        let raw: toml::Value = toml::from_str(
-            r##"
-            [theme]
-            panel_bg = "#112233"
-            icon_theme = "ascii"
-            "##,
-        )
-        .unwrap();
-
-        let colors = Theme::apply_from_value(&raw).unwrap();
-
-        assert_eq!(colors.panel_bg, Color::Rgb(0x11, 0x22, 0x33));
-        assert_eq!(colors.icon_theme(), IconTheme::Ascii);
     }
 
     #[test]

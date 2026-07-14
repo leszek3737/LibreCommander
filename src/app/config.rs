@@ -63,10 +63,16 @@ where
     })
 }
 
+/// Runtime + wire config in one type. Serde maps `active_panel` and `hotlist`
+/// to/from the TOML shape users hand-edit (`"left"`/`"right"`, string paths).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistedSetup {
-    #[serde(default)]
-    pub active_panel: String,
+pub struct Settings {
+    #[serde(
+        default = "default_active_panel",
+        serialize_with = "serialize_active_panel",
+        deserialize_with = "deserialize_active_panel"
+    )]
+    pub active_panel: ActivePanel,
     #[serde(default = "default_true")]
     pub dir_first: bool,
     #[serde(default, alias = "sort_sensitive")]
@@ -75,23 +81,11 @@ pub struct PersistedSetup {
     pub left: PersistedPanel,
     #[serde(default)]
     pub right: PersistedPanel,
-    #[serde(default)]
-    pub hotlist: Option<Vec<String>>,
-}
-
-// Settings and PersistedSetup form a parallel type pair:
-//   PersistedSetup/PersistedPanel — serde-shaped, owned strings, optional hotlist.
-//   Settings                       — runtime-shaped, enum active_panel, Vec<PathBuf> hotlist.
-// The duplication is intentional: PersistedSetup mirrors the TOML schema (strings,
-// optional fields), while Settings uses domain types for application logic.
-// Conversion between them (From impls) handles mapping and validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Settings {
-    pub active_panel: ActivePanel,
-    pub dir_first: bool,
-    pub sensitive: bool,
-    pub left: PersistedPanel,
-    pub right: PersistedPanel,
+    #[serde(
+        default,
+        serialize_with = "serialize_hotlist",
+        deserialize_with = "deserialize_hotlist"
+    )]
     pub hotlist: Vec<PathBuf>,
 }
 
@@ -122,43 +116,31 @@ impl Settings {
     }
 }
 
-impl From<&Settings> for PersistedSetup {
-    fn from(settings: &Settings) -> Self {
-        Self {
-            active_panel: active_panel_to_wire(settings.active_panel).to_string(),
-            dir_first: settings.dir_first,
-            sensitive: settings.sensitive,
-            left: settings.left.clone(),
-            right: settings.right.clone(),
-            hotlist: Some(paths_to_utf8_strings(&settings.hotlist)),
-        }
-    }
-}
-
-impl From<PersistedSetup> for Settings {
-    fn from(setup: PersistedSetup) -> Self {
-        Self {
-            active_panel: active_panel_from_wire(&setup.active_panel),
-            dir_first: setup.dir_first,
-            sensitive: setup.sensitive,
-            left: setup.left,
-            right: setup.right,
-            hotlist: canonicalize_hotlist(&setup.hotlist.unwrap_or_default()),
-        }
-    }
-}
-
-/// Maps an [`ActivePanel`] to its persisted wire string.
-fn active_panel_to_wire(panel: ActivePanel) -> &'static str {
-    match panel {
+fn serialize_active_panel<S>(panel: &ActivePanel, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let s = match panel {
         ActivePanel::Left => "left",
         ActivePanel::Right => "right",
-    }
+    };
+    serializer.serialize_str(s)
+}
+
+fn deserialize_active_panel<'de, D>(deserializer: D) -> Result<ActivePanel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = Option::<String>::deserialize(deserializer)?.unwrap_or_default();
+    Ok(active_panel_from_wire(&s))
+}
+
+fn default_active_panel() -> ActivePanel {
+    ActivePanel::Left
 }
 
 /// Parses a persisted `active_panel` string into [`ActivePanel`], defaulting to
-/// `Left` (and logging) on any unrecognized non-empty value. Inverse of
-/// [`active_panel_to_wire`].
+/// `Left` (and logging) on any unrecognized non-empty value.
 fn active_panel_from_wire(s: &str) -> ActivePanel {
     if s.eq_ignore_ascii_case("right") {
         ActivePanel::Right
@@ -170,6 +152,22 @@ fn active_panel_from_wire(s: &str) -> ActivePanel {
         }
         ActivePanel::Left
     }
+}
+
+fn serialize_hotlist<S>(hotlist: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    paths_to_utf8_strings(hotlist).serialize(serializer)
+}
+
+fn deserialize_hotlist<'de, D>(deserializer: D) -> Result<Vec<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Accept both `hotlist = [...]` and legacy absence / null via Option.
+    let raw: Option<Vec<String>> = Option::deserialize(deserializer)?;
+    Ok(canonicalize_hotlist(&raw.unwrap_or_default()))
 }
 
 /// Resolves persisted hotlist strings to canonical paths. Each unique cleaned
@@ -232,9 +230,7 @@ pub fn save_settings(settings: &Settings) -> io::Result<PathBuf> {
         fs::create_dir_all(parent)?;
     }
 
-    let setup = PersistedSetup::from(settings);
-
-    let content = toml::to_string_pretty(&setup)
+    let content = toml::to_string_pretty(settings)
         .map_err(|e| io::Error::other(format!("serialize config: {e}")))?;
 
     // Follow a symlinked config to its target so the atomic replace updates the
@@ -315,34 +311,38 @@ fn sync_parent_dir(target: &Path) {
 fn sync_parent_dir(_target: &Path) {}
 
 pub fn load_setup(state: &mut AppState) -> Result<Option<toml::Value>, String> {
-    let Some(raw) = read_config_raw_with_env(&paths::ProcessEnv)? else {
+    let Some(raw) = read_config_raw_with_env(|k| std::env::var_os(k))? else {
         return Ok(None);
     };
     // clone() is required because toml::Value only implements IntoDeserializer
     // for owned values, so we cannot deserialize from a reference.
-    let setup: PersistedSetup = raw
+    let settings: Settings = raw
         .clone()
         .try_into()
         .map_err(|e| format!("Failed to parse config: {e}"))?;
-    Settings::from(setup).apply_to_state(state);
+    settings.apply_to_state(state);
     Ok(Some(raw))
 }
 
 pub fn load_settings() -> Result<Option<Settings>, String> {
-    load_settings_with_env(&paths::ProcessEnv)
+    load_settings_with_env(|k| std::env::var_os(k))
 }
 
-pub fn load_settings_with_env(env: &impl paths::EnvProvider) -> Result<Option<Settings>, String> {
+pub fn load_settings_with_env(
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Option<Settings>, String> {
     let Some(raw) = read_config_raw_with_env(env)? else {
         return Ok(None);
     };
-    let setup: PersistedSetup = raw
+    let settings: Settings = raw
         .try_into()
         .map_err(|e| format!("Failed to parse config: {e}"))?;
-    Ok(Some(Settings::from(setup)))
+    Ok(Some(settings))
 }
 
-fn read_config_raw_with_env(env: &impl paths::EnvProvider) -> Result<Option<toml::Value>, String> {
+fn read_config_raw_with_env(
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Option<toml::Value>, String> {
     let Some(path) = paths::config_file_path_with_env(env) else {
         return Ok(None);
     };
@@ -490,15 +490,15 @@ mod tests {
 
     #[allow(clippy::unwrap_used)]
     #[test]
-    fn persisted_setup_roundtrips_through_settings() {
+    fn settings_toml_roundtrip_preserves_fields() {
         let hotlist_path = std::env::current_dir()
             .unwrap()
             .canonicalize()
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        let setup = PersistedSetup {
-            active_panel: "right".to_string(),
+        let settings = Settings {
+            active_panel: ActivePanel::Right,
             dir_first: true,
             sensitive: false,
             left: PersistedPanel {
@@ -510,47 +510,40 @@ mod tests {
                 show_permissions: false,
             },
             right: PersistedPanel::default(),
-            hotlist: Some(vec![hotlist_path.clone()]),
+            hotlist: vec![PathBuf::from(&hotlist_path)],
         };
-        let settings = Settings::from(setup.clone());
-        let persisted = PersistedSetup::from(&settings);
+        let toml_str = toml::to_string_pretty(&settings).unwrap();
+        let loaded: Settings = toml::from_str(&toml_str).unwrap();
 
-        assert_eq!(settings.active_panel, ActivePanel::Right);
-        assert!(settings.dir_first);
-        assert!(!settings.sensitive);
-        assert_eq!(settings.hotlist, vec![PathBuf::from(hotlist_path)]);
-        assert_eq!(persisted.active_panel, setup.active_panel);
-        assert_eq!(persisted.dir_first, setup.dir_first);
-        assert_eq!(persisted.sensitive, setup.sensitive);
-        assert_eq!(persisted.left, setup.left);
-        assert_eq!(persisted.right, setup.right);
-        assert_eq!(persisted.hotlist, setup.hotlist);
+        assert_eq!(loaded.active_panel, ActivePanel::Right);
+        assert!(loaded.dir_first);
+        assert!(!loaded.sensitive);
+        assert_eq!(loaded.left, settings.left);
+        assert_eq!(loaded.right, settings.right);
+        assert_eq!(loaded.hotlist, vec![PathBuf::from(hotlist_path)]);
     }
 
     #[allow(clippy::unwrap_used)]
     #[test]
-    fn persisted_setup_canonicalizes_existing_hotlist_paths() {
+    fn settings_deserializes_and_canonicalizes_hotlist_paths() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("nested");
         fs::create_dir(&nested).unwrap();
         let dirty_path = nested.join("..").join("nested");
-        let setup = PersistedSetup {
-            active_panel: String::new(),
-            dir_first: false,
-            sensitive: false,
-            left: PersistedPanel::default(),
-            right: PersistedPanel::default(),
-            hotlist: Some(vec![dirty_path.to_string_lossy().into_owned()]),
-        };
+        let toml_str = format!(
+            "active_panel = \"\"\ndir_first = false\nsensitive = false\nhotlist = [\"{}\"]\n",
+            dirty_path.to_string_lossy().replace('\\', "\\\\")
+        );
 
-        let settings = Settings::from(setup);
+        let settings: Settings = toml::from_str(&toml_str).unwrap();
 
         assert_eq!(settings.hotlist, vec![nested.canonicalize().unwrap()]);
     }
 
     #[cfg(unix)]
+    #[allow(clippy::unwrap_used)]
     #[test]
-    fn persisted_setup_skips_non_utf8_paths() {
+    fn settings_serialize_skips_non_utf8_paths() {
         let non_utf8 = PathBuf::from(OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xFF]));
         let settings = Settings {
             active_panel: ActivePanel::Left,
@@ -564,9 +557,11 @@ mod tests {
             hotlist: vec![PathBuf::from("/tmp"), non_utf8],
         };
 
-        let persisted = PersistedSetup::from(&settings);
-
-        assert_eq!(persisted.left.path, None);
-        assert_eq!(persisted.hotlist, Some(vec!["/tmp".to_string()]));
+        let value = toml::Value::try_from(&settings).unwrap();
+        let left = value.get("left").unwrap();
+        // path_to_utf8_string returned None so left.path stays None (omitted).
+        assert_eq!(left.get("path"), None);
+        let hotlist = value.get("hotlist").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(hotlist, &vec![toml::Value::String("/tmp".to_string())]);
     }
 }

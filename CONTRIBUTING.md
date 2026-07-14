@@ -58,10 +58,10 @@ These are non-negotiable — they protect the TUI and your data:
   TUI display and are denied by clippy. Use the `app::debug_log!` macro instead.
 - **Never mutate state from `ui::*` draw code** — rendering must be a pure
   function of `AppState`. Only `input::*` handlers mutate state.
-- **Never block the event thread** — any work over ~50 ms goes to `rayon` or the
-  `app::job_runner`, never inline.
+- **Never block the event thread** — any work over ~50 ms goes to
+  `app::job_runner` (or a dedicated worker thread), never inline.
 - **Never introduce `tokio`/async** — the project is intentionally synchronous.
-  Use `rayon` for parallelism, `mpsc` channels for progress.
+  Use threads/`job_runner` for offload, `mpsc` channels for progress.
 - **Destructive ops need explicit confirmation** — delete/move/overwrite must
   confirm unless already confirmed in the current flow.
 - **Symlinks are data** — don't follow them during chmod/copy/delete unless the
@@ -88,11 +88,11 @@ These are non-negotiable — they protect the TUI and your data:
                         ▲                       ▼
                  ┌─────────────┐         ┌──────────────┐
                  │  ops/*      │ ◄─jobs─ │  ui/*        │  pure render, never mutates
-                 │ (rayon)     │         │ ratatui      │
+                 │ (job_runner)│         │ ratatui      │
                  └─────────────┘         └──────────────┘
 ```
 
-- **Sync event loop + rayon offloading** — no async runtime.
+- **Sync event loop + job_runner offloading** — no async runtime.
 - **One `AppState` struct** holds all UI-relevant data → enables pure rendering.
 - **Ratatui** immediate-mode + crossterm backend + double-buffered diff.
 
@@ -107,7 +107,7 @@ These are non-negotiable — they protect the TUI and your data:
 | `src/app/` | State types, config, keymaps, job runner, watcher sync | `types/app_state.rs` |
 | `src/ops/` | File operations — copy, move, delete, search, archive, sort | MUST be cancellable |
 | `src/ui/` | Pure rendering — **never mutates state** | `panels/`, `dialogs/`, `viewer/` |
-| `src/fs/` | Directory reads (rayon), `notify` watcher, path helpers | |
+| `src/fs/` | Directory reads, `notify` watcher, path helpers | |
 | `src/tests/` | Integration tests | `AppState` harness |
 | `src/menu.rs` | `F9` menu bar definitions | |
 

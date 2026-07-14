@@ -3,19 +3,20 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use memchr::{memchr, memmem};
 
 use crate::ops::search::pattern::contains_case_insensitive;
 use crate::ops::search::walk::{
-    ContentSearchContext, SearchContext, item_limit_reached, prepare_content_dir_scan,
-    seed_visited_dir, should_recurse, with_fresh_cancel,
+    ContentSearchContext, item_limit_reached, prepare_content_dir_scan, seed_visited_dir,
+    should_recurse,
 };
 use crate::ops::search::{
     MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS, MAX_SEARCH_DEPTH,
     MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
 };
+use std::sync::atomic::Ordering;
 
 /// A content-search hit: the file it was found in, the 1-based line number, and
 /// the matched line text. The path is an [`Arc`] so a file with many matches
@@ -23,24 +24,7 @@ use crate::ops::search::{
 type ContentMatch = (Arc<Path>, usize, String);
 
 /// Search file contents for `pattern`.
-///
-/// When `cancel` is `None`, a fresh never-set flag is used (uncancellable run).
 pub fn search_content(
-    path: &Path,
-    pattern: &str,
-    recursive: bool,
-    case_sensitive: bool,
-    cancel: Option<&AtomicBool>,
-) -> SearchOutcome<ContentMatch, SearchError> {
-    match cancel {
-        Some(c) => search_content_inner(path, pattern, recursive, case_sensitive, c),
-        None => {
-            with_fresh_cancel(|c| search_content_inner(path, pattern, recursive, case_sensitive, c))
-        }
-    }
-}
-
-fn search_content_inner(
     path: &Path,
     pattern: &str,
     recursive: bool,
@@ -55,7 +39,7 @@ fn search_content_inner(
         case_sensitive,
         0,
         &mut outcome,
-        Some(cancel),
+        cancel,
     );
     outcome
 }
@@ -67,7 +51,7 @@ fn search_content_recursive(
     case_sensitive: bool,
     depth: usize,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) {
     let pattern_bytes: Vec<u8> = if !case_sensitive {
         pattern.to_lowercase().into_bytes()
@@ -90,7 +74,7 @@ fn search_content_recursive(
 }
 
 fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSearchContext<'_>) {
-    if ctx.is_cancelled() {
+    if ctx.cancel.load(Ordering::Relaxed) {
         return;
     }
     if !path.is_dir() {
@@ -108,7 +92,7 @@ fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSe
     };
 
     for entry in entries {
-        if ctx.is_cancelled() {
+        if ctx.cancel.load(Ordering::Relaxed) {
             return;
         }
         if process_content_entry(entry, path, depth, ctx) {
@@ -123,7 +107,7 @@ fn process_content_entry(
     depth: usize,
     ctx: &mut ContentSearchContext<'_>,
 ) -> bool {
-    if ctx.is_cancelled() {
+    if ctx.cancel.load(Ordering::Relaxed) {
         return true;
     }
     // Content-result cap takes precedence (first reason wins via get_or_insert);
@@ -218,7 +202,7 @@ fn search_in_file(
     case_sensitive: bool,
     pattern_bytes: &[u8],
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) {
     if pattern.is_empty() {
         return;
@@ -280,7 +264,7 @@ struct ScanContext<'a> {
     case_sensitive: bool,
     finder: memmem::Finder<'a>,
     bufs: ScanBuffers,
-    cancel: Option<&'a AtomicBool>,
+    cancel: &'a AtomicBool,
 }
 
 struct ScanBuffers {
@@ -360,7 +344,7 @@ fn scan_lines(
         {
             Ok(0) => break,
             Ok(bytes_read) => {
-                if ctx.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                if ctx.cancel.load(Ordering::Relaxed) {
                     return;
                 }
                 line_no += 1;
@@ -477,7 +461,7 @@ mod tests {
         writeln!(file2, "This is a test too").unwrap();
         drop(file2);
 
-        let results = search_content(&dir, "test", true, false, None).matches;
+        let results = search_content(&dir, "test", true, false, &AtomicBool::new(false)).matches;
         assert_eq!(results.len(), 2);
 
         let _ = fs::remove_dir_all(dir);
@@ -488,7 +472,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lc_test_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
-        let results = search_content(&dir, "", true, false, None).matches;
+        let results = search_content(&dir, "", true, false, &AtomicBool::new(false)).matches;
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -511,7 +495,7 @@ mod tests {
         let content = std::iter::repeat_n("needle\n", MAX_CONTENT_RESULTS + 1).collect::<String>();
         fs::write(dir.join("many.txt"), content).unwrap();
 
-        let outcome = search_content(&dir, "needle", false, false, None);
+        let outcome = search_content(&dir, "needle", false, false, &AtomicBool::new(false));
 
         assert_eq!(outcome.matches.len(), MAX_CONTENT_RESULTS);
         assert_eq!(
@@ -540,7 +524,7 @@ mod tests {
         let file = File::create(dir.join("large.txt")).unwrap();
         file.set_len(MAX_CONTENT_FILE_BYTES + 1).unwrap();
 
-        let outcome = search_content(&dir, "needle", false, false, None);
+        let outcome = search_content(&dir, "needle", false, false, &AtomicBool::new(false));
 
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::FileTooLarge));
@@ -565,7 +549,7 @@ mod tests {
 
         fs::write(dir.join("binary.bin"), b"needle\0needle\n").unwrap();
 
-        let outcome = search_content(&dir, "needle", false, false, None);
+        let outcome = search_content(&dir, "needle", false, false, &AtomicBool::new(false));
 
         assert!(outcome.matches.is_empty());
         assert_eq!(outcome.truncated, Some(TruncationReason::BinaryFile));
@@ -589,7 +573,7 @@ mod tests {
         content.extend_from_slice(b"\nneedle\n");
         fs::write(dir.join("long_line.txt"), content).unwrap();
 
-        let outcome = search_content(&dir, "needle", false, false, None);
+        let outcome = search_content(&dir, "needle", false, false, &AtomicBool::new(false));
 
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 2);
@@ -611,7 +595,7 @@ mod tests {
 
         fs::write(dir.join("crlf.txt"), b"hello world\r\nfoo bar\r\n").unwrap();
 
-        let outcome = search_content(&dir, "world", false, false, None);
+        let outcome = search_content(&dir, "world", false, false, &AtomicBool::new(false));
 
         assert_eq!(outcome.matches.len(), 1);
         assert!(!outcome.matches[0].2.contains('\r'));
@@ -640,7 +624,7 @@ mod tests {
 
         fs::write(dir.join("bbb_binary.bin"), b"needle\0needle\n").unwrap();
 
-        let outcome = search_content(&dir, "needle", false, false, None);
+        let outcome = search_content(&dir, "needle", false, false, &AtomicBool::new(false));
 
         assert!(outcome.matches.is_empty());
         let reason = outcome.truncated.unwrap();
@@ -671,7 +655,7 @@ mod tests {
             fs::write(dir.join(format!("bbb_match_{i}.txt")), "needle\n").unwrap();
         }
 
-        let outcome = search_content(&dir, "needle", false, false, None);
+        let outcome = search_content(&dir, "needle", false, false, &AtomicBool::new(false));
 
         assert!(outcome.truncated.is_some());
         assert_ne!(
@@ -702,7 +686,14 @@ mod tests {
         fs::write(dir.join("outside/target.txt"), "needle").unwrap();
         symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
 
-        let results = search_content(&dir.join("root"), "needle", true, false, None).matches;
+        let results = search_content(
+            &dir.join("root"),
+            "needle",
+            true,
+            false,
+            &AtomicBool::new(false),
+        )
+        .matches;
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -724,16 +715,16 @@ mod tests {
 
         fs::write(dir.join("hello.txt"), "Hello World\naŻółć gęślą\n").unwrap();
 
-        let outcome = search_content(&dir, "hello", false, false, None);
+        let outcome = search_content(&dir, "hello", false, false, &AtomicBool::new(false));
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 1);
         assert!(outcome.errors.is_empty());
 
-        let outcome = search_content(&dir, "ŻÓŁĆ", false, true, None);
+        let outcome = search_content(&dir, "ŻÓŁĆ", false, true, &AtomicBool::new(false));
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
 
-        let outcome = search_content(&dir, "ŻÓŁĆ", false, false, None);
+        let outcome = search_content(&dir, "ŻÓŁĆ", false, false, &AtomicBool::new(false));
         assert_eq!(outcome.matches.len(), 1);
         assert_eq!(outcome.matches[0].1, 2);
         assert!(outcome.errors.is_empty());
@@ -757,7 +748,7 @@ mod tests {
 
         fs::write(dir.join("hello.txt"), "Hello World\n").unwrap();
 
-        let outcome = search_content(&dir, "hello", false, true, None);
+        let outcome = search_content(&dir, "hello", false, true, &AtomicBool::new(false));
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
 
@@ -783,7 +774,7 @@ mod tests {
         fs::write(dir.join("real.txt"), "needle\n").unwrap();
         symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let results = search_content(&dir, "needle", false, false, None).matches;
+        let results = search_content(&dir, "needle", false, false, &AtomicBool::new(false)).matches;
         assert_eq!(results.len(), 1);
         assert!(results[0].0.ends_with("real.txt"));
 
@@ -804,7 +795,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let outcome = search_content(&dir, "needle", true, false, None);
+        let outcome = search_content(&dir, "needle", true, false, &AtomicBool::new(false));
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.truncated, None);

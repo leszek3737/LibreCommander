@@ -1,6 +1,6 @@
+use crate::app::mime::is_image_mime;
 use crate::app::types::ViewMode;
 
-use super::mime::is_image_mime;
 use super::open::ViewerState;
 use super::scroll::line_number_column_width;
 

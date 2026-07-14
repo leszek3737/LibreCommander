@@ -56,19 +56,12 @@ impl TextInput {
         self.cursor
     }
 
-    /// Display-column offset of the left edge of the visible window, snapped to
-    /// a grapheme boundary. Derived on demand from the current text, cursor and
-    /// `visible_width`; returns 0 when `visible_width == 0`.
-    pub fn scroll_offset(&self) -> usize {
-        self.current_scroll_offset()
-    }
-
     pub fn set_visible_width(&mut self, width: usize) {
         self.visible_width = width;
     }
 
-    // O(n) in the cursor index, but only invoked from `current_scroll_offset`,
-    // which itself runs only when `scroll_offset()` is read (cursor positioning
+    // O(n) in the cursor index, but only invoked from `scroll_offset`,
+    // which itself runs only when the scroll window is read (cursor positioning
     // on a mouse click) — not on the per-keystroke edit path — so caching it
     // would add invalidation complexity for no measurable win.
     fn cursor_display(&self) -> usize {
@@ -79,9 +72,10 @@ impl TextInput {
             .sum()
     }
 
-    /// Centralized derivation of the horizontal scroll offset. This is the only
-    /// place the scroll window is computed; mutators never refresh it eagerly.
-    fn current_scroll_offset(&self) -> usize {
+    /// Display-column offset of the left edge of the visible window, snapped to
+    /// a grapheme boundary. Derived on demand from the current text, cursor and
+    /// `visible_width`; returns 0 when `visible_width == 0`.
+    pub fn scroll_offset(&self) -> usize {
         if self.visible_width == 0 {
             return 0;
         }

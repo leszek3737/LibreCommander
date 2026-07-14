@@ -206,7 +206,7 @@ pub fn start_search_job(state: &mut AppState, running_job: &mut Option<RunningJo
     let handle = match thread::Builder::new()
         .name("search-worker".into())
         .spawn(move || {
-            let outcome = ops::search_files(&dir, &pattern_owned, true, false, Some(&cancel_clone));
+            let outcome = ops::search_files(&dir, &pattern_owned, true, false, &cancel_clone);
             let _ = sender.send(JobMessage::SearchFinished {
                 outcome: Box::new(outcome),
                 pattern: pattern_owned,
@@ -356,9 +356,9 @@ fn format_progress_message(progress: &ops::batch::BatchProgress, canceling: bool
         let _ = write!(
             buf,
             "{} / {} | {}/s",
-            ops::batch::BatchProgress::format_bytes(progress.bytes_done),
-            ops::batch::BatchProgress::format_bytes(progress.bytes_total),
-            ops::batch::BatchProgress::format_bytes(progress.speed().round() as u64),
+            crate::app::types::format_size(progress.bytes_done),
+            crate::app::types::format_size(progress.bytes_total),
+            crate::app::types::format_size(progress.speed().round() as u64),
         );
         if let Some(eta) = progress.eta() {
             buf.push_str(" | ETA ");

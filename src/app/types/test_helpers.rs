@@ -205,6 +205,6 @@ impl TestEntry {
         let owner = self.owner.as_deref().unwrap_or("");
         let group = self.group.as_deref().unwrap_or("");
 
-        FileEntry::new(self.name, path, cha, owner, group, self.selected, None)
+        FileEntry::new(self.name, path, cha, owner, group, self.selected)
     }
 }

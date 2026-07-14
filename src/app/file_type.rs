@@ -1,18 +1,8 @@
+use crate::app::mime::{self, ends_with_ignore_ascii_case};
 use crate::app::types::FileCategory;
 
-const ARCHIVE_SUFFIXES: &[&str] = &[
-    ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".zip", ".tar", ".gz", ".bz2", ".xz", ".zst",
-    ".7z", ".rar", ".tgz", ".tbz", ".tbz2", ".txz", ".tzst", ".lz", ".lzma", ".lzo", ".br", ".cab",
-    ".iso", ".dmg", ".pkg", ".deb", ".rpm", ".apk", ".ar", ".cpio", ".jar", ".war", ".ear", ".xar",
-    ".z", ".ace", ".arj",
-];
-
-const IMAGE_SUFFIXES: &[&str] = &[
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".avif", ".heic", ".heif", ".tif",
-    ".tiff", ".ico", ".icns", ".raw", ".cr2", ".nef", ".orf", ".arw", ".dng", ".psd", ".xcf",
-    ".ai", ".eps",
-];
-
+// Source / document / config stay table-driven: category precedence differs from
+// MIME (e.g. `.md` is Document, not Code; config exact names and prefixes).
 const SOURCE_CODE_SUFFIXES: &[&str] = &[
     ".rs", ".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".c", ".h", ".cc", ".hh",
     ".cpp", ".cxx", ".hpp", ".hxx", ".go", ".java", ".kt", ".kts", ".swift", ".m", ".mm", ".cs",
@@ -49,16 +39,6 @@ const DOCUMENT_SUFFIXES: &[&str] = &[
     ".csv",
     ".tsv",
     ".log",
-];
-
-const AUDIO_SUFFIXES: &[&str] = &[
-    ".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".wma", ".aiff", ".aif",
-    ".alac", ".ape", ".mid", ".midi", ".mpc", ".amr", ".au",
-];
-
-const VIDEO_SUFFIXES: &[&str] = &[
-    ".mp4", ".avi", ".mkv", ".mov", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv", ".ogv",
-    ".3gp", ".3g2", ".mts", ".m2ts", ".vob", ".rm", ".rmvb", ".asf",
 ];
 
 const CONFIG_SUFFIXES: &[&str] = &[
@@ -110,10 +90,7 @@ const CONFIG_EXACT_NAMES: &[&str] = &[
     "Jenkinsfile",
 ];
 
-/// Dotless basenames matched case-insensitively on every platform (same set as
-/// `mime::dotless_config_mime`). On Linux `CONFIG_EXACT_NAMES` alone is
-/// case-sensitive, so bare `makefile` / `dockerfile` would otherwise fall
-/// through to Other; this table closes that gap for icon/color category only.
+/// Dotless basenames matched case-insensitively (same set as `mime::dotless_config_mime`).
 const CONFIG_DOTLESS_CASEFOLD: &[&str] = &[
     "makefile",
     "dockerfile",
@@ -128,22 +105,6 @@ const CONFIG_DOTLESS_CASEFOLD: &[&str] = &[
 
 const CONFIG_PREFIXES: &[&str] = &[".env."];
 
-const FONT_SUFFIXES: &[&str] = &[".ttf", ".otf", ".woff", ".woff2", ".eot"];
-
-#[inline]
-fn ends_with_ignore_ascii_case(s: &str, suffix: &str) -> bool {
-    if suffix.is_empty() {
-        return false;
-    }
-    let s_bytes = s.as_bytes();
-    let suffix_bytes = suffix.as_bytes();
-    s_bytes.len() >= suffix_bytes.len()
-        && s_bytes[s_bytes.len() - suffix_bytes.len()..].eq_ignore_ascii_case(suffix_bytes)
-}
-
-// NOTE: linear scan over ~44 suffixes per file. Acceptable for TUI scale
-// (directories rarely exceed thousands of entries). A phf perfect hash or
-// binary search would reduce this but adds dependency complexity.
 #[inline]
 fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
     suffixes
@@ -151,15 +112,7 @@ fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
         .any(|suffix| ends_with_ignore_ascii_case(name, suffix))
 }
 
-// NOTE: case-sensitivity is chosen at compile time via `cfg!(target_os)` rather
-// than by probing the underlying filesystem's case-folding behavior at runtime.
-// This is a deliberate simplification: Linux filesystems are case-sensitive by
-// default, while macOS/Windows are case-insensitive by default. It can misjudge
-// atypical mounts (a case-insensitive volume on Linux, or a case-sensitive APFS
-// volume on macOS), but the result only drives icon/color categorization, never
-// file operations, so a wrong guess is purely cosmetic. `exact_name_match` and
-// `prefix_match` share this single policy so that name and prefix checks fold
-// identically (e.g. `.env` and `.env.local` behave the same way).
+// Case-sensitivity via `cfg!(target_os)` (cosmetic icons/colors only).
 #[inline]
 fn name_is_case_sensitive() -> bool {
     cfg!(target_os = "linux")
@@ -188,28 +141,84 @@ fn prefix_match(name: &str, prefix: &str) -> bool {
     }
 }
 
-// Generates the family of `pub fn is_xxx(&str) -> bool` suffix predicates.
-// Each one was an identical `has_any_suffix(name, TABLE)` wrapper; the macro
-// keeps them as distinct public functions while removing the boilerplate.
-macro_rules! suffix_predicates {
-    ($($name:ident => $suffixes:ident),+ $(,)?) => {
-        $(
-            #[inline]
-            pub fn $name(name: &str) -> bool {
-                has_any_suffix(name, $suffixes)
-            }
-        )+
-    };
+/// Archive / compressed container MIME types produced by [`mime::extension_mime`].
+fn is_archive_mime(m: &str) -> bool {
+    matches!(
+        m,
+        "application/zip"
+            | "application/x-tar"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/x-bzip2"
+            | "application/x-xz"
+            | "application/x-7z-compressed"
+            | "application/vnd.rar"
+            | "application/x-rar-compressed"
+            | "application/zstd"
+            | "application/x-lzma"
+            | "application/vnd.ms-cab-compressed"
+            | "application/x-iso9660-image"
+            | "application/x-apple-diskimage"
+            | "application/x-debian-package"
+            | "application/x-rpm"
+            | "application/vnd.android.package-archive"
+            | "application/x-unix-archive"
+            | "application/x-cpio"
+            | "application/java-archive"
+            | "application/x-xar"
+            | "application/x-ace"
+            | "application/x-arj"
+            | "application/x-lzop"
+            | "application/x-brotli"
+    )
 }
 
-suffix_predicates! {
-    is_archive => ARCHIVE_SUFFIXES,
-    is_image => IMAGE_SUFFIXES,
-    is_source_code => SOURCE_CODE_SUFFIXES,
-    is_document => DOCUMENT_SUFFIXES,
-    is_audio => AUDIO_SUFFIXES,
-    is_video => VIDEO_SUFFIXES,
-    is_font => FONT_SUFFIXES,
+#[inline]
+pub fn is_archive(name: &str) -> bool {
+    mime::extension_mime(name).is_some_and(is_archive_mime)
+}
+
+#[inline]
+pub fn is_image(name: &str) -> bool {
+    match mime::extension_mime(name) {
+        // djvu is a document in the panel category (see DOCUMENT_SUFFIXES).
+        Some(m) if m.starts_with("image/") && m != "image/vnd.djvu" => true,
+        Some("application/postscript") => true,
+        _ => false,
+    }
+}
+
+#[inline]
+fn is_video(name: &str) -> bool {
+    match mime::extension_mime(name) {
+        Some(m) if m.starts_with("video/") => true,
+        Some("application/vnd.rn-realmedia") => true,
+        _ => false,
+    }
+}
+
+#[inline]
+fn is_audio(name: &str) -> bool {
+    mime::extension_mime(name).is_some_and(|m| m.starts_with("audio/"))
+}
+
+#[inline]
+fn is_font(name: &str) -> bool {
+    match mime::extension_mime(name) {
+        Some(m) if m.starts_with("font/") => true,
+        Some("application/vnd.ms-fontobject") => true,
+        _ => false,
+    }
+}
+
+#[inline]
+pub fn is_source_code(name: &str) -> bool {
+    has_any_suffix(name, SOURCE_CODE_SUFFIXES)
+}
+
+#[inline]
+fn is_document(name: &str) -> bool {
+    has_any_suffix(name, DOCUMENT_SUFFIXES)
 }
 
 #[inline]

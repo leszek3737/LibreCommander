@@ -308,8 +308,11 @@ fn test_render_confirmation_dialog_inner() {
                 "Confirm",
                 "Are you sure?",
                 &[
-                    (Theme::highlight_bold(), "[ Yes ]"),
-                    (Theme::dialog(), "[ No ]"),
+                    (
+                        Theme::highlight_bold_with_colors(&DEFAULT_COLORS),
+                        "[ Yes ]",
+                    ),
+                    (Theme::dialog_with_colors(&DEFAULT_COLORS), "[ No ]"),
                 ],
                 &["file1.txt", "file2.txt"] as &[&str],
                 &DEFAULT_COLORS,
@@ -352,7 +355,7 @@ fn test_render_confirmation_dialog_inner_empty_title_no_files() {
                 area,
                 "",
                 "msg",
-                &[(Theme::dialog(), "[ OK ]")],
+                &[(Theme::dialog_with_colors(&DEFAULT_COLORS), "[ OK ]")],
                 &[] as &[&str],
                 &DEFAULT_COLORS,
             );
@@ -424,7 +427,9 @@ fn test_input_dialog_empty_value_has_warning_border() {
 
     let input_area = chunks[1];
     let top_left = buf[(input_area.x, input_area.y)].clone();
-    let warning_color = Theme::warning().fg.unwrap_or(Color::Yellow);
+    let warning_color = Theme::warning_with_colors(&DEFAULT_COLORS)
+        .fg
+        .unwrap_or(Color::Yellow);
     assert_eq!(
         top_left.fg, warning_color,
         "empty value input border should have warning color"

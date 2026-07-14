@@ -5,10 +5,10 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::app::mime::{is_image_mime, should_open_as_text};
 use crate::app::types::ViewMode;
 
 use super::hex::HEX_BYTES_PER_LINE;
-use super::mime::{is_image_mime, should_open_as_text};
 use super::scroll::line_number_column_width;
 
 /// Maximum bytes the viewer will materialize for any file — and the cap on the
@@ -401,7 +401,7 @@ impl ViewerState {
     }
 
     fn format_archive_listing(path: &Path) -> io::Result<String> {
-        use crate::ops::archive::list::list_archive;
+        use crate::ops::archive::list_archive;
         use std::fmt::Write;
 
         let entries = list_archive(path).map_err(|e| {

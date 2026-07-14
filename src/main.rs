@@ -312,7 +312,7 @@ fn poll_background_loads(loop_state: &mut AppLoop, state: &mut AppState) -> bool
     if let Some((source, dest)) = state.ui.pending_archive_list.take() {
         let src = source.clone();
         match app::bg_load::BgLoad::spawn("archive-list", move |_cancel| {
-            (source, dest, lc::ops::archive::list::list_archive(&src))
+            (source, dest, lc::ops::archive::list_archive(&src))
         }) {
             Ok(load) => loop_state.archive_list_load = Some(load),
             Err(e) => {

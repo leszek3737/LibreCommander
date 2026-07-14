@@ -2,8 +2,6 @@
 //! Note: uid/gid owner-name lookups use Unix-specific APIs and are
 //! `cfg(unix)`-gated; other platforms get empty owner/group names.
 
-#[cfg(test)]
-use chrono::{DateTime, Local};
 #[cfg(unix)]
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -12,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::{LazyLock, Mutex};
-#[cfg(test)]
-use std::time::SystemTime;
 
 use crate::app::types::PanelState;
 use crate::fs::cha::Cha;
@@ -213,15 +209,7 @@ fn build_file_entry_from_metadata(
     let (uid, gid) = (cha.uid, cha.gid);
     let (owner, group) = lookup_owner_group(uid, gid);
 
-    FileEntry::new(
-        file_name,
-        path,
-        cha,
-        owner.as_ref(),
-        group.as_ref(),
-        false,
-        None,
-    )
+    FileEntry::new(file_name, path, cha, owner.as_ref(), group.as_ref(), false)
 }
 
 pub fn ensure_path_index(panel: &mut PanelState) {
@@ -257,14 +245,11 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
             owner.as_ref(),
             group.as_ref(),
             false,
-            None,
         ));
     }
 
-    // read_dir is intentionally sequential. Parallel iteration via rayon
-    // would require restructured error reporting (collecting per-entry
-    // errors across threads). The sequential path is fast enough for
-    // interactive directory browsing.
+    // Sequential read_dir: interactive browsing is fast enough without
+    // parallelizing entry collection (which would complicate per-entry errors).
     for result in fs::read_dir(path)? {
         let entry = match result {
             Ok(entry) => entry,
@@ -345,39 +330,16 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
 }
 
 #[cfg(test)]
-pub fn format_date(time: SystemTime) -> String {
-    let datetime: DateTime<Local> = DateTime::from(time);
-    let now = Local::now();
-    let days = now.signed_duration_since(datetime).num_days();
-
-    if (0..=365).contains(&days) {
-        datetime.format("%b %d %H:%M").to_string()
-    } else {
-        datetime.format("%b %d  %Y").to_string()
-    }
-}
-
-#[cfg(test)]
-#[cfg(unix)]
-pub fn is_executable(mode: u32) -> bool {
-    (mode & 0o100) != 0 || (mode & 0o010) != 0 || (mode & 0o001) != 0
-}
-
-#[cfg(test)]
-#[cfg(not(unix))]
-pub fn is_executable(_mode: u32) -> bool {
-    false
-}
-
-#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::app::types::format_size;
+    #[cfg(unix)]
+    use crate::fs::cha::ChaMode;
     use std::fs::{self, File};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::time::Duration;
+    use std::time::SystemTime;
     use tempfile::TempDir;
 
     fn test_entry(name: &str, selected: bool) -> FileEntry {
@@ -449,17 +411,16 @@ mod tests {
         assert_eq!(FileEntry::display_permissions_raw(0o777), "rwxrwxrwx");
     }
 
-    // Unix permission-bit semantics; on Windows is_executable has no mode bits
-    // to inspect.
+    // Unix permission-bit semantics; on Windows ChaMode has no exec bits.
     #[cfg(unix)]
     #[test]
     fn test_is_executable() {
-        assert!(is_executable(0o100));
-        assert!(is_executable(0o010));
-        assert!(is_executable(0o001));
-        assert!(is_executable(0o755));
-        assert!(!is_executable(0o644));
-        assert!(!is_executable(0o000));
+        assert!(ChaMode::new(0o100).is_executable());
+        assert!(ChaMode::new(0o010).is_executable());
+        assert!(ChaMode::new(0o001).is_executable());
+        assert!(ChaMode::new(0o755).is_executable());
+        assert!(!ChaMode::new(0o644).is_executable());
+        assert!(!ChaMode::new(0o000).is_executable());
     }
 
     #[test]
@@ -490,20 +451,6 @@ mod tests {
         assert!(arc.starts_with("bad"));
         assert!(arc.ends_with("name"));
         assert!(arc.contains('\u{FFFD}'));
-    }
-
-    #[test]
-    fn test_format_date_recent() {
-        let recent = SystemTime::now() - Duration::from_secs(60 * 60 * 24 * 7);
-        let result = format_date(recent);
-        assert!(result.contains(':'));
-    }
-
-    #[test]
-    fn test_format_date_old() {
-        let old = SystemTime::now() - Duration::from_secs(60 * 60 * 24 * 400);
-        let result = format_date(old);
-        assert!(!result.contains(':'));
     }
 
     #[test]

@@ -8,17 +8,6 @@ use crate::fs::watcher::Watcher;
 use crate::ops;
 use crate::ui::LAYOUT_OVERHEAD_ROWS;
 
-pub fn file_names_from_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
-    paths
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| p.clone())
-        })
-        .collect()
-}
-
 pub fn sync_watcher_job_state(
     watcher: &Option<Watcher>,
     job_running: bool,
@@ -215,10 +204,6 @@ pub fn refresh_both(state: &mut AppState) {
     refresh_panel(&mut state.right_panel, visible);
 }
 
-pub fn set_active_panel(state: &mut AppState, panel: ActivePanel) {
-    state.set_active_panel(panel);
-}
-
 // Indices into the top menu bar (`crate::menu::MENUS`):
 // 0:Left 1:File 2:Command 3:Options 4:Right. The "Left"/"Right" menus drive the
 // panel of the same name, so their selection maps onto the matching `ActivePanel`.
@@ -228,15 +213,15 @@ const MENU_ITEM_RIGHT_PANEL: usize = 4;
 pub fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
     let original = state.active_panel;
     match state.ui.menu_selected {
-        MENU_ITEM_LEFT_PANEL => set_active_panel(state, ActivePanel::Left),
-        MENU_ITEM_RIGHT_PANEL => set_active_panel(state, ActivePanel::Right),
+        MENU_ITEM_LEFT_PANEL => state.set_active_panel(ActivePanel::Left),
+        MENU_ITEM_RIGHT_PANEL => state.set_active_panel(ActivePanel::Right),
         _ => {}
     }
     let result = f(state);
     if matches!(state.mode, AppMode::Dialog(_)) {
         state.ui.menu_restore_panel = Some(original);
     } else {
-        set_active_panel(state, original);
+        state.set_active_panel(original);
     }
     result
 }
@@ -282,32 +267,11 @@ mod tests {
     }
 
     #[test]
-    fn test_file_names_from_paths() {
-        let paths = vec![
-            PathBuf::from("/tmp/a.txt"),
-            PathBuf::from("/home/user/b.rs"),
-            PathBuf::from("/"),
-        ];
-        let names = file_names_from_paths(&paths);
-        assert_eq!(names.len(), 3);
-        assert_eq!(names[0], PathBuf::from("a.txt"));
-        assert_eq!(names[1], PathBuf::from("b.rs"));
-        assert_eq!(names[2], PathBuf::from("/"));
-    }
-
-    #[test]
-    fn test_file_names_from_paths_empty() {
-        let paths: Vec<PathBuf> = vec![];
-        let names = file_names_from_paths(&paths);
-        assert!(names.is_empty());
-    }
-
-    #[test]
     fn test_set_active_panel() {
         let mut state = AppState::default();
-        set_active_panel(&mut state, ActivePanel::Right);
+        state.set_active_panel(ActivePanel::Right);
         assert_eq!(state.active_panel, ActivePanel::Right);
-        set_active_panel(&mut state, ActivePanel::Left);
+        state.set_active_panel(ActivePanel::Left);
         assert_eq!(state.active_panel, ActivePanel::Left);
     }
 }

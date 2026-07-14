@@ -8,36 +8,19 @@ use crate::app::types::FileEntry;
 use crate::fs::reader::{file_info_from_metadata, get_file_info};
 use crate::ops::search::pattern::{CompiledPattern, MatchScratch};
 use crate::ops::search::walk::{
-    FileSearchContext, SearchContext, item_limit_reached, prepare_dir_scan, seed_visited_dir,
-    should_recurse, with_fresh_cancel,
+    FileSearchContext, item_limit_reached, prepare_dir_scan, seed_visited_dir, should_recurse,
 };
 use crate::ops::search::{
     MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
 };
+use std::sync::atomic::Ordering;
 
 /// Initial capacity for the visited inode set. Most directories contain well under
 /// 256 entries; this avoids reallocations for typical workloads while staying small.
 const VISITED_INODE_CAP: usize = 256;
 
 /// Search for files by name pattern.
-///
-/// When `cancel` is `None`, a fresh never-set flag is used (uncancellable run).
 pub fn search_files(
-    path: &Path,
-    pattern: &str,
-    recursive: bool,
-    case_sensitive: bool,
-    cancel: Option<&AtomicBool>,
-) -> SearchOutcome<FileEntry, SearchError> {
-    match cancel {
-        Some(c) => search_files_inner(path, pattern, recursive, case_sensitive, c),
-        None => {
-            with_fresh_cancel(|c| search_files_inner(path, pattern, recursive, case_sensitive, c))
-        }
-    }
-}
-
-fn search_files_inner(
     path: &Path,
     pattern: &str,
     recursive: bool,
@@ -52,7 +35,7 @@ fn search_files_inner(
     let mut ctx = FileSearchContext {
         outcome: &mut outcome,
         visited: &mut visited,
-        cancel: Some(cancel),
+        cancel,
     };
     search_files_recursive(
         path,
@@ -73,7 +56,7 @@ fn search_files_recursive(
     ctx: &mut FileSearchContext<'_>,
     scratch: &mut MatchScratch,
 ) {
-    if ctx.is_cancelled() {
+    if ctx.cancel.load(Ordering::Relaxed) {
         return;
     }
     let Some(entries) =
@@ -83,7 +66,7 @@ fn search_files_recursive(
     };
 
     for entry in entries {
-        if ctx.is_cancelled() {
+        if ctx.cancel.load(Ordering::Relaxed) {
             return;
         }
         if item_limit_reached(ctx.outcome, MAX_SEARCH_ITEMS) {
@@ -191,12 +174,13 @@ mod tests {
             drop(f3);
         }
 
-        let results = search_files(dir_path, "*.txt", true, false, None).matches;
+        let results = search_files(dir_path, "*.txt", true, false, &AtomicBool::new(false)).matches;
         assert_eq!(results.len(), 2, "Expected 2 results, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
         assert!(results.iter().any(|e| e.name == "test3.txt"));
 
-        let results = search_files(dir_path, "*.txt", false, false, None).matches;
+        let results =
+            search_files(dir_path, "*.txt", false, false, &AtomicBool::new(false)).matches;
         assert_eq!(results.len(), 1, "Expected 1 result, found {:?}", results);
         assert!(results.iter().any(|e| e.name == "test1.txt"));
 
@@ -216,7 +200,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("target.txt"), "metadata").unwrap();
 
-        let results = search_files(&dir, "target.txt", false, false, None).matches;
+        let results =
+            search_files(&dir, "target.txt", false, false, &AtomicBool::new(false)).matches;
 
         assert_eq!(results.len(), 1);
         assert!(!results[0].owner.is_empty());
@@ -235,7 +220,7 @@ mod tests {
             std::env::temp_dir().join(format!("lc_search_missing_{}_{}", std::process::id(), id));
         let _ = fs::remove_dir_all(&dir);
 
-        let outcome = search_files(&dir, "*.txt", true, false, None);
+        let outcome = search_files(&dir, "*.txt", true, false, &AtomicBool::new(false));
 
         assert!(outcome.matches.is_empty());
         assert!(!outcome.errors.is_empty());
@@ -257,7 +242,7 @@ mod tests {
             File::create(dir.join(format!("file_{i}.txt"))).unwrap();
         }
 
-        let outcome = search_files(&dir, "*.txt", false, false, None);
+        let outcome = search_files(&dir, "*.txt", false, false, &AtomicBool::new(false));
 
         assert_eq!(outcome.matches.len(), MAX_SEARCH_ITEMS);
         assert_eq!(outcome.truncated, Some(TruncationReason::ItemLimit));
@@ -285,7 +270,14 @@ mod tests {
         fs::write(dir.join("outside/target.txt"), "x").unwrap();
         symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
 
-        let results = search_files(&dir.join("root"), "target.txt", true, false, None).matches;
+        let results = search_files(
+            &dir.join("root"),
+            "target.txt",
+            true,
+            false,
+            &AtomicBool::new(false),
+        )
+        .matches;
         assert!(results.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -313,7 +305,7 @@ mod tests {
         fs::write(dir.join("real.txt"), "x").unwrap();
         symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let results = search_files(&dir, "*.txt", false, false, None).matches;
+        let results = search_files(&dir, "*.txt", false, false, &AtomicBool::new(false)).matches;
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"real.txt"));
@@ -333,7 +325,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let outcome = search_files(&dir, "*.txt", true, false, None);
+        let outcome = search_files(&dir, "*.txt", true, false, &AtomicBool::new(false));
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
         assert_eq!(outcome.truncated, None);

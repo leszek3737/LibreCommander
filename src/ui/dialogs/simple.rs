@@ -1,6 +1,4 @@
-use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::sync::OnceLock;
 
 use ratatui::{
     Frame,
@@ -54,15 +52,6 @@ impl PropField {
             Self::Owner => "Owner: ",
         }
     }
-}
-
-static PERCENT_LABELS: OnceLock<[String; 101]> = OnceLock::new();
-
-fn percent_label(n: u16) -> &'static str {
-    let labels = PERCENT_LABELS.get_or_init(|| std::array::from_fn(|i| format!("{i}%")));
-    // Defensive clamp: the table only holds 0..=100. Even though callers clamp
-    // today, never index out of range if an unclamped percentage slips through.
-    &labels[(n as usize).min(100)]
 }
 
 fn centered_paragraph<'a>(text: &'a str, style: Style) -> Paragraph<'a> {
@@ -146,10 +135,11 @@ pub fn render_progress_dialog(
     f.render_widget(msg_paragraph, chunks[0]);
 
     let clamped = (percent.clamp(0.0, 100.0).round()) as u16;
+    let label = format!("{clamped}%");
     let gauge = Gauge::default()
-        .gauge_style(Theme::progress_bar_with_colors(colors))
+        .gauge_style(Theme::help_dialog_with_colors(colors))
         .percent(clamped)
-        .label(percent_label(clamped));
+        .label(label);
     f.render_widget(gauge, chunks[1]);
 
     let hint_text = if !cancellable {
@@ -163,45 +153,6 @@ pub fn render_progress_dialog(
         let hint = centered_paragraph(hint_text, Theme::warning_with_colors(colors));
         f.render_widget(hint, chunks[2]);
     }
-}
-
-thread_local! {
-    /// Render-local memo for the properties-dialog title.
-    ///
-    /// Reformatting `"Properties — {name}"` every frame is wasteful while the
-    /// same file's dialog stays open, so the title is cached keyed by the
-    /// (already truncated) display name. This is purely a render optimization:
-    /// it never touches `AppState` and the rendered output is identical to
-    /// recomputing the title every frame.
-    ///
-    /// `None` means the cache has never been populated (first call). Using
-    /// `Option` rather than a `("", "")` sentinel avoids a false cache hit when
-    /// `display_name` is the empty string (e.g. width-0 truncation on the first
-    /// frame), which would leave the title as `""` instead of `"Properties — "`.
-    static PROPERTIES_TITLE: RefCell<Option<(String, String)>> =
-        const { RefCell::new(None) };
-}
-
-/// Runs `body` with the cached properties-dialog title for `display_name`,
-/// recomputing the title only when the name changed since the last frame.
-fn with_properties_title<R>(display_name: &str, body: impl FnOnce(&str) -> R) -> R {
-    PROPERTIES_TITLE.with_borrow_mut(|cache| {
-        let needs_recompute = cache
-            .as_ref()
-            .is_none_or(|(key, _)| key.as_str() != display_name);
-        if needs_recompute {
-            let mut title =
-                String::with_capacity(PROPERTIES_TITLE_PREFIX.len() + display_name.len());
-            title.push_str(PROPERTIES_TITLE_PREFIX);
-            title.push_str(display_name);
-            *cache = Some((display_name.to_owned(), title));
-        }
-        match cache.as_ref() {
-            Some((_, title)) => body(title.as_str()),
-            // cache was set to Some above by the needs_recompute branch
-            None => unreachable!("cache set to Some above"),
-        }
-    })
 }
 
 /// Builds a single `"Label: value"` line, pre-sizing the buffer so the value
@@ -231,12 +182,12 @@ pub fn render_properties_dialog(
 ) {
     let display_name = truncate_path(&info.name, PROPERTIES_NAME_MAX_WIDTH);
 
-    let inner = with_properties_title(&display_name, |title| {
-        let block = dialog_block(title, Theme::warning_dialog_with_colors(colors));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-        inner
-    });
+    let mut title = String::with_capacity(PROPERTIES_TITLE_PREFIX.len() + display_name.len());
+    title.push_str(PROPERTIES_TITLE_PREFIX);
+    title.push_str(&display_name);
+    let block = dialog_block(&title, Theme::warning_dialog_with_colors(colors));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     // Minimum-size guard (see `render_error_dialog`): bail before building lines
     // when the bordered block leaves no inner room.
@@ -274,15 +225,6 @@ mod tests {
     use ratatui::backend::TestBackend;
     use std::borrow::Cow;
 
-    #[test]
-    fn percent_label_clamps_out_of_range() {
-        assert_eq!(percent_label(0), "0%");
-        assert_eq!(percent_label(100), "100%");
-        // n > 100 must clamp to the last valid label, never index out of bounds.
-        assert_eq!(percent_label(101), "100%");
-        assert_eq!(percent_label(u16::MAX), "100%");
-    }
-
     fn sample_info() -> PropertiesInfo<'static> {
         PropertiesInfo {
             name: Cow::Borrowed("file.txt"),
@@ -311,7 +253,7 @@ mod tests {
         ] {
             draw_into(|f| render_error_dialog(f, area, "Err", "boom", &DEFAULT_COLORS));
             draw_into(|f| {
-                // percent > 100 also exercises the `percent_label` clamp.
+                // percent > 100 exercises the clamp path in render_progress_dialog.
                 render_progress_dialog(f, area, "Work", "copying", 150.0, true, &DEFAULT_COLORS);
             });
             draw_into(|f| render_properties_dialog(f, area, &info, &DEFAULT_COLORS));
@@ -324,12 +266,11 @@ mod tests {
     fn progress_dialog_nan_percent_does_not_panic() {
         // NaN input: `NaN.clamp(0.0, 100.0)` propagates NaN, `.round()` stays
         // NaN, and `NaN as u16` saturates to 0 (Rust 1.45+ well-defined cast).
-        // The gauge must render "0%" without panicking on a normal-sized area.
+        // The gauge must render without panicking on a normal-sized area.
         let area = Rect::new(0, 0, 20, 6);
         draw_into(|f| {
             render_progress_dialog(f, area, "Work", "copying", f32::NAN, false, &DEFAULT_COLORS);
         });
-        // Verify the NaN → 0 cast path that `render_progress_dialog` relies on.
-        assert_eq!(percent_label(f32::NAN as u16), "0%");
+        assert_eq!((f32::NAN as u16).min(100), 0);
     }
 }

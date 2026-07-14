@@ -104,7 +104,7 @@ fn tree_build_result_enters_directory_tree() {
 #[test]
 fn archive_listing_runs_off_thread_and_opens_dialog() {
     use lc::app::bg_load::BgLoad;
-    use lc::ops::archive::list::list_archive;
+    use lc::ops::archive::list_archive;
     use std::io::Write as _;
 
     let dir = tempfile::tempdir().unwrap();
