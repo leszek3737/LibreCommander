@@ -7,24 +7,15 @@ use crate::app::types::FileEntry;
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::{SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
 
-pub(super) trait SearchContext {
-    fn is_cancelled(&self) -> bool {
-        self.cancel().is_some_and(|c| c.load(Ordering::Relaxed))
-    }
-
-    fn cancel(&self) -> Option<&AtomicBool>;
+#[inline]
+pub(super) fn is_cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
 }
 
 pub(super) struct FileSearchContext<'a> {
     pub(super) outcome: &'a mut SearchOutcome<FileEntry, SearchError>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
-    pub(super) cancel: Option<&'a AtomicBool>,
-}
-
-impl SearchContext for FileSearchContext<'_> {
-    fn cancel(&self) -> Option<&AtomicBool> {
-        self.cancel
-    }
+    pub(super) cancel: &'a AtomicBool,
 }
 
 pub(super) struct ContentSearchContext<'a> {
@@ -34,13 +25,7 @@ pub(super) struct ContentSearchContext<'a> {
     pub(super) recursive: bool,
     pub(super) outcome: &'a mut SearchOutcome<(Arc<Path>, usize, String), SearchError>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
-    pub(super) cancel: Option<&'a AtomicBool>,
-}
-
-impl SearchContext for ContentSearchContext<'_> {
-    fn cancel(&self) -> Option<&AtomicBool> {
-        self.cancel
-    }
+    pub(super) cancel: &'a AtomicBool,
 }
 
 /// Run `f` with a fresh, never-cancelled flag.

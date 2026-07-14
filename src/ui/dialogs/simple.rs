@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::fmt::Write as _;
 
 use ratatui::{
@@ -156,45 +155,6 @@ pub fn render_progress_dialog(
     }
 }
 
-thread_local! {
-    /// Render-local memo for the properties-dialog title.
-    ///
-    /// Reformatting `"Properties — {name}"` every frame is wasteful while the
-    /// same file's dialog stays open, so the title is cached keyed by the
-    /// (already truncated) display name. This is purely a render optimization:
-    /// it never touches `AppState` and the rendered output is identical to
-    /// recomputing the title every frame.
-    ///
-    /// `None` means the cache has never been populated (first call). Using
-    /// `Option` rather than a `("", "")` sentinel avoids a false cache hit when
-    /// `display_name` is the empty string (e.g. width-0 truncation on the first
-    /// frame), which would leave the title as `""` instead of `"Properties — "`.
-    static PROPERTIES_TITLE: RefCell<Option<(String, String)>> =
-        const { RefCell::new(None) };
-}
-
-/// Runs `body` with the cached properties-dialog title for `display_name`,
-/// recomputing the title only when the name changed since the last frame.
-fn with_properties_title<R>(display_name: &str, body: impl FnOnce(&str) -> R) -> R {
-    PROPERTIES_TITLE.with_borrow_mut(|cache| {
-        let needs_recompute = cache
-            .as_ref()
-            .is_none_or(|(key, _)| key.as_str() != display_name);
-        if needs_recompute {
-            let mut title =
-                String::with_capacity(PROPERTIES_TITLE_PREFIX.len() + display_name.len());
-            title.push_str(PROPERTIES_TITLE_PREFIX);
-            title.push_str(display_name);
-            *cache = Some((display_name.to_owned(), title));
-        }
-        match cache.as_ref() {
-            Some((_, title)) => body(title.as_str()),
-            // cache was set to Some above by the needs_recompute branch
-            None => unreachable!("cache set to Some above"),
-        }
-    })
-}
-
 /// Builds a single `"Label: value"` line, pre-sizing the buffer so the value
 /// can be appended without a reallocation (replacing a per-line `format!`).
 fn prop_line(field: PropField, value: impl std::fmt::Display) -> Line<'static> {
@@ -222,12 +182,12 @@ pub fn render_properties_dialog(
 ) {
     let display_name = truncate_path(&info.name, PROPERTIES_NAME_MAX_WIDTH);
 
-    let inner = with_properties_title(&display_name, |title| {
-        let block = dialog_block(title, Theme::warning_dialog_with_colors(colors));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-        inner
-    });
+    let mut title = String::with_capacity(PROPERTIES_TITLE_PREFIX.len() + display_name.len());
+    title.push_str(PROPERTIES_TITLE_PREFIX);
+    title.push_str(&display_name);
+    let block = dialog_block(&title, Theme::warning_dialog_with_colors(colors));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     // Minimum-size guard (see `render_error_dialog`): bail before building lines
     // when the bordered block leaves no inner room.

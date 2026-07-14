@@ -8,7 +8,7 @@ use crate::app::types::FileEntry;
 use crate::fs::reader::{file_info_from_metadata, get_file_info};
 use crate::ops::search::pattern::{CompiledPattern, MatchScratch};
 use crate::ops::search::walk::{
-    FileSearchContext, SearchContext, item_limit_reached, prepare_dir_scan, seed_visited_dir,
+    FileSearchContext, is_cancelled, item_limit_reached, prepare_dir_scan, seed_visited_dir,
     should_recurse, with_fresh_cancel,
 };
 use crate::ops::search::{
@@ -52,7 +52,7 @@ fn search_files_inner(
     let mut ctx = FileSearchContext {
         outcome: &mut outcome,
         visited: &mut visited,
-        cancel: Some(cancel),
+        cancel,
     };
     search_files_recursive(
         path,
@@ -73,7 +73,7 @@ fn search_files_recursive(
     ctx: &mut FileSearchContext<'_>,
     scratch: &mut MatchScratch,
 ) {
-    if ctx.is_cancelled() {
+    if is_cancelled(ctx.cancel) {
         return;
     }
     let Some(entries) =
@@ -83,7 +83,7 @@ fn search_files_recursive(
     };
 
     for entry in entries {
-        if ctx.is_cancelled() {
+        if is_cancelled(ctx.cancel) {
             return;
         }
         if item_limit_reached(ctx.outcome, MAX_SEARCH_ITEMS) {

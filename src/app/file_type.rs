@@ -189,7 +189,7 @@ pub fn is_image(name: &str) -> bool {
 }
 
 #[inline]
-pub fn is_video(name: &str) -> bool {
+fn is_video(name: &str) -> bool {
     match mime::extension_mime(name) {
         Some(m) if m.starts_with("video/") => true,
         Some("application/vnd.rn-realmedia") => true,
@@ -198,12 +198,12 @@ pub fn is_video(name: &str) -> bool {
 }
 
 #[inline]
-pub fn is_audio(name: &str) -> bool {
+fn is_audio(name: &str) -> bool {
     mime::extension_mime(name).is_some_and(|m| m.starts_with("audio/"))
 }
 
 #[inline]
-pub fn is_font(name: &str) -> bool {
+fn is_font(name: &str) -> bool {
     match mime::extension_mime(name) {
         Some(m) if m.starts_with("font/") => true,
         Some("application/vnd.ms-fontobject") => true,
@@ -217,7 +217,7 @@ pub fn is_source_code(name: &str) -> bool {
 }
 
 #[inline]
-pub fn is_document(name: &str) -> bool {
+fn is_document(name: &str) -> bool {
     has_any_suffix(name, DOCUMENT_SUFFIXES)
 }
 

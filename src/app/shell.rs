@@ -1,6 +1,5 @@
 use std::io;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use crossterm::cursor::{Hide, Show};
@@ -78,37 +77,22 @@ impl Drop for TerminalRestoreGuard {
 ///
 /// On Windows the `for_menu` parameter is ignored — `COMSPEC` (falling back
 /// to `cmd.exe`) is always used with `/C`, because menu commands are also
-/// executed through `cmd`.
-///
-/// The result is cached in a `OnceLock` so the environment variable lookup
-/// happens at most once.
+/// executed through `cmd`. Shell spawns are rare, so env is read each time.
 #[cfg(windows)]
-fn get_shell(_for_menu: bool) -> &'static (String, &'static str) {
-    static SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
-    SHELL.get_or_init(|| {
-        let shell = get_shell_from_env("COMSPEC", "cmd.exe");
-        (shell, "/C")
-    })
+fn get_shell(_for_menu: bool) -> (String, &'static str) {
+    (get_shell_from_env("COMSPEC", "cmd.exe"), "/C")
 }
 
 /// Returns `(shell_path, flag)` for spawning a shell command.
 ///
 /// `for_menu` selects between `sh -c` (user menu) and `$SHELL -c`
-/// (interactive commands).
-///
-/// The result is cached in a `OnceLock` so the environment variable lookup
-/// happens at most once.
+/// (interactive commands). Shell spawns are rare, so env is read each time.
 #[cfg(not(windows))]
-fn get_shell(for_menu: bool) -> &'static (String, &'static str) {
-    static MENU_SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
-    static INTERACTIVE_SHELL: OnceLock<(String, &'static str)> = OnceLock::new();
+fn get_shell(for_menu: bool) -> (String, &'static str) {
     if for_menu {
-        MENU_SHELL.get_or_init(|| ("sh".to_string(), "-c"))
+        ("sh".to_string(), "-c")
     } else {
-        INTERACTIVE_SHELL.get_or_init(|| {
-            let shell = get_shell_from_env("SHELL", "sh");
-            (shell, "-c")
-        })
+        (get_shell_from_env("SHELL", "sh"), "-c")
     }
 }
 
@@ -167,8 +151,8 @@ pub fn run_shell_command(
         already_restored: false,
     };
     let (shell, flag) = get_shell(for_menu);
-    let status = Command::new(shell)
-        .arg(*flag)
+    let status = Command::new(&shell)
+        .arg(flag)
         .arg(cmd)
         .current_dir(state.active_panel().path())
         .stdin(Stdio::inherit())

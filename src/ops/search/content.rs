@@ -3,13 +3,13 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use memchr::{memchr, memmem};
 
 use crate::ops::search::pattern::contains_case_insensitive;
 use crate::ops::search::walk::{
-    ContentSearchContext, SearchContext, item_limit_reached, prepare_content_dir_scan,
+    ContentSearchContext, is_cancelled, item_limit_reached, prepare_content_dir_scan,
     seed_visited_dir, should_recurse, with_fresh_cancel,
 };
 use crate::ops::search::{
@@ -55,7 +55,7 @@ fn search_content_inner(
         case_sensitive,
         0,
         &mut outcome,
-        Some(cancel),
+        cancel,
     );
     outcome
 }
@@ -67,7 +67,7 @@ fn search_content_recursive(
     case_sensitive: bool,
     depth: usize,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) {
     let pattern_bytes: Vec<u8> = if !case_sensitive {
         pattern.to_lowercase().into_bytes()
@@ -90,7 +90,7 @@ fn search_content_recursive(
 }
 
 fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSearchContext<'_>) {
-    if ctx.is_cancelled() {
+    if is_cancelled(ctx.cancel) {
         return;
     }
     if !path.is_dir() {
@@ -108,7 +108,7 @@ fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSe
     };
 
     for entry in entries {
-        if ctx.is_cancelled() {
+        if is_cancelled(ctx.cancel) {
             return;
         }
         if process_content_entry(entry, path, depth, ctx) {
@@ -123,7 +123,7 @@ fn process_content_entry(
     depth: usize,
     ctx: &mut ContentSearchContext<'_>,
 ) -> bool {
-    if ctx.is_cancelled() {
+    if is_cancelled(ctx.cancel) {
         return true;
     }
     // Content-result cap takes precedence (first reason wins via get_or_insert);
@@ -218,7 +218,7 @@ fn search_in_file(
     case_sensitive: bool,
     pattern_bytes: &[u8],
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) {
     if pattern.is_empty() {
         return;
@@ -280,7 +280,7 @@ struct ScanContext<'a> {
     case_sensitive: bool,
     finder: memmem::Finder<'a>,
     bufs: ScanBuffers,
-    cancel: Option<&'a AtomicBool>,
+    cancel: &'a AtomicBool,
 }
 
 struct ScanBuffers {
@@ -360,7 +360,7 @@ fn scan_lines(
         {
             Ok(0) => break,
             Ok(bytes_read) => {
-                if ctx.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                if is_cancelled(ctx.cancel) {
                     return;
                 }
                 line_no += 1;

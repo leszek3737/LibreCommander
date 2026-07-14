@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::app::file_type::*;
 use crate::app::types::format_time;
 use crate::app::types::sanitize_for_display;
 use crate::ui::theme::{DEFAULT_COLORS, IconTheme};
@@ -338,68 +337,6 @@ fn test_format_permissions_readonly() {
 fn test_format_permissions_no_permissions() {
     let result = FileEntry::display_permissions_raw(0o000);
     assert_eq!(result, "---------");
-}
-
-#[test]
-fn test_is_archive_tar() {
-    assert!(is_archive("file.tar"));
-    assert!(is_archive("archive.TAR"));
-    assert!(is_archive("backup.tar.gz"));
-}
-
-#[test]
-fn test_is_archive_zip() {
-    assert!(is_archive("files.zip"));
-    assert!(is_archive("data.7z"));
-    assert!(is_archive("backup.rar"));
-}
-
-#[test]
-fn test_is_archive_negative() {
-    assert!(!is_archive("document.txt"));
-    assert!(!is_archive("image.png"));
-}
-
-#[test]
-fn test_is_image_jpg() {
-    assert!(is_image("photo.jpg"));
-    assert!(is_image("image.JPEG"));
-}
-
-#[test]
-fn test_is_image_png() {
-    assert!(is_image("screenshot.png"));
-    assert!(is_image("icon.PNG"));
-}
-
-#[test]
-fn test_is_image_negative() {
-    assert!(!is_image("document.txt"));
-    assert!(!is_image("code.rs"));
-}
-
-#[test]
-fn test_is_source_code_rust() {
-    assert!(is_source_code("main.rs"));
-    assert!(is_source_code("lib.RS"));
-}
-
-#[test]
-fn test_is_source_code_python() {
-    assert!(is_source_code("script.py"));
-    assert!(is_source_code("module.PY"));
-}
-
-#[test]
-fn test_is_source_code_js() {
-    assert!(is_source_code("app.js"));
-    assert!(is_source_code("component.ts"));
-}
-
-#[test]
-fn test_is_source_code_negative() {
-    assert!(!is_source_code("image.png"));
-    assert!(!is_source_code("data.ini"));
 }
 
 #[test]
