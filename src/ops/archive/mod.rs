@@ -342,8 +342,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn has_ext_ignore_case(name: &str, ext: &str) -> bool {
-    name.len() >= ext.len()
-        && name.as_bytes()[name.len() - ext.len()..].eq_ignore_ascii_case(ext.as_bytes())
+    crate::app::mime::ends_with_ignore_ascii_case(name, ext)
 }
 
 fn verify_tar_header(mut reader: impl Read) -> bool {

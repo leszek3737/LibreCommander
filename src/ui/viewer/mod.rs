@@ -1,6 +1,5 @@
 mod hex;
 mod loader;
-mod mime;
 mod open;
 mod render;
 mod scroll;

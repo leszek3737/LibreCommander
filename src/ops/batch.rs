@@ -136,26 +136,12 @@ impl BatchProgress {
         let remaining = (self.bytes_total - self.bytes_done) as f64 / speed;
         Some(Duration::from_secs_f64(remaining))
     }
-
-    pub fn format_bytes(bytes: u64) -> String {
-        crate::app::types::format_size(bytes)
-    }
 }
 
 #[cfg(test)]
 pub fn execute_batch(action: PendingAction) -> BatchReport {
     let label = helpers::action_label(&action);
-    execute_batch_with_progress(action, |_| {}, &None, label)
-}
-
-#[cfg(test)]
-pub fn execute_batch_with_progress(
-    action: PendingAction,
-    progress: impl FnMut(BatchProgress),
-    cancel: &Option<Arc<AtomicBool>>,
-    action_label: &'static str,
-) -> BatchReport {
-    execute_batch_with_byte_progress(action, progress, cancel, action_label)
+    execute_batch_with_byte_progress(action, |_| {}, &None, label)
 }
 
 pub fn execute_batch_with_byte_progress(
@@ -468,7 +454,7 @@ where
     let mut state = BatchState {
         used_dests: HashSet::new(),
         bytes_done: 0,
-        bytes_total: helpers::sum_sizes(&sizes),
+        bytes_total: sizes.iter().copied().fold(0, u64::saturating_add),
         errors: Vec::new(),
         success_count: 0,
         canceled: false,
@@ -681,7 +667,7 @@ fn batch_delete(
 
     let total = filtered.len();
     let sizes = helpers::path_sizes(&filtered);
-    let bytes_total = helpers::sum_sizes(&sizes);
+    let bytes_total = sizes.iter().copied().fold(0, u64::saturating_add);
     let mut bytes_done = 0_u64;
 
     report_progress(
@@ -871,7 +857,8 @@ fn batch_create_archive(
     action_label: &'static str,
 ) -> BatchReport {
     let start_time = Instant::now();
-    let total_size = helpers::sum_sizes(&helpers::path_sizes(sources));
+    let sizes = helpers::path_sizes(sources);
+    let total_size = sizes.iter().copied().fold(0, u64::saturating_add);
     let cancel_token = effective_cancel(cancel);
 
     report_progress(

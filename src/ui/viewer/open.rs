@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::types::ViewMode;
 
+use crate::app::mime::{is_image_mime, should_open_as_text};
+
 use super::hex::HEX_BYTES_PER_LINE;
-use super::mime::{is_image_mime, should_open_as_text};
 use super::scroll::line_number_column_width;
 
 /// Maximum bytes the viewer will materialize for any file — and the cap on the

@@ -764,7 +764,6 @@ fn mtime_none_displays_unknown() {
         "",
         "",
         false,
-        None,
     );
     let expected_epoch = chrono::DateTime::from_timestamp(0, 0)
         .expect("valid timestamp")

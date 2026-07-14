@@ -92,7 +92,6 @@ fn mk_entry(name: &str) -> crate::app::types::FileEntry {
         "",
         "",
         false,
-        None,
     )
 }
 

@@ -1,9 +1,9 @@
 use super::hex::format_hex_line;
-use super::mime::should_open_as_text;
 use super::open::ViewerState;
 use super::render::{format_line_with_highlight, render_viewer_with_colors};
 use super::scroll::{line_number_column_width, paragraph_horizontal_scroll};
 use super::{SearchLineMatch, SearchMatch};
+use crate::app::mime::should_open_as_text;
 use crate::app::types::ViewMode;
 use crate::app::types::format_size;
 use crate::ui::theme::ColorPalette;

@@ -146,8 +146,12 @@ fn batch_delete_reports_progress() {
     };
     let mut updates = Vec::new();
 
-    let report =
-        execute_batch_with_progress(action, |progress| updates.push(progress), &None, "Delete");
+    let report = execute_batch_with_byte_progress(
+        action,
+        |progress| updates.push(progress),
+        &None,
+        "Delete",
+    );
 
     assert_eq!(report.success_count, 2);
     assert!(!report.canceled);
@@ -173,7 +177,7 @@ fn batch_copy_cancel_stops_between_items() {
         overwrite: false,
     });
 
-    let report = execute_batch_with_progress(
+    let report = execute_batch_with_byte_progress(
         action,
         |progress| {
             if progress.completed == 1 {
@@ -203,7 +207,7 @@ fn batch_copy_post_action_cancel_reports_canceled() {
         overwrite: false,
     });
 
-    let report = execute_batch_with_progress(
+    let report = execute_batch_with_byte_progress(
         action,
         |progress| {
             if progress.completed == 1 {
@@ -263,7 +267,7 @@ fn batch_copy_cancel_before_start_copies_nothing() {
         dest: dest_dir.path().to_path_buf(),
         overwrite: false,
     });
-    let report = execute_batch_with_progress(action, |_| {}, &Some(cancel), "Copy");
+    let report = execute_batch_with_byte_progress(action, |_| {}, &Some(cancel), "Copy");
     assert!(report.canceled);
     assert_eq!(report.success_count, 0);
     assert!(!dest_dir.path().join("a.txt").exists());
@@ -279,7 +283,7 @@ fn batch_delete_cancel_before_start_deletes_nothing() {
     let action = PendingAction::Delete {
         paths: vec![f1.clone(), f2.clone()],
     };
-    let report = execute_batch_with_progress(action, |_| {}, &Some(cancel), "Delete");
+    let report = execute_batch_with_byte_progress(action, |_| {}, &Some(cancel), "Delete");
     assert!(report.canceled);
     assert!(f1.exists());
     assert!(f2.exists());

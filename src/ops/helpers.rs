@@ -179,47 +179,25 @@ fn path_size_or_zero(path: &Path) -> u64 {
 /// Individual failures are logged and reported as 0 so that batch progress
 /// can still proceed.
 pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    use rayon::prelude::*;
-    paths.par_iter().map(|p| path_size_or_zero(p)).collect()
-}
-
-pub(crate) fn sum_sizes(sizes: &[u64]) -> u64 {
-    sizes.iter().copied().fold(0, u64::saturating_add)
-}
-
-#[derive(Clone, Copy)]
-enum CleanupOp {
-    File,
-    Dir,
-    DirAll,
-}
-
-fn cleanup_path(path: &Path, op: CleanupOp) {
-    let result = match op {
-        CleanupOp::File => fs::remove_file(path),
-        CleanupOp::Dir => fs::remove_dir(path),
-        CleanupOp::DirAll => fs::remove_dir_all(path),
-    };
-    if let Err(e) = result {
-        let label = match op {
-            CleanupOp::File => "file",
-            CleanupOp::Dir => "directory",
-            CleanupOp::DirAll => "directory tree",
-        };
-        debug_log!("failed to clean up {label} {}: {e}", path.display());
-    }
+    paths.iter().map(|p| path_size_or_zero(p)).collect()
 }
 
 pub(crate) fn cleanup_file(path: &Path) {
-    cleanup_path(path, CleanupOp::File);
+    if let Err(e) = fs::remove_file(path) {
+        debug_log!("failed to clean up file {}: {e}", path.display());
+    }
 }
 
 pub(crate) fn cleanup_dir(path: &Path) {
-    cleanup_path(path, CleanupOp::Dir);
+    if let Err(e) = fs::remove_dir(path) {
+        debug_log!("failed to clean up directory {}: {e}", path.display());
+    }
 }
 
 pub(crate) fn cleanup_dir_all(path: &Path) {
-    cleanup_path(path, CleanupOp::DirAll);
+    if let Err(e) = fs::remove_dir_all(path) {
+        debug_log!("failed to clean up directory tree {}: {e}", path.display());
+    }
 }
 
 #[cfg(test)]
@@ -341,12 +319,5 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("f.txt"), b"xyz").unwrap();
         assert_eq!(path_size(&dir).unwrap(), 3);
-    }
-
-    #[test]
-    fn test_sum_sizes() {
-        assert_eq!(sum_sizes(&[]), 0);
-        assert_eq!(sum_sizes(&[1, 2, 3]), 6);
-        assert_eq!(sum_sizes(&[u64::MAX, 1]), u64::MAX);
     }
 }

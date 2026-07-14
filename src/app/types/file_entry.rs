@@ -107,7 +107,6 @@ pub struct FileEntry {
     pub owner: Arc<str>,
     pub group: Arc<str>,
     pub selected: bool,
-    pub mime_type: Option<String>,
     pub time_str: String,
     pub size_str: String,
     pub name_width: usize,
@@ -126,7 +125,6 @@ impl FileEntry {
         owner: impl AsRef<str>,
         group: impl AsRef<str>,
         selected: bool,
-        mime_type: Option<String>,
     ) -> Self {
         let (time_str, size_str, name_width, size_width, time_width) =
             Self::cached_fields(&cha, &name);
@@ -139,7 +137,6 @@ impl FileEntry {
             owner: Arc::from(owner.as_ref()),
             group: Arc::from(group.as_ref()),
             selected,
-            mime_type,
             time_str,
             size_str,
             name_width,
