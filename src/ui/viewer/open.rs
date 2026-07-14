@@ -5,9 +5,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::app::types::ViewMode;
-
 use crate::app::mime::{is_image_mime, should_open_as_text};
+use crate::app::types::ViewMode;
 
 use super::hex::HEX_BYTES_PER_LINE;
 use super::scroll::line_number_column_width;

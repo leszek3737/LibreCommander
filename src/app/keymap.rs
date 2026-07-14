@@ -1,7 +1,8 @@
 /// Static descriptive keymap table for lc (Midnight Commander compatible).
 ///
-/// Each binding records the app mode, key combo, and human-readable description. The `find_duplicate_keys()` helper
-/// validates that no key appears twice within the same mode.
+/// Each binding records the app mode, key combo, and human-readable description.
+/// The `find_duplicate_keys()` helper validates that no key appears twice within
+/// the same mode.
 use std::fmt::Write;
 use std::sync::OnceLock;
 
