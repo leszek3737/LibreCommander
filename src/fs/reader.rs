@@ -334,6 +334,7 @@ pub fn remove_entry(panel: &mut PanelState, path: &Path) {
 mod tests {
     use super::*;
     use crate::app::types::format_size;
+    #[cfg(unix)]
     use crate::fs::cha::ChaMode;
     use std::fs::{self, File};
     #[cfg(unix)]
