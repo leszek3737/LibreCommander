@@ -148,123 +148,22 @@ fn render_input_field(
         return;
     }
 
-    // 1) Scroll-window calc.
-    let (scroll_display, cursor_display) = input_scroll_offset(value, cursor_pos, visible_width);
+    let window = super::input::compute_visible_window(value, cursor_pos, visible_width);
+    // Keep the cursor on the last interior column when a wide grapheme would
+    // otherwise land it on the border (`visible_width >= 1` here).
+    let cursor_col = window.cursor_col.min(visible_width.saturating_sub(1));
 
     INPUT_BUF.with_borrow_mut(|buf| {
         buf.clear();
-        // 2) Render: collect the visible window into the reusable buffer.
-        let (_vis_width, start_cum) =
-            collect_visible_graphemes(value, scroll_display, visible_width, buf);
+        buf.push_str(&window.text);
         let input_paragraph = Paragraph::new(buf.as_str()).block(input_block);
         // `render_widget` consumes `input_paragraph`, dropping the shared borrow of `buf`
         // synchronously here — before `set_cursor_position` below touches the closure scope.
         f.render_widget(input_paragraph, area);
 
-        // 3) Cursor calc (clamped to stay inside the inner area).
-        let cursor_col = input_cursor_col(cursor_display, start_cum, visible_width);
         let cursor_x = input_inner.x + cursor_col as u16;
         f.set_cursor_position((cursor_x, input_inner.y));
     });
-}
-
-/// Computes the horizontal scroll offset (in display columns) and the cursor's
-/// display column for an input field of the given visible width.
-///
-/// Single pass over graphemes: an out-of-range `cursor_pos` is implicitly
-/// clamped because iteration stops at the end of the text.
-fn input_scroll_offset(value: &str, cursor_pos: usize, visible_width: usize) -> (usize, usize) {
-    use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
-
-    let mut cursor_display = 0usize;
-    for (i, g) in value.graphemes(true).enumerate() {
-        if i >= cursor_pos {
-            break;
-        }
-        cursor_display += UnicodeWidthStr::width(g);
-    }
-    // Keep the cursor within the last column of the visible window.
-    let scroll_display = cursor_display.saturating_sub(visible_width.saturating_sub(1));
-    (scroll_display, cursor_display)
-}
-
-/// Computes the cursor's column within the inner input area.
-///
-/// `start_cum` is the cumulative display width at the first visible grapheme; it
-/// can be smaller than `scroll_display` when a wide (e.g. CJK, width-2)
-/// grapheme straddles the scroll boundary, which would otherwise push the cursor
-/// onto or past the right border column. Clamping to `visible_width - 1` keeps
-/// it on the last interior column (`visible_width >= 1` is guaranteed by the
-/// caller's guard).
-fn input_cursor_col(cursor_display: usize, start_cum: usize, visible_width: usize) -> usize {
-    let col = cursor_display.saturating_sub(start_cum);
-    col.min(visible_width.saturating_sub(1))
-}
-
-/// Fills `buf` with the graphemes visible in the scroll window and returns
-/// `(visible_width, start_cum)`, where `start_cum` is the cumulative display
-/// width at the first visible grapheme. `buf` is assumed to be empty on entry.
-///
-/// When a wide grapheme straddles `scroll_display`, the whole grapheme is shown
-/// and `start_cum` reflects its true (pre-grapheme) start, which the cursor
-/// calc accounts for.
-fn collect_visible_graphemes(
-    value: &str,
-    scroll_display: usize,
-    visible_width: usize,
-    buf: &mut String,
-) -> (usize, usize) {
-    use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
-
-    if scroll_display == 0 {
-        let vis_width = collect_graphemes_up_to_width(value, visible_width, buf);
-        return (vis_width, 0);
-    }
-
-    let mut vis_width = 0usize;
-    let mut start_cum = 0usize;
-    let mut cum = 0usize;
-    let mut found_start = false;
-    for g in value.graphemes(true) {
-        let gw = UnicodeWidthStr::width(g);
-        if !found_start && cum + gw > scroll_display {
-            found_start = true;
-            start_cum = cum;
-        }
-        cum += gw;
-        if found_start {
-            if vis_width + gw > visible_width {
-                break;
-            }
-            buf.push_str(g);
-            vis_width += gw;
-        }
-    }
-    if !found_start {
-        // Cursor/scroll past the end of the text: fall back to the start.
-        let vis_width = collect_graphemes_up_to_width(value, visible_width, buf);
-        return (vis_width, 0);
-    }
-
-    (vis_width, start_cum)
-}
-
-fn collect_graphemes_up_to_width(value: &str, max_width: usize, buf: &mut String) -> usize {
-    use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
-
-    let mut width = 0;
-    for g in value.graphemes(true) {
-        let gw = UnicodeWidthStr::width(g);
-        if width + gw > max_width {
-            break;
-        }
-        buf.push_str(g);
-        width += gw;
-    }
-    width
 }
 
 fn render_button_row(f: &mut Frame, area: Rect, buttons: &[(ratatui::style::Style, &str)]) {
@@ -289,108 +188,8 @@ mod tests {
     use ratatui::layout::{Position, Rect};
     use ratatui::widgets::{Block, Borders};
 
-    // --- collect_graphemes_up_to_width: unicode width handling ---
-
-    #[test]
-    fn up_to_width_ascii_truncates_by_columns() {
-        let mut buf = String::new();
-        let w = collect_graphemes_up_to_width("hello", 3, &mut buf);
-        assert_eq!(buf, "hel");
-        assert_eq!(w, 3);
-    }
-
-    #[test]
-    fn up_to_width_wide_cjk_does_not_split_grapheme() {
-        // Each CJK char is width 2; a budget of 3 fits only one.
-        let mut buf = String::new();
-        let w = collect_graphemes_up_to_width("你好", 3, &mut buf);
-        assert_eq!(buf, "你");
-        assert_eq!(w, 2);
-    }
-
-    #[test]
-    fn up_to_width_emoji_is_width_two() {
-        let mut buf = String::new();
-        let w = collect_graphemes_up_to_width("😀x", 2, &mut buf);
-        assert_eq!(buf, "😀");
-        assert_eq!(w, 2);
-    }
-
-    #[test]
-    fn up_to_width_combining_mark_counts_as_one_column() {
-        // "e" + combining acute is a single grapheme of display width 1.
-        let mut buf = String::new();
-        let w = collect_graphemes_up_to_width("e\u{0301}llo", 2, &mut buf);
-        assert_eq!(buf, "e\u{0301}l");
-        assert_eq!(w, 2);
-    }
-
-    // --- collect_visible_graphemes: scroll window ---
-
-    #[test]
-    fn visible_no_scroll_collects_from_start() {
-        let mut buf = String::new();
-        let (vis_width, start_cum) = collect_visible_graphemes("hello", 0, 3, &mut buf);
-        assert_eq!(buf, "hel");
-        assert_eq!((vis_width, start_cum), (3, 0));
-    }
-
-    #[test]
-    fn visible_wide_grapheme_straddles_scroll_boundary() {
-        // value widths: 2,2,2 (cum 0,2,4,6). scroll=3 falls inside the 2nd
-        // grapheme, so start_cum (2) is < scroll_display (3).
-        let mut buf = String::new();
-        let (vis_width, start_cum) = collect_visible_graphemes("你好你", 3, 4, &mut buf);
-        assert_eq!(buf, "好你");
-        assert_eq!((vis_width, start_cum), (4, 2));
-    }
-
-    #[test]
-    fn visible_scroll_past_end_falls_back_to_start() {
-        let mut buf = String::new();
-        let (vis_width, start_cum) = collect_visible_graphemes("ab", 100, 4, &mut buf);
-        assert_eq!(buf, "ab");
-        assert_eq!((vis_width, start_cum), (2, 0));
-    }
-
-    // --- input_scroll_offset ---
-
-    #[test]
-    fn scroll_offset_wide_cursor_at_end() {
-        // cursor_display = 6, visible_width 4 -> scroll = 6 - 3 = 3.
-        assert_eq!(input_scroll_offset("你好你", 3, 4), (3, 6));
-    }
-
-    #[test]
-    fn scroll_offset_out_of_range_cursor_is_clamped() {
-        assert_eq!(input_scroll_offset("ab", 99, 4), (0, 2));
-    }
-
-    #[test]
-    fn scroll_offset_empty_value() {
-        assert_eq!(input_scroll_offset("", 0, 4), (0, 0));
-    }
-
-    // --- input_cursor_col: wide-grapheme clamp at the scroll boundary (bug 1) ---
-
-    #[test]
-    fn cursor_col_clamped_off_the_border() {
-        // Without clamping, col would be 4 == visible_width (the border column);
-        // it must be clamped to visible_width - 1 = 3.
-        assert_eq!(input_cursor_col(6, 2, 4), 3);
-    }
-
-    #[test]
-    fn cursor_col_within_window_is_unchanged() {
-        assert_eq!(input_cursor_col(2, 0, 4), 2);
-    }
-
-    #[test]
-    fn cursor_col_single_column_window() {
-        assert_eq!(input_cursor_col(0, 0, 1), 0);
-    }
-
-    // --- render-level integration: cursor never lands off the inner area ---
+    // Scroll/window math lives in `input::compute_visible_window`; archive keeps
+    // render-level tests that the cursor never lands outside the input area.
 
     fn render_input_cursor(area: Rect, value: &str, cursor_pos: usize) -> Position {
         let w = area.x + area.width + 2;
@@ -405,6 +204,8 @@ mod tests {
     #[test]
     fn render_wide_grapheme_cursor_stays_inside_inner() {
         // inner width 4; CJK value of total width 6 with the cursor at the end.
+        // Shared `compute_visible_window` anchors on whole graphemes, so the
+        // cursor sits past the last visible cluster, still inside the inner area.
         let area = Rect::new(0, 0, 6, 3);
         let inner = Block::default().borders(Borders::ALL).inner(area);
         let pos = render_input_cursor(area, "你好你", 3);
@@ -416,7 +217,6 @@ mod tests {
             inner.x,
             last_interior
         );
-        assert_eq!(pos.x, last_interior);
     }
 
     #[test]

@@ -1,96 +1,42 @@
 use std::ffi::OsString;
-
-#[cfg(test)]
-use std::collections::HashMap;
-#[cfg(test)]
-use std::ffi::OsStr;
 use std::path::PathBuf;
 
 const APP_NAME: &str = "lc";
 
-pub trait EnvProvider {
-    fn var_os(&self, key: &str) -> Option<OsString>;
-}
-
-pub struct ProcessEnv;
-
-impl ProcessEnv {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for ProcessEnv {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EnvProvider for ProcessEnv {
-    fn var_os(&self, key: &str) -> Option<OsString> {
-        std::env::var_os(key)
-    }
-}
-
-#[cfg(test)]
-#[derive(Default)]
-pub struct MapEnv {
-    values: HashMap<String, OsString>,
-}
-
-#[cfg(test)]
-impl MapEnv {
-    #[must_use]
-    pub fn new(values: &[(&str, &OsStr)]) -> Self {
-        Self {
-            values: values
-                .iter()
-                .map(|(key, value)| (key.to_string(), value.to_os_string()))
-                .collect(),
-        }
-    }
-}
-
-#[cfg(test)]
-impl EnvProvider for MapEnv {
-    fn var_os(&self, key: &str) -> Option<OsString> {
-        self.values.get(key).cloned()
-    }
-}
-
 #[must_use]
 pub fn config_file_path() -> Option<PathBuf> {
-    config_file_path_with_env(&ProcessEnv)
+    config_file_path_with_env(|k| std::env::var_os(k))
 }
 
 #[must_use]
 pub fn user_menu_path() -> Option<PathBuf> {
-    user_menu_path_with_env(&ProcessEnv)
+    user_menu_path_with_env(|k| std::env::var_os(k))
 }
 
 #[must_use]
 pub fn terminal_state_file_path() -> Option<PathBuf> {
-    terminal_state_file_path_with_env(&ProcessEnv)
+    terminal_state_file_path_with_env(|k| std::env::var_os(k))
 }
 
 #[must_use]
-pub fn config_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
-    config_home(env).map(|dir| dir.join("config.toml"))
+pub fn config_file_path_with_env(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    config_home(&env).map(|dir| dir.join("config.toml"))
 }
 
 #[must_use]
-pub fn user_menu_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
-    config_home(env).map(|dir| dir.join("menu"))
+pub fn user_menu_path_with_env(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    config_home(&env).map(|dir| dir.join("menu"))
 }
 
 #[must_use]
-pub fn terminal_state_file_path_with_env(env: &impl EnvProvider) -> Option<PathBuf> {
-    cache_home(env).map(|dir| dir.join("terminal_state"))
+pub fn terminal_state_file_path_with_env(
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
+    cache_home(&env).map(|dir| dir.join("terminal_state"))
 }
 
 fn xdg_dir(
-    env: &impl EnvProvider,
+    env: &impl Fn(&str) -> Option<OsString>,
     xdg_key: &str,
     home_subdir: &str,
     platform_fn: fn() -> Option<PathBuf>,
@@ -103,19 +49,19 @@ fn xdg_dir(
         .or_else(platform_fn)
 }
 
-fn validate_path_env(env: &impl EnvProvider, key: &str) -> Option<PathBuf> {
-    env.var_os(key)
+fn validate_path_env(env: &impl Fn(&str) -> Option<OsString>, key: &str) -> Option<PathBuf> {
+    env(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
 }
 
-fn config_home(env: &impl EnvProvider) -> Option<PathBuf> {
+fn config_home(env: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     xdg_dir(env, "XDG_CONFIG_HOME", ".config", platform_config_home)
 }
 
 #[must_use]
-pub(crate) fn cache_home(env: &impl EnvProvider) -> Option<PathBuf> {
+pub(crate) fn cache_home(env: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     xdg_dir(env, "XDG_CACHE_HOME", ".cache", platform_cache_home)
 }
 
@@ -146,112 +92,109 @@ platform_home!(platform_cache_home, dirs::cache_dir);
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use std::collections::HashMap;
 
-    fn env(values: &[(&str, &str)]) -> MapEnv {
-        let values: Vec<(&str, &OsStr)> = values
-            .iter()
-            .map(|(key, value)| (*key, OsStr::new(value)))
-            .collect();
-        MapEnv::new(&values)
+    fn env_map<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        let map: HashMap<&str, &str> = values.iter().copied().collect();
+        move |key| map.get(key).map(|v| OsString::from(*v))
     }
 
     #[test]
     fn config_path_uses_xdg_config_home() {
-        let env = env(&[("XDG_CONFIG_HOME", "/xdg/config"), ("HOME", "/home/user")]);
+        let env = env_map(&[("XDG_CONFIG_HOME", "/xdg/config"), ("HOME", "/home/user")]);
 
         assert_eq!(
-            config_file_path_with_env(&env),
+            config_file_path_with_env(env),
             Some(PathBuf::from("/xdg/config/lc/config.toml"))
         );
     }
 
     #[test]
     fn config_path_falls_back_to_home_config() {
-        let env = env(&[("HOME", "/home/user")]);
+        let env = env_map(&[("HOME", "/home/user")]);
 
         assert_eq!(
-            config_file_path_with_env(&env),
+            config_file_path_with_env(env),
             Some(PathBuf::from("/home/user/.config/lc/config.toml"))
         );
     }
 
     #[test]
     fn user_menu_path_uses_xdg_config_home() {
-        let env = env(&[("XDG_CONFIG_HOME", "/xdg/config"), ("HOME", "/home/user")]);
+        let env = env_map(&[("XDG_CONFIG_HOME", "/xdg/config"), ("HOME", "/home/user")]);
 
         assert_eq!(
-            user_menu_path_with_env(&env),
+            user_menu_path_with_env(env),
             Some(PathBuf::from("/xdg/config/lc/menu"))
         );
     }
 
     #[test]
     fn terminal_state_path_uses_xdg_cache_home() {
-        let env = env(&[("XDG_CACHE_HOME", "/xdg/cache"), ("HOME", "/home/user")]);
+        let env = env_map(&[("XDG_CACHE_HOME", "/xdg/cache"), ("HOME", "/home/user")]);
 
         assert_eq!(
-            terminal_state_file_path_with_env(&env),
+            terminal_state_file_path_with_env(env),
             Some(PathBuf::from("/xdg/cache/lc/terminal_state"))
         );
     }
 
     #[test]
     fn terminal_state_path_falls_back_to_home_cache() {
-        let env = env(&[("HOME", "/home/user")]);
+        let env = env_map(&[("HOME", "/home/user")]);
 
         assert_eq!(
-            terminal_state_file_path_with_env(&env),
+            terminal_state_file_path_with_env(env),
             Some(PathBuf::from("/home/user/.cache/lc/terminal_state"))
         );
     }
 
     #[test]
     fn config_path_returns_none_when_home_empty() {
-        let env = env(&[("HOME", "")]);
-        let result = config_file_path_with_env(&env);
+        let env = env_map(&[("HOME", "")]);
+        let result = config_file_path_with_env(env);
         assert!(result.is_none());
     }
 
     #[test]
     fn terminal_state_path_returns_none_when_no_env() {
-        let env = MapEnv::default();
-        assert_eq!(terminal_state_file_path_with_env(&env), None);
+        let env = env_map(&[]);
+        assert_eq!(terminal_state_file_path_with_env(env), None);
     }
 
     #[test]
     fn config_path_rejects_relative_xdg_config_home() {
-        let env = env(&[
+        let env = env_map(&[
             ("XDG_CONFIG_HOME", "relative/config"),
             ("HOME", "/home/user"),
         ]);
 
         assert_eq!(
-            config_file_path_with_env(&env),
+            config_file_path_with_env(env),
             Some(PathBuf::from("/home/user/.config/lc/config.toml"))
         );
     }
 
     #[test]
     fn terminal_state_path_rejects_relative_xdg_cache_home() {
-        let env = env(&[("XDG_CACHE_HOME", "relative/cache"), ("HOME", "/home/user")]);
+        let env = env_map(&[("XDG_CACHE_HOME", "relative/cache"), ("HOME", "/home/user")]);
 
         assert_eq!(
-            terminal_state_file_path_with_env(&env),
+            terminal_state_file_path_with_env(env),
             Some(PathBuf::from("/home/user/.cache/lc/terminal_state"))
         );
     }
 
     #[test]
     fn config_path_rejects_relative_home() {
-        let env = env(&[("HOME", "relative/home")]);
-        assert!(config_file_path_with_env(&env).is_none());
+        let env = env_map(&[("HOME", "relative/home")]);
+        assert!(config_file_path_with_env(env).is_none());
     }
 
     #[test]
     fn terminal_state_path_rejects_relative_home() {
-        let env = env(&[("HOME", "relative/home")]);
-        assert_eq!(terminal_state_file_path_with_env(&env), None);
+        let env = env_map(&[("HOME", "relative/home")]);
+        assert_eq!(terminal_state_file_path_with_env(env), None);
     }
 }
 
@@ -264,8 +207,7 @@ mod windows_tests {
     /// config dir (AppData) instead of returning None.
     #[test]
     fn config_path_falls_back_to_platform_dir_without_env() {
-        let env = MapEnv::default();
-        let path = config_file_path_with_env(&env).expect("AppData fallback");
+        let path = config_file_path_with_env(|_: &str| None).expect("AppData fallback");
         assert!(path.ends_with("lc\\config.toml") || path.ends_with("lc/config.toml"));
     }
 }

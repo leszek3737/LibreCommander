@@ -38,9 +38,8 @@ pub struct SortOptions {
     #[serde(default = "default_true")]
     pub dir_first: bool,
     // Canonical key for the case-sensitivity flag is "sensitive"; "sort_sensitive"
-    // is the legacy alias kept for old on-disk configs. `config.rs`'s parallel
-    // `PersistedSetup` field MUST match this (canonical "sensitive", alias
-    // "sort_sensitive") so a config written by either type is read by both.
+    // is the legacy alias kept for old on-disk configs. `Settings.sensitive` in
+    // config.rs uses the same key/alias so wire format stays consistent.
     #[serde(default, alias = "sort_sensitive")]
     pub sensitive: bool,
 }

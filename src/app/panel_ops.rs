@@ -8,17 +8,6 @@ use crate::fs::watcher::Watcher;
 use crate::ops;
 use crate::ui::LAYOUT_OVERHEAD_ROWS;
 
-pub fn file_names_from_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
-    paths
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| p.clone())
-        })
-        .collect()
-}
-
 pub fn sync_watcher_job_state(
     watcher: &Option<Watcher>,
     job_running: bool,
@@ -279,27 +268,6 @@ mod tests {
         assert_eq!(panel_visible_height(10), 4);
         assert_eq!(panel_visible_height(0), 0);
         assert_eq!(panel_visible_height(3), 0);
-    }
-
-    #[test]
-    fn test_file_names_from_paths() {
-        let paths = vec![
-            PathBuf::from("/tmp/a.txt"),
-            PathBuf::from("/home/user/b.rs"),
-            PathBuf::from("/"),
-        ];
-        let names = file_names_from_paths(&paths);
-        assert_eq!(names.len(), 3);
-        assert_eq!(names[0], PathBuf::from("a.txt"));
-        assert_eq!(names[1], PathBuf::from("b.rs"));
-        assert_eq!(names[2], PathBuf::from("/"));
-    }
-
-    #[test]
-    fn test_file_names_from_paths_empty() {
-        let paths: Vec<PathBuf> = vec![];
-        let names = file_names_from_paths(&paths);
-        assert!(names.is_empty());
     }
 
     #[test]

@@ -39,9 +39,7 @@ impl IsolatedEnv {
             home: None,
         }
     }
-}
 
-impl app::paths::EnvProvider for IsolatedEnv {
     fn var_os(&self, key: &str) -> Option<std::ffi::OsString> {
         match key {
             "XDG_CONFIG_HOME" => self.xdg_config.clone(),
@@ -93,7 +91,7 @@ fn file_name_str_non_utf8_returns_lossy() {
 fn config_load_missing_file_ok() {
     let tmp = tempfile::tempdir().expect("tempdir creation");
     let env = IsolatedEnv::new(tmp.path());
-    let result = app::config::load_settings_with_env(&env);
+    let result = app::config::load_settings_with_env(|k| env.var_os(k));
     // No config file present -> Ok(None): not an error, and no defaults invented.
     assert_eq!(result.expect("load should succeed"), None);
 }
@@ -105,7 +103,8 @@ fn config_load_invalid_toml() {
     std::fs::create_dir_all(&config_dir).expect("create config dir");
     std::fs::write(config_dir.join("config.toml"), "[[broken toml {{{").expect("write config");
     let env = IsolatedEnv::new(tmp.path());
-    let err = app::config::load_settings_with_env(&env).expect_err("invalid toml must error");
+    let err = app::config::load_settings_with_env(|k| env.var_os(k))
+        .expect_err("invalid toml must error");
     assert!(
         err.contains("parse"),
         "error should mention the parse failure: {err}"
@@ -140,7 +139,7 @@ sort_mode = \"name_asc\"
     std::fs::write(config_dir.join("config.toml"), toml).expect("write config");
     let env = IsolatedEnv::new(tmp.path());
 
-    let settings = app::config::load_settings_with_env(&env)
+    let settings = app::config::load_settings_with_env(|k| env.var_os(k))
         .expect("load should succeed")
         .expect("config present");
 
@@ -169,7 +168,7 @@ sort_mode = \"name_asc\"
 #[test]
 fn config_fallback_no_xdg_no_home() {
     let env = IsolatedEnv::empty();
-    let result = app::config::load_settings_with_env(&env);
+    let result = app::config::load_settings_with_env(|k| env.var_os(k));
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
 }
@@ -178,7 +177,7 @@ fn config_fallback_no_xdg_no_home() {
 fn config_xdg_present() {
     let tmp = tempfile::tempdir().expect("tempdir creation");
     let env = IsolatedEnv::xdg(tmp.path());
-    let path = app::paths::config_file_path_with_env(&env);
+    let path = app::paths::config_file_path_with_env(|k| env.var_os(k));
     let expected = tmp.path().join("lc").join("config.toml");
     assert_eq!(path, Some(expected));
 }

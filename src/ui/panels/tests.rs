@@ -51,7 +51,7 @@ fn entry_line(entry: &FileEntry, width: usize, show_permissions: bool) -> String
         width,
         show_permissions,
         &entry.category(),
-        ColorCtx::defaults(),
+        IconTheme::default(),
         &mut suffix,
         &mut out,
     );
@@ -65,7 +65,7 @@ fn brief_line(entry: &FileEntry, width: usize) -> String {
         entry,
         width,
         &entry.category(),
-        ColorCtx::defaults(),
+        IconTheme::default(),
         &mut out,
     );
     out

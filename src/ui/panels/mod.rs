@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 use unicode_width::UnicodeWidthStr;
 
-use super::theme::{ColorCtx, ColorPalette, DEFAULT_COLORS, IconTheme, Theme};
+use super::theme::{ColorPalette, DEFAULT_COLORS, IconTheme, Theme};
 
 use crate::app::types::{FileCategory, FileEntry, ListingMode, PanelState, format_size};
 
@@ -155,7 +155,6 @@ pub fn render_panel_with_colors(
     let start_idx = panel.scroll_offset.min(entry_count);
     let end_idx = std::cmp::min(entry_count, start_idx + inner_area.height as usize);
 
-    let ctx = ColorCtx::new(colors, icon_theme);
     let mode = panel.listing_mode();
     let show_permissions = panel.show_permissions();
     let content_width = chunks[0].width.saturating_sub(2) as usize;
@@ -182,12 +181,12 @@ pub fn render_panel_with_colors(
                 content_width,
                 show_permissions,
                 &cat,
-                ctx,
+                icon_theme,
                 &mut suffix_buf,
                 &mut line,
             ),
             ListingMode::Brief => {
-                format_brief_entry_line(entry, content_width, &cat, ctx, &mut line)
+                format_brief_entry_line(entry, content_width, &cat, icon_theme, &mut line)
             }
         }
 
@@ -327,7 +326,7 @@ fn format_entry_line(
     width: usize,
     show_permissions: bool,
     category: &FileCategory,
-    ctx: ColorCtx,
+    icon_theme: IconTheme,
     suffix_buf: &mut String,
     out: &mut String,
 ) {
@@ -340,8 +339,8 @@ fn format_entry_line(
     let display_name = entry.display_name();
     let display_name_width = UnicodeWidthStr::width(display_name);
 
-    let icon = get_file_icon_with_theme(category, ctx.icon_theme);
-    let icon_width = icon_display_width(ctx.icon_theme);
+    let icon = get_file_icon_with_theme(category, icon_theme);
+    let icon_width = icon_display_width(icon_theme);
 
     suffix_buf.clear();
     let suffix_width = build_suffix_into(entry, width, show_permissions, suffix_buf);
@@ -383,15 +382,15 @@ fn format_brief_entry_line(
     entry: &FileEntry,
     width: usize,
     category: &FileCategory,
-    ctx: ColorCtx,
+    icon_theme: IconTheme,
     out: &mut String,
 ) {
     let marker = if entry.selected { '*' } else { ' ' };
     let display_name = entry.display_name();
     let display_name_width = UnicodeWidthStr::width(display_name);
 
-    let icon = get_file_icon_with_theme(category, ctx.icon_theme);
-    let icon_width = icon_display_width(ctx.icon_theme) + 1;
+    let icon = get_file_icon_with_theme(category, icon_theme);
+    let icon_width = icon_display_width(icon_theme) + 1;
     let available = width.saturating_sub(1);
     // `icon_width` is always >= 2, so this also covers `available == 0`
     // (widths 0 and 1 leave room only for the selection marker).
