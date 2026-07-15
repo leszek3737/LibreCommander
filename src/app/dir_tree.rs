@@ -1,29 +1,9 @@
 use crate::debug_log;
+use crate::ops::helpers::get_inode_key;
+use crate::ops::sorting::cmp_ignore_case;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
-
-/// Stable per-file identity used for symlink-cycle detection.
-///
-/// Returns `None` when the platform cannot provide reliable identifiers, so
-/// callers MUST then skip cycle detection rather than substitute a colliding
-/// sentinel (a shared sentinel would make two distinct directories look like the
-/// same node and trigger false-positive cycle suppression).
-#[cfg(unix)]
-fn file_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((metadata.dev(), metadata.ino()))
-}
-
-#[cfg(not(unix))]
-fn file_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
-    // No STABLE identifiers off Unix: Windows' volume_serial_number()/
-    // file_index() need the unstable `windows_by_handle` feature
-    // (rust-lang/rust#63010), so cycle detection is skipped entirely.
-    None
-}
-
-use crate::ops::sorting::cmp_ignore_case;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TreeDiagnosticKind {
@@ -90,7 +70,7 @@ pub fn build_tree_with_diagnostics(
 
 fn insert_root_key(root: &Path, visited: &mut HashSet<(u64, u64)>) {
     if let Ok(meta) = root.metadata()
-        && let Some(key) = file_key(&meta)
+        && let Some(key) = get_inode_key(&meta)
     {
         let _ = visited.insert(key);
     }
@@ -276,7 +256,7 @@ fn recurse_children(
         // `expanded`, since it has no listed children). Regression guard: a
         // detected cycle previously dropped the entry entirely. The three-way
         // decision lives in `classify_descent` so it can be unit-tested.
-        let tracked_key = match classify_descent(file_key(&meta), visited) {
+        let tracked_key = match classify_descent(get_inode_key(&meta), visited) {
             DescentDecision::Cycle => {
                 child.expanded = false;
                 out.push(child);

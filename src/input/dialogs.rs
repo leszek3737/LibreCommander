@@ -735,37 +735,6 @@ fn handle_archive_dialog(
     }
 }
 
-fn handle_copymove_dialog(
-    state: &mut AppState,
-    running_job: &mut Option<RunningJob>,
-    key: KeyCode,
-) {
-    let Some(confirmed) = confirm_dialog_key(state, key) else {
-        return;
-    };
-
-    if confirmed {
-        let action = if let AppMode::Dialog(DialogKind::CopyMove(details)) = &state.mode {
-            let transfer = TransferAction {
-                sources: details.source.clone(),
-                dest: details.dest.clone(),
-                overwrite: false,
-            };
-            if details.kind.is_move() {
-                PendingAction::Move(transfer)
-            } else {
-                PendingAction::Copy(transfer)
-            }
-        } else {
-            return;
-        };
-        state.ui.pending_action = Some(action);
-        dispatch_with_overwrite_check(state, running_job);
-    } else {
-        dismiss_dialog(state);
-    }
-}
-
 pub(crate) fn handle_dialog(ctx: &mut EventContext, key: KeyCode, modifiers: KeyModifiers) {
     // A Char with Ctrl/Alt/Super held is not literal text for any dialog;
     // swallow it so it never lands in a text field as a stray letter. Bare or
@@ -858,9 +827,6 @@ pub(crate) fn handle_dialog(ctx: &mut EventContext, key: KeyCode, modifiers: Key
         }
         DialogKind::Properties(..) => {
             handle_properties_dialog(state, key);
-        }
-        DialogKind::CopyMove(..) => {
-            handle_copymove_dialog(state, running_job, key);
         }
         DialogKind::OverwriteConfirm(..) => {
             handle_overwrite_dialog(state, running_job, key);

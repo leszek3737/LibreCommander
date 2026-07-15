@@ -11,7 +11,7 @@ use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
     copy_with_progress,
 };
-use crate::debug_log;
+use crate::ops::helpers::cleanup_file as cleanup_temp_file;
 
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
 
@@ -29,14 +29,6 @@ fn count_entry(count: &mut usize) -> Result<(), ArchiveError> {
         )));
     }
     Ok(())
-}
-
-/// Removes a partially written temporary archive, logging any failure instead of
-/// silently dropping the error (mirrors the tar create path).
-fn cleanup_temp_file(path: &Path) {
-    if let Err(e) = fs::remove_file(path) {
-        debug_log!("create_zip: temp cleanup {} failed: {e}", path.display());
-    }
 }
 
 fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {

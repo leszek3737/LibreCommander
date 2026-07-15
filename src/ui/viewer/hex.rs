@@ -19,14 +19,6 @@ const HEX_COLS_PER_BYTE: usize = 3;
 /// Printable ASCII range used by the right-hand text pane.
 const PRINTABLE_ASCII: std::ops::RangeInclusive<u8> = 0x20..=0x7e;
 
-#[cfg(test)]
-#[must_use]
-pub(crate) fn format_hex_line(offset: usize, bytes: &[u8]) -> String {
-    let mut buf = String::with_capacity(128);
-    format_hex_line_to_buffer(offset, bytes, &mut buf);
-    buf
-}
-
 fn push_byte_hex(buf: &mut String, b: u8) {
     buf.push(HEX_CHARS[(b >> NIBBLE_BITS) as usize] as char);
     buf.push(HEX_CHARS[(b & LOW_NIBBLE_MASK) as usize] as char);

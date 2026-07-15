@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::dialogs::{ConfirmDetails, CopyMoveDetails, CopyMoveKind, DialogKind, InputAction};
+use super::dialogs::{ConfirmDetails, DialogKind, InputAction};
 use super::file_entry::{FileCategory, FileEntry};
 use super::modes::AppMode;
 use super::panel::{ActivePanel, PanelState};
@@ -477,26 +477,6 @@ fn test_dialog_kind_progress() {
     assert_eq!(message, "Copying...");
     assert_eq!(progress_fraction, 0.5);
     assert!(cancellable);
-}
-
-#[test]
-fn test_dialog_kind_copy_move() {
-    let sources = vec![PathBuf::from("/source1"), PathBuf::from("/source2")];
-    let dest = PathBuf::from("/dest");
-    let dialog = DialogKind::CopyMove(Box::new(CopyMoveDetails {
-        source: sources.clone(),
-        dest: dest.clone(),
-        kind: CopyMoveKind::Move,
-    }));
-    let DialogKind::CopyMove(details) = dialog else {
-        panic!("Expected CopyMove variant");
-    };
-    assert_eq!(details.source, sources);
-    // `source_display()` is now derived on demand from `source` (file name,
-    // falling back to the full path) instead of a stored parallel field.
-    assert_eq!(details.source_display(), vec!["source1", "source2"]);
-    assert_eq!(details.dest, dest);
-    assert!(details.kind.is_move());
 }
 
 #[test]

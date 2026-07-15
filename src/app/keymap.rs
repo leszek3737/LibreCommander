@@ -754,7 +754,6 @@ mod tests {
                 DialogKind::Confirm(_)
                 | DialogKind::Error(_)
                 | DialogKind::Progress { .. }
-                | DialogKind::CopyMove(_)
                 | DialogKind::Properties(_)
                 | DialogKind::OverwriteConfirm(_),
             ) => MODE_DIALOG_CONFIRM,

@@ -50,43 +50,6 @@ pub enum InputAction {
     ViewerSearch,
 }
 
-/// Whether a [`CopyMoveDetails`] dialog confirms a copy or a move. Replaces the
-/// former `is_move: bool` flag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopyMoveKind {
-    Copy,
-    Move,
-}
-
-impl CopyMoveKind {
-    pub fn is_move(self) -> bool {
-        matches!(self, Self::Move)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CopyMoveDetails {
-    pub source: Vec<PathBuf>,
-    pub dest: PathBuf,
-    pub kind: CopyMoveKind,
-}
-
-impl CopyMoveDetails {
-    /// Per-source display labels (file name, falling back to the full path).
-    /// Derived on demand from `source` instead of being stored as a parallel
-    /// `source_display` field that could drift out of sync.
-    pub fn source_display(&self) -> Vec<String> {
-        self.source
-            .iter()
-            .map(|p| {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| p.display().to_string())
-            })
-            .collect()
-    }
-}
-
 /// The kind of filesystem object a [`PropertiesDetails`] describes. Replaces the
 /// former `is_dir: bool` / `is_symlink: bool` flag pair, which could encode the
 /// nonsensical "both true / which wins?" states.
@@ -168,7 +131,6 @@ pub enum DialogKind {
     },
     // Boxed to keep the enum small — these variants carry large structs that would
     // inflate the discriminant size for all other variants (enum size optimization).
-    CopyMove(Box<CopyMoveDetails>),
     Properties(Box<PropertiesDetails>),
     OverwriteConfirm(Box<OverwriteConfirmDetails>),
     ArchiveExtract(Box<ArchiveExtractDetails>),

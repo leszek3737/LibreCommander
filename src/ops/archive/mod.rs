@@ -7,19 +7,6 @@ use std::time::SystemTime;
 
 use crate::debug_log;
 
-/// Compatibility paths for callers that still use `archive::create::create_archive`
-/// (and extract/list). Prefer the flat `create_archive` / `extract_archive` /
-/// `list_archive` free functions at the `archive` module root.
-pub mod create {
-    pub use super::create_archive;
-}
-pub mod extract {
-    pub use super::extract_archive;
-}
-pub mod list {
-    pub use super::list_archive;
-}
-
 pub mod sevenz;
 pub mod tar;
 pub mod zip;

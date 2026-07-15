@@ -52,38 +52,6 @@ pub(super) fn to_ui_dialog<'a>(
             percent: progress_fraction.clamp(0.0, 1.0) * 100.0,
             cancellable: *cancellable,
         },
-        app::types::DialogKind::CopyMove(details) => {
-            let action = if details.kind.is_move() {
-                "Move"
-            } else {
-                "Copy"
-            };
-            // Per-frame alloc. Not cacheable to Cow::Borrowed: the message is
-            // synthesized from counts + PathBuf displays (no borrowable source).
-            // A real cache would need persistent state keyed on the dialog data,
-            // which this wave forbids (render must stay AppState-pure).
-            let msg = format!(
-                "{} {} item(s)\nfrom: {}\n  to: {}",
-                action,
-                details.source.len(),
-                details
-                    .source
-                    .first()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
-                details.dest.display(),
-            );
-            dialogs::DialogKind::Confirm {
-                title: Cow::Borrowed(if details.kind.is_move() {
-                    "Move Confirm"
-                } else {
-                    "Copy Confirm"
-                }),
-                message: Cow::Owned(msg),
-                selection: state.input.dialog_selection,
-                files: Cow::Owned(details.source_display()),
-            }
-        }
         app::types::DialogKind::Properties(details) => properties_to_ui_dialog(details),
         app::types::DialogKind::OverwriteConfirm(details) => {
             dialogs::DialogKind::OverwriteConfirm {

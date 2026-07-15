@@ -16,6 +16,3 @@ pub mod fs;
 pub mod menu;
 pub mod ops;
 pub mod ui;
-
-#[cfg(unix)]
-pub use ops::file_ops::chmod;

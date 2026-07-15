@@ -1,4 +1,4 @@
-use super::hex::format_hex_line;
+use super::hex::format_hex_line_to_buffer;
 use super::open::ViewerState;
 use super::render::{format_line_with_highlight, render_viewer_with_colors};
 use super::scroll::{line_number_column_width, paragraph_horizontal_scroll};
@@ -450,7 +450,8 @@ fn test_format_hex_line() {
     let bytes = &[
         0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x00,
     ];
-    let line = format_hex_line(0x1000, bytes);
+    let mut line = String::new();
+    format_hex_line_to_buffer(0x1000, bytes, &mut line);
 
     assert!(line.starts_with("0000000000001000:"));
     assert!(line.contains("48 65 6c 6c 6f 20 57 6f  72 6c 64 00"));
@@ -480,7 +481,8 @@ fn test_open_invalid_utf8_sets_warning() {
 fn test_format_hex_line_accepts_more_than_sixteen_bytes() {
     let bytes = [b'A'; 17];
 
-    let line = format_hex_line(0, &bytes);
+    let mut line = String::new();
+    format_hex_line_to_buffer(0, &bytes, &mut line);
 
     assert!(line.starts_with("0000000000000000:"));
     assert!(line.ends_with("|AAAAAAAAAAAAAAAAA|"));

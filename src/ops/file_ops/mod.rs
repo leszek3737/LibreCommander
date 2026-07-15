@@ -956,8 +956,14 @@ mod tests {
         #[cfg(unix)]
         std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o750)).unwrap();
 
-        let past_mtime = filetime::FileTime::from_unix_time(1_700_000_000, 0);
-        filetime::set_file_mtime(&src, past_mtime).unwrap();
+        let past_mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let times = std::fs::FileTimes::new().set_modified(past_mtime);
+        std::fs::File::options()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
 
         copy::copy_file(&src, &dest, false).unwrap();
 
@@ -967,8 +973,7 @@ mod tests {
             let dest_mode = dest_meta.permissions().mode() & 0o777;
             assert_eq!(dest_mode, 0o750);
         }
-        let dest_mtime = filetime::FileTime::from_last_modification_time(&dest_meta);
-        assert_eq!(dest_mtime.unix_seconds(), past_mtime.unix_seconds());
+        assert_eq!(dest_meta.modified().unwrap(), past_mtime);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }

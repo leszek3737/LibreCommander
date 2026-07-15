@@ -1,6 +1,4 @@
 use super::helpers::cleanup_file;
-#[cfg(test)]
-use filetime::FileTime;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -502,8 +500,14 @@ mod tests {
         let content = b"timestamps test";
         fs::write(&src, content).expect("write source file");
 
-        let set_mtime = FileTime::from_unix_time(1_700_000_000, 0);
-        filetime::set_file_mtime(&src, set_mtime).expect("set source mtime");
+        let set_mtime = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let times = fs::FileTimes::new().set_modified(set_mtime);
+        File::options()
+            .write(true)
+            .open(&src)
+            .expect("open source")
+            .set_times(times)
+            .expect("set source mtime");
 
         let (progress_tx, _progress_rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
@@ -511,18 +515,9 @@ mod tests {
         copy_with_progress(&src, &dest, &progress_tx, &cancel, false).expect("copy file");
 
         let dest_meta = fs::metadata(&dest).expect("dest metadata");
-        let dest_mtime = FileTime::from_last_modification_time(&dest_meta);
+        let dest_mtime = dest_meta.modified().expect("dest mtime");
 
-        assert_eq!(
-            dest_mtime.unix_seconds(),
-            set_mtime.unix_seconds(),
-            "mtime preserved"
-        );
-        assert_eq!(
-            dest_mtime.nanoseconds(),
-            set_mtime.nanoseconds(),
-            "mtime nanoseconds preserved"
-        );
+        assert_eq!(dest_mtime, set_mtime, "mtime preserved");
     }
 
     #[cfg(unix)]
