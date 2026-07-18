@@ -101,10 +101,11 @@ cargo install librecommander
 
 ```bash
 cargo install --git https://github.com/leszek3737/LibreCommander
-# or:
+# or from a clone:
 git clone https://github.com/leszek3737/LibreCommander.git
 cd LibreCommander
 cargo build --release    # target/release/lc
+# or install onto PATH:
 cargo install --path .
 ```
 

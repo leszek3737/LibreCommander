@@ -10,7 +10,7 @@ repository = "https://github.com/leszek3737/LibreCommander"
 homepage = "https://github.com/leszek3737/LibreCommander"
 keywords = ["tui", "file-manager", "ratatui", "cli", "terminal"]
 categories = ["command-line-utilities", "filesystem"]
-exclude = ["assets/s1.png", "assets/s2.png", ".github/", ".serena/"]
+exclude = [".github/", ".serena/"]
 
 # crates.io package is `librecommander` (`lc` is taken). Binary + lib stay `lc`.
 [lib]
