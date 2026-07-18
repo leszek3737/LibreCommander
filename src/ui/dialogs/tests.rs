@@ -131,6 +131,11 @@ fn wrapped_line_count_long_line_narrow_area() {
 }
 
 #[test]
+fn wrapped_line_count_multi_word() {
+    assert_eq!(wrapped_line_count("hello world foo bar", 10), 3);
+}
+
+#[test]
 fn wrapped_line_count_short_line_wide_area() {
     assert_eq!(wrapped_line_count("abc", 80), 1);
 }

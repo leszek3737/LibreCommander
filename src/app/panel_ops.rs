@@ -37,9 +37,10 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             let current_name = current_panel_entry_name(panel);
             let saved = selected_panel_paths(panel);
             let new_unfiltered = entries;
-            let new_filtered = filtered_sorted_entries(
+            let compiled = panel.compiled_filter_cached();
+            let new_filtered = filter_and_sort(
                 &new_unfiltered,
-                panel.filter(),
+                compiled.as_ref(),
                 panel.sort_mode(),
                 *panel.sort_options(),
                 panel.show_hidden(),
@@ -108,18 +109,35 @@ pub fn filtered_sorted_entries(
     show_hidden: bool,
 ) -> Vec<reader::FileEntry> {
     // PERF FOLLOW-UP: `CompiledPattern` is rebuilt on every call (once per
-    // filtered_sorted_entries). It cannot be cached on `PanelState` yet because
-    // `CompiledPattern` derives none of `Debug`/`Clone`/`PartialEq` that
-    // `PanelState` requires; caching needs those derives added in
-    // ops/search/pattern.rs first (cross-module, separate change).
+    // filtered_sorted_entries). Stateful callers (`refresh_panel`,
+    // `rebuild_visible_entries`) bypass this via `filter_and_sort` +
+    // `PanelState::compiled_filter_cached`, which reuses a cached pattern.
+    // This pure entry point still exists for one-off callers without a
+    // `PanelState` to anchor the cache.
     let compiled = filter.map(|f| ops::CompiledPattern::new(f, false));
+    filter_and_sort(
+        entries,
+        compiled.as_ref(),
+        sort_mode,
+        sort_options,
+        show_hidden,
+    )
+}
+
+fn filter_and_sort(
+    entries: &[reader::FileEntry],
+    compiled: Option<&ops::CompiledPattern>,
+    sort_mode: SortMode,
+    sort_options: SortOptions,
+    show_hidden: bool,
+) -> Vec<reader::FileEntry> {
     // PERF FOLLOW-UP: `.cloned()` copies each (potentially large) FileEntry into
     // the filtered Vec. A `Vec<&FileEntry>` / index view would avoid the copy,
     // but `ops::sort_entries` takes `&mut [FileEntry]` (owned), so a borrow-only
     // view needs a reference-sorting variant in `ops` first (cross-module).
     let mut filtered_entries: Vec<reader::FileEntry> = entries
         .iter()
-        .filter(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden))
+        .filter(|e| entry_matches_panel(e, compiled, show_hidden))
         .cloned()
         .collect();
     ops::sort_entries(&mut filtered_entries, sort_mode, sort_options);
@@ -128,9 +146,10 @@ pub fn filtered_sorted_entries(
 
 pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
     let current_name = current_panel_entry_name(panel);
-    let filtered = filtered_sorted_entries(
+    let compiled = panel.compiled_filter_cached();
+    let filtered = filter_and_sort(
         panel.listing.unfiltered(),
-        panel.filter(),
+        compiled.as_ref(),
         panel.sort_mode(),
         *panel.sort_options(),
         panel.show_hidden(),

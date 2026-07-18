@@ -41,9 +41,20 @@ pub(super) struct MatchScratch {
 /// original bytes when case-sensitive, or the lowercased form when not. The
 /// `finder` is precomputed once (case-insensitive only) so `matches` never
 /// rebuilds it per call.
+#[derive(Clone, Debug)]
 struct Plain {
     needle: String,
     finder: Option<memmem::Finder<'static>>,
+}
+
+impl PartialEq for Plain {
+    // `finder` is a precomputed cache of `needle`; equality is determined by
+    // the needle alone (and the case-sensitivity flag owned by the enclosing
+    // `CompiledPattern`). `memchr::memmem::Finder` does not implement
+    // `PartialEq`, so it cannot be derived.
+    fn eq(&self, other: &Self) -> bool {
+        self.needle == other.needle
+    }
 }
 
 impl Plain {
@@ -104,6 +115,7 @@ impl Plain {
 /// into [`Plain`], since a contains-test is exactly a plain substring match).
 /// `prefix`/`suffix` are stored lowercased when matching case-insensitively;
 /// `None` means that side is empty (a bare `*` is both `None`).
+#[derive(Clone, Debug, PartialEq)]
 struct WildcardAffix {
     /// Affixes for the case-sensitive (byte) path; for insensitive patterns
     /// these hold the lowercased form and seed `matches_bytes` on non-UTF-8.
@@ -213,6 +225,7 @@ impl WildcardAffix {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 enum PatternKind {
     // Boxed: a Plain carries a precomputed memmem::Finder (a Two-Way search
     // table, ~300 bytes), which would otherwise bloat every CompiledPattern.
@@ -221,6 +234,7 @@ enum PatternKind {
     WildcardDp { pattern: Vec<char> },
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct CompiledPattern {
     kind: PatternKind,
     insensitive: bool,

@@ -106,6 +106,7 @@ pub fn push_history(state: &mut AppState, cmd: &str) {
     if state.input.command_history.len() > MAX_HISTORY {
         state.input.command_history.pop_front();
     }
+    state.rebuild_history_cache();
 }
 
 /// Runs `cmd` through a shell (`$SHELL -c` for interactive commands, `sh -c`

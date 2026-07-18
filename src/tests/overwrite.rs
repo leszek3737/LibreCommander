@@ -661,7 +661,7 @@ fn check_overwrite_copy_duplicate_sources_different_dirs_conflict() {
     };
 
     let conflicts = dialogs::check_overwrite_conflict(&state).unwrap();
-    assert_eq!(conflicts, vec!["same.txt", "same.txt"]);
+    assert_eq!(conflicts, vec!["same.txt"]);
 }
 
 #[test]

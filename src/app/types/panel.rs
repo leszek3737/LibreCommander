@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use super::file_entry::FileEntry;
 use super::sorting::{ListingMode, SortMode, SortOptions};
 
+use crate::ops::CompiledPattern;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListingState {
     #[default]
@@ -302,6 +304,15 @@ pub struct PanelState {
     pub(crate) show_hidden: bool,
     pub(crate) show_permissions: bool,
     pub(crate) filter: Option<String>,
+    /// Cached compiled form of `filter`. Recompiled lazily by
+    /// [`compiled_filter_cached`](Self::compiled_filter_cached) whenever
+    /// `filter_text` drifts from `filter`, so repeated calls with an
+    /// unchanged filter reuse the precomputed pattern (avoids recompiling
+    /// the search table on every refresh/rebuild).
+    pub(crate) compiled_filter: Option<CompiledPattern>,
+    /// Snapshot of `filter` at the time `compiled_filter` was last built.
+    /// Drives the invalidation check in `compiled_filter_cached`.
+    pub(crate) filter_text: Option<String>,
     pub(crate) selected_count: usize,
     pub(crate) selected_size: u64,
     pub(crate) total_size: u64,
@@ -324,6 +335,8 @@ impl PanelState {
             show_hidden: true,
             show_permissions: false,
             filter: None,
+            compiled_filter: None,
+            filter_text: None,
             selected_count: 0,
             selected_size: 0,
             total_size: 0,
@@ -413,6 +426,18 @@ impl PanelState {
 
     pub fn set_filter(&mut self, f: Option<String>) {
         self.filter = f;
+    }
+
+    /// Returns the compiled form of `self.filter`, rebuilding it only when
+    /// `filter` has changed since the last call. The result is a cheap
+    /// `Clone` of the cached pattern (the search-table allocation happens at
+    /// most once per filter change, not once per refresh).
+    pub fn compiled_filter_cached(&mut self) -> Option<CompiledPattern> {
+        if self.filter_text != self.filter {
+            self.compiled_filter = self.filter.as_ref().map(|f| CompiledPattern::new(f, false));
+            self.filter_text = self.filter.clone();
+        }
+        self.compiled_filter.clone()
     }
 
     pub fn selected_count(&self) -> usize {

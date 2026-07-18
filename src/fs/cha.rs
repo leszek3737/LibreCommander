@@ -65,8 +65,6 @@ macro_rules! cfg_trivial {
 
 cfg_trivial!(fn metadata_uid(meta: &fs::Metadata) -> u32, uid);
 cfg_trivial!(fn metadata_gid(meta: &fs::Metadata) -> u32, gid);
-cfg_trivial!(fn metadata_dev(meta: &fs::Metadata) -> u64, dev);
-cfg_trivial!(fn metadata_nlink(meta: &fs::Metadata) -> u64, nlink);
 
 /// Symlink/hidden flags for a [`Cha`]. Plain bools — three flags do not need bitflags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -81,10 +79,6 @@ pub(crate) enum ChaType {
     File,
     Dir,
     Link,
-    Block,
-    Char,
-    Socket,
-    Fifo,
     Unknown,
 }
 
@@ -95,10 +89,6 @@ impl ChaType {
             0o100000 => Self::File,
             0o040000 => Self::Dir,
             0o120000 => Self::Link,
-            0o060000 => Self::Block,
-            0o020000 => Self::Char,
-            0o140000 => Self::Socket,
-            0o010000 => Self::Fifo,
             _ => Self::Unknown,
         }
     }
@@ -142,26 +132,6 @@ impl ChaMode {
     }
 
     #[inline]
-    pub(crate) fn is_block(&self) -> bool {
-        self.typ() == ChaType::Block
-    }
-
-    #[inline]
-    pub(crate) fn is_char(&self) -> bool {
-        self.typ() == ChaType::Char
-    }
-
-    #[inline]
-    pub(crate) fn is_socket(&self) -> bool {
-        self.typ() == ChaType::Socket
-    }
-
-    #[inline]
-    pub(crate) fn is_fifo(&self) -> bool {
-        self.typ() == ChaType::Fifo
-    }
-
-    #[inline]
     pub fn permissions(&self) -> u32 {
         self.0 & 0o7777
     }
@@ -184,11 +154,8 @@ pub struct Cha {
     pub mtime: Option<SystemTime>,
     pub btime: Option<SystemTime>,
     pub ctime: Option<SystemTime>,
-    pub atime: Option<SystemTime>,
     pub uid: u32,
     pub gid: u32,
-    pub dev: u64,
-    pub nlink: u64,
 }
 
 impl Cha {
@@ -202,11 +169,8 @@ impl Cha {
             mtime: meta.modified().ok(),
             btime: meta.created().ok(),
             ctime: change_time(meta),
-            atime: meta.accessed().ok(),
             uid: metadata_uid(meta),
             gid: metadata_gid(meta),
-            dev: metadata_dev(meta),
-            nlink: metadata_nlink(meta),
         }
     }
 
@@ -253,11 +217,8 @@ impl Cha {
             mtime: Some(UNIX_EPOCH),
             btime: Some(UNIX_EPOCH),
             ctime: None,
-            atime: None,
             uid: 0,
             gid: 0,
-            dev: 0,
-            nlink: 1,
         }
     }
 
@@ -269,11 +230,8 @@ impl Cha {
             mtime: Some(DIR_SENTINEL_MTIME),
             btime: Some(DIR_SENTINEL_MTIME),
             ctime: None,
-            atime: None,
             uid: 0,
             gid: 0,
-            dev: 0,
-            nlink: 0,
         }
     }
 
@@ -299,31 +257,6 @@ impl Cha {
     }
 
     #[inline]
-    pub fn is_block(&self) -> bool {
-        self.mode.is_block()
-    }
-
-    #[inline]
-    pub fn is_char(&self) -> bool {
-        self.mode.is_char()
-    }
-
-    #[inline]
-    pub fn is_socket(&self) -> bool {
-        self.mode.is_socket()
-    }
-
-    #[inline]
-    pub fn is_fifo(&self) -> bool {
-        self.mode.is_fifo()
-    }
-
-    #[inline]
-    pub fn is_orphan(&self) -> bool {
-        self.is_link() && !self.kind.follow
-    }
-
-    #[inline]
     pub fn is_hidden(&self) -> bool {
         self.kind.hidden
     }
@@ -333,39 +266,35 @@ impl Cha {
         self.mode.is_executable()
     }
 
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Compares file metadata for change detection (cache invalidation).
-    ///
-    /// Intentionally excludes:
-    /// - `atime` — unstable, changes on read access
-    /// - `dev` — device ID, irrelevant for content changes
-    /// - `nlink` — link count, irrelevant for content changes
-    ///
-    /// For full field equality, use `PartialEq` instead.
+    /// Cache-invalidation equality: same fields as [`PartialEq`] today.
+    /// Kept as a named API so call sites stay readable if `Cha` later gains
+    /// fields that should not bust the cache (e.g. atime).
     pub fn hits(&self, other: &Self) -> bool {
-        self.len == other.len
-            && self.mtime == other.mtime
-            && self.ctime == other.ctime
-            && self.btime == other.btime
-            && self.kind == other.kind
-            && self.mode == other.mode
-            && self.uid == other.uid
-            && self.gid == other.gid
+        self == other
     }
 
     pub fn set_hidden(&mut self, hidden: bool) {
         self.kind.hidden = hidden;
     }
 
+    /// Sets execute permission on **all three** triples (owner, group, others).
+    /// Use [`Cha::set_executable_owner`](Self::set_executable_owner) to toggle
+    /// only the owner's execute bit.
     pub fn set_executable(&mut self, executable: bool) {
         if executable {
             self.mode = ChaMode::new(self.mode.mode_u32() | 0o111);
         } else {
             self.mode = ChaMode::new(self.mode.mode_u32() & !0o111);
+        }
+    }
+
+    /// Toggles only the owner execute bit (`0o100`); group and others are left
+    /// untouched.
+    pub fn set_executable_owner(&mut self, executable: bool) {
+        if executable {
+            self.mode = ChaMode::new(self.mode.mode_u32() | 0o100);
+        } else {
+            self.mode = ChaMode::new(self.mode.mode_u32() & !0o100);
         }
     }
 }
@@ -481,14 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn cha_orphan_detection() {
+    fn cha_link_mode_without_follow_flag() {
         let mut cha = Cha::dummy_dir();
         cha.mode = ChaMode::new(0o120777);
         assert!(cha.is_link());
-        assert!(cha.is_orphan());
-
-        cha.kind.follow = true;
-        assert!(!cha.is_orphan());
+        assert!(!cha.kind.follow);
     }
 
     #[test]
@@ -537,7 +463,6 @@ mod tests {
 
         assert!(cha.is_link());
         assert!(cha.kind.follow);
-        assert!(!cha.is_orphan());
         assert_eq!(cha.len, 5);
         assert_eq!(cha.mode.permissions(), link_meta.mode() & 0o7777);
     }
@@ -553,7 +478,6 @@ mod tests {
         let cha = Cha::from_link_metadata(&link_meta, None);
 
         assert!(cha.is_link());
-        assert!(cha.is_orphan());
         assert!(!cha.kind.follow);
         assert!(!cha.is_executable());
         assert_eq!(cha.mode.permissions(), link_meta.mode() & 0o7777 & !0o111);
@@ -590,13 +514,12 @@ mod tests {
     }
 
     #[test]
-    fn cha_mode_block_char_socket_fifo() {
-        assert!(ChaMode::new(0o060000).is_block());
-        assert!(ChaMode::new(0o020000).is_char());
-        assert!(ChaMode::new(0o140000).is_socket());
-        assert!(ChaMode::new(0o010000).is_fifo());
+    fn cha_mode_special_types_are_unknown() {
+        // Block/char/socket/fifo are not first-class UI kinds; they map to Unknown.
         assert!(!ChaMode::new(0o060000).is_file());
         assert!(!ChaMode::new(0o020000).is_dir());
+        assert!(!ChaMode::new(0o140000).is_link());
+        assert!(!ChaMode::new(0o010000).is_file());
     }
 
     #[test]
@@ -607,14 +530,6 @@ mod tests {
         let mut cha = Cha::dummy_dir();
         cha.set_executable(false);
         assert!(!cha.is_executable());
-    }
-
-    #[test]
-    fn cha_accessors_for_dead_fields() {
-        let cha = Cha::dummy_dir();
-        assert_eq!(cha.dev, 0);
-        assert_eq!(cha.nlink, 0);
-        assert!(cha.atime.is_none());
     }
 
     #[test]
@@ -666,6 +581,6 @@ mod tests {
 
         assert!(cha.is_link());
         assert!(!cha.is_executable());
-        assert!(cha.is_orphan());
+        assert!(!cha.kind.follow);
     }
 }

@@ -147,11 +147,8 @@ impl TestEntry {
             // sort-by-btime tests can distinguish "unknown" from "epoch".
             btime: self.created,
             ctime: None,
-            atime: None,
             uid: 0,
             gid: 0,
-            dev: 0,
-            nlink: 0,
         };
 
         if let Some(mode) = self.raw_mode {

@@ -306,6 +306,9 @@ fn passive_dialog_cases() -> Vec<PassiveDialogCase> {
                     owner: String::new(),
                     group: String::new(),
                     kind: FileKind::from_metadata_flags(false, false),
+                    size_str: String::new(),
+                    mtime_str: String::new(),
+                    permissions_str: String::new(),
                 }))),
                 ..Default::default()
             },

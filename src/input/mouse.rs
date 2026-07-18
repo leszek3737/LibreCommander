@@ -4,19 +4,14 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::job_runner::{RunningJob, start_confirmed_action};
-use crate::app::shell;
-use crate::app::types::{
-    ActivePanel, AppMode, AppState, DialogKind, OverwriteConfirmDetails, TextInput,
-};
+use crate::app::types::{ActivePanel, AppMode, AppState, DialogKind, TextInput};
 use crate::menu::{MENUS, menu_dropdown_x, menu_title_width, menu_title_x};
 use crate::ui::dialogs;
 use crate::ui::viewer;
 
 use super::EventContext;
-use super::dialogs::{
-    check_overwrite_conflict, commit_archive_dialog, dismiss_dialog, finish_confirmed_action,
-};
-use crate::app::panel_ops::{refresh_active, refresh_both, refresh_panel};
+use super::dialogs::{commit_archive_dialog, dismiss_dialog, finish_confirmed_action};
+use crate::app::panel_ops::refresh_panel;
 
 const SCROLL_LINES: usize = 3;
 const DOUBLE_CLICK_THRESHOLD_MS: u64 = 300;
@@ -467,37 +462,7 @@ fn handle_confirm_click(
     if geo.hit_button_row(pos) {
         let new_sel = if pos.col < geo.btn_center { 0 } else { 1 };
         if state.input.dialog_selection == new_sel {
-            if state.ui.pending_hotlist_delete.is_some() {
-                super::pickers::resolve_hotlist_delete(state, new_sel == 0);
-                return Some(MouseOutcome::Consumed);
-            }
-            if new_sel == 0 {
-                if state.ui.pending_action.is_some() {
-                    if let Some(conflicting) = check_overwrite_conflict(state) {
-                        state.input.dialog_selection = 0;
-                        state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
-                            OverwriteConfirmDetails { conflicting },
-                        )));
-                        return Some(MouseOutcome::Consumed);
-                    }
-                    let status_message = state.ui.status_message.take();
-                    start_confirmed_action(state, running_job);
-                    if state.ui.status_message.is_none() {
-                        state.ui.status_message = status_message;
-                    }
-                    finish_confirmed_action(state);
-                    return Some(MouseOutcome::Consumed);
-                }
-                if let Some(cmd) = state.ui.pending_menu_command.take() {
-                    state.mode = AppMode::Normal;
-                    shell::run_shell_command(state, &cmd, true, refresh_active);
-                    return Some(MouseOutcome::Consumed);
-                }
-                dismiss_dialog(state);
-                refresh_both(state);
-            } else {
-                dismiss_dialog(state);
-            }
+            super::dialogs::resolve_confirm_dialog(state, running_job, new_sel == 0);
         } else {
             state.input.dialog_selection = new_sel;
         }

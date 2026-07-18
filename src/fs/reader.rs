@@ -176,8 +176,8 @@ fn file_name_from_path(path: &Path) -> String {
 fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
     let path = entry.path();
     let file_name = os_str_to_string(&entry.file_name());
-    let metadata = entry.metadata()?;
-    let is_symlink = metadata.is_symlink();
+    let is_symlink = entry.file_type()?.is_symlink();
+    let metadata = fs::symlink_metadata(&path)?;
     let target_meta = if is_symlink {
         fs::metadata(&path).ok()
     } else {

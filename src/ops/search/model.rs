@@ -19,7 +19,6 @@ pub enum SearchErrorKind {
     OpenFile,
     ReadFile,
     NonUtf8,
-    Other,
 }
 
 #[derive(Debug, Clone)]

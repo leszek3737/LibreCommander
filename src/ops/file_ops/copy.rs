@@ -275,18 +275,29 @@ fn create_symlink_at(_target: &Path, _dest: &Path, _overwrite: bool) -> io::Resu
 }
 
 pub(crate) fn preserve_timestamps(target: &Path, src_meta: &fs::Metadata) -> io::Result<()> {
-    let atime = filetime::FileTime::from_last_access_time(src_meta);
-    let mtime = filetime::FileTime::from_last_modification_time(src_meta);
-    filetime::set_file_times(target, atime, mtime).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!(
-                "failed to preserve timestamps for {}: {}",
-                target.display(),
-                e
-            ),
-        )
-    })
+    let mut times = fs::FileTimes::new();
+    if let Ok(modified) = src_meta.modified() {
+        times = times.set_modified(modified);
+    }
+    if let Ok(accessed) = src_meta.accessed() {
+        times = times.set_accessed(accessed);
+    }
+    // Read open works for files and directories and does not require write mode
+    // (so this still works after permissions are set to read-only).
+    fs::File::options()
+        .read(true)
+        .open(target)
+        .and_then(|f| f.set_times(times))
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "failed to preserve timestamps for {}: {}",
+                    target.display(),
+                    e
+                ),
+            )
+        })
 }
 
 #[cfg(test)]

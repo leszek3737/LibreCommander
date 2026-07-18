@@ -83,6 +83,9 @@ pub(crate) fn leave_tui_stdout() -> io::Result<()> {
         DisableMouseCapture,
         Show
     );
+    if raw_result.is_err() && screen_result.is_err() {
+        lc::debug_log!("leave_tui_stdout: screen error masked by raw error: {screen_result:?}");
+    }
     raw_result.and(screen_result)
 }
 
@@ -129,6 +132,7 @@ fn poll_viewer_loader(
         }
         Ok(Err(e)) => {
             state.ui.status_message = Some(format!("Failed to open file: {e}"));
+            *viewer_state = None;
             state.mode = AppMode::Normal;
             *viewer_loader = None;
             changed = true;
@@ -147,6 +151,7 @@ fn poll_viewer_loader(
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             state.ui.status_message = Some("Viewer load failed: thread panicked".to_string());
+            *viewer_state = None;
             state.mode = AppMode::Normal;
             *viewer_loader = None;
             changed = true;

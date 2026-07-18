@@ -12,6 +12,7 @@ use super::{
     copy_with_progress,
 };
 use crate::debug_log;
+use crate::ops::helpers::cleanup_file as cleanup_temp_file;
 
 const MAX_CREATE_ENTRIES: usize = 100_000;
 
@@ -327,6 +328,8 @@ pub fn extract_tar(
                                 "extract_tar: destination exists, overwriting: {}",
                                 outpath.display()
                             );
+                            // SECURITY: on non-Unix, fallback is susceptible to
+                            // TOCTOU; Unix uses O_NOFOLLOW.
                             super::open_outfile(&outpath)
                         } else {
                             Err(e)
@@ -460,12 +463,6 @@ fn build_tar_into<W: Write>(
     let mut builder = tar::Builder::new(writer);
     append_sources(&mut builder, sources, progress, cancel)?;
     builder.finish().map_err(ArchiveError::Io)
-}
-
-fn cleanup_temp_file(path: &Path) {
-    if let Err(e) = fs::remove_file(path) {
-        debug_log!("cleanup temp {} failed: {e}", path.display());
-    }
 }
 
 fn append_sources(

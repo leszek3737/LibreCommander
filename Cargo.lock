@@ -971,7 +971,6 @@ dependencies = [
  "chrono",
  "crossterm",
  "dirs",
- "filetime",
  "flate2",
  "libc",
  "lzma-rs",

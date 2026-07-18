@@ -178,6 +178,11 @@ fn path_size_or_zero(path: &Path) -> u64 {
 ///
 /// Individual failures are logged and reported as 0 so that batch progress
 /// can still proceed.
+///
+/// **Blocking pre-scan:** walks every path's subtree synchronously on the
+/// caller's thread before returning. Used up-front by batch operations to
+/// size the total byte budget for progress reporting; large trees stall the
+/// caller until the walk completes.
 pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
     paths.iter().map(|p| path_size_or_zero(p)).collect()
 }

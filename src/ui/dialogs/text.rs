@@ -112,20 +112,28 @@ pub fn wrapped_line_count(text: &str, available_width: u16) -> usize {
         return 0;
     }
     let w = usize::from(available_width);
+    text.split('\n')
+        .map(|seg| count_wrapped_segment(seg, w))
+        .sum()
+}
+
+fn count_wrapped_segment(seg: &str, w: usize) -> usize {
     let mut lines = 1;
-    let mut col = 0;
-    for ch in text.chars() {
-        if ch == '\n' {
-            lines += 1;
-            col = 0;
+    let mut col: usize = 0;
+    for word in seg.split_whitespace() {
+        let ww = unicode_width::UnicodeWidthStr::width(word);
+        if col > 0 && col + 1 + ww <= w {
+            col += 1 + ww;
             continue;
         }
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if col + cw > w {
+        if col > 0 {
             lines += 1;
-            col = cw;
+        }
+        if ww <= w {
+            col = ww;
         } else {
-            col += cw;
+            lines += (ww - 1) / w;
+            col = if ww % w == 0 { w } else { ww % w };
         }
     }
     lines
