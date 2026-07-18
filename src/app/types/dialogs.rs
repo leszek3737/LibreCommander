@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use chrono::TimeZone;
+
 use super::text_input::TextInput;
 use crate::ops::archive::ArchiveEntry;
 
@@ -91,6 +93,24 @@ pub struct PropertiesDetails {
     pub owner: String,
     pub group: String,
     pub kind: FileKind,
+    pub size_str: String,
+    pub mtime_str: String,
+    pub permissions_str: String,
+}
+
+/// Format `mtime` as a local-time string matching the properties dialog.
+/// Falls back to `"Unknown"` when the value predates `UNIX_EPOCH`.
+pub fn format_mtime(mtime: SystemTime) -> String {
+    if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
+        chrono::Local
+            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
+            .single()
+            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    } else {
+        "Unknown".to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

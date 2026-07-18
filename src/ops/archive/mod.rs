@@ -466,7 +466,9 @@ fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
             let mut buf = [0u8; TAR_BLOCK_SIZE];
             let mut cursor = io::Cursor::new(&mut buf[..]);
             let mut buf_reader = io::BufReader::new(file);
-            let _ = lzma_rs::xz_decompress(&mut buf_reader, &mut cursor);
+            if lzma_rs::xz_decompress(&mut buf_reader, &mut cursor).is_err() {
+                return false;
+            }
             cursor.position() as usize >= TAR_BLOCK_SIZE
                 && buf[USTAR_MAGIC_OFFSET..].starts_with(USTAR_MAGIC)
         }

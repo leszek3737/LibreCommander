@@ -1,4 +1,3 @@
-use chrono::TimeZone;
 use std::borrow::Cow;
 
 use lc::{app, ui};
@@ -86,28 +85,12 @@ pub(super) fn to_ui_dialog<'a>(
 
 fn properties_to_ui_dialog(details: &app::types::PropertiesDetails) -> dialogs::DialogKind<'_> {
     let file_type = details.kind.label();
-    let mtime_str: Cow<'static, str> =
-        if let Ok(duration) = details.mtime.duration_since(std::time::UNIX_EPOCH) {
-            // Per-frame alloc; low cost for short strings.
-            Cow::Owned(
-                chrono::Local
-                    .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-                    .single()
-                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string(),
-            )
-        } else {
-            Cow::Borrowed("Unknown")
-        };
     dialogs::DialogKind::Properties {
         info: dialogs::PropertiesInfo {
             name: Cow::Borrowed(details.name.as_str()),
-            size: Cow::Owned(app::types::FileEntry::format_size(details.size)), // Per-frame alloc; low cost for short strings.
-            mtime: mtime_str,
-            permissions: Cow::Owned(app::types::FileEntry::display_permissions_raw(
-                details.permissions,
-            )), // Per-frame alloc; low cost for short strings.
+            size: Cow::Borrowed(details.size_str.as_str()),
+            mtime: Cow::Borrowed(details.mtime_str.as_str()),
+            permissions: Cow::Borrowed(details.permissions_str.as_str()),
             owner: Cow::Borrowed(details.owner.as_str()),
             group: Cow::Borrowed(details.group.as_str()),
             file_type: Cow::Borrowed(file_type),

@@ -282,11 +282,24 @@ impl Cha {
         self.kind.hidden = hidden;
     }
 
+    /// Sets execute permission on **all three** triples (owner, group, others).
+    /// Use [`Cha::set_executable_owner`](Self::set_executable_owner) to toggle
+    /// only the owner's execute bit.
     pub fn set_executable(&mut self, executable: bool) {
         if executable {
             self.mode = ChaMode::new(self.mode.mode_u32() | 0o111);
         } else {
             self.mode = ChaMode::new(self.mode.mode_u32() & !0o111);
+        }
+    }
+
+    /// Toggles only the owner execute bit (`0o100`); group and others are left
+    /// untouched.
+    pub fn set_executable_owner(&mut self, executable: bool) {
+        if executable {
+            self.mode = ChaMode::new(self.mode.mode_u32() | 0o100);
+        } else {
+            self.mode = ChaMode::new(self.mode.mode_u32() & !0o100);
         }
     }
 }

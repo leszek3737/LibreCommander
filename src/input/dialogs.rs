@@ -143,22 +143,23 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
             if t.overwrite {
                 return None;
             }
-            let conflicting: Vec<String> = t
-                .sources
-                .iter()
-                .filter_map(|s| {
-                    let name = s.file_name()?;
-                    let target = t.dest.join(name);
-                    if is_same_file(s, &target) {
-                        return None;
-                    }
-                    if std::fs::symlink_metadata(&target).is_ok() {
-                        Some(name.to_string_lossy().into_owned())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let mut conflicting: Vec<String> = Vec::new();
+            for s in &t.sources {
+                let Some(name) = s.file_name() else {
+                    continue;
+                };
+                let target = t.dest.join(name);
+                if is_same_file(s, &target) {
+                    continue;
+                }
+                if std::fs::symlink_metadata(&target).is_err() {
+                    continue;
+                }
+                let name = name.to_string_lossy().into_owned();
+                if !conflicting.contains(&name) {
+                    conflicting.push(name);
+                }
+            }
             (!conflicting.is_empty()).then_some(conflicting)
         }
         PendingAction::CreateArchive {
@@ -235,11 +236,11 @@ fn confirm_dialog_key(state: &mut AppState, key: KeyCode) -> Option<bool> {
     }
 }
 
-fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
-    let Some(confirmed) = confirm_dialog_key(state, key) else {
-        return;
-    };
-
+pub(crate) fn resolve_confirm_dialog(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    confirmed: bool,
+) {
     // A pending hotlist deletion returns to the hotlist picker either way.
     if state.ui.pending_hotlist_delete.is_some() {
         super::pickers::resolve_hotlist_delete(state, confirmed);
@@ -248,7 +249,19 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
 
     if confirmed {
         if state.ui.pending_action.is_some() {
-            dispatch_with_overwrite_check(state, running_job);
+            if let Some(conflicting) = check_overwrite_conflict(state) {
+                state.input.dialog_selection = 0;
+                state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
+                    OverwriteConfirmDetails { conflicting },
+                )));
+                return;
+            }
+            let status_message = state.ui.status_message.take();
+            start_confirmed_action(state, running_job);
+            if state.ui.status_message.is_none() {
+                state.ui.status_message = status_message;
+            }
+            finish_confirmed_action(state);
         } else if let Some(cmd) = state.ui.pending_menu_command.take() {
             state.mode = AppMode::Normal;
             shell::run_shell_command(state, &cmd, true, refresh_active);
@@ -259,6 +272,13 @@ fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJ
     } else {
         dismiss_dialog(state);
     }
+}
+
+fn handle_confirm_dialog(state: &mut AppState, running_job: &mut Option<RunningJob>, key: KeyCode) {
+    let Some(confirmed) = confirm_dialog_key(state, key) else {
+        return;
+    };
+    resolve_confirm_dialog(state, running_job, confirmed);
 }
 
 fn handle_overwrite_dialog(

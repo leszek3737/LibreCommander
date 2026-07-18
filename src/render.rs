@@ -211,19 +211,10 @@ fn render_list_picker_overlay(
     let selected = state.ui.picker_selected;
     match kind {
         PickerKind::History => {
-            // command_history is newest-last in a VecDeque; reverse materializes
-            // per frame (no contiguous reversed slice).
-            let items: Vec<&str> = state
-                .input
-                .command_history
-                .iter()
-                .rev()
-                .map(String::as_str)
-                .collect();
             render_picker(
                 f,
                 "Command History",
-                &items,
+                &state.ui.cached_history_strings,
                 selected,
                 SELECT_CANCEL_HINT,
                 colors,

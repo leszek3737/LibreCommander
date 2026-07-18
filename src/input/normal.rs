@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use lc::app::file_type;
 use lc::app::paths::terminal_state_file_path;
-use lc::app::types::{AppMode, AppState, FileEntry, InputAction, PickerKind};
+use lc::app::types::{AppMode, AppState, FileEntry, InputAction, PickerKind, format_mtime};
 use lc::app::{panel_ops, shell};
 use lc::ops::archive;
 use lc::ui::viewer;
@@ -534,6 +534,11 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
                         kind: lc::app::types::FileKind::from_metadata_flags(
                             entry.is_dir(),
                             entry.is_symlink(),
+                        ),
+                        size_str: lc::app::types::FileEntry::format_size(entry.size()),
+                        mtime_str: format_mtime(entry.mtime()),
+                        permissions_str: lc::app::types::FileEntry::display_permissions_raw(
+                            entry.mode_bits(),
                         ),
                     },
                 )));

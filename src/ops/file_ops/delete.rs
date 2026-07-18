@@ -194,7 +194,7 @@ fn delete_dir_contents_impl(
     cancel: Option<&AtomicBool>,
     depth: usize,
 ) -> io::Result<()> {
-    if depth > MAX_RECURSION_DEPTH {
+    if depth >= MAX_RECURSION_DEPTH {
         return Err(io::Error::other(format!(
             "directory nesting depth {depth} exceeds maximum allowed {MAX_RECURSION_DEPTH}",
         )));

@@ -37,7 +37,7 @@ pub fn copy_with_progress(
         return Ok(0);
     }
 
-    if !overwrite && dest.try_exists()? {
+    if !overwrite && fs::symlink_metadata(dest).is_ok() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("destination already exists: {}", dest.display()),

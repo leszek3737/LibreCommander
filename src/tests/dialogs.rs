@@ -267,6 +267,7 @@ fn list_picker_overlay_renders_title() {
         .input
         .command_history
         .push_back("echo hello".to_string());
+    state.rebuild_history_cache();
     let rendered = render_and_get_text(&state);
     assert!(rendered.contains("Command History"));
     assert!(rendered.contains("echo hello"));

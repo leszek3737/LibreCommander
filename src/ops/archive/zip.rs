@@ -11,7 +11,7 @@ use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
     copy_with_progress,
 };
-use crate::ops::helpers::cleanup_file as cleanup_temp_file;
+use crate::ops::helpers::{MAX_RECURSION_DEPTH, cleanup_file as cleanup_temp_file};
 
 const DEFAULT_COMPRESSION_LEVEL: i64 = 6;
 
@@ -99,7 +99,6 @@ fn extract_zip_entries(
 
         let mut entry = archive.by_index(i).map_err(map_zip_err)?;
 
-        #[cfg(unix)]
         if entry.is_symlink() {
             let _ = progress.send(entry.size());
             continue;
@@ -199,7 +198,9 @@ fn add_sources_to_zip(
         // (add_dir_to_zip) and the final open is hardened with O_NOFOLLOW.
         let meta = fs::symlink_metadata(source)?;
         if meta.is_dir() {
-            add_dir_to_zip(zip, source, source, options, progress, cancel, &mut count)?;
+            add_dir_to_zip(
+                zip, source, source, options, progress, cancel, &mut count, 0,
+            )?;
         } else {
             count_entry(&mut count)?;
             let name = source
@@ -279,6 +280,9 @@ pub fn create_zip(
     }
 }
 
+// The 8 parameters are intrinsic: archive writer plus walk inputs and the
+// shared progress/cancel/depth controls.
+#[allow(clippy::too_many_arguments)]
 fn add_dir_to_zip(
     zip: &mut zip::ZipWriter<File>,
     base: &Path,
@@ -287,7 +291,14 @@ fn add_dir_to_zip(
     progress: &Sender<u64>,
     cancel: &AtomicBool,
     count: &mut usize,
+    depth: usize,
 ) -> Result<(), ArchiveError> {
+    if depth >= MAX_RECURSION_DEPTH {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "recursion depth limit ({MAX_RECURSION_DEPTH}) exceeded at {}",
+            dir.display()
+        )));
+    }
     for entry in fs::read_dir(dir)? {
         check_cancel(cancel)?;
 
@@ -314,7 +325,16 @@ fn add_dir_to_zip(
         if meta.is_dir() {
             count_entry(count)?;
             zip.add_directory(&name, *options).map_err(map_zip_err)?;
-            add_dir_to_zip(zip, base, &path, options, progress, cancel, count)?;
+            add_dir_to_zip(
+                zip,
+                base,
+                &path,
+                options,
+                progress,
+                cancel,
+                count,
+                depth + 1,
+            )?;
         } else {
             count_entry(count)?;
             add_file_to_zip(zip, &name, &path, options, progress, cancel)?;

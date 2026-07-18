@@ -24,7 +24,7 @@ pub use app_state::{AppState, InputState, InteractionState, TreeState, UiState};
 // Dialog data types.
 pub use dialogs::{
     ArchiveCreateDetails, ArchiveExtractDetails, ConfirmDetails, DialogKind, FileKind, InputAction,
-    OverwriteConfirmDetails, PickerKind, PropertiesDetails,
+    OverwriteConfirmDetails, PickerKind, PropertiesDetails, format_mtime,
 };
 
 // File-entry data types.

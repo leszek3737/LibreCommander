@@ -45,6 +45,7 @@ pub struct UiState {
     pub user_menu_source: MenuSource,
     pub cached_hotlist_strings: Vec<String>,
     pub cached_user_menu_strings: Vec<String>,
+    pub cached_history_strings: Vec<String>,
     pub pending_menu_command: Option<String>,
     /// Hotlist index awaiting a "Remove from hotlist?" confirmation, if any.
     pub pending_hotlist_delete: Option<usize>,
@@ -72,6 +73,7 @@ impl Default for UiState {
             user_menu_source: MenuSource::Global,
             cached_hotlist_strings: Vec::new(),
             cached_user_menu_strings: Vec::new(),
+            cached_history_strings: Vec::new(),
             pending_menu_command: None,
             pending_hotlist_delete: None,
             pending_archive_list: None,
@@ -222,6 +224,16 @@ impl AppState {
             &mut self.ui.cached_user_menu_strings,
             |e| format!("{}  {}", e.hotkey, e.title),
         );
+    }
+
+    pub fn rebuild_history_cache(&mut self) {
+        self.ui.cached_history_strings.clear();
+        self.ui
+            .cached_history_strings
+            .reserve(self.input.command_history.len());
+        self.ui
+            .cached_history_strings
+            .extend(self.input.command_history.iter().rev().cloned());
     }
 
     pub fn hotlist_push(&mut self, path: PathBuf) {

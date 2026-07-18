@@ -328,6 +328,8 @@ pub fn extract_tar(
                                 "extract_tar: destination exists, overwriting: {}",
                                 outpath.display()
                             );
+                            // SECURITY: on non-Unix, fallback is susceptible to
+                            // TOCTOU; Unix uses O_NOFOLLOW.
                             super::open_outfile(&outpath)
                         } else {
                             Err(e)
