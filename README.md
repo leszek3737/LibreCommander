@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/leszek3737/LibreCommander/actions/workflows/rust.yml"><img src="https://github.com/leszek3737/LibreCommander/actions/workflows/rust.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/librecommander"><img src="https://img.shields.io/crates/v/librecommander.svg?style=flat-square" alt="crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust&style=flat-square" alt="Rust 1.95+"></a>
   <a href="https://doc.rust-lang.org/edition-guide/"><img src="https://img.shields.io/badge/edition-2024-yellow?style=flat-square" alt="Edition 2024"></a>
@@ -11,15 +12,14 @@
   <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/built%20with-ratatui-red?style=flat-square" alt="Built with Ratatui"></a>
 </p>
 
-**Libre Commander** (`lc`) is a dual-panel terminal file manager inspired by
-Midnight Commander: copy, move, browse archives, preview images, and search —
-without leaving the keyboard. One static Rust binary, fully offline, no async
-runtime and no network calls.
+**Modern dual-panel MC for people who want Norton/MC muscle memory in a single
+offline Rust binary — no async runtime, `forbid(unsafe)`, zip-safe archives.**
 
-> `lc` = **L**ibre **C**ommander.
+Binary name: `lc` (**L**ibre **C**ommander). crates.io package: `librecommander`
+(`lc` is taken).
 
 ```bash
-cargo install --git https://github.com/leszek3737/LibreCommander
+cargo install librecommander
 lc
 ```
 
@@ -88,27 +88,25 @@ watcher (keeps filter/sort/selection), 12 sort modes, MC-compatible user menu
 
 ### Install
 
-**From git (any OS with Rust 1.95+):**
+**crates.io (binary `lc`):**
+
+```bash
+cargo install librecommander
+```
+
+**Prebuilt release binaries** (Linux x86_64 / aarch64, macOS arm64 / x86_64):
+[GitHub Releases](https://github.com/leszek3737/LibreCommander/releases).
+
+**From git / source:**
 
 ```bash
 cargo install --git https://github.com/leszek3737/LibreCommander
-```
-
-Binary lands on `PATH` as `lc` (`~/.cargo/bin`).
-
-**From source:**
-
-```bash
+# or:
 git clone https://github.com/leszek3737/LibreCommander.git
 cd LibreCommander
 cargo build --release    # target/release/lc
-# or:
 cargo install --path .
 ```
-
-> Prebuilt binaries and Homebrew/apt packages are not published yet — track
-> [issues](https://github.com/leszek3737/LibreCommander/issues) if you want to
-> help package `lc`.
 
 ### First run
 
