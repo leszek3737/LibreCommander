@@ -1,12 +1,25 @@
 [package]
-name = "lc"
+name = "librecommander"
 version = "0.0.12"
 edition = "2024"
 rust-version = "1.95"
-description = "A fast Rust terminal file manager inspired by Midnight Commander"
+description = "Modern dual-panel MC for Norton/MC muscle memory in one offline Rust binary — no async runtime, forbid(unsafe), zip-safe archives"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/leszek3737/LibreCommander"
+homepage = "https://github.com/leszek3737/LibreCommander"
+keywords = ["tui", "file-manager", "ratatui", "cli", "terminal"]
+categories = ["command-line-utilities", "filesystem"]
+exclude = [".github/", ".serena/"]
+
+# crates.io package is `librecommander` (`lc` is taken). Binary + lib stay `lc`.
+[lib]
+name = "lc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lc"
+path = "src/main.rs"
 
 [dependencies]
 bzip2 = "0.6"
