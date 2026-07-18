@@ -463,10 +463,13 @@ fn verify_tar_inside(file: &mut fs::File, format: ArchiveFormat) -> bool {
         ArchiveFormat::TarGz => verify_tar_header(flate2::read::GzDecoder::new(file)),
         ArchiveFormat::TarBz2 => verify_tar_header(bzip2::read::BzDecoder::new(file)),
         ArchiveFormat::TarXz => {
+            // Only need the first tar block. A fixed 512-byte writer will error
+            // (WriteZero) once full — treat that as success if the block is filled.
             let mut buf = [0u8; TAR_BLOCK_SIZE];
             let mut cursor = io::Cursor::new(&mut buf[..]);
             let mut buf_reader = io::BufReader::new(file);
-            if lzma_rs::xz_decompress(&mut buf_reader, &mut cursor).is_err() {
+            let res = lzma_rs::xz_decompress(&mut buf_reader, &mut cursor);
+            if res.is_err() && (cursor.position() as usize) < TAR_BLOCK_SIZE {
                 return false;
             }
             cursor.position() as usize >= TAR_BLOCK_SIZE
@@ -799,6 +802,50 @@ mod tests {
 
         let (fmt, _file) = detect_format(&archive_path).unwrap();
         assert_eq!(fmt, ArchiveFormat::TarZst);
+
+        let dest = work.path().join("extract");
+        fs::create_dir(&dest).unwrap();
+        let (tx2, _rx2) = mpsc::channel();
+        extract_archive(&archive_path, &dest, &tx2, &AtomicBool::new(false)).unwrap();
+
+        assert_eq!(fs::read(dest.join("hello.txt")).unwrap(), f1_content);
+        assert_eq!(fs::read(dest.join("data.bin")).unwrap(), f2_content);
+    }
+
+    // Regression: TarXz magic sniff only needs the first 512-byte tar block.
+    // Decompress into a fixed Cursor errors with WriteZero once full; treating
+    // any decompress Err as failure rejected every real .tar.xz (>512 bytes).
+    #[test]
+    fn detect_format_tar_xz_magic_roundtrip() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        let work = tempfile::tempdir().unwrap();
+        let src_dir = work.path().join("src");
+        fs::create_dir(&src_dir).unwrap();
+        let f1 = src_dir.join("hello.txt");
+        let f2 = src_dir.join("data.bin");
+        let f1_content = b"hello tar xz world";
+        let f2_content: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&f1, f1_content).unwrap();
+        fs::write(&f2, &f2_content).unwrap();
+
+        let archive_path = work.path().join("out.tar.xz");
+        let (tx, _rx) = mpsc::channel();
+        create_archive(
+            &[f1, f2],
+            &archive_path,
+            ArchiveFormat::TarXz,
+            &tx,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        // Extension-less name forces the magic + verify_tar_inside path.
+        let magic_path = work.path().join("mystery.dat");
+        fs::copy(&archive_path, &magic_path).unwrap();
+        let (fmt, _file) = detect_format(&magic_path).unwrap();
+        assert_eq!(fmt, ArchiveFormat::TarXz);
 
         let dest = work.path().join("extract");
         fs::create_dir(&dest).unwrap();

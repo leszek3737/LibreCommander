@@ -199,7 +199,7 @@ enum DescentDecision {
 /// symlink cycle, recording newly seen keys in `visited`.
 ///
 /// A `None` key means the platform cannot identify this directory (see
-/// `file_key`); cycle detection is then SKIPPED and descent always proceeds.
+/// `get_inode_key`); cycle detection is then SKIPPED and descent always proceeds.
 /// Substituting a shared sentinel (e.g. the old Windows `(0, 0)` fallback) for
 /// `None` would make distinct directories collide and be falsely suppressed as
 /// cycles — the bug this seam exists to guard against. Factored out of
@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn build_tree_expands_distinct_sibling_dirs_independently() {
         // Intent documentation, NOT a regression guard on this platform: the
-        // collision class it describes (the old Windows `(0, 0)` `file_key`
+        // collision class it describes (the old Windows `(0, 0)` `get_inode_key`
         // fallback that made two distinct directories share a key) cannot occur
         // on Unix, where every inode is distinct, so this passes against the old
         // code too. The portable, non-tautological guards for that fix live in

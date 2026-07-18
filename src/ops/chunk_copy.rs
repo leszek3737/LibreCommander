@@ -37,11 +37,17 @@ pub fn copy_with_progress(
         return Ok(0);
     }
 
-    if !overwrite && fs::symlink_metadata(dest).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("destination already exists: {}", dest.display()),
-        ));
+    if !overwrite {
+        match fs::symlink_metadata(dest) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("destination already exists: {}", dest.display()),
+                ));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
     }
 
     let src_file = File::open(src)?;
@@ -205,14 +211,16 @@ fn publish_temp(
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             return Err(err);
         }
-        Err(_) => {
-            if fs::symlink_metadata(dest).is_ok() {
+        Err(_) => match fs::symlink_metadata(dest) {
+            Ok(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!("destination appeared during copy: {}", dest.display()),
                 ));
             }
-        }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        },
     }
 
     fs::rename(temp_dest, dest)

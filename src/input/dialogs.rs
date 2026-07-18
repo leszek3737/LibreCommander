@@ -89,6 +89,16 @@ pub(crate) fn finish_confirmed_action(state: &mut AppState) {
 }
 
 fn dispatch_with_overwrite_check(state: &mut AppState, running_job: &mut Option<RunningJob>) {
+    dispatch_with_overwrite_check_inner(state, running_job, false);
+}
+
+/// `preserve_status`: keep the pre-start status message when the job does not
+/// install a new one (confirm dialog path). Archive menu callers leave this off.
+fn dispatch_with_overwrite_check_inner(
+    state: &mut AppState,
+    running_job: &mut Option<RunningJob>,
+    preserve_status: bool,
+) {
     if let Some(conflicting) = check_overwrite_conflict(state) {
         state.input.dialog_selection = 0;
         state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
@@ -96,7 +106,13 @@ fn dispatch_with_overwrite_check(state: &mut AppState, running_job: &mut Option<
         )));
         return;
     }
+    let status_message = preserve_status
+        .then(|| state.ui.status_message.take())
+        .flatten();
     start_confirmed_action(state, running_job);
+    if preserve_status && state.ui.status_message.is_none() {
+        state.ui.status_message = status_message;
+    }
     finish_confirmed_action(state);
 }
 
@@ -249,19 +265,7 @@ pub(crate) fn resolve_confirm_dialog(
 
     if confirmed {
         if state.ui.pending_action.is_some() {
-            if let Some(conflicting) = check_overwrite_conflict(state) {
-                state.input.dialog_selection = 0;
-                state.mode = AppMode::Dialog(DialogKind::OverwriteConfirm(Box::new(
-                    OverwriteConfirmDetails { conflicting },
-                )));
-                return;
-            }
-            let status_message = state.ui.status_message.take();
-            start_confirmed_action(state, running_job);
-            if state.ui.status_message.is_none() {
-                state.ui.status_message = status_message;
-            }
-            finish_confirmed_action(state);
+            dispatch_with_overwrite_check_inner(state, running_job, true);
         } else if let Some(cmd) = state.ui.pending_menu_command.take() {
             state.mode = AppMode::Normal;
             shell::run_shell_command(state, &cmd, true, refresh_active);

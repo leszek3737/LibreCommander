@@ -266,16 +266,11 @@ impl Cha {
         self.mode.is_executable()
     }
 
-    /// Compares file metadata for change detection (cache invalidation).
+    /// Cache-invalidation equality: same fields as [`PartialEq`] today.
+    /// Kept as a named API so call sites stay readable if `Cha` later gains
+    /// fields that should not bust the cache (e.g. atime).
     pub fn hits(&self, other: &Self) -> bool {
-        self.len == other.len
-            && self.mtime == other.mtime
-            && self.ctime == other.ctime
-            && self.btime == other.btime
-            && self.kind == other.kind
-            && self.mode == other.mode
-            && self.uid == other.uid
-            && self.gid == other.gid
+        self == other
     }
 
     pub fn set_hidden(&mut self, hidden: bool) {
@@ -415,14 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn cha_orphan_detection() {
+    fn cha_link_mode_without_follow_flag() {
         let mut cha = Cha::dummy_dir();
         cha.mode = ChaMode::new(0o120777);
         assert!(cha.is_link());
         assert!(!cha.kind.follow);
-
-        cha.kind.follow = true;
-        assert!(cha.kind.follow);
     }
 
     #[test]

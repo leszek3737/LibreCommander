@@ -184,7 +184,6 @@ fn path_size_or_zero(path: &Path) -> u64 {
 /// size the total byte budget for progress reporting; large trees stall the
 /// caller until the walk completes.
 pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    debug_log!("path_sizes: pre-scanning {} paths", paths.len());
     paths.iter().map(|p| path_size_or_zero(p)).collect()
 }
 
