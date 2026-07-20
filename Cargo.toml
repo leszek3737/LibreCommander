@@ -1,6 +1,6 @@
 [package]
 name = "librecommander"
-version = "0.0.12"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 description = "Modern dual-panel MC for Norton/MC muscle memory in one offline Rust binary — no async runtime, forbid(unsafe), zip-safe archives"
