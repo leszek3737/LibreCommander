@@ -5,7 +5,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::Style,
-    widgets::{Block, Borders, Clear},
+    widgets::{Block, BorderType, Borders, Clear},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -112,6 +112,7 @@ fn render_menu_dropdown(
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Theme::panel_fg_with_colors(colors))
         .style(Theme::panel_bg_with_colors(colors));
     let inner = block.inner(dropdown_area);

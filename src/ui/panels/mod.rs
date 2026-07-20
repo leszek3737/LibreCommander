@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::*,
     style::Style,
-    widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
 use std::borrow::Cow;
 use std::fmt::Write;
@@ -117,6 +117,28 @@ fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
     truncate_to_width(name, max_width)
 }
 
+/// Shorten the panel-title path: an absolute path under `$HOME` renders as
+/// `~` / `~/...`. Pure core split out so tests don't need to mutate the
+/// environment (`set_var` is unsafe in edition 2024).
+fn shorten_home_with<'a>(path: &'a str, home: &str) -> Cow<'a, str> {
+    if home.len() > 1
+        && let Some(rest) = path.strip_prefix(home)
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        return Cow::Owned(format!("~{rest}"));
+    }
+    Cow::Borrowed(path)
+}
+
+fn shorten_home(path: &str) -> Cow<'_, str> {
+    // dirs::home_dir (not std::env) to stay consistent with tilde expansion
+    // in fs::path, which also falls back to passwd when $HOME is unset.
+    match dirs::home_dir() {
+        Some(home) => shorten_home_with(path, &home.to_string_lossy()),
+        None => Cow::Borrowed(path),
+    }
+}
+
 pub fn render_panel_with_colors(
     f: &mut Frame,
     area: Rect,
@@ -132,13 +154,15 @@ pub fn render_panel_with_colors(
     };
 
     let path_lossy = panel.path().to_string_lossy();
-    let mut title = String::with_capacity(path_lossy.len() + 2);
+    let display_path = shorten_home(&path_lossy);
+    let mut title = String::with_capacity(display_path.len() + 2);
     title.push(' ');
-    title.push_str(&path_lossy);
+    title.push_str(&display_path);
     title.push(' ');
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(title)
         .title_style(Theme::title_with_colors(colors));
@@ -200,7 +224,7 @@ pub fn render_panel_with_colors(
     }
 
     let highlight_style = if is_active {
-        Theme::highlight_with_colors(colors)
+        Theme::highlight_bold_with_colors(colors)
     } else {
         Theme::panel_with_colors(colors)
     };
@@ -560,7 +584,7 @@ fn function_bar_styles(colors: &ColorPalette) -> (Style, Style) {
         .bg(colors.function_bar_bg)
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default()
-        .fg(colors.function_bar_fg)
+        .fg(colors.function_bar_label)
         .bg(colors.function_bar_bg);
     (key_style, label_style)
 }
@@ -604,6 +628,7 @@ pub fn render_function_bar_with_colors(f: &mut Frame, area: Rect, colors: &Color
 
     // Common path: default function-bar colors -> reuse the precomputed cells.
     if colors.function_bar_fg == DEFAULT_COLORS.function_bar_fg
+        && colors.function_bar_label == DEFAULT_COLORS.function_bar_label
         && colors.function_bar_bg == DEFAULT_COLORS.function_bar_bg
     {
         render_default_function_bar(f, &chunks);

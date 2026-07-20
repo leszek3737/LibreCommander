@@ -39,7 +39,7 @@ pub fn render_input_dialog(
 
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain);
+        .border_type(BorderType::Rounded);
     let input_block = if value.is_empty() {
         input_block.border_style(Theme::warning_with_colors(colors))
     } else {

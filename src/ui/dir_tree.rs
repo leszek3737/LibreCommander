@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
 use unicode_width::UnicodeWidthStr;
@@ -194,6 +194,7 @@ pub fn render_directory_tree_with_colors(
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(format!(" Directory Tree: {} ", tree_root.display()))
         .title_style(Theme::title_with_colors(colors));
     let inner = block.inner(area);
