@@ -6,7 +6,7 @@ use ratatui::{
     layout::Margin,
     prelude::*,
     style::{Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
 use crate::app::types::format_size;
@@ -394,6 +394,7 @@ pub fn render_loading_with_colors(
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .style(Theme::panel_bg_with_colors(colors));
     let inner = block.inner(area);
     f.render_widget(block, area);

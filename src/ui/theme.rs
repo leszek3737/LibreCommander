@@ -41,11 +41,12 @@ impl<'de> Deserialize<'de> for IconTheme {
 }
 
 macro_rules! define_theme_colors {
-    ($(($field:ident => $color:expr)),* $(,)?) => {
+    ($(($field:ident => $modern:expr, $classic:expr)),* $(,)?) => {
         #[derive(Debug, Clone, Deserialize, Default)]
         #[serde(default)]
         pub struct ThemeConfig {
             $(pub $field: Option<String>,)*
+            pub preset: Option<String>,
             #[serde(default)]
             pub icon_theme: IconTheme,
         }
@@ -57,20 +58,35 @@ macro_rules! define_theme_colors {
         }
 
         pub const DEFAULT_COLORS: ColorPalette = ColorPalette {
-            $($field: $color,)*
+            $($field: $modern,)*
+            icon_theme: IconTheme::Emoji,
+        };
+
+        /// The original navy Norton/MC palette, selectable via
+        /// `[theme] preset = "classic"`.
+        pub const CLASSIC_COLORS: ColorPalette = ColorPalette {
+            $($field: $classic,)*
             icon_theme: IconTheme::Emoji,
         };
 
         impl ColorPalette {
             pub fn from_config(cfg: &ThemeConfig) -> Self {
-                Self {
+                let base = preset_palette(cfg.preset.as_deref());
+                let mut palette = Self {
                     $($field: parse_color_field(
                         stringify!($field),
                         cfg.$field.as_deref(),
-                        DEFAULT_COLORS.$field,
+                        base.$field,
                     ),)*
                     icon_theme: cfg.icon_theme,
+                };
+                // Pre-split configs only had `function_bar_fg` for both key and
+                // label. Inherit when label is unset so existing themes keep
+                // the overridden color on the label.
+                if cfg.function_bar_label.is_none() && cfg.function_bar_fg.is_some() {
+                    palette.function_bar_label = palette.function_bar_fg;
                 }
+                palette
             }
 
             pub fn icon_theme(&self) -> IconTheme {
@@ -82,9 +98,9 @@ macro_rules! define_theme_colors {
             /// Build a `ThemeConfig` directly from a borrowed `[theme]` TOML
             /// table, avoiding a full clone of the table just to round-trip it
             /// back through serde. Mirrors the `Deserialize` derive: each color
-            /// key must be a string (a non-string value is rejected), and
-            /// `icon_theme` tolerates bad values by falling back to the default
-            /// (see `IconTheme::from_value`).
+            /// key and `preset` must be a string (a non-string value is
+            /// rejected), and `icon_theme` tolerates bad values by falling back
+            /// to the default (see `IconTheme::from_value`).
             fn from_table(table: &toml::Table) -> Result<Self, String> {
                 Ok(Self {
                     $($field: match table.get(stringify!($field)) {
@@ -99,6 +115,15 @@ macro_rules! define_theme_colors {
                             }
                         },
                     },)*
+                    preset: match table.get("preset") {
+                        None => None,
+                        Some(value) => match value.as_str() {
+                            Some(s) => Some(s.to_string()),
+                            None => {
+                                return Err("[theme].preset must be a string value".to_string());
+                            }
+                        },
+                    },
                     icon_theme: table
                         .get("icon_theme")
                         .map(IconTheme::from_value)
@@ -116,43 +141,60 @@ macro_rules! define_theme_colors {
 }
 
 define_theme_colors! {
-    (panel_bg => Color::Rgb(0, 0, 128)),
-    (status_bar_bg => Color::Rgb(0, 0, 128)),
-    (menu_bar_bg => Color::Rgb(0, 0, 128)),
-    (dialog_bg => Color::Black),
-    (highlight_bg => Color::Cyan),
-    (panel_fg => Color::White),
-    (status_bar_fg => Color::White),
-    (menu_bar_fg => Color::White),
-    (dialog_fg => Color::White),
-    (highlight_fg => Color::Black),
-    (border_active => Color::Yellow),
-    (border_inactive => Color::DarkGray),
-    (title => Color::LightCyan),
-    (error => Color::Red),
-    (warning => Color::Yellow),
-    (info => Color::Cyan),
-    (selected_file_fg => Color::LightYellow),
-    (scrollbar_active => Color::Yellow),
-    (scrollbar_inactive => Color::DarkGray),
-    (function_bar_fg => Color::LightBlue),
-    (function_bar_bg => Color::DarkGray),
-    (search_match_fg => Color::Black),
-    (search_match_bg => Color::LightGreen),
-    (search_match_current_fg => Color::Black),
-    (search_match_current_bg => Color::Yellow),
-    (directory => Color::White),
-    (executable => Color::Green),
-    (symlink => Color::Cyan),
-    (archive => Color::Red),
-    (image => Color::Magenta),
-    (video => Color::LightMagenta),
-    (audio => Color::LightGreen),
-    (document => Color::LightYellow),
-    (source_code => Color::Yellow),
-    (config => Color::LightBlue),
-    (font => Color::LightCyan),
-    (regular_file => Color::White),
+    (panel_bg => Color::Rgb(0x16, 0x16, 0x1e), Color::Rgb(0, 0, 128)),
+    (status_bar_bg => Color::Rgb(0x16, 0x16, 0x1e), Color::Rgb(0, 0, 128)),
+    (menu_bar_bg => Color::Rgb(0x16, 0x16, 0x1e), Color::Rgb(0, 0, 128)),
+    (dialog_bg => Color::Rgb(0x1f, 0x23, 0x35), Color::Black),
+    (highlight_bg => Color::Rgb(0x28, 0x34, 0x57), Color::Cyan),
+    (panel_fg => Color::Rgb(0xa9, 0xb1, 0xd6), Color::White),
+    (status_bar_fg => Color::Rgb(0xa9, 0xb1, 0xd6), Color::White),
+    (menu_bar_fg => Color::Rgb(0x78, 0x7c, 0x99), Color::White),
+    (dialog_fg => Color::Rgb(0xc0, 0xca, 0xf5), Color::White),
+    (highlight_fg => Color::Rgb(0xc0, 0xca, 0xf5), Color::Black),
+    (border_active => Color::Rgb(0x7a, 0xa2, 0xf7), Color::Yellow),
+    (border_inactive => Color::Rgb(0x3b, 0x42, 0x61), Color::DarkGray),
+    (title => Color::Rgb(0x7a, 0xa2, 0xf7), Color::LightCyan),
+    (error => Color::Rgb(0xf7, 0x76, 0x8e), Color::Red),
+    (warning => Color::Rgb(0xe0, 0xaf, 0x68), Color::Yellow),
+    (info => Color::Rgb(0x7d, 0xcf, 0xff), Color::Cyan),
+    (selected_file_fg => Color::Rgb(0xe0, 0xaf, 0x68), Color::LightYellow),
+    (scrollbar_active => Color::Rgb(0x7a, 0xa2, 0xf7), Color::Yellow),
+    (scrollbar_inactive => Color::Rgb(0x3b, 0x42, 0x61), Color::DarkGray),
+    (function_bar_fg => Color::Rgb(0x7a, 0xa2, 0xf7), Color::LightBlue),
+    (function_bar_label => Color::Rgb(0x56, 0x5f, 0x89), Color::LightBlue),
+    (function_bar_bg => Color::Rgb(0x16, 0x16, 0x1e), Color::DarkGray),
+    (search_match_fg => Color::Rgb(0x16, 0x16, 0x1e), Color::Black),
+    (search_match_bg => Color::Rgb(0x9e, 0xce, 0x6a), Color::LightGreen),
+    (search_match_current_fg => Color::Rgb(0x16, 0x16, 0x1e), Color::Black),
+    (search_match_current_bg => Color::Rgb(0xe0, 0xaf, 0x68), Color::Yellow),
+    (directory => Color::Rgb(0x7a, 0xa2, 0xf7), Color::White),
+    (executable => Color::Rgb(0x9e, 0xce, 0x6a), Color::Green),
+    (symlink => Color::Rgb(0x73, 0xda, 0xca), Color::Cyan),
+    (archive => Color::Rgb(0xf7, 0x76, 0x8e), Color::Red),
+    (image => Color::Rgb(0xbb, 0x9a, 0xf7), Color::Magenta),
+    (video => Color::Rgb(0xff, 0x9e, 0x64), Color::LightMagenta),
+    (audio => Color::Rgb(0x73, 0xda, 0xca), Color::LightGreen),
+    (document => Color::Rgb(0xe0, 0xaf, 0x68), Color::LightYellow),
+    (source_code => Color::Rgb(0x7d, 0xcf, 0xff), Color::Yellow),
+    (config => Color::Rgb(0xff, 0x9e, 0x64), Color::LightBlue),
+    (font => Color::Rgb(0xbb, 0x9a, 0xf7), Color::LightCyan),
+    (regular_file => Color::Rgb(0xa9, 0xb1, 0xd6), Color::White),
+}
+
+/// Resolve `[theme].preset` to its base palette; unknown values fall back to
+/// the modern default (mirrors `IconTheme::from_value` tolerance).
+fn preset_palette(preset: Option<&str>) -> &'static ColorPalette {
+    match preset {
+        None => &DEFAULT_COLORS,
+        Some(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "modern" => &DEFAULT_COLORS,
+            "classic" => &CLASSIC_COLORS,
+            _ => {
+                crate::debug_log!("config: unknown theme preset '{s}', using modern");
+                &DEFAULT_COLORS
+            }
+        },
+    }
 }
 
 pub struct Theme;
@@ -425,9 +467,97 @@ mod tests {
     #[test]
     fn defaults_match_when_no_config() {
         let c = &DEFAULT_COLORS;
-        assert_eq!(c.panel_bg, Color::Rgb(0, 0, 128));
-        assert_eq!(c.directory, Color::White);
-        assert_eq!(c.error, Color::Red);
+        assert_eq!(c.panel_bg, Color::Rgb(0x16, 0x16, 0x1e));
+        assert_eq!(c.directory, Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(c.error, Color::Rgb(0xf7, 0x76, 0x8e));
+    }
+
+    #[test]
+    fn preset_classic_selects_navy_palette() {
+        let cfg = ThemeConfig {
+            preset: Some("classic".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.panel_bg, Color::Rgb(0, 0, 128));
+        assert_eq!(colors.directory, Color::White);
+    }
+
+    #[test]
+    fn preset_overrides_apply_on_top_of_base() {
+        let cfg = ThemeConfig {
+            preset: Some("classic".to_string()),
+            directory: Some("cyan".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.panel_bg, CLASSIC_COLORS.panel_bg);
+        assert_eq!(colors.directory, Color::Cyan);
+    }
+
+    #[test]
+    fn preset_unknown_falls_back_to_modern() {
+        let cfg = ThemeConfig {
+            preset: Some("solarized".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.panel_bg, DEFAULT_COLORS.panel_bg);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn preset_parsed_from_toml_table() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            preset = "classic"
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+
+        Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap();
+
+        assert_eq!(colors.panel_bg, CLASSIC_COLORS.panel_bg);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn preset_non_string_is_rejected() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            preset = 1
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+        let err = Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap_err();
+        assert!(err.contains("preset"), "{err}");
+    }
+
+    #[test]
+    fn function_bar_fg_only_inherits_to_label() {
+        let cfg = ThemeConfig {
+            function_bar_fg: Some("red".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.function_bar_fg, Color::Red);
+        assert_eq!(colors.function_bar_label, Color::Red);
+    }
+
+    #[test]
+    fn function_bar_label_override_stays_independent() {
+        let cfg = ThemeConfig {
+            function_bar_fg: Some("red".to_string()),
+            function_bar_label: Some("green".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.function_bar_fg, Color::Red);
+        assert_eq!(colors.function_bar_label, Color::Green);
     }
 
     #[test]

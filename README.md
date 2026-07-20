@@ -328,8 +328,13 @@ digit runs numerically (`file9` < `file10`).
 
 ### Theming
 
+Two built-in presets: `modern` (default — dark, truecolor) and `classic` (the
+original navy Norton/MC palette, ANSI-safe for terminals without truecolor).
+Borders are rounded in both. Individual colors override the chosen preset:
+
 ```toml
 [theme]
+preset       = "classic"    # "modern" (default) or "classic"
 icon_theme   = "emoji"      # "emoji", "ascii", or "nerd_font"
 panel_bg     = "navy"
 panel_fg     = "white"
@@ -345,6 +350,8 @@ audio        = "light_green"
 source_code  = "yellow"
 config       = "light_blue"
 regular_file = "white"
+function_bar_fg    = "light_blue"  # F-key number
+function_bar_label = "light_blue"  # F-key label
 ```
 
 Colors: named (`red`, `navy`), hex (`#RRGGBB` / `#RGB`), or ANSI `0–255`.

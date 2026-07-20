@@ -19,14 +19,14 @@ pub struct HelpGeometry {
     pub width: u16,
 }
 
-fn thick_bordered_block() -> Block<'static> {
+fn rounded_bordered_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
+        .border_type(BorderType::Rounded)
 }
 
 pub(super) fn help_dialog_content_rect(dialog_area: Rect) -> Rect {
-    let block = thick_bordered_block();
+    let block = rounded_bordered_block();
     let inner = block.inner(dialog_area);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -68,7 +68,7 @@ pub fn help_message_width(area: Rect) -> u16 {
 }
 
 pub(super) fn dialog_block(title: &str, style: Style) -> Block<'_> {
-    thick_bordered_block().title(title).style(style)
+    rounded_bordered_block().title(title).style(style)
 }
 
 pub fn input_dialog_rect(area: Rect) -> Rect {

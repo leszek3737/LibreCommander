@@ -94,7 +94,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.directory,
         },
         Case {
             name: "script.sh",
@@ -102,7 +102,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: true,
             is_symlink: false,
             size: 1024,
-            fg: Color::Yellow,
+            fg: DEFAULT_COLORS.source_code,
         },
         Case {
             name: "mybinary",
@@ -110,7 +110,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: true,
             is_symlink: false,
             size: 1024,
-            fg: Color::Green,
+            fg: DEFAULT_COLORS.executable,
         },
         Case {
             name: "link",
@@ -118,7 +118,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: true,
             size: 1024,
-            fg: Color::Cyan,
+            fg: DEFAULT_COLORS.symlink,
         },
         Case {
             name: "archive.tar.gz",
@@ -126,7 +126,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::Red,
+            fg: DEFAULT_COLORS.archive,
         },
         Case {
             name: "photo.png",
@@ -134,7 +134,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::Magenta,
+            fg: DEFAULT_COLORS.image,
         },
         Case {
             name: "main.rs",
@@ -142,7 +142,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::Yellow,
+            fg: DEFAULT_COLORS.source_code,
         },
         Case {
             name: ".hidden",
@@ -150,7 +150,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.regular_file,
         },
         Case {
             name: "settings.toml",
@@ -158,7 +158,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::LightBlue,
+            fg: DEFAULT_COLORS.config,
         },
         Case {
             name: "movie.mp4",
@@ -166,7 +166,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::LightMagenta,
+            fg: DEFAULT_COLORS.video,
         },
         Case {
             name: "song.mp3",
@@ -174,7 +174,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::LightGreen,
+            fg: DEFAULT_COLORS.audio,
         },
         Case {
             name: "font.ttf",
@@ -182,7 +182,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::LightCyan,
+            fg: DEFAULT_COLORS.font,
         },
         Case {
             name: "unknown.xyz",
@@ -190,7 +190,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.regular_file,
         },
         Case {
             name: "random.qzx",
@@ -198,7 +198,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.regular_file,
         },
         Case {
             name: "document.txt",
@@ -206,7 +206,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::LightYellow,
+            fg: DEFAULT_COLORS.document,
         },
         // Edge cases.
         // u64::MAX size must not change the (size-independent) color.
@@ -216,7 +216,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: u64::MAX,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.regular_file,
         },
         // dir + executable -> directory wins (file_type::category precedence).
         Case {
@@ -225,7 +225,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: true,
             is_symlink: false,
             size: 1024,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.directory,
         },
         // symlink + executable -> symlink wins.
         Case {
@@ -234,7 +234,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: true,
             is_symlink: true,
             size: 1024,
-            fg: Color::Cyan,
+            fg: DEFAULT_COLORS.symlink,
         },
         // 300-char name, no extension -> Other.
         Case {
@@ -243,7 +243,7 @@ fn file_color_table_maps_categories_with_intended_bold() {
             is_exec: false,
             is_symlink: false,
             size: 1024,
-            fg: Color::White,
+            fg: DEFAULT_COLORS.regular_file,
         },
         // Empty names are unrepresentable: FileEntry::build() asserts a non-empty name, so
         // the panel never receives one. The empty-string → Other mapping is verified at the
@@ -268,6 +268,34 @@ fn file_color_table_maps_categories_with_intended_bold() {
             case.name
         );
     }
+}
+
+#[test]
+fn shorten_home_with_replaces_home_prefix_only() {
+    assert_eq!(shorten_home_with("/home/u/docs", "/home/u"), "~/docs");
+    assert_eq!(shorten_home_with("/home/u", "/home/u"), "~");
+    // Prefix must end on a path-component boundary.
+    assert_eq!(
+        shorten_home_with("/home/user2/x", "/home/u"),
+        "/home/user2/x"
+    );
+    assert_eq!(shorten_home_with("/etc", "/home/u"), "/etc");
+    // A root home dir must not swallow every absolute path.
+    assert_eq!(shorten_home_with("/etc", "/"), "/etc");
+    // Trailing slashes on home and/or path still shorten.
+    assert_eq!(shorten_home_with("/home/u/docs", "/home/u/"), "~/docs");
+    assert_eq!(shorten_home_with("/home/u/", "/home/u/"), "~");
+    assert_eq!(shorten_home_with("/home/u/", "/home/u"), "~");
+    // Windows-style separators (accepted on every host).
+    assert_eq!(
+        shorten_home_with(r"C:\Users\u\docs", r"C:\Users\u"),
+        r"~\docs"
+    );
+    assert_eq!(shorten_home_with(r"C:\Users\u", r"C:\Users\u\"), "~");
+    assert_eq!(
+        shorten_home_with(r"C:\Users\user2\x", r"C:\Users\u"),
+        r"C:\Users\user2\x"
+    );
 }
 
 #[test]
