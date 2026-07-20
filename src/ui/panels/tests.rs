@@ -282,6 +282,20 @@ fn shorten_home_with_replaces_home_prefix_only() {
     assert_eq!(shorten_home_with("/etc", "/home/u"), "/etc");
     // A root home dir must not swallow every absolute path.
     assert_eq!(shorten_home_with("/etc", "/"), "/etc");
+    // Trailing slashes on home and/or path still shorten.
+    assert_eq!(shorten_home_with("/home/u/docs", "/home/u/"), "~/docs");
+    assert_eq!(shorten_home_with("/home/u/", "/home/u/"), "~");
+    assert_eq!(shorten_home_with("/home/u/", "/home/u"), "~");
+    // Windows-style separators (accepted on every host).
+    assert_eq!(
+        shorten_home_with(r"C:\Users\u\docs", r"C:\Users\u"),
+        r"~\docs"
+    );
+    assert_eq!(shorten_home_with(r"C:\Users\u", r"C:\Users\u\"), "~");
+    assert_eq!(
+        shorten_home_with(r"C:\Users\user2\x", r"C:\Users\u"),
+        r"C:\Users\user2\x"
+    );
 }
 
 #[test]

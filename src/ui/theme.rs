@@ -72,14 +72,21 @@ macro_rules! define_theme_colors {
         impl ColorPalette {
             pub fn from_config(cfg: &ThemeConfig) -> Self {
                 let base = preset_palette(cfg.preset.as_deref());
-                Self {
+                let mut palette = Self {
                     $($field: parse_color_field(
                         stringify!($field),
                         cfg.$field.as_deref(),
                         base.$field,
                     ),)*
                     icon_theme: cfg.icon_theme,
+                };
+                // Pre-split configs only had `function_bar_fg` for both key and
+                // label. Inherit when label is unset so existing themes keep
+                // the overridden color on the label.
+                if cfg.function_bar_label.is_none() && cfg.function_bar_fg.is_some() {
+                    palette.function_bar_label = palette.function_bar_fg;
                 }
+                palette
             }
 
             pub fn icon_theme(&self) -> IconTheme {
@@ -91,9 +98,9 @@ macro_rules! define_theme_colors {
             /// Build a `ThemeConfig` directly from a borrowed `[theme]` TOML
             /// table, avoiding a full clone of the table just to round-trip it
             /// back through serde. Mirrors the `Deserialize` derive: each color
-            /// key must be a string (a non-string value is rejected), and
-            /// `icon_theme` tolerates bad values by falling back to the default
-            /// (see `IconTheme::from_value`).
+            /// key and `preset` must be a string (a non-string value is
+            /// rejected), and `icon_theme` tolerates bad values by falling back
+            /// to the default (see `IconTheme::from_value`).
             fn from_table(table: &toml::Table) -> Result<Self, String> {
                 Ok(Self {
                     $($field: match table.get(stringify!($field)) {
@@ -108,10 +115,15 @@ macro_rules! define_theme_colors {
                             }
                         },
                     },)*
-                    preset: table
-                        .get("preset")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string),
+                    preset: match table.get("preset") {
+                        None => None,
+                        Some(value) => match value.as_str() {
+                            Some(s) => Some(s.to_string()),
+                            None => {
+                                return Err("[theme].preset must be a string value".to_string());
+                            }
+                        },
+                    },
                     icon_theme: table
                         .get("icon_theme")
                         .map(IconTheme::from_value)
@@ -508,6 +520,44 @@ mod tests {
         Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap();
 
         assert_eq!(colors.panel_bg, CLASSIC_COLORS.panel_bg);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn preset_non_string_is_rejected() {
+        let raw: toml::Value = toml::from_str(
+            r##"
+            [theme]
+            preset = 1
+            "##,
+        )
+        .unwrap();
+        let mut colors = ColorPalette::default();
+        let err = Theme::apply_from_value_to_palette(&raw, &mut colors).unwrap_err();
+        assert!(err.contains("preset"), "{err}");
+    }
+
+    #[test]
+    fn function_bar_fg_only_inherits_to_label() {
+        let cfg = ThemeConfig {
+            function_bar_fg: Some("red".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.function_bar_fg, Color::Red);
+        assert_eq!(colors.function_bar_label, Color::Red);
+    }
+
+    #[test]
+    fn function_bar_label_override_stays_independent() {
+        let cfg = ThemeConfig {
+            function_bar_fg: Some("red".to_string()),
+            function_bar_label: Some("green".to_string()),
+            ..Default::default()
+        };
+        let colors = ColorPalette::from_config(&cfg);
+        assert_eq!(colors.function_bar_fg, Color::Red);
+        assert_eq!(colors.function_bar_label, Color::Green);
     }
 
     #[test]

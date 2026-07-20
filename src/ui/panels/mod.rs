@@ -120,11 +120,21 @@ fn truncate_name<'a>(name: &'a str, max_width: usize) -> Cow<'a, str> {
 /// Shorten the panel-title path: an absolute path under `$HOME` renders as
 /// `~` / `~/...`. Pure core split out so tests don't need to mutate the
 /// environment (`set_var` is unsafe in edition 2024).
+///
+/// Accepts `/` and `\` as separators so Windows homes (`C:\Users\…`) and
+/// trailing-slash homes both match.
 fn shorten_home_with<'a>(path: &'a str, home: &str) -> Cow<'a, str> {
-    if home.len() > 1
-        && let Some(rest) = path.strip_prefix(home)
-        && (rest.is_empty() || rest.starts_with('/'))
-    {
+    let home = home.trim_end_matches(['/', '\\']);
+    if home.len() <= 1 {
+        return Cow::Borrowed(path);
+    }
+    let Some(rest) = path.strip_prefix(home) else {
+        return Cow::Borrowed(path);
+    };
+    if rest.is_empty() || rest.trim_start_matches(['/', '\\']).is_empty() {
+        return Cow::Borrowed("~");
+    }
+    if rest.starts_with('/') || rest.starts_with('\\') {
         return Cow::Owned(format!("~{rest}"));
     }
     Cow::Borrowed(path)
