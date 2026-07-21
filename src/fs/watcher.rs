@@ -125,6 +125,8 @@ impl Watcher {
 
     fn create_fallback(&mut self) -> io::Result<&mut PollWatcher> {
         if self.fallback.is_none() {
+            // Network mounts (the reason this fallback exists) need a short
+            // interval; notify's Config::default() polls every 30s.
             let fallback = PollWatcher::new(
                 make_handler(
                     Arc::clone(&self.event_tx),
@@ -133,7 +135,7 @@ impl Watcher {
                     Arc::clone(&self.pending_from),
                     Arc::clone(&self.overflow_pending),
                 ),
-                Config::default(),
+                Config::default().with_poll_interval(Duration::from_secs(2)),
             )
             .map_err(|e| notify_to_io(&e))?;
             self.fallback = Some(fallback);

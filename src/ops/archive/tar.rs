@@ -182,8 +182,7 @@ fn append_dir_counted(
     Ok(())
 }
 
-pub fn list_tar(path: &Path, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, ArchiveError> {
-    let file = File::open(path)?;
+pub fn list_tar(file: File, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     let reader: Box<dyn Read> = wrap_decompress(file, format)?;
     let mut archive = tar::Archive::new(reader);
 

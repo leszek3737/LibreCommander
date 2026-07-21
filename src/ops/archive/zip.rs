@@ -53,8 +53,7 @@ fn compression_method_name(method: CompressionMethod) -> &'static str {
     }
 }
 
-pub fn list_zip(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
-    let file = File::open(path)?;
+pub fn list_zip(file: File) -> Result<Vec<ArchiveEntry>, ArchiveError> {
     let mut archive = ZipArchive::new(file).map_err(map_zip_err)?;
 
     let capacity = archive.len().min(MAX_LIST_ENTRIES);
@@ -63,7 +62,7 @@ pub fn list_zip(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
         let entry = archive.by_index(i).map_err(map_zip_err)?;
 
         entries.push(ArchiveEntry {
-            name: entry.name().to_string().into_boxed_str(),
+            name: Box::<str>::from(entry.name()),
             size: entry.size(),
             compressed_size: entry.compressed_size(),
             modified: entry.last_modified().map(zip_datetime_to_system_time),

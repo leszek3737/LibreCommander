@@ -18,9 +18,12 @@ pub struct PersistedPanel {
     pub sort_mode: SortMode,
     #[serde(default)]
     pub filter: String,
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_bool_default_true"
+    )]
     pub show_hidden: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_default_false")]
     pub show_permissions: bool,
 }
 
@@ -63,6 +66,27 @@ where
     })
 }
 
+// bool has Default=false, so show_hidden/dir_first need an explicit true fallback.
+fn deserialize_bool_default_true<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(d).or_else(|_| {
+        crate::debug_log!("config: invalid bool, using true");
+        Ok(true)
+    })
+}
+
+fn deserialize_bool_default_false<'de, D>(d: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(d).or_else(|_| {
+        crate::debug_log!("config: invalid bool, using false");
+        Ok(false)
+    })
+}
+
 /// Runtime + wire config in one type. Serde maps `active_panel` and `hotlist`
 /// to/from the TOML shape users hand-edit (`"left"`/`"right"`, string paths).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,9 +97,16 @@ pub struct Settings {
         deserialize_with = "deserialize_active_panel"
     )]
     pub active_panel: ActivePanel,
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_bool_default_true"
+    )]
     pub dir_first: bool,
-    #[serde(default, alias = "sort_sensitive")]
+    #[serde(
+        default,
+        alias = "sort_sensitive",
+        deserialize_with = "deserialize_bool_default_false"
+    )]
     pub sensitive: bool,
     #[serde(default)]
     pub left: PersistedPanel,
@@ -563,5 +594,23 @@ mod tests {
         assert_eq!(left.get("path"), None);
         let hotlist = value.get("hotlist").and_then(|v| v.as_array()).unwrap();
         assert_eq!(hotlist, &vec![toml::Value::String("/tmp".to_string())]);
+    }
+
+    #[allow(clippy::unwrap_used)]
+    #[test]
+    fn settings_invalid_bool_falls_back_instead_of_failing_whole_file() {
+        let toml_str = r#"
+active_panel = "left"
+dir_first = "yes"
+sensitive = 1
+[left]
+show_hidden = "yeah"
+show_permissions = "nope"
+"#;
+        let settings: Settings = toml::from_str(toml_str).unwrap();
+        assert!(settings.dir_first);
+        assert!(!settings.sensitive);
+        assert!(settings.left.show_hidden);
+        assert!(!settings.left.show_permissions);
     }
 }

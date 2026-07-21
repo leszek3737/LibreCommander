@@ -163,15 +163,25 @@ pub fn extract_archive(
 /// [`ArchiveError::InvalidArchive`] for corrupt archives, or [`ArchiveError::Io`]
 /// on filesystem errors.
 pub fn list_archive(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
-    let (format, _file) = detect_format(path)?;
+    let (format, file_opt) = detect_format(path)?;
     match format {
-        ArchiveFormat::Zip => zip::list_zip(path),
+        ArchiveFormat::Zip => {
+            let file = reuse_or_open(file_opt, path)?;
+            zip::list_zip(file)
+        }
         ArchiveFormat::Tar
         | ArchiveFormat::TarGz
         | ArchiveFormat::TarBz2
         | ArchiveFormat::TarXz
-        | ArchiveFormat::TarZst => tar::list_tar(path, format),
-        ArchiveFormat::SevenZ => sevenz::list_7z(path),
+        | ArchiveFormat::TarZst => {
+            let file = reuse_or_open(file_opt, path)?;
+            tar::list_tar(file, format)
+        }
+        ArchiveFormat::SevenZ => {
+            // sevenz_rust reader API requires a path — cannot reuse the file handle
+            drop(file_opt);
+            sevenz::list_7z(path)
+        }
     }
 }
 

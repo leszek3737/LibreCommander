@@ -256,6 +256,7 @@ fn check_overwrite_extract_archive_no_conflict_empty_dest() {
                 source: src,
                 dest,
                 overwrite: false,
+                entry_tops: vec![],
             }),
             ..Default::default()
         },
@@ -277,6 +278,7 @@ fn check_overwrite_extract_archive_conflict_with_existing_file() {
                 source: src,
                 dest,
                 overwrite: false,
+                entry_tops: vec![],
             }),
             ..Default::default()
         },
@@ -299,6 +301,7 @@ fn check_overwrite_extract_archive_overwrite_true_no_conflict() {
                 source: src,
                 dest,
                 overwrite: true,
+                entry_tops: vec![],
             }),
             ..Default::default()
         },

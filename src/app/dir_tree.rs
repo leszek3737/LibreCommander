@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::debug_log;
 use crate::ops::helpers::get_inode_key;
 use crate::ops::sorting::cmp_ignore_case;
@@ -40,6 +41,7 @@ pub struct TreeEntry {
 /// Build a flat tree listing from `root`, expanding directories up to `initial_depth` levels.
 /// Returns the list sorted: directories first (alphabetically), then files (alphabetically),
 /// within each parent directory.
+#[cfg(test)]
 pub fn build_tree(root: &Path, initial_depth: usize, show_hidden: bool) -> Vec<TreeEntry> {
     build_tree_with_diagnostics(root, initial_depth, show_hidden).entries
 }
@@ -298,6 +300,7 @@ fn sort_entries(entries: &mut [TreeEntry]) {
 /// If expanding: reads children and inserts them after the entry.
 /// If collapsing: removes all descendants (entries at greater depth until we return
 /// to the same or lesser depth).
+#[cfg(test)]
 pub fn toggle_expand(entries: &mut Vec<TreeEntry>, index: usize, show_hidden: bool) {
     let diagnostics = toggle_expand_with_diagnostics(entries, index, show_hidden);
     if !diagnostics.is_empty() {

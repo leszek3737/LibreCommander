@@ -217,6 +217,7 @@ fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
 }
 
 /// Parse the menu file content and return all entries.
+#[cfg(test)]
 pub fn parse_menu(content: &str) -> Vec<MenuEntry> {
     parse_menu_with_warnings(content).entries
 }

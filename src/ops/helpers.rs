@@ -297,6 +297,7 @@ mod tests {
             source: PathBuf::new(),
             dest: PathBuf::new(),
             overwrite: false,
+            entry_tops: vec![],
         };
         assert_eq!(action_label(&extract), "Extract");
 

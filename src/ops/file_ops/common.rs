@@ -59,6 +59,7 @@ pub(super) fn check_optional_canceled(cancel: Option<&AtomicBool>) -> io::Result
 pub const MSG_DEST_EXISTS: &str = "destination already exists";
 
 pub(super) fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
+    // ponytail: check-then-rename TOCTOU; renameat2(RENAME_NOREPLACE) if needed.
     match fs::symlink_metadata(dest) {
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
