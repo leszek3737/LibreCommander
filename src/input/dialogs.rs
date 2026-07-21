@@ -140,6 +140,24 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
     }
 }
 
+/// Unique top-level path components from archive entry names (for overwrite UX).
+fn top_level_entry_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    // Borrow tops into `seen` so each unique component allocates once (into `tops`).
+    let mut seen = std::collections::HashSet::<&'a str>::new();
+    let mut tops = Vec::new();
+    for name in names {
+        // `split('/')` always yields at least one segment (possibly empty).
+        let top = name.split('/').next().unwrap_or("");
+        // Skip empty / "." / ".." — `dest.join(".")` is the dest dir itself and
+        // would always look like an overwrite conflict.
+        if top.is_empty() || top == "." || top == ".." || !seen.insert(top) {
+            continue;
+        }
+        tops.push(top.to_owned());
+    }
+    tops
+}
+
 /// Reports which destination names already exist, so the caller can prompt
 /// before overwriting.
 ///
@@ -198,26 +216,25 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
             source,
             dest,
             overwrite,
+            entry_tops,
         } => {
             if *overwrite {
                 return None;
             }
-            let entries = ops::archive::list_archive(source).ok()?;
-            let mut seen = std::collections::HashSet::new();
-            let conflicting: Vec<String> = entries
+            // Prefer tops captured when the extract dialog opened (bg list).
+            // Fall back to list_archive only for bare PendingAction unit tests.
+            let owned_tops;
+            let tops: &[String] = if entry_tops.is_empty() {
+                let entries = ops::archive::list_archive(source).ok()?;
+                owned_tops = top_level_entry_names(entries.iter().map(|e| e.name.as_ref()));
+                owned_tops.as_slice()
+            } else {
+                entry_tops.as_slice()
+            };
+            let conflicting: Vec<String> = tops
                 .iter()
-                .filter_map(|e| {
-                    let top = e.name.split('/').next()?;
-                    if top.is_empty() || top == ".." || !seen.insert(top.to_owned()) {
-                        return None;
-                    }
-                    let target = dest.join(top);
-                    if std::fs::symlink_metadata(&target).is_ok() {
-                        Some(top.to_owned())
-                    } else {
-                        None
-                    }
-                })
+                .filter(|top| std::fs::symlink_metadata(dest.join(top)).is_ok())
+                .cloned()
                 .collect();
             (!conflicting.is_empty()).then_some(conflicting)
         }
@@ -669,10 +686,14 @@ fn commit_archive_extract(state: &mut AppState, running_job: &mut Option<Running
         return;
     }
     let dest = fs::path::resolve_user_path(state.active_panel().path(), &dest_text);
+    // Capture tops here while the dialog (and its bg-loaded entries) still live.
+    // check_overwrite_conflict must not re-list the archive on the event thread.
+    let entry_tops = top_level_entry_names(details.entries.iter().map(|e| e.name.as_ref()));
     state.ui.pending_action = Some(PendingAction::ExtractArchive {
         source,
         dest,
         overwrite: false,
+        entry_tops,
     });
     dispatch_with_overwrite_check(state, running_job);
 }

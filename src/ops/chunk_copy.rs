@@ -203,6 +203,8 @@ fn publish_temp(
 
     // Use hard_link as an atomic existence test: it returns AlreadyExists
     // if dest already exists, avoiding the TOCTOU race of try_exists.
+    // ponytail: on FS without hard links the NotFound→rename fallback can still
+    // race; renameat2(RENAME_NOREPLACE) if adversarial/no-clobber FS becomes a target.
     match fs::hard_link(temp_dest, dest) {
         Ok(()) => {
             cleanup_file(temp_dest);

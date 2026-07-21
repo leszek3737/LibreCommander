@@ -21,7 +21,7 @@ pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
             break;
         }
         entries.push(ArchiveEntry {
-            name: entry.name().to_string().into_boxed_str(),
+            name: Box::<str>::from(entry.name()),
             size: entry.size(),
             compressed_size: entry.compressed_size,
             modified: if entry.has_last_modified_date {

@@ -411,16 +411,19 @@ pub fn poll_watcher_events(state: &mut AppState, receiver: &Receiver<WatchEvent>
     apply_panel_changes(state, &changes, &left_cache, &right_cache)
 }
 
+#[cfg(test)]
 pub fn apply_watcher_upsert_if_matches(panel: &mut PanelState, path: &Path) -> bool {
     apply_watcher_if_matches(panel, path, apply_watcher_upsert)
 }
 
+#[cfg(test)]
 pub fn apply_watcher_remove_if_matches(panel: &mut PanelState, path: &Path) -> bool {
     apply_watcher_if_matches(panel, path, apply_watcher_remove)
 }
 
 /// Shared body for the public `apply_watcher_*_if_matches` entry points: builds
 /// the panel cache on demand and defers to `apply_cached`.
+#[cfg(test)]
 fn apply_watcher_if_matches(
     panel: &mut PanelState,
     path: &Path,

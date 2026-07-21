@@ -168,11 +168,6 @@ impl AppState {
         self.panel(self.active_panel.toggle())
     }
 
-    pub fn inactive_panel_mut(&mut self) -> &mut PanelState {
-        let which = self.active_panel.toggle();
-        self.panel_mut(which)
-    }
-
     /// Switch keyboard focus to an explicit panel.
     pub fn set_active_panel(&mut self, panel: ActivePanel) {
         self.active_panel = panel;

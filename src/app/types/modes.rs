@@ -65,6 +65,11 @@ pub enum PendingAction {
         source: PathBuf,
         dest: PathBuf,
         overwrite: bool,
+        /// Top-level entry names from the extract dialog listing (already loaded
+        /// off-thread). Used by overwrite conflict check so the UI thread never
+        /// re-lists the archive. Empty only in unit tests that build a bare
+        /// `PendingAction` — those fall back to `list_archive`.
+        entry_tops: Vec<String>,
     },
     CreateArchive {
         sources: Vec<PathBuf>,
