@@ -23,7 +23,7 @@ pub struct PersistedPanel {
         deserialize_with = "deserialize_bool_default_true"
     )]
     pub show_hidden: bool,
-    #[serde(default, deserialize_with = "deserialize_bool_default_false")]
+    #[serde(default, deserialize_with = "deserialize_with_fallback")]
     pub show_permissions: bool,
 }
 
@@ -66,7 +66,7 @@ where
     })
 }
 
-// bool has Default=false, so show_hidden/dir_first need an explicit true fallback.
+// bool Default is false — show_hidden/dir_first need an explicit true fallback.
 fn deserialize_bool_default_true<'de, D>(d: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -74,16 +74,6 @@ where
     bool::deserialize(d).or_else(|_| {
         crate::debug_log!("config: invalid bool, using true");
         Ok(true)
-    })
-}
-
-fn deserialize_bool_default_false<'de, D>(d: D) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    bool::deserialize(d).or_else(|_| {
-        crate::debug_log!("config: invalid bool, using false");
-        Ok(false)
     })
 }
 
@@ -105,7 +95,7 @@ pub struct Settings {
     #[serde(
         default,
         alias = "sort_sensitive",
-        deserialize_with = "deserialize_bool_default_false"
+        deserialize_with = "deserialize_with_fallback"
     )]
     pub sensitive: bool,
     #[serde(default)]

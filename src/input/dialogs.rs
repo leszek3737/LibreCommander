@@ -142,13 +142,15 @@ fn is_same_file(src: &std::path::Path, dest: &std::path::Path) -> bool {
 
 /// Unique top-level path components from archive entry names (for overwrite UX).
 fn top_level_entry_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+    // Borrow tops into `seen` so each unique component allocates once (into `tops`).
+    let mut seen = std::collections::HashSet::<&'a str>::new();
     let mut tops = Vec::new();
     for name in names {
-        let Some(top) = name.split('/').next() else {
-            continue;
-        };
-        if top.is_empty() || top == ".." || !seen.insert(top.to_owned()) {
+        // `split('/')` always yields at least one segment (possibly empty).
+        let top = name.split('/').next().unwrap_or("");
+        // Skip empty / "." / ".." — `dest.join(".")` is the dest dir itself and
+        // would always look like an overwrite conflict.
+        if top.is_empty() || top == "." || top == ".." || !seen.insert(top) {
             continue;
         }
         tops.push(top.to_owned());
