@@ -149,6 +149,26 @@ Press **`F1`** any time for in-app help.
 
 ---
 
+## Documentation
+
+Full user documentation lives in [`docs/`](docs/README.md):
+
+| Topic | |
+|-------|-|
+| [Getting Started](docs/getting-started.md) | Install, first run, optional deps |
+| [Keybindings](docs/keybindings.md) | Every key, grouped by mode |
+| [File Operations](docs/file-operations.md) | Copy, move, delete, rename, chmod, safety |
+| [Panels & Navigation](docs/panels-navigation.md) | Layout, sorting, filtering, hotlist, tree |
+| [Viewer](docs/viewer.md) | Text, hex, image, archive preview |
+| [Archives](docs/archives.md) | Formats, extraction, creation, safety |
+| [Search](docs/search.md) | Name & content search, limits |
+| [Shell & Command Line](docs/shell.md) | Command line, external view, history |
+| [User Menu](docs/user-menu.md) | `.mc.menu`, substitutions, conditions |
+| [Configuration](docs/configuration.md) | `config.toml` reference, themes, paths |
+| [FAQ & Troubleshooting](docs/faq.md) | Common problems and answers |
+
+---
+
 ## Keyboard reference
 
 <details>
