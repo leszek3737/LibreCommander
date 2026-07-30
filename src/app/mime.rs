@@ -32,6 +32,8 @@ const MIME_7Z: &str = "application/x-7z-compressed";
 const MIME_RAR: &str = "application/vnd.rar";
 const MIME_RAR_COMPRESSED: &str = "application/x-rar-compressed";
 const MIME_ZSTD: &str = "application/zstd";
+/// Unix `compress(1)` LZW — `.Z` (not gzip).
+const MIME_X_COMPRESS: &str = "application/x-compress";
 const MIME_PDF: &str = "application/pdf";
 const MIME_MSWORD: &str = "application/msword";
 const MIME_EPUB: &str = "application/epub+zip";
@@ -64,6 +66,7 @@ pub const KNOWN_BINARY_MIMES: &[&str] = &[
     MIME_RAR,
     MIME_RAR_COMPRESSED,
     MIME_ZSTD,
+    MIME_X_COMPRESS,
     MIME_PDF,
     MIME_MSWORD,
     MIME_EPUB,
@@ -150,6 +153,11 @@ pub fn extension_mime(name: &str) -> Option<&'static str> {
     {
         return Some("application/x-xz");
     }
+    if ends_with_ignore_ascii_case(basename, ".tar.zst")
+        || ends_with_ignore_ascii_case(basename, ".tzst")
+    {
+        return Some("application/zstd");
+    }
 
     let ext = basename.rsplit_once('.')?.1.to_ascii_lowercase();
 
@@ -186,7 +194,6 @@ fn image_mime(ext: &str) -> Option<&'static str> {
         "orf" => Some("image/x-olympus-orf"),
         "psd" => Some("image/vnd.adobe.photoshop"),
         "xcf" => Some("image/x-xcf"),
-        "ai" | "eps" => Some("application/postscript"),
         _ => None,
     }
 }
@@ -262,7 +269,7 @@ fn archive_mime(ext: &str) -> Option<&'static str> {
         "arj" => Some("application/x-arj"),
         "lzo" => Some("application/x-lzop"),
         "br" => Some("application/x-brotli"),
-        "z" => Some("application/gzip"),
+        "z" => Some(MIME_X_COMPRESS),
         _ => None,
     }
 }
@@ -289,6 +296,8 @@ fn document_mime(ext: &str) -> Option<&'static str> {
         "azw" | "azw3" => Some("application/vnd.amazon.ebook"),
         "chm" => Some("application/vnd.ms-htmlhelp"),
         "tex" => Some("application/x-tex"),
+        // PostScript-based vector docs; `image/` MIME would break `is_image_mime`.
+        "ai" | "eps" => Some("application/postscript"),
         "txt" | "log" => Some("text/plain"),
         "rst" => Some("text/x-rst"),
         "adoc" => Some("text/x-asciidoc"),
@@ -387,17 +396,28 @@ pub(crate) fn is_image_mime(mime: Option<&str>) -> bool {
 /// Decides whether a file should be opened in text mode.
 ///
 /// Checks are performed in order of specificity:
-/// 1. Known source-code / config extensions → **text**
-/// 2. Known binary MIME → **binary**
-/// 3. NUL bytes in the first [`NUL_BYTE_SCAN_LIMIT`] → **binary**
+/// 1. NUL bytes in the first [`NUL_BYTE_SCAN_LIMIT`] → **binary**
+/// 2. Known source-code / config extensions → **text**
+/// 3. Known binary MIME → **binary**
 /// 4. MIME that signals text → **text**
 /// 5. Fallback: assume **text**
+///
+/// The NUL-byte scan (step 1) runs *before* the source-code/config extension
+/// shortcut (step 2) so that a binary file mislabeled with e.g. `.rs` or `.json`
+/// is still detected as binary instead of being rendered as text gibberish.
 #[must_use]
 pub(crate) fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8]) -> bool {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy())
         .unwrap_or(Cow::Borrowed(""));
+
+    // Content (NUL bytes) wins over extensions: a binary file mislabeled with a
+    // source/config extension must not be opened as text.
+    let scan_limit = bytes.len().min(NUL_BYTE_SCAN_LIMIT);
+    if bytes[..scan_limit].contains(&0) {
+        return false;
+    }
 
     if crate::app::file_type::is_source_code(&name) || crate::app::file_type::is_config(&name) {
         return true;
@@ -406,11 +426,6 @@ pub(crate) fn should_open_as_text(path: &Path, mime: Option<&str>, bytes: &[u8])
     if let Some(mime) = mime
         && is_known_binary_mime(mime)
     {
-        return false;
-    }
-
-    let scan_limit = bytes.len().min(NUL_BYTE_SCAN_LIMIT);
-    if bytes[..scan_limit].contains(&0) {
         return false;
     }
 
@@ -615,5 +630,72 @@ mod tests {
         let mut data = vec![b'a'; NUL_BYTE_SCAN_LIMIT];
         data[42] = 0;
         assert!(!should_open_as_text(Path::new("data.bin"), None, &data));
+    }
+    #[test]
+    fn extension_mime_tar_zst_compound() {
+        assert_eq!(extension_mime("archive.tar.zst"), Some("application/zstd"));
+        assert_eq!(extension_mime("ARCHIVE.TAR.ZST"), Some("application/zstd"));
+        assert_eq!(extension_mime("archive.tzst"), Some("application/zstd"));
+        assert_eq!(extension_mime("ARCHIVE.TZST"), Some("application/zstd"));
+        // Bare .zst still resolves to the zstd MIME.
+        assert_eq!(extension_mime("archive.zst"), Some("application/zstd"));
+    }
+
+    #[test]
+    fn extension_mime_unix_compress_z_is_lzw_not_gzip() {
+        assert_eq!(extension_mime("data.z"), Some(MIME_X_COMPRESS));
+        assert_eq!(extension_mime("DATA.Z"), Some(MIME_X_COMPRESS));
+        assert_eq!(MIME_X_COMPRESS, "application/x-compress");
+        // application/x-compress is treated as a known binary MIME.
+        assert!(is_known_binary_mime(MIME_X_COMPRESS));
+        // The gzip MIME must not be claimed for LZW .Z data.
+        assert_ne!(extension_mime("data.z"), Some(MIME_GZIP));
+    }
+
+    #[test]
+    fn image_mime_no_longer_holds_postscript() {
+        // ai/eps now live in document_mime with application/postscript; they must
+        // not appear in image_mime, since application/postscript would fail
+        // is_image_mime's `image/` prefix check.
+        assert_eq!(extension_mime("logo.ai"), Some("application/postscript"));
+        assert_eq!(extension_mime("fig.eps"), Some("application/postscript"));
+        assert!(!is_image_mime(extension_mime("logo.ai")));
+        assert!(!is_image_mime(extension_mime("fig.eps")));
+    }
+
+    #[test]
+    fn should_open_as_text_binary_wins_over_source_config_extension() {
+        // A binary file mislabeled with a source extension: NUL in content wins.
+        assert!(!should_open_as_text(
+            Path::new("trojan.rs"),
+            Some("text/x-rust"),
+            b"fn main() {\0binary\x00here}"
+        ));
+        // A binary file mislabeled with a config extension.
+        assert!(!should_open_as_text(
+            Path::new("data.json"),
+            Some("application/json"),
+            b"{\0\x01\x02}"
+        ));
+        assert!(!should_open_as_text(
+            Path::new("secrets.yaml"),
+            Some("application/yaml"),
+            b"---\n\0\x01\x02"
+        ));
+    }
+
+    #[test]
+    fn should_open_as_text_source_config_still_text_when_no_nul() {
+        // Same extensions but clean text content still open as text.
+        assert!(should_open_as_text(
+            Path::new("main.rs"),
+            Some("application/octet-stream"),
+            b"fn main() {}"
+        ));
+        assert!(should_open_as_text(
+            Path::new("config.toml"),
+            Some("application/octet-stream"),
+            b"key = \"value\""
+        ));
     }
 }

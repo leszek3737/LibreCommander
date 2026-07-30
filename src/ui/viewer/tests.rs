@@ -276,11 +276,13 @@ fn test_open_binary_file_defaults_to_hex_mode() {
 }
 
 #[test]
-fn test_source_code_ext_opens_as_text_even_with_nul_bytes() {
+fn test_source_code_ext_with_nul_bytes_opens_as_hex() {
+    // Binary detection (NUL scan) wins over the source-code extension: a binary
+    // file mislabeled with `.rs` must open in hex mode, not as text gibberish.
     let mut file = NamedTempFile::with_suffix(".rs").unwrap();
     file.write_all(b"fn main() {}\0\0\0\0binary").unwrap();
     let state = ViewerState::open(file.path()).unwrap();
-    assert!(!state.is_hex_mode());
+    assert!(state.is_hex_mode());
 }
 
 #[test]
