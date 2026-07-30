@@ -94,8 +94,12 @@ impl Plain {
         }
     }
 
-    /// Match against raw (non-UTF-8) name bytes. Case-insensitive folds ASCII
-    /// only — Unicode folding has no meaning over arbitrary bytes.
+    /// Match against raw (non-UTF-8) name bytes.
+    ///
+    /// Case-insensitive mode folds ASCII only. Multi-byte Unicode case-folds
+    /// (e.g. `ß` → `ss`) cannot be applied to arbitrary bytes; when the stored
+    /// (already-lowercased) needle is non-ASCII we refuse rather than compare
+    /// expanded UTF-8 against raw name bytes (which would false-negative).
     #[cfg(unix)]
     fn matches_bytes(&self, name: &[u8], insensitive: bool) -> bool {
         let needle = self.needle.as_bytes();
@@ -103,6 +107,11 @@ impl Plain {
             return true;
         }
         if insensitive {
+            // Unicode-lowercased needle may have expanded (ß→ss). ASCII-only
+            // byte compare against raw name bytes cannot represent that fold.
+            if !self.needle.is_ascii() {
+                return false;
+            }
             name.windows(needle.len())
                 .any(|w| w.eq_ignore_ascii_case(needle))
         } else {
@@ -199,7 +208,8 @@ impl WildcardAffix {
     }
 
     /// Match against raw (non-UTF-8) name bytes; case-insensitive folds ASCII
-    /// only (see [`Plain::matches_bytes`]).
+    /// only (see [`Plain::matches_bytes`]). Non-ASCII affixes refuse under
+    /// case-insensitive mode rather than false-negative via byte compare.
     #[cfg(unix)]
     fn matches_bytes(&self, name: &[u8], insensitive: bool) -> bool {
         let prefix = self.prefix.as_deref().map(str::as_bytes);
@@ -207,6 +217,12 @@ impl WildcardAffix {
         let prefix_len = prefix.map_or(0, <[u8]>::len);
         let suffix_len = suffix.map_or(0, <[u8]>::len);
         if name.len() < prefix_len + suffix_len {
+            return false;
+        }
+        if insensitive
+            && (self.prefix.as_deref().is_some_and(|p| !p.is_ascii())
+                || self.suffix.as_deref().is_some_and(|s| !s.is_ascii()))
+        {
             return false;
         }
         let prefix_ok = match prefix {
@@ -329,9 +345,13 @@ impl CompiledPattern {
         }
     }
 
-    /// Match an OS file name. Valid-UTF-8 names take the borrowed-`str` fast
-    /// path; non-UTF-8 names match on raw bytes (Unix) so `to_string_lossy`'s
-    /// `U+FFFD` replacement can never produce a false positive.
+    /// Match an OS file name.
+    ///
+    /// Valid-UTF-8 names take the borrowed-`str` fast path (full Unicode
+    /// case-folding). Non-UTF-8 names match on raw bytes (Unix) for
+    /// Plain/Affix patterns; the WildcardDp path returns `false` rather than
+    /// lossy-decoding to `U+FFFD`, which could otherwise make `?` match the
+    /// replacement character and produce a false positive.
     pub(super) fn matches_os(&self, name: &OsStr, scratch: &mut MatchScratch) -> bool {
         match name.to_str() {
             Some(name) => self.matches_with(name, scratch),
@@ -340,22 +360,24 @@ impl CompiledPattern {
     }
 
     #[cfg(unix)]
-    fn matches_non_utf8(&self, name: &OsStr, scratch: &mut MatchScratch) -> bool {
+    fn matches_non_utf8(&self, name: &OsStr, _scratch: &mut MatchScratch) -> bool {
         use std::os::unix::ffi::OsStrExt;
         let bytes = name.as_bytes();
         match &self.kind {
             PatternKind::Plain(plain) => plain.matches_bytes(bytes, self.insensitive),
             PatternKind::WildcardAffix(affix) => affix.matches_bytes(bytes, self.insensitive),
-            // The DP matcher needs char boundaries; for this rare combination
-            // (non-UTF-8 name + `?`/multi-`*` pattern) fall back to lossy.
-            PatternKind::WildcardDp { .. } => self.matches_with(&name.to_string_lossy(), scratch),
+            // DP needs char boundaries. Lossy decoding would let `?` match
+            // U+FFFD (the replacement for each bad byte) — a false positive.
+            // Prefer a conservative false over a wrong true.
+            PatternKind::WildcardDp { .. } => false,
         }
     }
 
     #[cfg(not(unix))]
-    fn matches_non_utf8(&self, name: &OsStr, scratch: &mut MatchScratch) -> bool {
-        // No portable raw-bytes view of an OsStr; fall back to lossy decoding.
-        self.matches_with(&name.to_string_lossy(), scratch)
+    fn matches_non_utf8(&self, _name: &OsStr, _scratch: &mut MatchScratch) -> bool {
+        // No portable raw-bytes view of an OsStr. Lossy decoding risks the
+        // same U+FFFD/`?` false positive as the Unix DP path, so refuse.
+        false
     }
 
     fn greedy_wildcard_match(name: &[char], pattern: &[char]) -> bool {
@@ -568,5 +590,52 @@ mod tests {
         let name = format!("{pad}ŻÓŁĆ{pad}");
         assert!(matches_pattern(&name, "żółć", false));
         assert!(!matches_pattern(&name, "żółć", true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn matches_os_non_utf8_dp_no_false_positive() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        // Invalid UTF-8 name: 0xFF is not valid UTF-8. Pattern "?" would match
+        // U+FFFD under lossy decoding — that false positive must not happen.
+        let name = OsStr::from_bytes(b"\xff");
+        let pat = CompiledPattern::new("?", true);
+        let mut scratch = MatchScratch::default();
+        assert!(
+            !pat.matches_os(name, &mut scratch),
+            "WildcardDp must not match U+FFFD from lossy decode"
+        );
+    }
+
+    #[test]
+    fn matches_unicode_case_insensitive_str_path() {
+        // UTF-8 path uses Unicode simple case mapping (char::to_lowercase).
+        // Multi-char expansions like ß→ss are *not* applied by Rust's simple
+        // mapping; ASCII and single-codepoint folds still work.
+        let pat = CompiledPattern::new("FILE", false);
+        assert!(pat.matches("file"));
+        assert!(pat.matches("FiLe"));
+        assert!(pat.matches("FILE"));
+
+        // Non-ASCII single-codepoint fold: İ (U+0130) lowercases to i + combining
+        // dot on some mappings; Ą→ą is a clean single-char fold.
+        let pat = CompiledPattern::new("ą", false);
+        assert!(pat.matches("Ą"));
+        assert!(pat.matches("ą"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn matches_bytes_refuses_non_ascii_insensitive_needle() {
+        // When the lowercased needle is non-ASCII, the raw-byte path must not
+        // silently ASCII-compare expanded UTF-8 against arbitrary name bytes.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let pat = CompiledPattern::new("ą", false);
+        let mut scratch = MatchScratch::default();
+        // Non-UTF-8 name: must not panic / must return false for non-ASCII needle.
+        let name = OsStr::from_bytes(b"\xff\xfe");
+        assert!(!pat.matches_os(name, &mut scratch));
     }
 }

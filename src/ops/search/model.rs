@@ -46,7 +46,10 @@ impl std::error::Error for SearchError {}
 pub struct SearchOutcome<T, E = String> {
     pub matches: Vec<T>,
     pub errors: Vec<E>,
-    pub truncated: Option<TruncationReason>,
+    /// All truncation reasons observed during the scan (unique, insertion order).
+    /// Multiple limits can fire in one run (e.g. DepthLimit + ItemLimit); keep
+    /// every distinct reason so callers are not limited to the first one.
+    pub truncated: Vec<TruncationReason>,
     pub items_scanned: usize,
 }
 
@@ -55,9 +58,25 @@ impl<T, E> Default for SearchOutcome<T, E> {
         Self {
             matches: Vec::new(),
             errors: Vec::new(),
-            truncated: None,
+            truncated: Vec::new(),
             items_scanned: 0,
         }
+    }
+}
+
+impl<T, E> SearchOutcome<T, E> {
+    /// Record a truncation reason if it is not already present.
+    #[inline]
+    pub fn record_truncation(&mut self, reason: TruncationReason) {
+        if !self.truncated.contains(&reason) {
+            self.truncated.push(reason);
+        }
+    }
+
+    /// Whether any truncation reason was recorded.
+    #[inline]
+    pub fn is_truncated(&self) -> bool {
+        !self.truncated.is_empty()
     }
 }
 
@@ -67,8 +86,13 @@ pub const MAX_SEARCH_DEPTH: usize = 20;
 pub const MAX_SEARCH_ITEMS: usize = 10000;
 
 /// Maximum file size (10 MiB) to read for content search.
+///
+/// Typed as `u64` to match [`std::fs::Metadata::len`].
 pub const MAX_CONTENT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 /// Maximum line length (64 KiB) read per line during content search.
-pub const MAX_CONTENT_LINE_BYTES: usize = 64 * 1024;
+///
+/// Typed as `u64` to stay consistent with [`MAX_CONTENT_FILE_BYTES`]; cast to
+/// `usize` at buffer-capacity call sites.
+pub const MAX_CONTENT_LINE_BYTES: u64 = 64 * 1024;
 /// Maximum content search matches to collect before truncating.
 pub const MAX_CONTENT_RESULTS: usize = 1000;

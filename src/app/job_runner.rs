@@ -430,16 +430,20 @@ fn finish_search_job(
     if !outcome.errors.is_empty() {
         msg.push_str(&format!(", {} error(s)", outcome.errors.len()));
     }
-    if let Some(reason) = outcome.truncated {
-        let label = match reason {
-            ops::search::TruncationReason::DepthLimit => "depth limit",
-            ops::search::TruncationReason::ItemLimit => "item limit",
-            ops::search::TruncationReason::ContentResultLimit => "result limit",
-            ops::search::TruncationReason::FileTooLarge => "file too large",
-            ops::search::TruncationReason::LineTooLong => "line too long",
-            ops::search::TruncationReason::BinaryFile => "binary file",
-        };
-        msg.push_str(&format!(", truncated ({label})"));
+    if !outcome.truncated.is_empty() {
+        let labels: Vec<&str> = outcome
+            .truncated
+            .iter()
+            .map(|reason| match reason {
+                ops::search::TruncationReason::DepthLimit => "depth limit",
+                ops::search::TruncationReason::ItemLimit => "item limit",
+                ops::search::TruncationReason::ContentResultLimit => "result limit",
+                ops::search::TruncationReason::FileTooLarge => "file too large",
+                ops::search::TruncationReason::LineTooLong => "line too long",
+                ops::search::TruncationReason::BinaryFile => "binary file",
+            })
+            .collect();
+        msg.push_str(&format!(", truncated ({})", labels.join(", ")));
     }
     state.ui.status_message = Some(msg);
     state.mode = AppMode::Normal;
