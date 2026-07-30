@@ -99,6 +99,13 @@ fn reopen(guard: &mut Option<BufWriter<std::fs::File>>) -> bool {
 
 #[inline(never)]
 pub fn log(args: std::fmt::Arguments<'_>) {
+    // Format the timestamp and the caller's message *before* taking the lock,
+    // so concurrent loggers (and the TUI event thread) only contend on the
+    // actual file write, not on `Local::now()` / `Display` rendering. The
+    // remaining critical section is just the BufWriter append and the periodic
+    // flush/reopen, which inherently need the guarded handle.
+    let line = format!("[{}] {}\n", Local::now().format("%Y-%m-%d %H:%M:%S"), args);
+
     let mut guard = lock_recover(&LOG_FILE);
     if guard.is_none() && !reopen(&mut guard) {
         return;
@@ -108,8 +115,7 @@ pub fn log(args: std::fmt::Arguments<'_>) {
         return;
     }
     if let Some(bw) = guard.as_mut() {
-        let stamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-        if let Err(e) = writeln!(bw, "[{stamp}] {args}") {
+        if let Err(e) = bw.write_all(line.as_bytes()) {
             report_error("write_error", &e);
             *guard = None;
             return;
