@@ -325,16 +325,18 @@ fn line_contains_needle(
 /// up to and including the next newline, leaving `buf` empty for the next line.
 ///
 /// Checks `cancel` each chunk so a multi-gigabyte line without newlines cannot
-/// pin the search thread.
+/// pin the search thread. Returns `Ok(true)` when cancelled **before** the line
+/// was fully consumed — callers must stop the scan instead of re-reading the
+/// unconsumed bytes, or the outer loop would spin on the same segment.
 fn skip_rest_of_long_line(
     reader: &mut BufReader<File>,
     buf: &mut Vec<u8>,
     cancel: &AtomicBool,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     loop {
         if cancel.load(Ordering::Relaxed) {
             buf.clear();
-            return Ok(());
+            return Ok(true);
         }
         buf.clear();
         let bytes = reader
@@ -346,7 +348,7 @@ fn skip_rest_of_long_line(
         }
     }
     buf.clear();
-    Ok(())
+    Ok(false)
 }
 
 /// Record an I/O read failure for `path` on `outcome`.
@@ -395,13 +397,17 @@ fn scan_lines(
                 let found_newline = ctx.bufs.line_buf.last() == Some(&b'\n');
                 if !found_newline && (bytes_read as u64) > MAX_CONTENT_LINE_BYTES {
                     outcome.record_truncation(TruncationReason::LineTooLong);
-                    if let Err(err) =
-                        skip_rest_of_long_line(reader, &mut ctx.bufs.line_buf, ctx.cancel)
-                    {
-                        push_read_error(outcome, ctx.path, &err);
-                        return;
+                    match skip_rest_of_long_line(reader, &mut ctx.bufs.line_buf, ctx.cancel) {
+                        // Cancelled mid-skip: remaining long-line bytes were not
+                        // consumed. Bail out instead of letting the outer loop
+                        // re-read the same segment forever.
+                        Ok(true) => return,
+                        Ok(false) => continue,
+                        Err(err) => {
+                            push_read_error(outcome, ctx.path, &err);
+                            return;
+                        }
                     }
-                    continue;
                 }
                 // Drop the trailing \n (if any). Remaining bytes may still
                 // contain classic-Mac CR endings; process_raw_chunk splits

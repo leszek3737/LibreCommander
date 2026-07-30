@@ -374,10 +374,19 @@ impl CompiledPattern {
     }
 
     #[cfg(not(unix))]
-    fn matches_non_utf8(&self, _name: &OsStr, _scratch: &mut MatchScratch) -> bool {
-        // No portable raw-bytes view of an OsStr. Lossy decoding risks the
-        // same U+FFFD/`?` false positive as the Unix DP path, so refuse.
-        false
+    fn matches_non_utf8(&self, name: &OsStr, scratch: &mut MatchScratch) -> bool {
+        // No portable raw-bytes view of an OsStr on Windows, so lossy-decode to
+        // a UTF-8 String (bad bytes → U+FFFD) and run the normal str matchers.
+        // Plain/Affix substring/affix tests tolerate stray U+FFFD just fine. Only
+        // WildcardDp refuses: its `?` would match the replacement character, a
+        // false positive — the same guard as the Unix DP path.
+        match &self.kind {
+            PatternKind::Plain(plain) => plain.matches(&name.to_string_lossy(), scratch),
+            PatternKind::WildcardAffix(affix) => {
+                affix.matches(&name.to_string_lossy(), self.insensitive, scratch)
+            }
+            PatternKind::WildcardDp { .. } => false,
+        }
     }
 
     fn greedy_wildcard_match(name: &[char], pattern: &[char]) -> bool {
