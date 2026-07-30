@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::app::types::*;
 use crate::fs::reader;
@@ -30,11 +30,11 @@ pub fn sync_watcher_job_state(
     }
 }
 
-pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
+pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) -> Option<String> {
     match reader::read_directory(panel.path()) {
         Ok((entries, errors)) => {
             update_panel_read_errors(panel, &errors);
-            let current_name = current_panel_entry_name(panel);
+            let current_path = current_panel_entry_path(panel);
             let saved = selected_panel_paths(panel);
             let new_unfiltered = entries;
             let compiled = panel.compiled_filter_cached();
@@ -58,14 +58,17 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) {
             panel.listing.set_unfiltered(sorted_unfiltered);
             panel.listing.set_filtered(&new_filtered);
             restore_panel_selection(panel, &saved);
-            finalize_view(panel, current_name.as_deref(), visible_height);
+            finalize_view(panel, current_path.as_deref(), visible_height);
+            None
         }
         Err(e) => {
+            let msg = format!("Failed to read {}", panel.path().display());
             panel.listing.clear();
             panel.cursor = 0;
             panel.scroll_offset = 0;
             panel.set_last_error(Some(e.to_string()));
             panel.recalculate_selection_stats();
+            Some(msg)
         }
     }
 }
@@ -89,12 +92,12 @@ pub(crate) fn update_panel_read_errors(panel: &mut PanelState, errors: &[io::Err
     }
 }
 
-fn current_panel_entry_name(panel: &PanelState) -> Option<String> {
+fn current_panel_entry_path(panel: &PanelState) -> Option<PathBuf> {
     panel
         .listing
         .filtered_get(panel.cursor)
         .filter(|e| e.name != "..")
-        .map(|e| e.name.clone())
+        .map(|e| e.path.clone())
 }
 
 fn selected_panel_paths(panel: &PanelState) -> HashSet<PathBuf> {
@@ -145,7 +148,7 @@ fn filter_and_sort(
 }
 
 pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
-    let current_name = current_panel_entry_name(panel);
+    let current_path = current_panel_entry_path(panel);
     let compiled = panel.compiled_filter_cached();
     let filtered = filter_and_sort(
         panel.listing.unfiltered(),
@@ -155,7 +158,7 @@ pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
         panel.show_hidden(),
     );
     panel.listing.set_filtered(&filtered);
-    finalize_view(panel, current_name.as_deref(), visible_height);
+    finalize_view(panel, current_path.as_deref(), visible_height);
 }
 
 pub(crate) fn entry_matches_panel(
@@ -181,16 +184,16 @@ fn restore_panel_selection(panel: &mut PanelState, saved: &HashSet<PathBuf>) {
 
 /// Shared post-rebuild steps for both the full refresh and the filter-only
 /// rebuild: recompute selection stats, re-anchor the cursor on the previously
-/// focused entry name (if still visible) and clamp it into the viewport.
-fn finalize_view(panel: &mut PanelState, current_name: Option<&str>, visible_height: usize) {
+/// focused entry path (if still visible) and clamp it into the viewport.
+fn finalize_view(panel: &mut PanelState, current_path: Option<&Path>, visible_height: usize) {
     panel.recalculate_selection_stats();
-    restore_panel_cursor(panel, current_name);
+    restore_panel_cursor(panel, current_path);
     panel.ensure_cursor_visible(visible_height);
 }
 
-fn restore_panel_cursor(panel: &mut PanelState, current_name: Option<&str>) {
-    if let Some(name) = current_name
-        && let Some(pos) = panel.listing.filtered().position(|e| e.name == name)
+fn restore_panel_cursor(panel: &mut PanelState, current_path: Option<&Path>) {
+    if let Some(path) = current_path
+        && let Some(pos) = panel.listing.filtered().position(|e| e.path == path)
     {
         panel.cursor = pos;
     }
@@ -211,16 +214,23 @@ pub fn current_visible_height() -> usize {
 
 pub fn refresh_active(state: &mut AppState) {
     let visible = current_visible_height();
-    match state.active_panel {
+    let result = match state.active_panel {
         ActivePanel::Left => refresh_panel(&mut state.left_panel, visible),
         ActivePanel::Right => refresh_panel(&mut state.right_panel, visible),
+    };
+    if let Some(msg) = result {
+        state.set_status(msg);
     }
 }
 
 pub fn refresh_both(state: &mut AppState) {
     let visible = current_visible_height();
-    refresh_panel(&mut state.left_panel, visible);
-    refresh_panel(&mut state.right_panel, visible);
+    if let Some(msg) = refresh_panel(&mut state.left_panel, visible) {
+        state.set_status(msg);
+    }
+    if let Some(msg) = refresh_panel(&mut state.right_panel, visible) {
+        state.set_status(msg);
+    }
 }
 
 // Indices into the top menu bar (`crate::menu::MENUS`):
@@ -237,11 +247,10 @@ pub fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) ->
         _ => {}
     }
     let result = f(state);
-    if matches!(state.mode, AppMode::Dialog(_)) {
-        state.ui.menu_restore_panel = Some(original);
-    } else {
-        state.set_active_panel(original);
-    }
+    // Restore unconditionally. If the callback opened a dialog, it will set
+    // menu_restore_panel itself if needed. This avoids the bug where a dialog
+    // is dismissed through a non-standard path that doesn't consume menu_restore_panel.
+    state.set_active_panel(original);
     result
 }
 

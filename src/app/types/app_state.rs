@@ -247,10 +247,15 @@ impl AppState {
         self.rebuild_hotlist_cache();
     }
 
-    /// Replace the entire directory hotlist and rebuild the string cache.
+    /// Replace the entire directory hotlist, deduplicating paths (preserving
+    /// first occurrence), and rebuild the string cache.
     /// Used when loading a persisted hotlist from config.
     pub fn hotlist_set(&mut self, hotlist: Vec<PathBuf>) {
-        self.ui.directory_hotlist = hotlist;
+        let mut seen = std::collections::HashSet::new();
+        self.ui.directory_hotlist = hotlist
+            .into_iter()
+            .filter(|p| seen.insert(p.clone()))
+            .collect();
         self.rebuild_hotlist_cache();
     }
 

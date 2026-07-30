@@ -127,8 +127,24 @@ fn build_tree_recursive(
             continue;
         }
 
-        let Some(is_dir) = classify_is_dir(&entry, &path, diagnostics) else {
-            continue;
+        let is_dir = match classify_is_dir(&entry, &path, diagnostics) {
+            Some(is_dir) => is_dir,
+            // file_type() failed (permission error, race): keep the entry visible
+            // as a plain file with read_error=true, matching the invariant that
+            // entries are never silently dropped.
+            None => {
+                let name_width = UnicodeWidthStr::width(name.as_str());
+                children.push(TreeEntry {
+                    path,
+                    depth: current_depth,
+                    is_dir: false,
+                    expanded: false,
+                    name,
+                    name_width,
+                    read_error: true,
+                });
+                continue;
+            }
         };
         let expanded = is_dir && current_depth < max_expand_depth;
         let name_width = UnicodeWidthStr::width(name.as_str());

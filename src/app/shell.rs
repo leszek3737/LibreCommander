@@ -106,6 +106,8 @@ pub fn push_history(state: &mut AppState, cmd: &str) {
     if state.input.command_history.len() > MAX_HISTORY {
         state.input.command_history.pop_front();
     }
+    // Reset history_index to prevent stale index after mutation
+    state.input.history_index = None;
     state.rebuild_history_cache();
 }
 
