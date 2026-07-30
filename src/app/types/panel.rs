@@ -606,6 +606,12 @@ impl PanelState {
     }
 
     pub fn ensure_cursor_visible(&mut self, visible_height: usize) {
+        // Empty filtered view: nothing to clamp, cursor/scroll stay at 0.
+        if self.listing.filtered_len() == 0 {
+            self.cursor = 0;
+            self.scroll_offset = 0;
+            return;
+        }
         // Clamp cursor to valid range first
         let max_cursor = self.listing.filtered_len().saturating_sub(1);
         if self.cursor > max_cursor {

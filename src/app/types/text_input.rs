@@ -243,11 +243,14 @@ impl TextInput {
             .find(|&(_, g)| is_whitespace_grapheme(g))
             .map(|(i, g)| i + g.len())
             .unwrap_or(0);
+        let removed = pos - word_start;
         self.text.drain(word_start..pos);
-        // Recompute cursor and grapheme_count after deletion to handle cluster re-merging
+        // Move the cursor to the deletion boundary (grapheme count of the
+        // surviving prefix before `word_start`). clamp_cursor alone only caps
+        // the upper bound, leaving the cursor parked inside/after the suffix.
+        self.cursor = self.text[..word_start].graphemes(true).count();
         self.recompute_grapheme_count();
-        self.clamp_cursor();
-        true
+        removed > 0
     }
 
     pub fn drain_to_start(&mut self) {

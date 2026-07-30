@@ -241,16 +241,23 @@ const MENU_ITEM_RIGHT_PANEL: usize = 4;
 
 pub fn with_menu_panel<T>(state: &mut AppState, f: impl FnOnce(&mut AppState) -> T) -> T {
     let original = state.active_panel;
+    let prev_mode = state.mode.clone();
     match state.ui.menu_selected {
         MENU_ITEM_LEFT_PANEL => state.set_active_panel(ActivePanel::Left),
         MENU_ITEM_RIGHT_PANEL => state.set_active_panel(ActivePanel::Right),
         _ => {}
     }
     let result = f(state);
-    // Restore unconditionally. If the callback opened a dialog, it will set
-    // menu_restore_panel itself if needed. This avoids the bug where a dialog
-    // is dismissed through a non-standard path that doesn't consume menu_restore_panel.
-    state.set_active_panel(original);
+    // If the callback opened a dialog/picker (mode changed away from the menu
+    // session), defer the restore until that dialog exits — it consumes
+    // menu_restore_panel on commit/cancel. Otherwise restore immediately so a
+    // synchronous menu action (ToggleHidden, CycleSort, …) leaves the original
+    // panel active.
+    if state.mode != prev_mode && state.ui.menu_restore_panel.is_none() {
+        state.ui.menu_restore_panel = Some(original);
+    } else {
+        state.set_active_panel(original);
+    }
     result
 }
 
