@@ -61,6 +61,9 @@ impl<T: Send + 'static> BgLoad<T> {
         // thread exit (drop only signals cancellation — it does not kill the
         // detached I/O), so this counts running threads, not held handles. At
         // capacity the caller gets an error and falls back to a sync read.
+        // ponytail: cancelled workers hold permits until uninterruptible I/O
+        // finishes; upgrade path: per-kind queues with coalescing if cap
+        // exhaustion becomes user-visible.
         if LIVE_WORKERS.fetch_add(1, Ordering::AcqRel) >= MAX_LIVE_WORKERS {
             LIVE_WORKERS.fetch_sub(1, Ordering::Release);
             return Err(std::io::Error::other("bg-load worker cap reached"));
