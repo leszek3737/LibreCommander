@@ -22,7 +22,12 @@ pub(super) fn same_inode(_a: &fs::Metadata, _b: &fs::Metadata) -> bool {
     false
 }
 
+/// Windows needs the raw file_attributes bit because `Metadata::is_dir()`
+/// follows reparse points (returns true for directory symlinks/junctions),
+/// which must be removed via `remove_dir` not `remove_file`. On Unix this is
+/// unused (symlinks are never `is_dir()`), so it's gated to avoid dead code.
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub(super) fn is_dir_meta(meta: &fs::Metadata) -> bool {
     meta.is_dir()
 }
@@ -36,13 +41,7 @@ pub(super) fn is_dir_meta(meta: &fs::Metadata) -> bool {
 
 /// Mandatory cancel check for callers with a required cancel token.
 pub(super) fn check_canceled(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "operation canceled",
-        ));
-    }
-    Ok(())
+    check_optional_canceled(Some(cancel))
 }
 
 /// Optional cancel check — used by functions that may or may not have a cancel token.
@@ -259,7 +258,9 @@ pub(super) fn remove_any(path: &Path) -> io::Result<()> {
         return remove_dir_all_idempotent(path);
     }
     // Windows-only: directory symlinks/junctions have is_symlink() + is_dir_meta().
-    // On Unix this branch is unreachable — symlink_metadata symlinks are !is_dir().
+    // On Unix this branch is unreachable — symlink_metadata symlinks are !is_dir(),
+    // and !is_dir() symlinks fall through to remove_file below.
+    #[cfg(windows)]
     if meta.is_symlink() && is_dir_meta(&meta) {
         return match fs::remove_dir(path) {
             Ok(()) => Ok(()),

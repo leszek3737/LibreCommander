@@ -163,9 +163,11 @@ impl WildcardAffix {
         // Only insensitive matching consults the char slices; don't pay for them
         // on case-sensitive patterns.
         let to_chars = |s: &Option<String>| {
-            insensitive
-                .then(|| s.as_ref().map(|x| x.chars().collect::<Box<[char]>>()))
-                .flatten()
+            if insensitive {
+                s.as_ref().map(|x| x.chars().collect::<Box<[char]>>())
+            } else {
+                None
+            }
         };
         let prefix_chars = to_chars(&prefix);
         let suffix_chars = to_chars(&suffix);

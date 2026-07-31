@@ -3,8 +3,9 @@ use crate::debug_log;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 /// 256 KiB — balances syscall overhead against memory use. Above 512 KiB
@@ -23,7 +24,7 @@ const PROGRESS_CHECK_BYTES: usize = 64 * 1024;
 pub fn copy_with_progress(
     src: &Path,
     dest: &Path,
-    progress_tx: &std::sync::mpsc::Sender<u64>,
+    progress_tx: &Sender<u64>,
     cancel: &AtomicBool,
     overwrite: bool,
 ) -> io::Result<u64> {
@@ -135,7 +136,7 @@ fn open_regular_file(src: &Path) -> io::Result<File> {
 /// `File::create_new` refuses to clobber an existing entry, so a stale temp (or a
 /// racing sibling copy) that happens to reuse the same name is retried a few
 /// times rather than aborting the whole copy with `AlreadyExists`.
-fn create_temp_file(dest: &Path) -> io::Result<(std::path::PathBuf, File)> {
+fn create_temp_file(dest: &Path) -> io::Result<(PathBuf, File)> {
     const MAX_ATTEMPTS: u32 = 8;
     let mut last_err = None;
     for _ in 0..MAX_ATTEMPTS {
@@ -159,7 +160,7 @@ fn copy_to_temp(
     dest_file: File,
     temp_dest: &Path,
     metadata: &fs::Metadata,
-    progress_tx: &std::sync::mpsc::Sender<u64>,
+    progress_tx: &Sender<u64>,
     cancel: &AtomicBool,
 ) -> io::Result<u64> {
     let mut reader = src_file;
@@ -288,7 +289,7 @@ fn publish_temp(
     fs::rename(temp_dest, dest)
 }
 
-fn temp_path_for(dest: &Path) -> std::path::PathBuf {
+fn temp_path_for(dest: &Path) -> PathBuf {
     let mut name = dest
         .file_name()
         .map(|name| name.to_os_string())

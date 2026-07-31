@@ -12,6 +12,8 @@ use super::common::{MSG_DEST_EXISTS, remove_any};
 const DEFAULT_NAME: &str = "copy";
 const TEMP_NAME_MAX_ATTEMPTS: u32 = 128;
 
+#[derive(Debug)]
+#[must_use = "the temp directory is cleaned up on drop unless committed"]
 pub(crate) struct TempDirGuard {
     path: PathBuf,
     committed: bool,

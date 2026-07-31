@@ -38,6 +38,12 @@ fn map_zip_err(e: zip::result::ZipError) -> ArchiveError {
     }
 }
 
+/// Maps a zip crate `CompressionMethod` to a display string.
+///
+/// `_ => "Unknown"` is forced by the `zip` crate's API: `CompressionMethod` is
+/// `#[non_exhaustive]`, so it cannot be exhaustively matched. New methods added
+/// by a future crate release land here as `"Unknown"` until this match is
+/// updated — there is no string accessor on the type to forward to.
 fn compression_method_name(method: CompressionMethod) -> &'static str {
     match method {
         CompressionMethod::Stored => "Stored",
@@ -169,7 +175,7 @@ fn extract_zip_entries(
 }
 
 pub fn extract_zip(
-    file: std::fs::File,
+    file: File,
     dest: &Path,
     progress: &Sender<u64>,
     cancel: &AtomicBool,
