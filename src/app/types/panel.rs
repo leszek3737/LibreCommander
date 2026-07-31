@@ -83,7 +83,9 @@ impl PanelListing {
         }
         self.unfiltered_entries = entries;
         self.entries.clear();
-        self.state = ListingState::Clean;
+        // The filtered view is now empty and must be rebuilt before it is read;
+        // `Clean` would falsely advertise a ready-to-display view.
+        self.state = ListingState::NeedsRebuild;
     }
 
     /// Rebuild the filtered view from an ordered slice of entries, mapping each
@@ -93,6 +95,10 @@ impl PanelListing {
     /// Selection is intentionally NOT copied from `ordered` (which may be a stale
     /// clone): it lives solely in `unfiltered_entries`, so the filtered view can
     /// never carry a divergent selection.
+    ///
+    /// The view is now consistent with the store, so a pending `NeedsRebuild`
+    /// (from `set_unfiltered` or `mark_dirty`) is cleared to `Clean` — otherwise
+    /// the next frame rebuilds again redundantly.
     pub fn set_filtered(&mut self, ordered: &[FileEntry]) {
         self.ensure_index();
         self.entries.clear();
@@ -102,13 +108,21 @@ impl PanelListing {
                 self.entries.push(idx);
             }
         }
+        if self.state == ListingState::NeedsRebuild {
+            self.state = ListingState::Clean;
+        }
     }
 
     /// Set the filtered view to the full backing store, in storage order
-    /// (the no-filter case).
+    /// (the no-filter case). The view is now consistent with the store, so the
+    /// panel is marked `Clean` (cancelling any pending `NeedsRebuild` from a
+    /// prior `set_unfiltered`).
     pub fn set_filtered_all(&mut self) {
         self.entries.clear();
         self.entries.extend(0..self.unfiltered_entries.len());
+        if self.state == ListingState::NeedsRebuild {
+            self.state = ListingState::Clean;
+        }
     }
 
     /// Number of entries in the filtered (visible) view.

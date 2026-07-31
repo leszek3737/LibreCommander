@@ -227,12 +227,24 @@ pub(crate) fn check_overwrite_conflict(state: &AppState) -> Option<Vec<String>> 
                 return None;
             }
             // Prefer tops captured when the extract dialog opened (bg list).
-            // Fall back to list_archive only for bare PendingAction unit tests.
-            let owned_tops;
+            // The sync `list_archive` fallback runs on the UI/event thread and
+            // can block on a large archive, so it is test-only: production
+            // builds with empty `entry_tops` skip conflict detection (the
+            // extract path still validates at execution time).
+            #[allow(unused_variables)]
+            let owned_tops: Vec<String>;
             let tops: &[String] = if entry_tops.is_empty() {
-                let entries = ops::archive::list_archive(source).ok()?;
-                owned_tops = top_level_entry_names(entries.iter().map(|e| e.name.as_ref()));
-                owned_tops.as_slice()
+                #[cfg(test)]
+                {
+                    let entries = ops::archive::list_archive(source).ok()?;
+                    owned_tops = top_level_entry_names(entries.iter().map(|e| e.name.as_ref()));
+                    owned_tops.as_slice()
+                }
+                #[cfg(not(test))]
+                {
+                    let _ = source;
+                    return None;
+                }
             } else {
                 entry_tops.as_slice()
             };

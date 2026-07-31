@@ -68,7 +68,8 @@ pub enum PendingAction {
         /// Top-level entry names from the extract dialog listing (already loaded
         /// off-thread). Used by overwrite conflict check so the UI thread never
         /// re-lists the archive. Empty only in unit tests that build a bare
-        /// `PendingAction` — those fall back to `list_archive`.
+        /// `PendingAction` — those fall back to `list_archive` (cfg(test)-gated);
+        /// production builds with empty `entry_tops` skip conflict detection.
         entry_tops: Vec<String>,
     },
     CreateArchive {

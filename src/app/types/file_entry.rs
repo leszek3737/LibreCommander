@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use chrono::{DateTime, Local};
+use chrono::{Local, TimeZone};
 use unicode_width::UnicodeWidthStr;
 
 use crate::fs::cha::Cha;
@@ -95,6 +95,8 @@ pub fn format_size(size: u64) -> String {
             size_f /= BYTES_PER_UNIT;
             unit_idx += 1;
         }
+        // ponytail: at the largest unit (EB) rounding overflow cannot carry
+        // up, and u64::MAX tops out at ~16 EB, so no clamp is needed here.
     }
     if unit_idx == 0 {
         format!("{} {}", size, units[unit_idx])
@@ -104,14 +106,28 @@ pub fn format_size(size: u64) -> String {
 }
 
 pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
-    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    let ts = i64::try_from(duration.as_secs()).ok()?;
-    let dt = DateTime::from_timestamp(ts, 0)?;
-    Some(
-        dt.with_timezone(&Local)
-            .format("%d-%m-%y %H:%M")
-            .to_string(),
-    )
+    // Decompose to signed seconds so both pre- and post-epoch values convert
+    // without `DateTime::from(SystemTime)` (which `.expect()`s on out-of-range
+    // timestamps). `timestamp_opt` returns None outside chrono's range. The
+    // format is minute-precision, so sub-second nanos are irrelevant.
+    let secs = signed_epoch_secs(modified)?;
+    Local
+        .timestamp_opt(secs, 0)
+        .single()
+        .map(|dt| dt.format("%d-%m-%y %H:%M").to_string())
+}
+
+/// Signed seconds from the Unix epoch, handling both pre- and post-1970 and
+/// clamping out-of-i64 magnitudes to `i64::MAX` (which `timestamp_opt` then
+/// rejects, yielding the None fallback).
+pub(crate) fn signed_epoch_secs(t: SystemTime) -> Option<i64> {
+    match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(e) => {
+            let deficit = i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX);
+            Some(deficit.checked_neg()?)
+        }
+    }
 }
 
 pub fn format_time(modified: SystemTime) -> String {
@@ -177,7 +193,11 @@ impl FileEntry {
         } else {
             format!("{:>10}", format_size(cha.len))
         };
-        let name_width = UnicodeWidthStr::width(name);
+        // Width must match `display_name()`, which returns the sanitized form
+        // (tabs→2 spaces, \n→⏎, etc.) — the raw name can have a different
+        // visible width, misaligning columns.
+        let display = sanitize_for_display(name);
+        let name_width = UnicodeWidthStr::width(display.as_ref());
         let size_width = UnicodeWidthStr::width(size_str.as_str());
         let time_width = UnicodeWidthStr::width(time_str.as_str());
         (time_str, size_str, name_width, size_width, time_width)

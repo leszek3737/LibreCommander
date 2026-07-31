@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use super::dialogs::{ConfirmDetails, DialogKind, InputAction};
-use super::file_entry::{FileCategory, FileEntry};
+use super::dialogs::{ConfirmDetails, DialogKind, InputAction, format_mtime};
+use super::file_entry::{FileCategory, FileEntry, format_size, format_time};
 use super::modes::AppMode;
-use super::panel::{ActivePanel, PanelState};
+use super::panel::{ActivePanel, ListingState, PanelListing, PanelState};
 use super::sorting::{Direction, ListingMode, SortField, SortMode};
 use super::test_helpers::TestEntry;
 use super::text_input::TextInput;
@@ -830,4 +830,120 @@ fn test_scroll_offset_beyond_entries_len_clamped_by_ensure_visible() {
     assert_eq!(panel.scroll_offset, 100);
     panel.ensure_cursor_visible(5);
     assert_eq!(panel.scroll_offset, 2);
+}
+
+// --- Audit PR-11: app state invariants -------------------------------------
+
+#[test]
+fn format_mtime_pre_epoch_formats_absolute() {
+    // Pre-1970 mtimes must render an absolute date (aligned with the listing's
+    // format_time), not the "Unknown" placeholder. ~1969.
+    let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(31_536_000);
+    let result = format_mtime(pre_epoch);
+    assert_ne!(result, "Unknown", "pre-epoch should format, got {result}");
+    assert!(result.contains('-'), "expected a date, got {result}");
+}
+
+#[test]
+fn format_mtime_far_future_returns_unknown() {
+    // A timestamp whose seconds fit i64 but exceed chrono's representable
+    // range must render "Unknown", not a misleading 1970 epoch date.
+    // i64::MAX secs (~292 billion years) is well past chrono's NaiveDateTime max.
+    let far_future = std::time::UNIX_EPOCH + std::time::Duration::from_secs(i64::MAX as u64);
+    assert_eq!(format_mtime(far_future), "Unknown");
+}
+
+#[test]
+fn format_mtime_normal_value_formats() {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    let result = format_mtime(t);
+    assert!(!result.is_empty());
+    assert_ne!(result, "Unknown");
+}
+
+#[test]
+fn format_size_u64_max_formats_honest_eb() {
+    // u64::MAX tops out at ~16 EB; rounding at the EB unit can never reach
+    // 1024.0 EB, so no clamp is needed. The output must be a normal EB value,
+    // not a wraparound artifact.
+    let result = format_size(u64::MAX);
+    assert!(result.ends_with(" EB"), "expected EB unit, got {result}");
+    assert!(
+        !result.starts_with("1024"),
+        "unexpected wraparound: {result}"
+    );
+}
+
+#[test]
+fn format_time_pre_epoch_formats_absolute() {
+    // Pre-1970 mtimes must not be silently dropped to the placeholder; they
+    // should render an absolute date. We avoid asserting a specific year
+    // substring ("69") because `%y` and local-TZ offsets make it brittle; the
+    // load-bearing claim is "not the ?? placeholder".
+    let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(31_536_000); // ~1969
+    let result = format_time(pre_epoch);
+    assert_ne!(
+        result, "??-??-?? ??:??",
+        "pre-epoch should format, got {result}"
+    );
+    assert!(
+        result.contains('-'),
+        "expected a date with separators, got {result}"
+    );
+}
+
+#[test]
+fn format_time_far_future_falls_back_to_placeholder() {
+    // Out-of-range post-epoch timestamps must not panic (the old
+    // `DateTime::from(SystemTime)` `.expect()`ed); they yield the placeholder.
+    let far_future = std::time::UNIX_EPOCH + std::time::Duration::from_secs(i64::MAX as u64);
+    let result = format_time(far_future);
+    assert_eq!(result, "??-??-?? ??:??");
+}
+
+#[test]
+fn name_width_matches_sanitized_display_name() {
+    // A tab in the name becomes two spaces when sanitized; name_width must
+    // reflect the sanitized width, not the raw width (1 for the tab).
+    let entry = entry("a\tb").file(10).permissions(0o644).build();
+    assert_eq!(entry.name_width, entry.display_name().len());
+    assert_eq!(entry.name_width, 4, "'a' + 2 spaces + 'b'");
+    assert_eq!(entry.display_name(), "a  b");
+}
+
+#[test]
+fn set_unfiltered_marks_needs_rebuild() {
+    let mut listing = PanelListing::new();
+    listing.set_unfiltered(vec![entry("x.txt").file(1).permissions(0o644).build()]);
+    assert_eq!(
+        listing.state(),
+        ListingState::NeedsRebuild,
+        "set_unfiltered must not advertise Clean with an empty filtered view"
+    );
+}
+
+#[test]
+fn set_filtered_all_clears_needs_rebuild() {
+    let mut listing = PanelListing::new();
+    listing.set_unfiltered(vec![entry("x.txt").file(1).permissions(0o644).build()]);
+    assert_eq!(listing.state(), ListingState::NeedsRebuild);
+    listing.set_filtered_all();
+    assert_eq!(listing.state(), ListingState::Clean);
+}
+
+#[test]
+fn set_filtered_clears_needs_rebuild() {
+    // `set_filtered` rebuilds the filtered view from an ordered slice; like
+    // `set_filtered_all` it must clear a pending `NeedsRebuild`, otherwise the
+    // next frame rebuilds redundantly.
+    let entries = vec![entry("x.txt").file(1).permissions(0o644).build()];
+    let mut listing = PanelListing::new();
+    listing.set_unfiltered(entries.clone());
+    assert_eq!(listing.state(), ListingState::NeedsRebuild);
+    listing.set_filtered(&entries);
+    assert_eq!(
+        listing.state(),
+        ListingState::Clean,
+        "set_filtered must clear NeedsRebuild after a successful rebuild"
+    );
 }
