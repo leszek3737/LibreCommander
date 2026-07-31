@@ -75,14 +75,25 @@ pub fn expand_path(input: &str) -> PathBuf {
         });
     }
 
-    if let Some(rest) = stripped_tilde(trimmed)
-        && let Some(home) = dirs::home_dir()
-    {
+    if let Some(rest) = stripped_tilde(trimmed) {
         let expanded_rest = expand_env_vars(rest);
+        // home_dir() can be None (unset $HOME, sandboxed env). Rather than let
+        // `~` survive as a literal path component, fall back to current_dir/"."
+        // — the same base used for a bare `~` above — and join the rest onto it.
+        // This keeps `~/foo` usable even without a home directory.
+        let base = dirs::home_dir().unwrap_or_else(|| {
+            crate::debug_log!(
+                "expand_path: home_dir() returned None for ~-path, falling back to current_dir"
+            );
+            std::env::current_dir().unwrap_or_else(|_| {
+                crate::debug_log!("expand_path: current_dir() failed, falling back to \".\"");
+                PathBuf::from(".")
+            })
+        });
         // Strip ALL leading separators (platform-aware), not just '/'. Without
         // this, on Windows a `${VAR}` expanding to `\absolute\path` would be
         // treated as absolute by `Path::join` and silently discard `home`.
-        let raw = home.join(strip_leading_separators(&expanded_rest));
+        let raw = base.join(strip_leading_separators(&expanded_rest));
         return clean_path(&raw);
     }
 

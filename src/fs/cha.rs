@@ -15,11 +15,20 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
 
 // Non-Unix platforms lack Unix permission bits, so we synthesize a mode from the
 // file type plus a reasonable default (rw-r--r--) for display consistency.
+//
+// Caller contract: `meta` must come from `symlink_metadata` for the symlink type
+// bit to ever be set. `fs::metadata` follows links and reports the target's
+// type, so `is_symlink()` is then always false and a symlink renders as its
+// target's type. This mirrors the Unix path, where `Cha::new` is only fed
+// `symlink_metadata` (see `reader::build_file_entry_from_metadata`).
 #[cfg(not(unix))]
 pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
-    let type_bits = if meta.is_dir() {
+    // file_type() reflects what `meta` actually saw (link-followed or not),
+    // so the synthesized type bit tracks the metadata source the caller chose.
+    let file_type = meta.file_type();
+    let type_bits = if file_type.is_dir() {
         0o040000
-    } else if meta.is_symlink() {
+    } else if file_type.is_symlink() {
         0o120000
     } else {
         0o100000
@@ -32,12 +41,28 @@ fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
     // ctime_nsec() returns i64; negative values (broken OS) are clamped to 0.
     let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
+    system_time_from_unix_timespec(secs, nsecs)
+}
+
+/// Converts a Unix `(tv_sec, tv_nsec)` pair to `SystemTime`.
+///
+/// For negative `secs` the nanoseconds still move *toward the present* (i.e. they
+/// are added back after the seconds are subtracted), matching the `timespec`
+/// contract: `tv_sec=-1, tv_nsec=500_000_000` is -0.5s from the epoch, not -1.5s.
+/// Bundling both into one `Duration` and subtracting would get this backwards.
+#[cfg(unix)]
+fn system_time_from_unix_timespec(secs: i64, nsecs: u32) -> Option<SystemTime> {
+    // Cap at max Duration nanoseconds (999_999_999).
+    let nsecs = nsecs.min(999_999_999);
     if secs >= 0 {
-        // Cap at max Duration nanoseconds (999_999_999).
-        let nsecs = nsecs.min(999_999_999);
         UNIX_EPOCH.checked_add(Duration::new(secs as u64, nsecs))
     } else {
-        None
+        // Negative secs = pre-1970 inode change time. Subtract the whole seconds
+        // first, then add the nanoseconds back toward the epoch.
+        let abs_secs = secs.unsigned_abs();
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(abs_secs))
+            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nsecs))))
     }
 }
 
@@ -184,6 +209,12 @@ impl Cha {
     ) -> Self {
         // Symlink mode carries only the permission bits; the type is forced to
         // 0o120000 (symlink) regardless of the link's own stored type.
+        //
+        // Note (Linux): the kernel reports symlink permission bits as a fixed
+        // 0o777 (lchmod can change them on few filesystems and they are ignored
+        // at resolution), so `file_mode(link_meta) & 0o7777` is almost always
+        // 0o777 here. The mask is kept for portability: BSD/macOS HFS+ and some
+        // FUSE filesystems do store meaningful symlink permissions.
         let link_mode = ChaMode::new(0o120000 | (file_mode(link_meta) & 0o7777));
 
         if let Some(target) = target_meta {
@@ -582,5 +613,48 @@ mod tests {
         assert!(cha.is_link());
         assert!(!cha.is_executable());
         assert!(!cha.kind.follow);
+    }
+
+    /// Locks the negative-ctime fraction direction: `tv_sec=-1, tv_nsec=500_000_000`
+    /// must be -0.5s from epoch, not -1.5s. This is the bug Greptile flagged — the
+    /// old `checked_sub(Duration::new(abs_secs, nsecs))` bundled the nanos into the
+    /// subtracted duration and flipped the fraction.
+    #[test]
+    #[cfg(unix)]
+    fn negative_ctime_fraction_is_reversed() {
+        // -0.5s before epoch: 500ms into the second before 1970-01-01T00:00:00.
+        let minus_half = system_time_from_unix_timespec(-1, 500_000_000).unwrap();
+        assert_eq!(
+            minus_half
+                .duration_since(UNIX_EPOCH)
+                .unwrap_err()
+                .duration(),
+            Duration::from_millis(500),
+            "tv_sec=-1, tv_nsec=500_000_000 must be 0.5s before epoch"
+        );
+
+        // Whole negative second, no fraction.
+        let minus_one = system_time_from_unix_timespec(-1, 0).unwrap();
+        assert_eq!(
+            minus_one.duration_since(UNIX_EPOCH).unwrap_err().duration(),
+            Duration::from_secs(1)
+        );
+
+        // Quarter-second fraction the other way for good measure.
+        let minus_quarter = system_time_from_unix_timespec(-2, 250_000_000).unwrap();
+        assert_eq!(
+            minus_quarter
+                .duration_since(UNIX_EPOCH)
+                .unwrap_err()
+                .duration(),
+            Duration::from_millis(1750)
+        );
+
+        // Positive path still works.
+        let plus = system_time_from_unix_timespec(1, 500_000_000).unwrap();
+        assert_eq!(
+            plus.duration_since(UNIX_EPOCH).unwrap(),
+            Duration::new(1, 500_000_000)
+        );
     }
 }
