@@ -3,6 +3,14 @@ use crate::app::types::FileCategory;
 
 // Source / document / config stay table-driven: category precedence differs from
 // MIME (e.g. `.md` is Document, not Code; config exact names and prefixes).
+//
+// Note: shell/batch script extensions (`.sh`, `.bash`, `.zsh`, `.fish`, `.ps1`,
+// `.bat`, `.cmd`) are intentionally part of this list. [`category`] checks
+// `is_source_code` before the `is_exec` fallback, so a script with the
+// executable bit set (e.g. `deploy.sh +x`) classifies as `Code` (for syntax
+// highlighting) rather than `Executable`. This is the intended product
+// behavior: scripts are treated as source, not executables, regardless of the
+// exec bit. Plain binaries without a code extension still reach `Executable`.
 const SOURCE_CODE_SUFFIXES: &[&str] = &[
     ".rs", ".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".c", ".h", ".cc", ".hh",
     ".cpp", ".cxx", ".hpp", ".hxx", ".go", ".java", ".kt", ".kts", ".swift", ".m", ".mm", ".cs",
@@ -111,34 +119,22 @@ fn has_any_suffix(name: &str, suffixes: &[&str]) -> bool {
         .iter()
         .any(|suffix| ends_with_ignore_ascii_case(name, suffix))
 }
-
-// Case-sensitivity via `cfg!(target_os)` (cosmetic icons/colors only).
-#[inline]
-fn name_is_case_sensitive() -> bool {
-    cfg!(target_os = "linux")
-}
-
+// Config matching is ASCII case-insensitive on every platform: extensions,
+// dotless names, dotted exact names, and prefixes all fold case uniformly so
+// the category for e.g. `PACKAGE.JSON`, `.ENV`, or `.Dockerignore` does not flip
+// between Linux (byte-exact) and macOS/Windows (case-insensitive). This is the
+// same policy the filesystem already uses on macOS/Windows and keeps config
+// detection consistent regardless of host OS (cosmetic icons/colors only).
 #[inline]
 fn exact_name_match(name: &str, expected: &str) -> bool {
-    if name_is_case_sensitive() {
-        name == expected
-    } else {
-        name.eq_ignore_ascii_case(expected)
-    }
+    name.eq_ignore_ascii_case(expected)
 }
 
 #[inline]
 fn prefix_match(name: &str, prefix: &str) -> bool {
     let (name_bytes, prefix_bytes) = (name.as_bytes(), prefix.as_bytes());
-    if name_bytes.len() < prefix_bytes.len() {
-        return false;
-    }
-    let head = &name_bytes[..prefix_bytes.len()];
-    if name_is_case_sensitive() {
-        head == prefix_bytes
-    } else {
-        head.eq_ignore_ascii_case(prefix_bytes)
-    }
+    name_bytes.len() >= prefix_bytes.len()
+        && name_bytes[..prefix_bytes.len()].eq_ignore_ascii_case(prefix_bytes)
 }
 
 /// Archive / compressed container MIME types produced by [`mime::extension_mime`].
@@ -511,5 +507,66 @@ mod tests {
         assert!(!is_archive("."));
         assert!(!is_image(".z"));
         assert!(!is_source_code("a"));
+    }
+    #[test]
+    fn test_config_exact_names_case_insensitive_all_platforms() {
+        // Exact config names are ASCII case-insensitive on every platform so the
+        // category does not flip between Linux (byte-exact) and macOS/Windows.
+        assert!(is_config("Cargo.toml"));
+        assert!(is_config("CARGO.TOML"));
+        assert!(is_config("cargo.toml"));
+        assert!(is_config("package.json"));
+        assert!(is_config("PACKAGE.JSON"));
+        assert!(is_config(".gitignore"));
+        assert!(is_config(".GITIGNORE"));
+        assert!(is_config(".env"));
+        assert!(is_config(".ENV"));
+        assert!(is_config(".ENV.PRODUCTION"));
+        assert!(is_config(".env.production"));
+    }
+
+    // The exact-name case policy must hold regardless of the host the test runs
+    // on; assert it under both `#[cfg]` targets for documentation and coverage.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_config_exact_names_case_insensitive_on_linux() {
+        assert!(is_config("PACKAGE.JSON"));
+        assert!(is_config(".ENV"));
+        assert_eq!(
+            category("PACKAGE.JSON", false, false, false),
+            FileCategory::Config
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn test_config_exact_names_case_insensitive_off_linux() {
+        assert!(is_config("PACKAGE.JSON"));
+        assert!(is_config(".ENV"));
+        assert_eq!(
+            category("PACKAGE.JSON", false, false, false),
+            FileCategory::Config
+        );
+    }
+
+    #[test]
+    fn test_script_with_exec_bit_is_code_not_executable() {
+        // Documented precedence: scripts (.sh/.bat/…) are Code even with the exec
+        // bit set (is_source_code is checked before the is_exec fallback).
+        assert_eq!(
+            category("deploy.sh", false, true, false),
+            FileCategory::Code
+        );
+        assert_eq!(
+            category("build.bat", false, true, false),
+            FileCategory::Code
+        );
+        // A code extension without the exec bit is still Code.
+        assert_eq!(category("main.rs", false, false, false), FileCategory::Code);
+        // A non-code file with the exec bit and no code extension is Executable.
+        assert_eq!(
+            category("mybinary", false, true, false),
+            FileCategory::Executable
+        );
     }
 }
