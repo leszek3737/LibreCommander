@@ -99,17 +99,18 @@ pub struct PropertiesDetails {
 }
 
 /// Format `mtime` as a local-time string matching the properties dialog.
-/// Falls back to `"Unknown"` when the value predates `UNIX_EPOCH`.
+/// Falls back to `"Unknown"` for any value chrono cannot represent — both
+/// pre-epoch mtimes (via `duration_since` failure) and far-future timestamps
+/// that exceed chrono's representable range (via `timestamp_opt` returning
+/// `None`).
 pub fn format_mtime(mtime: SystemTime) -> String {
-    if let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) {
-        chrono::Local
-            .timestamp_opt(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX), 0)
-            .single()
-            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.into())
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string()
-    } else {
-        "Unknown".to_string()
+    let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) else {
+        return "Unknown".to_string();
+    };
+    let secs = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
+    match chrono::Local.timestamp_opt(secs, 0).single() {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => "Unknown".to_string(),
     }
 }
 

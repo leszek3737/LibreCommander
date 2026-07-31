@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use super::dialogs::{ConfirmDetails, DialogKind, InputAction};
-use super::file_entry::{FileCategory, FileEntry};
+use super::dialogs::{ConfirmDetails, DialogKind, InputAction, format_mtime};
+use super::file_entry::{FileCategory, FileEntry, format_size, format_time};
 use super::modes::AppMode;
-use super::panel::{ActivePanel, PanelState};
+use super::panel::{ActivePanel, ListingState, PanelListing, PanelState};
 use super::sorting::{Direction, ListingMode, SortField, SortMode};
 use super::test_helpers::TestEntry;
 use super::text_input::TextInput;
@@ -830,4 +830,78 @@ fn test_scroll_offset_beyond_entries_len_clamped_by_ensure_visible() {
     assert_eq!(panel.scroll_offset, 100);
     panel.ensure_cursor_visible(5);
     assert_eq!(panel.scroll_offset, 2);
+}
+
+// --- Audit PR-11: app state invariants -------------------------------------
+
+#[test]
+fn format_mtime_far_future_returns_unknown() {
+    // A timestamp whose seconds fit i64 but exceed chrono's representable
+    // range must render "Unknown", not a misleading 1970 epoch date.
+    // i64::MAX secs (~292 billion years) is well past chrono's NaiveDateTime max.
+    let far_future = std::time::UNIX_EPOCH + std::time::Duration::from_secs(i64::MAX as u64);
+    assert_eq!(format_mtime(far_future), "Unknown");
+}
+
+#[test]
+fn format_mtime_normal_value_formats() {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    let result = format_mtime(t);
+    assert!(!result.is_empty());
+    assert_ne!(result, "Unknown");
+}
+
+#[test]
+fn format_size_eb_overflow_clamped() {
+    // Rounding at the largest unit (EB) can yield 1024.0 EB; the clamp must
+    // prevent the visually-wrong wraparound. ~1.18e19 bytes → ~10239 EB.
+    let near_eb_max = 11_805_916_207_174_113_024u64;
+    let result = format_size(near_eb_max);
+    assert!(
+        !result.starts_with("1024.0 EB"),
+        "expected clamp, got {result}"
+    );
+}
+
+#[test]
+fn format_time_pre_epoch_formats_absolute() {
+    // Pre-1970 mtimes must not be silently dropped to the placeholder; they
+    // should render an absolute date.
+    let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(31_536_000); // ~1969
+    let result = format_time(pre_epoch);
+    assert_ne!(
+        result, "??-??-?? ??:??",
+        "pre-epoch should format, got {result}"
+    );
+    assert!(result.contains("69"), "expected year '69' in {result}");
+}
+
+#[test]
+fn name_width_matches_sanitized_display_name() {
+    // A tab in the name becomes two spaces when sanitized; name_width must
+    // reflect the sanitized width, not the raw width (1 for the tab).
+    let entry = entry("a\tb").file(10).permissions(0o644).build();
+    assert_eq!(entry.name_width, entry.display_name().len());
+    assert_eq!(entry.name_width, 4, "'a' + 2 spaces + 'b'");
+    assert_eq!(entry.display_name(), "a  b");
+}
+
+#[test]
+fn set_unfiltered_marks_needs_rebuild() {
+    let mut listing = PanelListing::new();
+    listing.set_unfiltered(vec![entry("x.txt").file(1).permissions(0o644).build()]);
+    assert_eq!(
+        listing.state(),
+        ListingState::NeedsRebuild,
+        "set_unfiltered must not advertise Clean with an empty filtered view"
+    );
+}
+
+#[test]
+fn set_filtered_all_clears_needs_rebuild() {
+    let mut listing = PanelListing::new();
+    listing.set_unfiltered(vec![entry("x.txt").file(1).permissions(0o644).build()]);
+    assert_eq!(listing.state(), ListingState::NeedsRebuild);
+    listing.set_filtered_all();
+    assert_eq!(listing.state(), ListingState::Clean);
 }

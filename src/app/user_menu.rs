@@ -205,17 +205,22 @@ fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
             .map(ToOwned::to_owned)
             .ok_or_else(non_utf8_err);
     }
+    // Only accept paths under `active_dir` (stripped to a relative name). A
+    // tagged file from a different directory must NOT silently fall back to its
+    // bare file_name(): a same-named file inside active_dir would cause the
+    // command to operate on the wrong file.
     path.strip_prefix(active_dir)
         .ok()
         .and_then(|p| p.to_str())
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
-        .or_else(|| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            format!(
+                "tagged path `{}` is not under the active directory `{}`",
+                path.display(),
+                active_dir.display()
+            )
         })
-        .ok_or_else(non_utf8_err)
 }
 
 /// Parse the menu file content and return all entries.
@@ -629,6 +634,29 @@ mod tests {
         let c = ctx("dir/a.txt", &active, &other, &tagged);
         let result = apply_substitutions("cp %t /dst/", &c).unwrap();
         assert_eq!(result, "cp 'dir/a.txt' /dst/");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_subst_percent_t_rejects_tagged_outside_active_dir() {
+        // A tagged file from a different directory must error rather than
+        // silently substituting its bare file_name (which could match a
+        // different file inside active_dir).
+        let active = PathBuf::from("/src");
+        let other = PathBuf::from("/dst");
+        let tagged = vec![PathBuf::from("/other/secret.txt")];
+        let c = ctx("secret.txt", &active, &other, &tagged);
+        let result = apply_substitutions("cat %t", &c);
+        assert!(
+            result.is_err(),
+            "expected error for out-of-active-dir tagged path"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("not under the active directory"),
+            "error should explain the mismatch"
+        );
     }
 
     #[test]

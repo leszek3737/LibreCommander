@@ -95,6 +95,11 @@ pub fn format_size(size: u64) -> String {
             size_f /= BYTES_PER_UNIT;
             unit_idx += 1;
         }
+        // At the largest unit (EB) rounding overflow cannot carry up — clamp
+        // to avoid rendering "1024.0 EB", which looks like a wraparound.
+        if size_f >= BYTES_PER_UNIT {
+            size_f = BYTES_PER_UNIT - 0.1;
+        }
     }
     if unit_idx == 0 {
         format!("{} {}", size, units[unit_idx])
@@ -104,14 +109,12 @@ pub fn format_size(size: u64) -> String {
 }
 
 pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
-    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    let ts = i64::try_from(duration.as_secs()).ok()?;
-    let dt = DateTime::from_timestamp(ts, 0)?;
-    Some(
-        dt.with_timezone(&Local)
-            .format("%d-%m-%y %H:%M")
-            .to_string(),
-    )
+    // `DateTime::from(SystemTime)` handles both pre- and post-epoch values
+    // (std's `duration_since(UNIX_EPOCH)` returns Err for pre-1970 mtimes,
+    // silently dropping them). Returns None if the value is outside chrono's
+    // representable range.
+    let dt: DateTime<Local> = modified.into();
+    Some(dt.format("%d-%m-%y %H:%M").to_string())
 }
 
 pub fn format_time(modified: SystemTime) -> String {
@@ -177,7 +180,11 @@ impl FileEntry {
         } else {
             format!("{:>10}", format_size(cha.len))
         };
-        let name_width = UnicodeWidthStr::width(name);
+        // Width must match `display_name()`, which returns the sanitized form
+        // (tabs→2 spaces, \n→⏎, etc.) — the raw name can have a different
+        // visible width, misaligning columns.
+        let display = sanitize_for_display(name);
+        let name_width = UnicodeWidthStr::width(display.as_ref());
         let size_width = UnicodeWidthStr::width(size_str.as_str());
         let time_width = UnicodeWidthStr::width(time_str.as_str());
         (time_str, size_str, name_width, size_width, time_width)
