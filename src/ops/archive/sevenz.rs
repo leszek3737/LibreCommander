@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 
 use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, cleanup_extracted,
-    copy_with_progress,
+    copy_with_progress, count_extract_entry,
 };
 
 pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
@@ -60,6 +60,7 @@ struct SevenzEntryExtractor<'a> {
     error_slot: &'a Cell<Option<SevenzExtractError>>,
     total_size: super::TotalSizeGuard,
     extracted_paths: &'a mut Vec<PathBuf>,
+    entry_count: usize,
 }
 
 impl<'a> SevenzEntryExtractor<'a> {
@@ -95,6 +96,11 @@ impl<'a> SevenzEntryExtractor<'a> {
             self.error_slot.set(Some(SevenzExtractError::Canceled));
             return Err(sevenz_rust::Error::Other("Operation canceled".into()));
         }
+        count_extract_entry(&mut self.entry_count).map_err(|e| {
+            self.error_slot
+                .set(Some(SevenzExtractError::InvalidArchive(e.to_string())));
+            sevenz_rust::Error::Other("too many entries".into())
+        })?;
 
         let outpath = match super::sanitize_entry_path(self.canonical_dest, Path::new(entry.name()))
         {
@@ -232,6 +238,7 @@ pub fn extract_7z(
             error_slot: &error_slot,
             total_size: super::TotalSizeGuard::default(),
             extracted_paths: &mut extracted_paths,
+            entry_count: 0,
         };
 
         reader
@@ -315,6 +322,7 @@ mod tests {
             error_slot: slot,
             total_size: super::super::TotalSizeGuard::default(),
             extracted_paths: extracted,
+            entry_count: 0,
         };
         extractor.process_entry(entry, reader)
     }
