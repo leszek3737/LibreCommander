@@ -1300,6 +1300,24 @@ fn test_scroll_right_zero_effective_width_clamps_to_zero() {
 }
 
 #[test]
+fn test_scroll_right_long_line_reaches_u16_max() {
+    // A line wider than u16::MAX must still scroll up to the rendering ceiling
+    // (u16::MAX). Capping the line width BEFORE subtracting the viewport (the
+    // old formula) truncated the range one viewport short, hiding the last
+    // pane-width of an extra-wide line.
+    let mut state = init_state(&"a".repeat(70_000));
+    state.wrap_lines = false;
+
+    state.scroll_right(usize::MAX, 80);
+
+    assert_eq!(
+        state.horizontal_offset,
+        u16::MAX as usize,
+        "wide-line scroll must reach the u16 rendering ceiling, not stop one viewport short"
+    );
+}
+
+#[test]
 fn test_image_file_not_flagged_as_originally_binary() {
     // An image opened in Image mode must not be flagged originally_binary,
     // which would show a spurious "BINARY CONTENT" warning.

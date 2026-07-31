@@ -133,8 +133,10 @@ impl ViewerState {
         };
         // `paragraph_horizontal_scroll` truncates to `u16`, so the effective max
         // scrollable offset is bounded by `u16::MAX` regardless of line width.
-        // Cap here so far-right content beyond 65 535 columns is known-unreachable
-        // rather than silently dropped (the rendering API itself is the ceiling).
+        // Subtract the viewport BEFORE applying the u16 cap: capping first
+        // (`max_line.min(u16::MAX) - viewport`) truncates the scrollable range
+        // a full viewport short of the real ceiling, hiding the last pane-width
+        // of a >65 535-column line.
         let width_cap = effective_width.min(u16::MAX as usize);
         // When the pane is too narrow to show any text (effective_width == 0),
         // clamp the max offset to 0 so scrolling cannot push every character off
@@ -142,7 +144,7 @@ impl ViewerState {
         let max_offset = if width_cap == 0 {
             0
         } else {
-            max_line.min(u16::MAX as usize).saturating_sub(width_cap)
+            max_line.saturating_sub(width_cap).min(u16::MAX as usize)
         };
         self.horizontal_offset = clamp_scroll_offset(self.horizontal_offset, cols, max_offset);
     }
