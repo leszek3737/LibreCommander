@@ -740,3 +740,200 @@ fn from_beyond_pending_from_limit_emits_overflow() {
         "overflow must clear the parent's queue, not leave stale Froms to flush as Deleted"
     );
 }
+
+// --- Audit PR-15: watcher edge coverage ------------------------------------
+
+/// `#2` cookie-mismatch: a rename-To carrying a tracker cookie that matches
+/// no buffered From must NOT steal an unrelated From via FIFO — it surfaces as
+/// `Created`, leaving the orphaned From to time out to `Deleted`.
+#[test]
+fn cookie_mismatch_to_emits_created_and_leaves_orphaned_from() {
+    use notify::event::ModifyKind;
+
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
+    let dir = PathBuf::from("/d");
+
+    // Buffered From with cookie 1.
+    let from = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::From)))
+        .add_path(dir.join("old"))
+        .set_tracker(1);
+    assert!(convert_event_with_rename_pairing(from, &pending).is_empty());
+
+    // To with a DIFFERENT cookie (2) — no matching buffered From.
+    let to = notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To)))
+        .add_path(dir.join("new_moved_in"))
+        .set_tracker(2);
+    let events = convert_event_with_rename_pairing(to, &pending);
+
+    // Must surface as Created (move-in from outside), not steal the cookie-1 From.
+    assert!(
+        matches!(events.as_slice(), [WatchEvent::Created(p)] if *p == dir.join("new_moved_in")),
+        "cookie-mismatch To must emit Created, not a bogus Renamed; got {events:?}"
+    );
+
+    // The orphaned From is still buffered — it will later time out to Deleted.
+    let map = pending.lock().unwrap();
+    let entries = map.get(&dir).expect("orphaned From still buffered");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, dir.join("old"));
+    assert_eq!(entries[0].cookie, Some(1));
+}
+
+/// `#4` debounce boundary: an entry whose `last_seen` is exactly
+/// `DEBOUNCE_DURATION` ago is treated as expired (the cutoff is inclusive
+/// `>=`). Without this boundary test an off-by-one making it strictly `>`
+/// would pass silently.
+#[test]
+fn process_debounce_boundary_at_exact_duration_is_suppressed() {
+    let mut debounce: HashMap<PathBuf, PendingEntry> = HashMap::new();
+    let path = PathBuf::from("/tmp/boundary.txt");
+
+    // Seed an entry seen exactly DEBOUNCE_DURATION ago (boundary case).
+    let boundary = Instant::now() - DEBOUNCE_DURATION;
+    debounce.insert(
+        path.clone(),
+        PendingEntry {
+            last_seen: boundary,
+            coalesced: Some(WatchEvent::Modified(path.clone())),
+        },
+    );
+
+    let event = WatchEvent::Modified(path.clone());
+    // `now - boundary == DEBOUNCE_DURATION` exactly; the suppression check is
+    // `duration_since(last_seen) < DEBOUNCE_DURATION`, which is false at the
+    // boundary — so the event emits (is NOT suppressed) and the stale coalesced
+    // event is flushed.
+    let (emit, flushed) = process_debounce(&mut debounce, &[path.as_path()], Some(&event), false);
+    assert!(
+        emit,
+        "at exactly DEBOUNCE_DURATION the event is NOT suppressed"
+    );
+    assert_eq!(
+        flushed.len(),
+        1,
+        "the boundary-stale coalesced event must be flushed"
+    );
+}
+
+/// `#5` empty paths on rename From/To events: the code must not panic and must
+/// emit nothing (no spurious Created/Deleted).
+#[test]
+fn empty_paths_on_rename_from_and_to_do_not_panic_or_emit() {
+    let pending: Mutex<HashMap<PathBuf, VecDeque<PendingFromEntry>>> = Mutex::new(HashMap::new());
+
+    // From with empty paths → buffered nothing, emitted nothing, no panic.
+    let from_empty = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+        paths: vec![],
+        attrs: Default::default(),
+    };
+    assert!(convert_event_with_rename_pairing(from_empty, &pending).is_empty());
+    assert!(pending.lock().unwrap().is_empty());
+
+    // To with empty paths → no path to emit as Created, no panic.
+    let to_empty = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)),
+        paths: vec![],
+        attrs: Default::default(),
+    };
+    assert!(convert_event_with_rename_pairing(to_empty, &pending).is_empty());
+}
+
+/// `#7` `RenameMode::Both` (the FSEvents shape: both halves in one event with
+/// exactly two paths) must map to a single `Renamed`.
+#[test]
+fn convert_event_maps_rename_both_to_single_renamed() {
+    let event = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::Both)),
+        paths: vec![PathBuf::from("/d/old"), PathBuf::from("/d/new")],
+        attrs: Default::default(),
+    };
+    let events = convert_event(event);
+    assert!(
+        matches!(events.as_slice(), [WatchEvent::Renamed { from, to }]
+            if from == &PathBuf::from("/d/old") && to == &PathBuf::from("/d/new")),
+        "RenameMode::Both with 2 paths → single Renamed; got {events:?}"
+    );
+}
+
+/// `#7` `RenameMode::Both` with a non-2 path count falls back to Modified per
+/// path (the production guard).
+#[test]
+fn convert_event_rename_both_with_one_path_falls_back_to_modified() {
+    let event = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::Both)),
+        paths: vec![PathBuf::from("/d/only")],
+        attrs: Default::default(),
+    };
+    let events = convert_event(event);
+    assert!(
+        matches!(events.as_slice(), [WatchEvent::Modified(p)] if *p == std::path::Path::new("/d/only")),
+        "RenameMode::Both with !=2 paths → Modified; got {events:?}"
+    );
+}
+
+/// `#7` `RenameMode::Any` (ungrouped rename) maps to Modified per path.
+#[test]
+fn convert_event_maps_rename_any_to_modified() {
+    let event = notify::Event {
+        kind: EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::Any)),
+        paths: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+        attrs: Default::default(),
+    };
+    let events = convert_event(event);
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], WatchEvent::Modified(p) if *p == std::path::Path::new("/a")));
+    assert!(matches!(&events[1], WatchEvent::Modified(p) if *p == std::path::Path::new("/b")));
+}
+
+/// `#8` `lock_or_recover` must rebuild guarded state from `Default` when a
+/// preceding thread poisoned the mutex, then clear the poison so subsequent
+/// locks succeed normally.
+#[test]
+fn lock_or_recover_rebuilds_state_on_poison() {
+    let mutex: Mutex<HashMap<PathBuf, PendingEntry>> = Mutex::new(HashMap::new());
+
+    // Seed data, then poison the mutex by panicking while holding the guard.
+    {
+        let mut guard = mutex.lock().unwrap();
+        guard.insert(
+            PathBuf::from("/tmp/poisoned"),
+            PendingEntry {
+                last_seen: Instant::now(),
+                coalesced: None,
+            },
+        );
+    }
+    let poison = |m: &Mutex<HashMap<PathBuf, PendingEntry>>| -> () {
+        let _guard = m.lock().unwrap();
+        panic!("intentional poison");
+    };
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| poison(&mutex)));
+    assert!(mutex.is_poisoned(), "precondition: mutex must be poisoned");
+
+    // lock_or_recover discards the poisoned contents and clears the flag.
+    {
+        let guard = lock_or_recover(&mutex, "test_poison");
+        assert!(
+            guard.is_empty(),
+            "poisoned state must be rebuilt to Default"
+        );
+    }
+    assert!(
+        !mutex.is_poisoned(),
+        "poison must be cleared after recovery"
+    );
+
+    // Subsequent plain locks work normally.
+    {
+        let mut guard = mutex.lock().unwrap();
+        guard.insert(
+            PathBuf::from("/tmp/after"),
+            PendingEntry {
+                last_seen: Instant::now(),
+                coalesced: None,
+            },
+        );
+    }
+    assert_eq!(mutex.lock().unwrap().len(), 1);
+}

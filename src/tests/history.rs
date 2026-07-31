@@ -28,6 +28,8 @@ fn history_dedup_different_commands() {
     shell::push_history(&mut state, "echo hi");
     shell::push_history(&mut state, "ls -la");
     assert_eq!(state.input.command_history.len(), 2);
+    assert_eq!(state.input.command_history[0], "echo hi");
+    assert_eq!(state.input.command_history[1], "ls -la");
 }
 
 #[test]
@@ -51,9 +53,14 @@ fn history_picker_enter_loads_command_line() {
 
 #[test]
 fn history_picker_esc_cancels() {
-    let mut state = make_history_picker(&["ls"], 0);
+    let mut state = make_history_picker(&["ls", "cd /tmp"], 1);
     pickers::handle_list_picker(&mut state, KeyCode::Esc);
     assert_eq!(state.mode, AppMode::Normal);
+    // Esc must not mutate history or the command line.
+    assert_eq!(state.input.command_history.len(), 2);
+    assert_eq!(state.input.command_history[0], "ls");
+    assert_eq!(state.input.command_history[1], "cd /tmp");
+    assert!(state.input.command_line.text().is_empty());
 }
 
 #[test]
@@ -127,6 +134,10 @@ fn history_picker_enter_selected_beyond_len() {
     let mut state = make_history_picker(&["cmd1"], 5);
     pickers::handle_list_picker(&mut state, KeyCode::Enter);
     assert_eq!(state.mode, AppMode::Normal);
+    assert!(
+        state.input.command_line.text().is_empty(),
+        "out-of-range Enter must not load a command line"
+    );
 }
 
 #[test]
@@ -213,7 +224,7 @@ fn history_dedup_of_existing_entry_at_cap_preserves_all_uniques() {
     );
     assert_eq!(
         state.input.command_history[0], "cmd_1",
-        "cmd_1 becomes the oldest after cmd_0 was deduped to the front"
+        "cmd_1 becomes the oldest after cmd_0 was deduped to the end"
     );
     assert_eq!(
         state.input.command_history[99], "cmd_0",

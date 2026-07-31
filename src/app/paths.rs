@@ -210,4 +210,21 @@ mod windows_tests {
         let path = config_file_path_with_env(|_: &str| None).expect("AppData fallback");
         assert!(path.ends_with("lc\\config.toml") || path.ends_with("lc/config.toml"));
     }
+
+    /// The cache-dir fallback (LocalAppData) feeds `terminal_state_file_path`,
+    /// which was previously only exercised indirectly. A regression in the
+    /// `platform_cache_home` fallback would have gone undetected on Windows CI.
+    #[test]
+    fn terminal_state_path_falls_back_to_platform_dir_without_env() {
+        let path = terminal_state_file_path_with_env(|_: &str| None).expect("cache-dir fallback");
+        assert!(path.ends_with("lc\\terminal_state") || path.ends_with("lc/terminal_state"));
+    }
+
+    /// `user_menu_path` shares the config-dir fallback; cover it so a
+    /// platform_config_home regression is caught for all three path helpers.
+    #[test]
+    fn user_menu_path_falls_back_to_platform_dir_without_env() {
+        let path = user_menu_path_with_env(|_: &str| None).expect("config-dir fallback");
+        assert!(path.ends_with("lc\\menu") || path.ends_with("lc/menu"));
+    }
 }

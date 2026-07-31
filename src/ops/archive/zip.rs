@@ -535,9 +535,29 @@ mod tests {
 
     #[test]
     fn zip_datetime_handles_minimum_year() {
+        // 1980-01-01 00:00:00 = the DOS epoch; exact value 315532800s. The
+        // old assertion (`elapsed > 0`) would pass for an off-by-one-day error.
         let dt = zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap();
-        let st = zip_datetime_to_system_time(dt);
-        let elapsed = st.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        assert!(elapsed.as_secs() > 0);
+        let secs = zip_datetime_to_system_time(dt)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(secs, 315_532_800, "1980-01-01 00:00:00 epoch seconds");
+
+        // Boundary across a leap-year March (2000 is a leap year).
+        let dt = zip::DateTime::from_date_and_time(2000, 3, 1, 0, 0, 0).unwrap();
+        let secs = zip_datetime_to_system_time(dt)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(secs, 951_868_800, "2000-03-01 00:00:00 epoch seconds");
+
+        // Upper bound of the zip range (2107-12-31).
+        let dt = zip::DateTime::from_date_and_time(2107, 12, 31, 23, 59, 58).unwrap();
+        let secs = zip_datetime_to_system_time(dt)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(secs, 4_354_819_198, "2107-12-31 23:59:58 epoch seconds");
     }
 }
