@@ -193,9 +193,10 @@ impl TextInput {
             return false;
         }
         self.cursor -= 1;
-        self.grapheme_count -= 1;
         let pos = self.byte_pos();
         self.delete_grapheme_at(pos);
+        // Recompute grapheme_count after deletion to handle cluster re-merging
+        self.recompute_grapheme_count();
         true
     }
 
@@ -205,7 +206,8 @@ impl TextInput {
             return false;
         }
         self.delete_grapheme_at(pos);
-        self.grapheme_count -= 1;
+        // Recompute grapheme_count after deletion to handle cluster re-merging
+        self.recompute_grapheme_count();
         true
     }
 
@@ -241,19 +243,21 @@ impl TextInput {
             .find(|&(_, g)| is_whitespace_grapheme(g))
             .map(|(i, g)| i + g.len())
             .unwrap_or(0);
-        let removed_graphemes = text[word_start..].graphemes(true).count();
+        let removed = pos - word_start;
         self.text.drain(word_start..pos);
-        self.cursor = self.cursor.saturating_sub(removed_graphemes);
-        self.grapheme_count -= removed_graphemes;
-        removed_graphemes > 0
+        // Move the cursor to the deletion boundary (grapheme count of the
+        // surviving prefix before `word_start`). clamp_cursor alone only caps
+        // the upper bound, leaving the cursor parked inside/after the suffix.
+        self.cursor = self.text[..word_start].graphemes(true).count();
+        self.recompute_grapheme_count();
+        removed > 0
     }
 
     pub fn drain_to_start(&mut self) {
         let pos = self.byte_pos();
-        let removed = self.cursor;
         self.text.drain(..pos);
         self.cursor = 0;
-        self.grapheme_count -= removed;
+        self.recompute_grapheme_count();
     }
 }
 

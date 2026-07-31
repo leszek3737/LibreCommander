@@ -222,6 +222,13 @@ impl PanelListing {
             let last_path = self.unfiltered_entries[last].path.clone();
             self.unfiltered_entries.swap_remove(idx);
             self.path_index.insert(last_path, idx);
+
+            // Repair filtered indices: any entry pointing to `last` now points to `idx`
+            for entry_idx in &mut self.entries {
+                if *entry_idx == last {
+                    *entry_idx = idx;
+                }
+            }
         } else {
             self.unfiltered_entries.pop();
         }
@@ -599,6 +606,18 @@ impl PanelState {
     }
 
     pub fn ensure_cursor_visible(&mut self, visible_height: usize) {
+        // Empty filtered view: nothing to clamp, cursor/scroll stay at 0.
+        if self.listing.filtered_len() == 0 {
+            self.cursor = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+        // Clamp cursor to valid range first
+        let max_cursor = self.listing.filtered_len().saturating_sub(1);
+        if self.cursor > max_cursor {
+            self.cursor = max_cursor;
+        }
+
         let max_scroll = self.listing.filtered_len().saturating_sub(1);
         if self.scroll_offset > max_scroll {
             self.scroll_offset = max_scroll;

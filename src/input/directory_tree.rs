@@ -52,6 +52,9 @@ pub(crate) fn handle_directory_tree(ctx: &mut EventContext, key: KeyCode) {
         _ => {}
     }
 
+    // Upper-clamp scroll after list may have shrunk (e.g. collapsing a directory)
+    let max_scroll = state.tree.entries.len().saturating_sub(visible_height);
+    state.tree.scroll = state.tree.scroll.min(max_scroll);
     ensure_selected_visible(state.tree.selected, &mut state.tree.scroll, visible_height);
 }
 
@@ -141,6 +144,8 @@ fn handle_tree_cd(state: &mut AppState) {
         state.tree.scroll = 0;
         refresh_active(state);
         state.mode = AppMode::Normal;
+    } else {
+        state.set_status(format!("{} is not a directory", target.display()));
     }
 }
 
