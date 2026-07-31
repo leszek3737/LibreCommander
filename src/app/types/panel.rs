@@ -113,6 +113,30 @@ impl PanelListing {
         }
     }
 
+    /// Rebuild the filtered view from the already-sorted backing store using a
+    /// predicate. Entries that pass the predicate are added to the filtered view
+    /// in backing-store order (which is already sorted). This avoids cloning
+    /// every visible `FileEntry` into a throwaway `Vec` only to map it back to
+    /// an index — the filtered view stores indices, not entry copies.
+    ///
+    /// The view is now consistent with the store, so a pending `NeedsRebuild`
+    /// (from `set_unfiltered` or `mark_dirty`) is cleared to `Clean`.
+    pub fn set_filtered_indices<F>(&mut self, mut predicate: F)
+    where
+        F: FnMut(&FileEntry) -> bool,
+    {
+        self.entries.clear();
+        self.entries.reserve(self.unfiltered_entries.len());
+        for (i, entry) in self.unfiltered_entries.iter().enumerate() {
+            if predicate(entry) {
+                self.entries.push(i);
+            }
+        }
+        if self.state == ListingState::NeedsRebuild {
+            self.state = ListingState::Clean;
+        }
+    }
+
     /// Set the filtered view to the full backing store, in storage order
     /// (the no-filter case). The view is now consistent with the store, so the
     /// panel is marked `Clean` (cancelling any pending `NeedsRebuild` from a

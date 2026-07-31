@@ -19,7 +19,11 @@ use crate::fs::cha::Cha;
 #[cfg(unix)]
 const CACHE_MAX_SIZE: usize = 1024;
 
-const INITIAL_DIR_CAPACITY: usize = 256;
+/// Initial capacity for `read_directory`. Most directories have <64 entries;
+/// the Vec grows as needed, so this is just an over-allocation vs re-alloc
+/// tradeoff. 64 (≈1.5 KiB) avoids wasting memory on small dirs while still
+/// preventing early reallocations for typical directories.
+const INITIAL_DIR_CAPACITY: usize = 64;
 
 pub use crate::app::types::FileEntry;
 
@@ -188,8 +192,10 @@ fn file_name_from_path(path: &Path) -> String {
 fn build_file_entry(entry: &std::fs::DirEntry) -> io::Result<FileEntry> {
     let path = entry.path();
     let file_name = os_str_to_string(&entry.file_name());
-    let is_symlink = entry.file_type()?.is_symlink();
     let metadata = fs::symlink_metadata(&path)?;
+    // symlink_metadata already gives us the link type — entry.file_type()
+    // would be a redundant syscall on filesystems without d_type support.
+    let is_symlink = metadata.is_symlink();
     let target_meta = if is_symlink {
         fs::metadata(&path).ok()
     } else {

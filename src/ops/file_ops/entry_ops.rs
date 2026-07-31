@@ -93,8 +93,13 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
-    let same_file = match (fs::symlink_metadata(old), new_meta.as_ref()) {
-        (Ok(old_meta), Some(new_meta)) => super::common::same_inode(&old_meta, new_meta),
+    // Only stat `old` when the dest exists (for the same-inode check).
+    // When dest doesn't exist, the old stat is unnecessary.
+    let same_file = match (new_meta.as_ref(), new_meta.is_some()) {
+        (Some(new_meta), true) => match fs::symlink_metadata(old) {
+            Ok(old_meta) => super::common::same_inode(&old_meta, new_meta),
+            _ => false,
+        },
         _ => false,
     };
     // TOCTOU: this check + `fs::rename` is non-atomic. On POSIX, rename

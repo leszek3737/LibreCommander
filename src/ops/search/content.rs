@@ -51,14 +51,12 @@ pub fn search_content(
         } else {
             Vec::new()
         };
-        search_in_file(
-            path,
-            pattern,
-            case_sensitive,
-            &pattern_bytes,
-            &mut outcome,
-            cancel,
-        );
+        let finder = memmem::Finder::new(if case_sensitive {
+            pattern.as_bytes()
+        } else {
+            &pattern_bytes
+        });
+        search_in_file(path, pattern, case_sensitive, &finder, &mut outcome, cancel);
         return outcome;
     }
     search_content_recursive(
@@ -87,13 +85,19 @@ fn search_content_recursive(
     } else {
         Vec::new()
     };
+    // One Finder for the entire recursive scan — previously rebuilt per file.
+    let finder = memmem::Finder::new(if case_sensitive {
+        pattern.as_bytes()
+    } else {
+        &pattern_bytes
+    });
     let mut visited = HashSet::with_capacity(256);
     seed_visited_dir(path, &mut visited);
 
     let mut ctx = ContentSearchContext {
         pattern,
         case_sensitive,
-        pattern_bytes: &pattern_bytes,
+        finder: &finder,
         recursive,
         outcome,
         visited: &mut visited,
@@ -106,7 +110,42 @@ fn search_content_recursive_inner(path: &Path, depth: usize, ctx: &mut ContentSe
     if ctx.cancel.load(Ordering::Relaxed) {
         return;
     }
-    if !path.is_dir() {
+    // The root call already verified this is a directory; deeper calls pass
+    // file_type from the dirent in process_content_entry, avoiding a redundant
+    // stat() here.
+    if depth == 0 && !path.is_dir() {
+        return;
+    }
+    let Some(entries) = prepare_content_dir_scan(
+        path,
+        depth,
+        MAX_SEARCH_DEPTH,
+        MAX_SEARCH_ITEMS,
+        MAX_CONTENT_RESULTS,
+        ctx.outcome,
+    ) else {
+        return;
+    };
+
+    for entry in entries {
+        if ctx.cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if process_content_entry(entry, path, depth, ctx) {
+            return;
+        }
+    }
+}
+
+/// Like `search_content_recursive_inner` but skips the `path.is_dir()` check —
+/// the caller (process_content_entry) already confirmed the type from the
+/// dirent, so a second stat syscall is unnecessary.
+fn search_content_recursive_inner_skip_dir_check(
+    path: &Path,
+    depth: usize,
+    ctx: &mut ContentSearchContext<'_>,
+) {
+    if ctx.cancel.load(Ordering::Relaxed) {
         return;
     }
     let Some(entries) = prepare_content_dir_scan(
@@ -190,7 +229,9 @@ fn process_content_entry(
 
     if file_type.is_dir() {
         if ctx.recursive && should_recurse(entry.metadata(), ctx.visited) {
-            search_content_recursive_inner(&entry_path, depth + 1, ctx);
+            // file_type from the dirent already confirms this is a directory;
+            // no need for search_content_recursive_inner to re-stat it.
+            search_content_recursive_inner_skip_dir_check(&entry_path, depth + 1, ctx);
         }
     } else {
         // `search_in_file` opens with O_NOFOLLOW and validates the type/size from
@@ -201,7 +242,7 @@ fn process_content_entry(
             &entry_path,
             ctx.pattern,
             ctx.case_sensitive,
-            ctx.pattern_bytes,
+            ctx.finder,
             ctx.outcome,
             ctx.cancel,
         );
@@ -232,7 +273,7 @@ fn search_in_file(
     path: &Path,
     pattern: &str,
     case_sensitive: bool,
-    pattern_bytes: &[u8],
+    finder: &memmem::Finder<'_>,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
     cancel: &AtomicBool,
 ) {
@@ -274,15 +315,13 @@ fn search_in_file(
         return;
     }
 
-    let mut reader = BufReader::with_capacity(MAX_CONTENT_LINE_BYTES as usize, file);
+    // 8 KiB default — the reader grows its buffer as needed for long lines, so
+    // the previous 64 KiB allocation was wasteful for small files.
+    let mut reader = BufReader::with_capacity(8 * 1024, file);
     let mut ctx = ScanContext {
         path,
         case_sensitive,
-        finder: memmem::Finder::new(if case_sensitive {
-            pattern.as_bytes()
-        } else {
-            pattern_bytes
-        }),
+        finder,
         bufs: ScanBuffers::new(),
         cancel,
     };
@@ -292,7 +331,7 @@ fn search_in_file(
 struct ScanContext<'a> {
     path: &'a Path,
     case_sensitive: bool,
-    finder: memmem::Finder<'a>,
+    finder: &'a memmem::Finder<'a>,
     bufs: ScanBuffers,
     cancel: &'a AtomicBool,
 }
@@ -382,8 +421,8 @@ fn scan_lines(
     reader: &mut BufReader<File>,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
 ) {
-    // One Arc per file, shared by every match in it (paths are not re-cloned).
-    let file_path: Arc<Path> = Arc::from(ctx.path);
+    // Arc allocated lazily — only if the file yields at least one match.
+    let mut file_path: Option<Arc<Path>> = None;
     let mut line_no = 0_usize;
     let mut non_utf8_lines = 0usize;
     loop {
@@ -425,7 +464,7 @@ fn scan_lines(
                 if process_raw_chunk(
                     ctx,
                     outcome,
-                    &file_path,
+                    &mut file_path,
                     end,
                     &mut line_no,
                     &mut non_utf8_lines,
@@ -457,7 +496,7 @@ fn scan_lines(
 fn process_raw_chunk(
     ctx: &mut ScanContext<'_>,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
-    file_path: &Arc<Path>,
+    file_path: &mut Option<Arc<Path>>,
     end: usize,
     line_no: &mut usize,
     non_utf8_lines: &mut usize,
@@ -508,7 +547,7 @@ fn process_raw_chunk(
 fn try_record_line(
     ctx: &mut ScanContext<'_>,
     outcome: &mut SearchOutcome<ContentMatch, SearchError>,
-    file_path: &Arc<Path>,
+    file_path: &mut Option<Arc<Path>>,
     line_start: usize,
     line_end: usize,
     line_no: usize,
@@ -526,7 +565,7 @@ fn try_record_line(
 
     // Case-sensitive prefilter on raw bytes: skip non-matching lines before
     // paying for UTF-8 validation.
-    if ctx.case_sensitive && !line_contains_needle(&ctx.finder, line, None, &mut ctx.bufs.ci_buf) {
+    if ctx.case_sensitive && !line_contains_needle(ctx.finder, line, None, &mut ctx.bufs.ci_buf) {
         return false;
     }
 
@@ -546,14 +585,16 @@ fn try_record_line(
     };
 
     if !ctx.case_sensitive
-        && !line_contains_needle(&ctx.finder, line, Some(line_text), &mut ctx.bufs.ci_buf)
+        && !line_contains_needle(ctx.finder, line, Some(line_text), &mut ctx.bufs.ci_buf)
     {
         return false;
     }
 
+    // Allocate the Arc only on the first match in this file.
+    let arc = file_path.get_or_insert_with(|| Arc::from(ctx.path));
     outcome
         .matches
-        .push((Arc::clone(file_path), line_no, line_text.to_owned()));
+        .push((Arc::clone(arc), line_no, line_text.to_owned()));
     false
 }
 

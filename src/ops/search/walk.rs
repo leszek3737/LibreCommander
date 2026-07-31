@@ -3,6 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use memchr::memmem;
+
 use crate::app::types::FileEntry;
 use crate::ops::helpers::get_inode_key;
 use crate::ops::search::{SearchError, SearchErrorKind, SearchOutcome, TruncationReason};
@@ -18,7 +20,8 @@ pub(super) struct FileSearchContext<'a> {
 pub(super) struct ContentSearchContext<'a> {
     pub(super) pattern: &'a str,
     pub(super) case_sensitive: bool,
-    pub(super) pattern_bytes: &'a [u8],
+    /// Precomputed memmem Finder — built once per recursive scan, not per file.
+    pub(super) finder: &'a memmem::Finder<'a>,
     pub(super) recursive: bool,
     pub(super) outcome: &'a mut SearchOutcome<(Arc<Path>, usize, String), SearchError>,
     pub(super) visited: &'a mut HashSet<(u64, u64)>,
@@ -54,8 +57,11 @@ pub(super) fn should_recurse(
 /// Single source of truth for the per-scan item cap. Records the `ItemLimit`
 /// truncation and returns whether the cap is reached. Shared by
 /// `prepare_dir_scan` and the per-entry loops in `name.rs` / `content.rs`.
-pub(super) fn item_limit_reached<T>(
-    outcome: &mut SearchOutcome<T, SearchError>,
+///
+/// Non-generic: the type parameter is unused, so genericizing would produce
+/// duplicate monomorphized copies with no benefit.
+pub(super) fn item_limit_reached<E>(
+    outcome: &mut SearchOutcome<E, SearchError>,
     max_items: usize,
 ) -> bool {
     if outcome.items_scanned >= max_items {
