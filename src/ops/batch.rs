@@ -707,12 +707,9 @@ fn batch_delete(
                 Some(cancel) => file_ops::delete_dir_recursive_cancelable(path, cancel),
                 None => file_ops::delete_dir_recursive(path),
             },
-            // Files and symlinks go through the same critical-path guard the Dir
-            // branch gets (via `delete_dir_recursive`), so a raw `delete_file`
-            // cannot unlink an entry sitting in `/etc`, `/usr/bin`, etc.
-            Ok(EntryKind::File) | Ok(EntryKind::Symlink) => {
-                file_ops::ensure_entry_not_critical(path).and_then(|()| file_ops::delete_file(path))
-            }
+            // `delete_file` itself applies the critical-path guard, matching the
+            // protection `delete_dir_recursive` gives the Dir branch.
+            Ok(EntryKind::File) | Ok(EntryKind::Symlink) => file_ops::delete_file(path),
             Err(e) => Err(e),
         };
         if let Err(e) = result {

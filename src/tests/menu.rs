@@ -12,7 +12,7 @@ const TEST_HEIGHT: u16 = 24;
 // replace the bare numeric literals the tests used to set on `menu_selected` /
 // `menu_item_selected`, so each test reads as the action it actually exercises.
 const LEFT_SORT_ORDER: (usize, usize) = (0, 1);
-const LEFT_RESET_FILTER: (usize, usize) = (0, 4);
+const OPTIONS_RESET_FILTER: (usize, usize) = (3, 3);
 const FILE_USER_MENU: (usize, usize) = (1, 0);
 const FILE_RENAME: (usize, usize) = (1, 7);
 const COMMAND_HISTORY: (usize, usize) = (2, 5);
@@ -246,8 +246,8 @@ fn menu_sort_preserves_current_entry_focus() {
 }
 
 #[test]
-fn menu_reset_filter_preserves_current_entry_focus() {
-    let mut state = menu_state(LEFT_RESET_FILTER);
+fn menu_reset_filter_clears_filter_and_preserves_focus() {
+    let mut state = menu_state(OPTIONS_RESET_FILTER);
     state
         .left_panel
         .set_entries(vec![entry("alpha.txt").build(), entry("beta.txt").build()]);
@@ -259,6 +259,11 @@ fn menu_reset_filter_preserves_current_entry_focus() {
 
     run_menu_action(&mut state);
 
+    assert_eq!(
+        state.left_panel.filter(),
+        None,
+        "filter must be cleared after reset"
+    );
     assert_eq!(
         state
             .left_panel

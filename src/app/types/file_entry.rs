@@ -11,15 +11,24 @@ use crate::fs::cha::Cha;
 /// Strip C0 controls / DEL from filenames for TUI display.
 ///
 /// - `\n` → ⏎, `\t` → two spaces, `\r` dropped, other C0/DEL → ·
+/// - Also strips Unicode bidi-control and zero-width characters that can spoof
+///   filename visual representation (e.g. `file.txt\u{202e}gpj` hiding an
+///   extension, or zero-width chars making distinct names look identical):
+///   U+200B–U+200D (zero-width space/joiner/non-joiner), U+200E–U+200F
+///   (LRM/RLM), U+202A–U+202E (bidi embedding/override), U+2066–U+2069
+///   (isolate), U+FEFF (BOM/zero-width no-break space).
 /// - **Not** a full ANSI CSI/OSC stripper: `ESC` becomes · and the following
 ///   payload (`[31m…`) stays visible. Filenames with real escape sequences are
 ///   rare; a full state machine was removed deliberately (ponytail audit).
 pub(crate) fn sanitize_for_display(s: &str) -> Cow<'_, str> {
-    if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) {
+    if !s.bytes().any(|b| b <= 0x1F || b == 0x7F) && !s.chars().any(is_unicode_spoofing_char) {
         return Cow::Borrowed(s);
     }
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
+        if is_unicode_spoofing_char(ch) {
+            continue;
+        }
         match ch {
             '\n' => result.push('\u{23ce}'),
             '\r' => {}
@@ -29,6 +38,20 @@ pub(crate) fn sanitize_for_display(s: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(result)
+}
+
+/// Returns `true` for Unicode bidi-control and zero-width characters that can
+/// spoof a filename's visual representation in the TUI (extension hiding,
+/// reordering, or invisible lookalikes).
+const fn is_unicode_spoofing_char(ch: char) -> bool {
+    let c = ch as u32;
+    matches!(c,
+        0x200B..=0x200D   // zero-width space / joiner / non-joiner
+        | 0x200E..=0x200F // LRM / RLM
+        | 0x202A..=0x202E // bidi embedding / override (incl. RLO U+202E)
+        | 0x2066..=0x2069 // bidi isolate controls
+        | 0xFEFF          // BOM / zero-width no-break space
+    )
 }
 
 pub(crate) fn sanitize_name(name: &str) -> Option<String> {

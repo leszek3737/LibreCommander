@@ -122,8 +122,13 @@ impl<'a> SevenzEntryExtractor<'a> {
         if entry.is_directory() {
             // Only track directories THIS operation actually creates, so a
             // rollback never `remove_dir_all`s a pre-existing user directory that
-            // `create_dir_all` merely succeeded on idempotently.
-            let newly_created = fs::symlink_metadata(&outpath).is_err();
+            // `create_dir_all` merely succeeded on idempotently. A bare `is_err()`
+            // treats a permission-denied metadata error as "does not exist",
+            // marking a pre-existing dir for rollback delete.
+            let newly_created = matches!(
+                fs::symlink_metadata(&outpath),
+                Err(ref e) if e.kind() == io::ErrorKind::NotFound
+            );
             if let Err(e) = fs::create_dir_all(&outpath) {
                 self.error_slot.set(Some(SevenzExtractError::Io(e)));
                 return Err(sevenz_rust::Error::Other("create_dir_all failed".into()));

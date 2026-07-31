@@ -14,6 +14,12 @@ pub mod zip;
 pub(crate) const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
 pub(crate) const MAX_TOTAL_ARCHIVE_SIZE: u64 = 256 * 1024 * 1024 * 1024; // 256 GiB
 pub(crate) const MAX_LIST_ENTRIES: usize = 100_000;
+/// Upper bound on the number of entries extracted from an archive. Mirrors the
+/// create-side limit and the listing cap: a crafted archive with millions of
+/// zero-byte entries bypasses both the per-entry `MAX_FILE_SIZE` check and the
+/// cumulative `TotalSizeGuard` (0 bytes each), exhausting inodes and memory in
+/// `extracted_paths` with no guard triggering.
+pub(crate) const MAX_EXTRACT_ENTRIES: usize = 100_000;
 pub(crate) const IO_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,8 +260,10 @@ pub(crate) fn check_symlink_at_dest(path: &Path) -> Result<(), ArchiveError> {
 
 pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), ArchiveError> {
     if cancel.load(Ordering::Relaxed) {
-        return Err(ArchiveError::Io(io::Error::new(
-            io::ErrorKind::Interrupted,
+        return Err(ArchiveError::Io(io::Error::other(
+            // `Other` (not `Interrupted`): callers following the standard Rust
+            // idiom of retrying on `Interrupted` would spin instead of
+            // terminating. Cancellation is terminal, not retryable.
             "Operation canceled",
         )));
     }
@@ -272,8 +280,12 @@ pub(crate) fn copy_with_progress(
     let mut total: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
+            return Err(io::Error::other(
+                // `Other`, not `Interrupted`: this loop retries on `Interrupted`
+                // from the reader below. A cancel-aware reader surfacing the
+                // cancellation as `Interrupted` would make this spin once per
+                // iteration before the loop-top check catches it. Using `Other`
+                // makes cancellation terminal here too.
                 "Operation canceled",
             ));
         }
@@ -421,6 +433,20 @@ impl TotalSizeGuard {
         }
         Ok(())
     }
+}
+
+/// Increments `count` for one extracted entry and errors if the entry-count cap
+/// (`MAX_EXTRACT_ENTRIES`) is crossed. A crafted archive with millions of
+/// zero-byte entries would otherwise bypass both `MAX_FILE_SIZE` (0 <= limit)
+/// and `TotalSizeGuard` (0 bytes added) to exhaust inodes and memory.
+pub(crate) fn count_extract_entry(count: &mut usize) -> Result<(), ArchiveError> {
+    *count = count.saturating_add(1);
+    if *count > MAX_EXTRACT_ENTRIES {
+        return Err(ArchiveError::InvalidArchive(format!(
+            "too many entries in archive (limit {MAX_EXTRACT_ENTRIES})"
+        )));
+    }
+    Ok(())
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

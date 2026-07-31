@@ -367,6 +367,20 @@ fn read_config_raw_with_env(
     let Some(path) = paths::config_file_path_with_env(env) else {
         return Ok(None);
     };
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(format!("Failed to stat config {}: {e}", path.display()));
+        }
+    };
+    if meta.len() > 1024 * 1024 {
+        return Err(format!(
+            "config file exceeds 1 MiB limit: {} ({} bytes)",
+            path.display(),
+            meta.len()
+        ));
+    }
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),

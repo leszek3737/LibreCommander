@@ -187,7 +187,12 @@ pub fn list_tar(file: File, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, 
     let mut archive = tar::Archive::new(reader);
 
     let mut entries = Vec::new();
-    for entry in archive.entries()?.take(MAX_LIST_ENTRIES) {
+    let mut truncated = false;
+    for entry in archive.entries()? {
+        if entries.len() >= MAX_LIST_ENTRIES {
+            truncated = true;
+            break;
+        }
         let entry = entry?;
         let header = entry.header();
 
@@ -213,6 +218,9 @@ pub fn list_tar(file: File, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, 
             method: format!("{format:?}").into_boxed_str(),
         });
     }
+    if truncated {
+        debug_log!("list_tar: archive has more than {MAX_LIST_ENTRIES} entries; listing truncated");
+    }
     Ok(entries)
 }
 
@@ -234,8 +242,10 @@ pub fn extract_tar(
         fs::create_dir_all(dest).map_err(ArchiveError::Io)?;
         let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
         let mut total_size = super::TotalSizeGuard::default();
+        let mut entry_counter: usize = 0;
         for entry in archive.entries()? {
             super::check_cancel(cancel)?;
+            super::count_extract_entry(&mut entry_counter)?;
 
             let mut entry = entry?;
             let header = entry.header();
@@ -291,8 +301,13 @@ pub fn extract_tar(
             if is_dir {
                 // Only track directories THIS operation actually creates, so a
                 // rollback never `remove_dir_all`s a pre-existing user directory
-                // that `create_dir_all` merely succeeded on idempotently.
-                let newly_created = fs::symlink_metadata(&outpath).is_err();
+                // that `create_dir_all` merely succeeded on idempotently. A bare
+                // `is_err()` would treat a permission-denied metadata error as
+                // "does not exist", marking a pre-existing dir for rollback delete.
+                let newly_created = matches!(
+                    fs::symlink_metadata(&outpath),
+                    Err(ref e) if e.kind() == io::ErrorKind::NotFound
+                );
                 fs::create_dir_all(&outpath)?;
                 super::verify_within_dest(&canonical_dest, &outpath)?;
                 if newly_created {
@@ -346,7 +361,10 @@ pub fn extract_tar(
                 {
                     use std::os::unix::fs::PermissionsExt;
                     if let Some(mode) = unix_mode {
-                        let safe_mode = mode & !0o7000;
+                        // Strip setuid/setgid/sticky (0o7000) AND group/other-write
+                        // (0o022): an archive entry with mode 0o777 must not be
+                        // extracted world-writable (privilege-escalation vector).
+                        let safe_mode = mode & !0o7022;
                         fs::set_permissions(&outpath, fs::Permissions::from_mode(safe_mode))?;
                     }
                 }
@@ -796,15 +814,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_canceled_returns_interrupted() {
+    fn extract_canceled_returns_terminal_error() {
         let work = tempfile::tempdir().unwrap();
         let archive = work.path().join("a.tar");
         build_tar(&archive, |b| add_file(b, "f.txt", b"data"));
         let dest = work.path().join("dest");
         let res = extract(&archive, &dest, &AtomicBool::new(true));
         assert!(
-            matches!(res, Err(ArchiveError::Io(ref e)) if e.kind() == io::ErrorKind::Interrupted),
-            "expected Interrupted, got {res:?}"
+            matches!(res, Err(ArchiveError::Io(ref e)) if e.kind() == io::ErrorKind::Other),
+            "expected terminal cancellation (Other), got {res:?}"
         );
     }
 
