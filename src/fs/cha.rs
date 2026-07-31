@@ -41,16 +41,28 @@ fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
     // ctime_nsec() returns i64; negative values (broken OS) are clamped to 0.
     let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
+    system_time_from_unix_timespec(secs, nsecs)
+}
+
+/// Converts a Unix `(tv_sec, tv_nsec)` pair to `SystemTime`.
+///
+/// For negative `secs` the nanoseconds still move *toward the present* (i.e. they
+/// are added back after the seconds are subtracted), matching the `timespec`
+/// contract: `tv_sec=-1, tv_nsec=500_000_000` is -0.5s from the epoch, not -1.5s.
+/// Bundling both into one `Duration` and subtracting would get this backwards.
+#[cfg(unix)]
+fn system_time_from_unix_timespec(secs: i64, nsecs: u32) -> Option<SystemTime> {
     // Cap at max Duration nanoseconds (999_999_999).
     let nsecs = nsecs.min(999_999_999);
     if secs >= 0 {
         UNIX_EPOCH.checked_add(Duration::new(secs as u64, nsecs))
     } else {
-        // Negative secs = pre-1970 inode change time. Build a Duration back from
-        // the epoch and subtract it rather than silently dropping the timestamp
-        // (old behavior returned None, hiding legitimate historical ctimes).
+        // Negative secs = pre-1970 inode change time. Subtract the whole seconds
+        // first, then add the nanoseconds back toward the epoch.
         let abs_secs = secs.unsigned_abs();
-        UNIX_EPOCH.checked_sub(Duration::new(abs_secs, nsecs))
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(abs_secs))
+            .and_then(|time| time.checked_add(Duration::from_nanos(u64::from(nsecs))))
     }
 }
 
@@ -601,5 +613,48 @@ mod tests {
         assert!(cha.is_link());
         assert!(!cha.is_executable());
         assert!(!cha.kind.follow);
+    }
+
+    /// Locks the negative-ctime fraction direction: `tv_sec=-1, tv_nsec=500_000_000`
+    /// must be -0.5s from epoch, not -1.5s. This is the bug Greptile flagged — the
+    /// old `checked_sub(Duration::new(abs_secs, nsecs))` bundled the nanos into the
+    /// subtracted duration and flipped the fraction.
+    #[test]
+    #[cfg(unix)]
+    fn negative_ctime_fraction_is_reversed() {
+        // -0.5s before epoch: 500ms into the second before 1970-01-01T00:00:00.
+        let minus_half = system_time_from_unix_timespec(-1, 500_000_000).unwrap();
+        assert_eq!(
+            minus_half
+                .duration_since(UNIX_EPOCH)
+                .unwrap_err()
+                .duration(),
+            Duration::from_millis(500),
+            "tv_sec=-1, tv_nsec=500_000_000 must be 0.5s before epoch"
+        );
+
+        // Whole negative second, no fraction.
+        let minus_one = system_time_from_unix_timespec(-1, 0).unwrap();
+        assert_eq!(
+            minus_one.duration_since(UNIX_EPOCH).unwrap_err().duration(),
+            Duration::from_secs(1)
+        );
+
+        // Quarter-second fraction the other way for good measure.
+        let minus_quarter = system_time_from_unix_timespec(-2, 250_000_000).unwrap();
+        assert_eq!(
+            minus_quarter
+                .duration_since(UNIX_EPOCH)
+                .unwrap_err()
+                .duration(),
+            Duration::from_millis(1750)
+        );
+
+        // Positive path still works.
+        let plus = system_time_from_unix_timespec(1, 500_000_000).unwrap();
+        assert_eq!(
+            plus.duration_since(UNIX_EPOCH).unwrap(),
+            Duration::new(1, 500_000_000)
+        );
     }
 }

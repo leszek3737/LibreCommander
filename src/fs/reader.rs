@@ -243,7 +243,7 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
     let mut errors = Vec::new();
 
     // Root detection must survive spellings like `//`, trailing slashes, and
-    // symlinks-to-root. A bare `path != "/"` misses those and would inject a
+    // repeated slashes. A bare `path != "/"` misses those and would inject a
     // spurious `..` entry at the filesystem root. Normalizing via clean_path
     // collapses redundant separators; an empty parent (no `..` possible) is the
     // other root signal on Unix.
