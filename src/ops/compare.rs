@@ -20,6 +20,7 @@ const CURRENT_DIR: &str = ".";
 #[derive(Clone, Copy)]
 struct EntryMeta {
     is_dir: bool,
+    is_symlink: bool,
     size: u64,
     mtime: Option<SystemTime>,
 }
@@ -27,6 +28,19 @@ struct EntryMeta {
 fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
     if left.is_dir != right.is_dir {
         return false;
+    }
+    // Symlink vs non-symlink is a type mismatch even when both resolve to files.
+    if left.is_symlink != right.is_symlink {
+        return false;
+    }
+    // Symlinks match by name only. `Cha` built via `from_link_metadata` with a
+    // resolved target stores the *target's* size/mtime in `len`/`mtime`, not
+    // the link's own lstat data — and the link's defining datum (its target
+    // path string) is not kept in `Cha` at all. Comparing target-derived
+    // size/mtime would compare *targets*, not *links* (AGENTS.md: symlinks are
+    // data, so a symlink is compared by existence/name, not its target's stats).
+    if left.is_symlink {
+        return true;
     }
     if left.is_dir {
         return true;
@@ -47,10 +61,12 @@ fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
 
 fn entry_to_meta(entry: &FileEntry) -> EntryMeta {
     // Symlinks are data (AGENTS.md): a symlink pointing at a directory must
-    // not be treated as one — its size/mtime should be compared like a file.
-    let is_dir = !entry.is_symlink() && entry.is_dir();
+    // not be treated as one. `is_symlink` is carried separately so
+    // `meta_matches` can match links by name only — their `cha.len`/`cha.mtime`
+    // are target-derived when the link was followed, not link-lstat data.
     EntryMeta {
-        is_dir,
+        is_dir: !entry.is_symlink() && entry.is_dir(),
+        is_symlink: entry.is_symlink(),
         size: entry.size(),
         mtime: entry.cha.mtime,
     }
@@ -90,9 +106,9 @@ pub struct CompareReport {
 /// differ under the given [`CompareMode`]. The returned [`CompareReport`] carries
 /// the names to mark on each side plus the unique/differing counts.
 ///
-/// If duplicate names appear on either side (which should not happen in a real
-/// directory listing), the first occurrence on each side wins — consistent with
-/// the left-to-right iteration — so counts stay stable and predictable.
+/// Duplicate names on the right side are resolved first-wins (the first entry
+/// seen for a name is kept); the left side is not deduplicated, so duplicate
+/// left names are each matched independently against the right-side map.
 pub fn compare_entries(
     left: &[FileEntry],
     right: &[FileEntry],
@@ -586,5 +602,46 @@ mod tests {
                 .expect("entry 0")
                 .selected
         );
+    }
+
+    fn symlink_entry(name: &str, size: u64) -> FileEntry {
+        // `cha.len` simulates target-derived data (what production produces
+        // via `from_link_metadata` when the target is resolved). `follow`
+        // stays false in tests, but the point is the same: size/mtime are not
+        // link-lstat data and must not drive the match.
+        TestEntry::new(name)
+            .path(format!("/tmp/{name}"))
+            .file(size)
+            .symlink()
+            .build()
+    }
+
+    #[test]
+    fn symlinks_match_by_name_regardless_of_target_size() {
+        // Two symlinks with the same name but different target sizes must not
+        // be flagged as differing: a symlink is data about the link, and `cha`
+        // holds target-derived stats, not link-lstat data.
+        let left = vec![symlink_entry("link.txt", 10)];
+        let right = vec![symlink_entry("link.txt", 9999)];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn symlink_vs_regular_file_type_mismatch() {
+        // A symlink and a regular file of the same name differ even if their
+        // sizes happen to match: symlinks are data, the type is the difference.
+        let left = vec![symlink_entry("item", 100)];
+        let right = vec![entry("item", 100)];
+
+        let report = compare_entries(&left, &right, CompareMode::Thorough);
+
+        assert_eq!(report.differing, 1);
+        assert!(report.left_marks.contains("item"));
+        assert!(report.right_marks.contains("item"));
     }
 }

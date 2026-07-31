@@ -101,6 +101,13 @@ fn dir_size_rec(
         );
         return Ok(0);
     }
+    // Check cancellation before the potentially expensive `read_dir` so a
+    // cancelled scan doesn't do more I/O before noticing (AGENTS.md: ops must
+    // be cancellable).
+    if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        debug_log!("dir_size: cancelled at entry of {}", path.display());
+        return Ok(0);
+    }
     let mut total: u64 = 0;
     let entries = match std::fs::read_dir(path) {
         Ok(e) => e,
@@ -215,9 +222,19 @@ fn path_size_or_zero(path: &Path, cancel: Option<&AtomicBool>) -> u64 {
 /// caller's thread before returning. Used up-front by batch operations to
 /// size the total byte budget for progress reporting; large trees stall the
 /// caller until the walk completes. The `cancel` flag is checked between
-/// entries in each subtree so the pre-scan can be aborted mid-walk.
+/// top-level paths and within each subtree walk so the pre-scan can be
+/// aborted mid-scan (AGENTS.md: ops must be cancellable).
 pub(crate) fn path_sizes(paths: &[PathBuf], cancel: Option<&AtomicBool>) -> Vec<u64> {
-    paths.iter().map(|p| path_size_or_zero(p, cancel)).collect()
+    paths
+        .iter()
+        .map(|p| {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                debug_log!("path_sizes: cancelled before {}", p.display());
+                return 0;
+            }
+            path_size_or_zero(p, cancel)
+        })
+        .collect()
 }
 
 pub(crate) fn cleanup_file(path: &Path) {
@@ -376,5 +393,23 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("f.txt"), b"xyz").unwrap();
         assert_eq!(path_size(&dir, None).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_path_sizes_cancels_between_top_level_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir1 = tmp.path().join("d1");
+        let dir2 = tmp.path().join("d2");
+        fs::create_dir(&dir1).unwrap();
+        fs::write(dir1.join("a.txt"), b"aaaa").unwrap();
+        fs::create_dir(&dir2).unwrap();
+        fs::write(dir2.join("b.txt"), b"bb").unwrap();
+
+        // Pre-set cancel: the first path returns 0 via the entry check in
+        // `dir_size_rec`, and the second is short-circuited at the top-level
+        // guard in `path_sizes` before any I/O.
+        let cancel = AtomicBool::new(true);
+        let sizes = path_sizes(&[dir1, dir2], Some(&cancel));
+        assert_eq!(sizes, vec![0, 0]);
     }
 }
