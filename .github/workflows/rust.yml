@@ -7,9 +7,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -33,12 +38,16 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --check
+        shell: bash
 
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+        shell: bash
 
       - name: Test
         run: cargo test --locked
+        shell: bash
 
       - name: Build release
         run: cargo build --release --locked
+        shell: bash

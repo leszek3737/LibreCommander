@@ -424,9 +424,10 @@ fn is_regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| !m.is_symlink() && m.is_file())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MenuSource {
     Local,
+    #[default]
     Global,
 }
 
@@ -458,12 +459,19 @@ pub struct LoadedMenu {
 }
 
 pub fn load_menu_with_warnings(panel_dir: &Path, filename: &str) -> Result<LoadedMenu, String> {
-    let (path, source) = locate_menu_file(panel_dir).ok_or_else(|| {
-        format!(
-            "No user menu file found (searched: {}/.mc.menu, ~/.config/lc/menu)",
-            panel_dir.display()
-        )
-    })?;
+    let global = paths::user_menu_path();
+    let (path, source) =
+        locate_menu_file_with_global(panel_dir, global.as_deref()).ok_or_else(|| {
+            let global_display = global
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(no global menu path configured)".to_string());
+            format!(
+                "No user menu file found (searched: {}/.mc.menu, {})",
+                panel_dir.display(),
+                global_display
+            )
+        })?;
     let mut content = String::new();
     // Read one byte past the limit so an oversize file is a hard error rather
     // than a silently truncated (and possibly mis-parsed) prefix.

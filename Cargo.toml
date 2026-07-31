@@ -2,7 +2,7 @@
 name = "librecommander"
 version = "0.1.1"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.95" # edition 2024 + inline let-chains used throughout
 description = "Modern dual-panel MC for Norton/MC muscle memory in one offline Rust binary — no async runtime, forbid(unsafe), zip-safe archives"
 license = "MIT"
 readme = "README.md"
@@ -10,7 +10,7 @@ repository = "https://github.com/leszek3737/LibreCommander"
 homepage = "https://github.com/leszek3737/LibreCommander"
 keywords = ["tui", "file-manager", "ratatui", "cli", "terminal"]
 categories = ["command-line-utilities", "filesystem"]
-exclude = [".github/", ".serena/"]
+exclude = [".github/", ".serena/", "docs/"]
 
 # crates.io package is `librecommander` (`lc` is taken). Binary + lib stay `lc`.
 [lib]
@@ -52,12 +52,16 @@ tempfile = "3"
 [profile.release]
 lto = true
 codegen-units = 1
+panic = "abort"
 
 # Dev: light optimization keeps TUI interaction responsive while
 # preserving full debug info and fast incremental rebuilds.
 [profile.dev]
 opt-level = 1
 
+# FSEvents-only on macOS: kqueue is excluded deliberately. FSEvents is the
+# recommended backend for recursive directory watching; kqueue requires a
+# file descriptor per watched directory and is slow/large on big trees.
 [target.'cfg(target_os = "macos")'.dependencies]
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
