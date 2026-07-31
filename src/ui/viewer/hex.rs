@@ -45,6 +45,11 @@ fn format_offset_hex(offset: usize, buf: &mut String) {
 }
 
 pub(crate) fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut String) {
+    // Enforce the per-line byte cap at the contract boundary. Every caller
+    // already slices to HEX_BYTES_PER_LINE, but a stray >16-byte slice breaks
+    // the fixed-width padding math and misaligns the ASCII pane. Clamp here
+    // rather than guarding each call site.
+    let bytes = &bytes[..bytes.len().min(HEX_BYTES_PER_LINE)];
     format_offset_hex(offset, buf);
     buf.push_str(": ");
 

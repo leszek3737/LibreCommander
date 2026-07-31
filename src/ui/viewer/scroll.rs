@@ -131,7 +131,21 @@ impl ViewerState {
         } else {
             self.max_line_width
         };
-        let max_offset = max_line.saturating_sub(effective_width);
+        // `paragraph_horizontal_scroll` truncates to `u16`, so the effective max
+        // scrollable offset is bounded by `u16::MAX` regardless of line width.
+        // Subtract the viewport BEFORE applying the u16 cap: capping first
+        // (`max_line.min(u16::MAX) - viewport`) truncates the scrollable range
+        // a full viewport short of the real ceiling, hiding the last pane-width
+        // of a >65 535-column line.
+        let width_cap = effective_width.min(u16::MAX as usize);
+        // When the pane is too narrow to show any text (effective_width == 0),
+        // clamp the max offset to 0 so scrolling cannot push every character off
+        // screen, leaving the user looking at empty space.
+        let max_offset = if width_cap == 0 {
+            0
+        } else {
+            max_line.saturating_sub(width_cap).min(u16::MAX as usize)
+        };
         self.horizontal_offset = clamp_scroll_offset(self.horizontal_offset, cols, max_offset);
     }
 
