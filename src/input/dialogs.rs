@@ -52,6 +52,11 @@ fn validate_path_name(input: &str) -> ValidationResult {
         ValidationResult::Valid => {}
         other => return other,
     }
+    // NUL terminates C strings and is never a valid path component (POSIX
+    // forbids it; Windows rejects it). Reject before it reaches the OS.
+    if input.contains('\0') {
+        return ValidationResult::InvalidPath("Name contains NUL byte".to_string());
+    }
     if input.contains('/') || (cfg!(windows) && input.contains('\\')) {
         return ValidationResult::InvalidPath(format!("Name contains path separator: {input}"));
     }

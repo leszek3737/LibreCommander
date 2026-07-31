@@ -65,7 +65,7 @@ fn hotlist_picker_delete_middle_and_last() {
 
     // 'd' now prompts for confirmation; `resolve_hotlist_delete` applies it.
     pickers::handle_list_picker(&mut state, KeyCode::Char('d'));
-    assert_eq!(state.ui.pending_hotlist_delete, Some(1));
+    assert_eq!(state.ui.pending_hotlist_delete, Some(PathBuf::from("/b")));
     assert_eq!(state.hotlist().len(), 3);
     pickers::resolve_hotlist_delete(&mut state, true);
     assert_eq!(state.hotlist().len(), 2);

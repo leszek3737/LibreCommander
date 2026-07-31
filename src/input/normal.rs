@@ -91,17 +91,16 @@ fn open_rename_dialog(state: &mut AppState) {
 }
 
 fn handle_f7_key(state: &mut AppState) {
-    if let Some(entry) = state.active_panel().current_entry()
-        && is_archive_file(entry)
-    {
-        show_archive_dialog(state);
-    } else {
-        state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
-            prompt: "Create directory:".to_string(),
-            action: InputAction::CreateDirectory,
-        });
-        state.input.dialog_input.clear();
-    }
+    // F7 is reserved for "create directory" (the mc convention). Previously it
+    // was overloaded: with the cursor on an archive it opened the extract
+    // dialog instead, making mkdir unreachable in that state. Archive extract
+    // is reachable via F12 (which falls through to the archive menu) and via the
+    // menu bar, so F7 now always creates a directory.
+    state.mode = AppMode::Dialog(lc::app::types::DialogKind::Input {
+        prompt: "Create directory:".to_string(),
+        action: InputAction::CreateDirectory,
+    });
+    state.input.dialog_input.clear();
 }
 
 fn handle_f12_key(state: &mut AppState) {
@@ -158,7 +157,10 @@ pub(crate) fn launch_editor<B: ratatui::backend::Backend>(
     if let Err(e) = terminal.clear() {
         lc::debug_log!("terminal.clear() failed after editor: {e}");
     }
-    panel_ops::refresh_active(state);
+    // The editor can modify files in either panel (e.g. a symlink, or the user
+    // switched panels in their head), so refresh both rather than only the
+    // active one — otherwise the inactive panel stays stale.
+    panel_ops::refresh_both(state);
 }
 
 /// Parse the `EDITOR` value into argv parts, falling back to `vi` when the
@@ -221,7 +223,15 @@ fn editor_status_message(
     resume_result: io::Result<()>,
 ) -> Option<String> {
     match (spawn_result, resume_result) {
-        (Err(e), _) => Some(format!("Editor error: {e}")),
+        (Err(spawn_err), Ok(())) => Some(format!("Editor error: {spawn_err}")),
+        (Err(spawn_err), Err(resume_err)) => {
+            // The editor never ran, but we must still flag that the terminal
+            // may be in an inconsistent state — previously the resume error was
+            // discarded here, which could leave the TUI in raw mode.
+            Some(format!(
+                "Editor error: {spawn_err}; Terminal restore failed: {resume_err}"
+            ))
+        }
         (Ok(s), Err(e)) => {
             let mut parts = Vec::new();
             if !s.success() {
@@ -380,11 +390,14 @@ fn switch_active_panel(state: &mut AppState, visible: usize) {
 
 fn toggle_selection_and_advance(state: &mut AppState, visible: usize) {
     let panel = state.active_panel_mut();
-    if panel.listing.filtered_is_empty() {
+    let len = panel.listing.filtered_len();
+    if len == 0 {
         return;
     }
     panel.toggle_selection();
-    if panel.cursor < panel.listing.filtered_len() - 1 {
+    // `saturating_sub` keeps this panic-free even if the empty guard above is
+    // ever refactored away — `filtered_len() - 1` with len == 0 would underflow.
+    if panel.cursor < len.saturating_sub(1) {
         panel.move_cursor_down(visible);
     }
 }
@@ -548,15 +561,17 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             let prev_dir_name = file_name_str(state.active_panel().path());
             let panel = state.active_panel_mut();
             if let Some(prev_path) = panel.pop_history() {
-                if prev_path.is_dir() {
-                    panel.set_path(prev_path.clone());
-                    panel.cursor = 0;
-                    panel.scroll_offset = 0;
-                    panel_ops::refresh_active(state);
+                // Skip the blocking `prev_path.is_dir()` stat: on network mounts
+                // it freezes the event thread, and it is also a TOCTOU. Instead
+                // set the path unconditionally and let `refresh_active` report
+                // the failure ("Failed to read ...") if the directory is gone.
+                panel.set_path(prev_path.clone());
+                panel.cursor = 0;
+                panel.scroll_offset = 0;
+                panel_ops::refresh_active(state);
+                if state.ui.status_message.is_none() {
                     reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
                     state.ui.status_message = Some(format!("cd to {}", prev_path.display()));
-                } else {
-                    panel.push_history(prev_path);
                 }
             }
         }

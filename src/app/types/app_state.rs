@@ -47,8 +47,11 @@ pub struct UiState {
     pub cached_user_menu_strings: Vec<String>,
     pub cached_history_strings: Vec<String>,
     pub pending_menu_command: Option<String>,
-    /// Hotlist index awaiting a "Remove from hotlist?" confirmation, if any.
-    pub pending_hotlist_delete: Option<usize>,
+    /// Hotlist path awaiting a "Remove from hotlist?" confirmation, if any.
+    /// Stores the path (not the index) so the deletion survives index drift
+    /// between pressing 'd' and confirming — the index is re-resolved by path
+    /// at delete time.
+    pub pending_hotlist_delete: Option<PathBuf>,
     /// Archive `(source, dest)` awaiting a background listing, if any. The main
     /// loop picks this up, spawns the read off the event thread, and shows a
     /// loading dialog until it completes (see `bg_load`).
