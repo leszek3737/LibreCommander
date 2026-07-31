@@ -106,6 +106,14 @@ fn viewer_long_line_horizontal_scroll() {
     assert_eq!(vs.horizontal_offset, 10);
     vs.scroll_right(10, visible_width);
     assert_eq!(vs.horizontal_offset, 20);
+    // Clamp at the content boundary: max_offset = line_width - visible_width
+    // = 120 - 80 = 40. Scrolling past it must not exceed the cap. Without
+    // this assertion a broken/removed clamp in scroll_right would pass.
+    vs.scroll_right(100, visible_width);
+    assert_eq!(
+        vs.horizontal_offset, 40,
+        "scroll_right must clamp at max_offset"
+    );
 }
 
 #[test]

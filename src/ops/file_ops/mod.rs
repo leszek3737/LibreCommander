@@ -18,7 +18,7 @@ pub(crate) use move_ops::move_entry_with_progress;
 pub(super) use temp::replace_file_with_temp;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
     #[cfg(unix)]
@@ -35,13 +35,30 @@ mod tests {
         for tag in tags {
             let pattern = format!(".lc-dir-{tag}-");
             let mut found = vec![];
-            if let Ok(entries) = std::fs::read_dir(tmp_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if name_str.contains(&pattern) {
-                        found.push(name_str.into_owned());
-                    }
+            // Propagate the read_dir error instead of swallowing it: an Err
+            // here (e.g. the directory was already removed, or a permission
+            // error) previously left `found` empty and the assertion passed
+            // vacuously — masking actual leftover temp files.
+            let entries = std::fs::read_dir(tmp_dir).unwrap_or_else(|e| {
+                panic!(
+                    "read_dir({}) failed: {e}; cannot verify temp cleanup",
+                    tmp_dir.display()
+                )
+            });
+            // Surface per-entry errors too: `flatten()` would silently drop an
+            // Err on an individual DirEntry (e.g. permission error on one file),
+            // again leaving `found` empty and passing vacuously.
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!(
+                        "error reading DirEntry in {}: {e}; cannot verify temp cleanup",
+                        tmp_dir.display()
+                    )
+                });
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.contains(&pattern) {
+                    found.push(name_str.into_owned());
                 }
             }
             assert!(
@@ -845,33 +862,61 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_dir_recursive_with_progress_cancel_before_start_via_thread() {
+    fn test_copy_dir_recursive_with_progress_cancel_mid_operation() {
+        // Replaces the former `_via_thread` test, which joined the cancel
+        // thread before the copy started — making it identical to the
+        // cancel-before-start test and adding no concurrency coverage. This
+        // version flips cancel AFTER the copy has started copying, exercising
+        // the cooperative cancel check inside the copy loop.
+        //
+        // The src dir holds ONE large file rather than many tiny ones: with
+        // 200 tiny files the worker could finish them all in the window
+        // between the first progress byte arriving and cancel being set (a
+        // race that made the test flaky — the copy would succeed and dest
+        // would exist, contradicting the assertion). A single multi-MB file
+        // keeps the worker inside chunk_copy's per-chunk cancel checkpoint
+        // for long enough that cancel is observed deterministically.
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
         std::fs::create_dir(&src).unwrap();
-        for i in 0..50 {
-            std::fs::write(src.join(format!("file_{}.txt", i)), b"some content").unwrap();
-        }
+        std::fs::write(
+            src.join("big.bin"),
+            (0..40_000_000u64)
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
 
         let dest = tmp.join("dest_dir");
-        let (progress_tx, _progress_rx) = mpsc::channel();
+        let (progress_tx, progress_rx) = mpsc::channel();
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
         let cancel_clone = std::sync::Arc::clone(&cancel);
+        let dest_clone = dest.clone();
+
         let handle = std::thread::spawn(move || {
-            cancel_clone.store(true, Ordering::Relaxed);
+            copy_dir_recursive_with_progress(&src, &dest_clone, &progress_tx, &cancel_clone, false)
         });
-        handle.join().unwrap();
 
-        let err = copy_dir_recursive_with_progress(&src, &dest, &progress_tx, &cancel, false)
-            .unwrap_err();
+        // Wait until the copy has actually started (first progress byte),
+        // then flip the cancel flag so a subsequent per-chunk checkpoint aborts.
+        let _ = progress_rx
+            .recv()
+            .expect("copy must emit at least one progress byte");
+        cancel.store(true, Ordering::Relaxed);
+
+        let err = handle.join().unwrap().unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
-        assert!(!dest.exists());
 
+        // The temp dir is rolled back on cancel: dest must not be published.
+        assert!(!dest.exists());
         assert_no_temp_leftovers(&tmp, &[TAG_COPY]);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
+    // `/` is a Unix-only critical path: on Windows it does not map to the
+    // same concept and the assertion would fail or test the wrong behaviour.
+    #[cfg(unix)]
     #[test]
     fn test_delete_dir_recursive_rejects_root_directory() {
         let err = delete_dir_recursive(std::path::Path::new("/")).unwrap_err();

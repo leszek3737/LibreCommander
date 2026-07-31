@@ -209,6 +209,7 @@ fn dispatch_test_event_exposes_job_on_confirmed_delete() {
     // handler rather than constructed by the test.
     let (tmp, mut state) = panel_with_files(&["victim.txt"]);
     let victim = tmp.path().join("victim.txt");
+    let victim_check = victim.clone();
     std::fs::write(&victim, b"x").unwrap();
     state.left_panel.cursor = 0;
     state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
@@ -234,7 +235,19 @@ fn dispatch_test_event_exposes_job_on_confirmed_delete() {
         AppMode::Dialog(DialogKind::Progress { .. })
     ));
 
-    // Join the spawned worker so the temp dir outlives the background delete.
+    // The worker runs independently once spawned; `shutdown()` cancels first
+    // then joins, which races the single-file delete. Poll for natural
+    // completion before tearing down, then assert the victim file was actually
+    // removed — the old test only checked the Progress mode transition, which
+    // a no-op batch would also produce (false green).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while victim_check.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        !victim_check.exists(),
+        "confirmed Delete must remove the victim file"
+    );
     if let Some(mut job) = res.job.take() {
         job.shutdown();
     }
@@ -302,7 +315,9 @@ fn non_printable_keys_do_not_trigger_search() {
         let DispatchResult { handled, .. } =
             dispatch_test_event(&mut state, &mut terminal, &Event::Key(key));
 
-        assert!(handled.is_ok());
+        // F1/Esc are consumed by normal-mode handlers (handled == true) but
+        // must NOT enter search mode — that is the property under test.
+        assert_eq!(handled, Ok(true));
         assert!(
             !matches!(state.mode, AppMode::Search),
             "{code:?} should not trigger search mode"

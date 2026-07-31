@@ -30,7 +30,7 @@ const PENDING_FROM_TIMEOUT: Duration = Duration::from_secs(2);
 /// panel does a full refresh rather than tracking individual renames.
 const PENDING_FROM_LIMIT: usize = 1024;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum WatchEvent {
     Created(PathBuf),
     Deleted(PathBuf),
@@ -926,5 +926,5 @@ fn normalize_missing_target(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
