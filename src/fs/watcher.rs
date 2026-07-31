@@ -172,6 +172,11 @@ impl Watcher {
 
         self.path_cache.insert(original, path.clone());
 
+        // Invariant: `watchers` is only mutated AFTER a successful watch().
+        // On failure (primary or fallback) the error is returned without
+        // inserting, so a path that failed to watch never lingers in the set —
+        // `unwatch` and `watched_dirs` stay accurate. Do not move the insert
+        // above the watch() calls.
         match self.primary.watch(&path, RecursiveMode::NonRecursive) {
             Ok(()) => {
                 self.watchers.insert(path, WhichWatcher::Primary);

@@ -110,10 +110,22 @@ fn get_or_insert_name(
     if let Some(existing) = map.map.get(&id) {
         return existing.clone();
     }
-    if map.map.len() >= CACHE_MAX_SIZE
-        && let Some(old) = map.order.pop_front()
-    {
-        map.map.remove(&old);
+    if map.map.len() >= CACHE_MAX_SIZE {
+        // Evict the oldest entry (FIFO). If the order queue is empty but the map
+        // is at/over capacity (a broken invariant — order and map should stay in
+        // sync), pop_front returns None and the naive path would silently skip
+        // eviction and let the map grow unbounded. Fall back to evicting an
+        // arbitrary key so the cap is honored even under corruption.
+        if let Some(old) = map.order.pop_front() {
+            map.map.remove(&old);
+        } else if let Some((&stale_key, _)) = map.map.iter().next() {
+            // Broken invariant: map full but order empty. Evict an arbitrary
+            // key so the cap is honored even under corruption.
+            map.map.remove(&stale_key);
+            crate::debug_log!(
+                "uid/gid cache invariant broken: map full but order empty; evicted key {stale_key}"
+            );
+        }
     }
     map.order.push_back(id);
     map.map.insert(id, name.clone());
@@ -216,11 +228,29 @@ pub fn ensure_path_index(panel: &mut PanelState) {
     panel.listing.ensure_index();
 }
 
+/// Reads the entries of `path` non-recursively.
+///
+/// Returns `(entries, errors)`. **Always returns `Ok`** unless the directory
+/// itself cannot be opened (`read_dir` fails); per-entry failures (a file whose
+/// metadata could not be read, a directory entry that could not be iterated) are
+/// collected into the `errors` vector and the readable entries are returned
+/// normally. Callers that need to surface total-failure must check `errors`
+/// themselves — an empty `entries` with a non-empty `errors` means every entry
+/// failed. The synthetic `..` entry (when `path` is not the root) is always
+/// present in `entries` regardless of per-entry failures.
 pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>)> {
     let mut entries = Vec::with_capacity(INITIAL_DIR_CAPACITY);
     let mut errors = Vec::new();
 
-    if path != Path::new("/") {
+    // Root detection must survive spellings like `//`, trailing slashes, and
+    // symlinks-to-root. A bare `path != "/"` misses those and would inject a
+    // spurious `..` entry at the filesystem root. Normalizing via clean_path
+    // collapses redundant separators; an empty parent (no `..` possible) is the
+    // other root signal on Unix.
+    let is_root = crate::fs::path::clean_path(path) == Path::new("/")
+        || path.parent().is_none_or(|p| p.as_os_str().is_empty());
+
+    if !is_root {
         let parent_buf;
         let parent_path = path.parent().filter(|p| !p.as_os_str().is_empty());
         let parent_path = match parent_path {
@@ -230,18 +260,24 @@ pub fn read_directory(path: &Path) -> io::Result<(Vec<FileEntry>, Vec<io::Error>
                 &parent_buf
             }
         };
-        let (owner, group) = fs::symlink_metadata(parent_path)
-            .ok()
-            .map(|meta| {
-                let cha = Cha::new(&meta);
-                lookup_owner_group(cha.uid, cha.gid)
-            })
-            .unwrap_or_default();
-        let dummy_cha = Cha::dummy_dir();
+        // The `..` entry's owner/group are looked up from the real parent's
+        // metadata, so the cha must carry the same uid/gid — otherwise the
+        // displayed owner (resolved from parent) disagrees with cha.uid (which
+        // was always 0 from dummy_dir). Build the cha from the parent stat when
+        // available; fall back to dummy_dir (uid=0) if the parent is unreadable.
+        let parent_meta = fs::symlink_metadata(parent_path).ok();
+        let (owner, group, cha) = match parent_meta.as_ref() {
+            Some(meta) => {
+                let cha = Cha::new(meta);
+                let (owner, group) = lookup_owner_group(cha.uid, cha.gid);
+                (owner, group, cha)
+            }
+            None => (Arc::from("-"), Arc::from("-"), Cha::dummy_dir()),
+        };
         entries.push(FileEntry::new(
             "..".to_string(),
             parent_path.to_path_buf(),
-            dummy_cha,
+            cha,
             owner.as_ref(),
             group.as_ref(),
             false,

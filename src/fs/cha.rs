@@ -15,11 +15,20 @@ pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
 
 // Non-Unix platforms lack Unix permission bits, so we synthesize a mode from the
 // file type plus a reasonable default (rw-r--r--) for display consistency.
+//
+// Caller contract: `meta` must come from `symlink_metadata` for the symlink type
+// bit to ever be set. `fs::metadata` follows links and reports the target's
+// type, so `is_symlink()` is then always false and a symlink renders as its
+// target's type. This mirrors the Unix path, where `Cha::new` is only fed
+// `symlink_metadata` (see `reader::build_file_entry_from_metadata`).
 #[cfg(not(unix))]
 pub(crate) fn file_mode(meta: &fs::Metadata) -> u32 {
-    let type_bits = if meta.is_dir() {
+    // file_type() reflects what `meta` actually saw (link-followed or not),
+    // so the synthesized type bit tracks the metadata source the caller chose.
+    let file_type = meta.file_type();
+    let type_bits = if file_type.is_dir() {
         0o040000
-    } else if meta.is_symlink() {
+    } else if file_type.is_symlink() {
         0o120000
     } else {
         0o100000
@@ -32,12 +41,16 @@ fn change_time(meta: &fs::Metadata) -> Option<SystemTime> {
     let secs = meta.ctime();
     // ctime_nsec() returns i64; negative values (broken OS) are clamped to 0.
     let nsecs = u32::try_from(meta.ctime_nsec()).unwrap_or(0);
+    // Cap at max Duration nanoseconds (999_999_999).
+    let nsecs = nsecs.min(999_999_999);
     if secs >= 0 {
-        // Cap at max Duration nanoseconds (999_999_999).
-        let nsecs = nsecs.min(999_999_999);
         UNIX_EPOCH.checked_add(Duration::new(secs as u64, nsecs))
     } else {
-        None
+        // Negative secs = pre-1970 inode change time. Build a Duration back from
+        // the epoch and subtract it rather than silently dropping the timestamp
+        // (old behavior returned None, hiding legitimate historical ctimes).
+        let abs_secs = secs.unsigned_abs();
+        UNIX_EPOCH.checked_sub(Duration::new(abs_secs, nsecs))
     }
 }
 
@@ -184,6 +197,12 @@ impl Cha {
     ) -> Self {
         // Symlink mode carries only the permission bits; the type is forced to
         // 0o120000 (symlink) regardless of the link's own stored type.
+        //
+        // Note (Linux): the kernel reports symlink permission bits as a fixed
+        // 0o777 (lchmod can change them on few filesystems and they are ignored
+        // at resolution), so `file_mode(link_meta) & 0o7777` is almost always
+        // 0o777 here. The mask is kept for portability: BSD/macOS HFS+ and some
+        // FUSE filesystems do store meaningful symlink permissions.
         let link_mode = ChaMode::new(0o120000 | (file_mode(link_meta) & 0o7777));
 
         if let Some(target) = target_meta {
