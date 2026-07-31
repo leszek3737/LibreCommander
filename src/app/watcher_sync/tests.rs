@@ -351,12 +351,33 @@ fn poll_watcher_events_processes_at_most_256_events() {
 
     assert!(poll_watcher_events(&mut state, &rx));
 
+    // drain_events caps at 256 events per poll; with 257 sent, the first 256
+    // are applied (file0..file255) plus the pre-seeded ".." parent entry, and
+    // file256 is left in the channel. State that invariant directly instead of
+    // reusing OVERFLOW_EVENT_COUNT, whose name is about the number of events
+    // *sent*, not entries in the panel — they coincide only numerically.
+    const PER_POLL_CAP: usize = 256;
+    const SEEDED_PARENT_ENTRY: usize = 1;
     let entries = state.left_panel.listing.unfiltered();
-    assert_eq!(entries.len(), OVERFLOW_EVENT_COUNT);
+    assert_eq!(
+        entries.len(),
+        PER_POLL_CAP + SEEDED_PARENT_ENTRY,
+        "256 applied events + the pre-seeded '..' entry"
+    );
     assert_has_entry(entries, "..");
     assert_has_entry(entries, "file0.txt");
     assert_no_entry(entries, "file256.txt");
-    assert!(rx.try_recv().is_ok());
+
+    // A subsequent poll processes the overflow event, proving events beyond
+    // the per-poll cap are not lost.
+    assert!(poll_watcher_events(&mut state, &rx));
+    let entries = state.left_panel.listing.unfiltered();
+    assert_eq!(
+        entries.len(),
+        OVERFLOW_EVENT_COUNT + SEEDED_PARENT_ENTRY,
+        "all 257 applied events + the pre-seeded '..' entry"
+    );
+    assert_has_entry(entries, "file256.txt");
 }
 
 #[test]
@@ -478,9 +499,10 @@ fn full_refresh_on_error_clears_entries_and_resets_viewport() {
     rebuild(&mut panel);
     assert!(panel.listing.filtered_len() > 1);
 
-    let gone = tempfile::tempdir().unwrap();
-    let gone_path = gone.path().to_path_buf();
-    drop(gone);
+    // Point at a path that was never created. Relying on drop(TempDir) to
+    // simulate a missing directory is fragile on Windows, where open handles
+    // can leave the directory undeleted and the read silently succeeds.
+    let gone_path = dir.path().join("never_existed");
     panel.set_path(gone_path);
     refresh_panel_from_disk(&mut panel);
 
@@ -502,9 +524,9 @@ fn full_refresh_recovers_after_error() {
     let file = dir.path().join("recovery.txt");
     fs::write(&file, b"hello").unwrap();
 
-    let gone = tempfile::tempdir().unwrap();
-    let gone_path = gone.path().to_path_buf();
-    drop(gone);
+    // A path that was never created simulates a missing directory reliably
+    // across platforms (drop(TempDir) is fragile on Windows — see above).
+    let gone_path = dir.path().join("never_existed");
     panel.set_path(gone_path);
     refresh_panel_from_disk(&mut panel);
     assert!(panel.listing.filtered_is_empty());
@@ -617,6 +639,7 @@ fn created_child_file_appears_in_panel() {
     assert_visible_has_entry(&harness.state.left_panel, "new_file.txt");
 }
 
+#[cfg(unix)]
 #[test]
 fn deleted_root_dir_stays_at_root_and_refreshes() {
     let (tx, rx) = mpsc::sync_channel(WATCHER_CHANNEL_CAPACITY);
@@ -710,7 +733,10 @@ fn symlinked_panel_dir_tracks_target() {
     assert_entry_names_eq(&panel, &["..", "inside.txt"]);
 }
 
-#[cfg(unix)]
+/// Symlink target swap within the same filesystem tick produces identical
+/// lstat timestamps on ext4 (1s granularity), so `cha.hits()` sees no change.
+/// FSEvents/macOS APFS has sub-second resolution — gate to macOS.
+#[cfg(target_os = "macos")]
 #[test]
 fn symlink_target_change_detected() {
     use std::os::unix::fs::symlink;
@@ -731,7 +757,14 @@ fn symlink_target_change_detected() {
 
     fs::remove_file(&link).unwrap();
     symlink(&target_b, &link).unwrap();
-    apply_watcher_upsert_if_matches(&mut panel, &link);
+    // The link already exists in the panel, so the only way to prove the
+    // metadata change (target_a -> target_b) was actually detected is to
+    // assert the upsert returns true; assert_visible_has_entry alone would
+    // pass even if the change were ignored.
+    assert!(
+        apply_watcher_upsert_if_matches(&mut panel, &link),
+        "target change (target_a -> target_b) must be detected"
+    );
     rebuild(&mut panel);
 
     assert_visible_has_entry(&panel, "link.txt");
