@@ -49,7 +49,13 @@ impl ViewerState {
         self.view_mode = self.next_view_mode();
         self.scroll_offset = 0;
         self.horizontal_offset = 0;
+        // Drop search matches (the byte/coordinate space differs between hex
+        // and text), but preserve `search_query` so the user sees *what* was
+        // cleared and can re-run the search in the new mode rather than losing
+        // it silently.
+        let preserved_query = self.search_query.take();
         self.clear_search_results();
+        self.search_query = preserved_query;
         // The wrap layout is mode- and line-count-specific; drop it so the new
         // mode rebuilds it instead of reusing a stale (binary↔text) layout.
         self.invalidate_visual_cache();
@@ -69,7 +75,7 @@ impl ViewerState {
     /// Interior mutability is used here so that `render` (which borrows `&self`)
     /// can update the wrap layout cache when the content width changes.
     pub fn update_wrap_layout(&self, content_width: usize) {
-        if !self.wrap_lines || self.is_hex_mode() || self.line_count == 0 {
+        if !self.wrap_lines || self.is_hex_mode() || self.is_image_mode() || self.line_count == 0 {
             if !self.render_cache.visual_heights.borrow().is_empty() {
                 self.invalidate_visual_cache();
             }

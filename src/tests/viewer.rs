@@ -115,8 +115,8 @@ fn viewer_crlf_line_endings() {
     std::fs::write(&file, b"line1\r\nline2\r\n").unwrap();
     let vs = open_viewer(&file);
     assert_eq!(vs.line_count, 2);
-    assert_eq!(vs.get_line(0), "line1\r");
-    assert_eq!(vs.get_line(1), "line2\r");
+    assert_eq!(vs.get_line(0), "line1");
+    assert_eq!(vs.get_line(1), "line2");
 }
 
 #[test]

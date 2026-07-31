@@ -66,7 +66,11 @@ fn buffer_line(buffer: &Buffer, y: u16) -> String {
 
 #[test]
 fn test_viewer_loader_drop_cancels_worker() {
-    let (_tx, rx) = mpsc::channel(); // _tx dropped immediately — closed sender signals worker exit
+    // The channel here is never read by the worker; its only purpose is to
+    // satisfy ViewerLoader::from_parts. Dropping `_tx` closes the sender but
+    // does not signal the worker — the worker exits solely by observing the
+    // cancel flag. (The receiver `rx` is held by the loader until drop.)
+    let (_tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_for_worker = Arc::clone(&cancel);
     let (done_tx, done_rx) = mpsc::channel();
@@ -88,12 +92,14 @@ fn test_viewer_loader_drop_cancels_worker() {
     drop(loader);
 
     assert!(cancel.load(Ordering::Relaxed));
-    // Drop stores `cancel` with `Release`; the worker loads it `Relaxed` in a
-    // `yield_now` loop, which still guarantees eventual visibility of the flag,
-    // so the worker is guaranteed to send. The generous 30s timeout (vs the old
-    // 1s) tolerates CPU starvation of the detached worker under heavy load, yet
-    // still bounds a genuine deadlock so CI fails fast instead of hanging the
-    // whole test binary.
+    // Note on memory ordering: `drop(loader)` stores `cancel` with `Release`,
+    // but the worker loads it `Relaxed` in a `yield_now` busy-loop. `Relaxed`
+    // does NOT establish a happens-before edge with the `Release` store — the
+    // load is still guaranteed to observe it eventually only because the loop
+    // spins and `yield_now` schedules the thread repeatedly. The 30s timeout
+    // (vs the old 1s) tolerates CPU starvation of the detached worker under
+    // heavy load, yet still bounds a genuine deadlock so CI fails fast instead
+    // of hanging the whole test binary.
     done_rx
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("worker should send done after observing cancel");
@@ -480,14 +486,20 @@ fn test_open_invalid_utf8_sets_warning() {
 }
 
 #[test]
-fn test_format_hex_line_accepts_more_than_sixteen_bytes() {
+fn test_format_hex_line_clamps_to_sixteen_bytes() {
+    // A >16-byte slice is clamped to HEX_BYTES_PER_LINE so the fixed-width
+    // alignment (hex columns + ASCII pane) stays intact. The 17th byte is
+    // dropped, not rendered into a misaligned extra column.
     let bytes = [b'A'; 17];
 
     let mut line = String::new();
     format_hex_line_to_buffer(0, &bytes, &mut line);
 
     assert!(line.starts_with("0000000000000000:"));
-    assert!(line.ends_with("|AAAAAAAAAAAAAAAAA|"));
+    assert!(
+        line.ends_with("|AAAAAAAAAAAAAAAA|"),
+        "17th byte must be dropped: {line}"
+    );
 }
 
 #[test]
@@ -1248,4 +1260,88 @@ fn test_hex_search_selects_match_at_or_after_current_line() {
     // With the viewport on line 2, the first selected match is the one on line 2.
     let current = state.current_match.unwrap();
     assert_eq!(state.search_matches[current].line, 2);
+}
+
+// --- PR-07 viewer correctness ---
+
+#[test]
+fn test_crlf_line_endings_stripped() {
+    // Windows-style CRLF endings must not leave a trailing \r in the decoded line.
+    let file = create_test_file("line1\r\nline2\r\n");
+    let state = ViewerState::open(file.path()).unwrap();
+
+    assert_eq!(state.line_count, 2);
+    assert_eq!(state.get_line(0), "line1");
+    assert_eq!(state.get_line(1), "line2");
+}
+
+#[test]
+fn test_image_content_size_never_returns_zero_height() {
+    // Even in a very short pane (height < 3 chrome rows), the content height
+    // must stay ≥ 1 so downstream aspect-ratio math never divides by zero.
+    assert_eq!(ViewerState::image_content_size(80, 0), (80, 1));
+    assert_eq!(ViewerState::image_content_size(80, 2), (80, 1));
+    assert_eq!(ViewerState::image_content_size(80, 3), (80, 1));
+    assert_eq!(ViewerState::image_content_size(80, 10), (80, 7));
+}
+
+#[test]
+fn test_scroll_right_zero_effective_width_clamps_to_zero() {
+    // When the pane is narrower than the line-number column, effective_width
+    // is 0 and horizontal_offset must clamp to 0 so content can't scroll
+    // entirely off-screen.
+    let mut state = init_state("a".repeat(100).as_str());
+    state.wrap_lines = false;
+    state.show_line_numbers = true;
+
+    // Make line-number column wider than the pane.
+    state.scroll_right(50, 0);
+    assert_eq!(state.horizontal_offset, 0);
+}
+
+#[test]
+fn test_image_file_not_flagged_as_originally_binary() {
+    // An image opened in Image mode must not be flagged originally_binary,
+    // which would show a spurious "BINARY CONTENT" warning.
+    let file = create_png_file();
+    let state = ViewerState::open(file.path()).unwrap();
+
+    assert_eq!(state.view_mode, ViewMode::Image);
+    assert!(!state.originally_binary);
+}
+
+#[test]
+fn test_toggle_hex_mode_preserves_search_query() {
+    // Toggling hex mode drops matches (coordinate spaces differ) but must
+    // preserve the query so the user knows what was cleared.
+    let mut file = NamedTempFile::with_suffix(".bin").unwrap();
+    file.write_all(b"\x00hello\x00world").unwrap();
+    let mut state = ViewerState::open(file.path()).unwrap();
+    assert!(state.is_hex_mode());
+
+    state.search("hello", DEFAULT_PAGE_HEIGHT);
+    assert!(state.search_query.is_some());
+
+    state.toggle_hex_mode();
+    assert_eq!(state.view_mode, ViewMode::Text);
+    assert!(state.search_matches.is_empty());
+    assert!(
+        state.search_query.is_some(),
+        "query must survive toggle so the user sees what was cleared"
+    );
+}
+
+#[test]
+fn test_update_wrap_layout_skips_image_mode() {
+    // Toggling to Image mode must not build a wrap layout — image rendering
+    // does not use logical-line wrapping.
+    let file = create_png_file();
+    let state = ViewerState::open(file.path()).unwrap();
+    assert_eq!(state.view_mode, ViewMode::Image);
+
+    state.update_wrap_layout(80);
+    assert!(
+        state.render_cache.visual_heights.borrow().is_empty(),
+        "wrap layout must not be built in Image mode"
+    );
 }

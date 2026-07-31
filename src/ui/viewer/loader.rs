@@ -139,10 +139,26 @@ pub(crate) fn run_chafa(
         .spawn();
 
     match child.and_then(|c| wait_for_chafa_output(c, cancel)) {
-        Ok(out) if out.status.success() => match out.stdout.into_text() {
-            Ok(text) => text,
-            Err(e) => Text::raw(format!("Failed to parse ANSI: {e}")),
-        },
+        Ok(out) if out.status.success() => {
+            if out.stdout.is_empty() {
+                // A blank preview is indistinguishable from a failed render
+                // (pipe-reader timeout dropped the partial bytes). Show a
+                // diagnostic so the user knows the preview failed, not that
+                // the image was intentionally empty.
+                let note = if out.stderr.is_empty() {
+                    "Image preview unavailable (chafa produced no output)"
+                } else {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    &format!("Image preview unavailable: {err}")[..]
+                };
+                Text::raw(note.to_string())
+            } else {
+                match out.stdout.into_text() {
+                    Ok(text) => text,
+                    Err(e) => Text::raw(format!("Failed to parse ANSI: {e}")),
+                }
+            }
+        }
         Ok(out) => {
             let err_msg = String::from_utf8_lossy(&out.stderr);
             Text::raw(format!("Chafa error: {err_msg}"))
@@ -223,7 +239,7 @@ fn collect_pipe_reader(rx: &mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     match rx.recv_timeout(PIPE_JOIN_TIMEOUT) {
         Ok(bytes) => bytes,
         Err(_) => {
-            debug_log!("pipe reader join timed out, detaching");
+            debug_log!("pipe reader join timed out, detaching (partial output dropped)");
             Vec::new()
         }
     }

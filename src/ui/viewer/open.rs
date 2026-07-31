@@ -100,7 +100,13 @@ impl ViewerState {
 
     fn line_end_excluding_newline(bytes: &[u8], end: usize) -> usize {
         if end > 0 && bytes[end - 1] == b'\n' {
-            end - 1
+            // Also strip a preceding `\r` so CRLF (Windows) line endings do not
+            // leave a trailing `\\r` in the decoded line slice.
+            if end > 1 && bytes[end - 2] == b'\r' {
+                end - 2
+            } else {
+                end - 1
+            }
         } else {
             end
         }
@@ -269,7 +275,11 @@ impl ViewerState {
         file_truncated: bool,
     ) -> Self {
         let has_invalid_utf8 = !raw_bytes.is_empty() && std::str::from_utf8(&raw_bytes).is_err();
-        let originally_binary = !matches!(view_mode, ViewMode::Text);
+        // `originally_binary` flags files decoded as hex so the hex→text toggle
+        // recompute and the BINARY CONTENT warning fire only for genuinely
+        // binary files. An image opened as Image mode is not "binary" — it has
+        // its own render path and the warning is spurious there.
+        let originally_binary = matches!(view_mode, ViewMode::Hex);
         Self::build(ViewerInit {
             path: path.to_path_buf(),
             raw_bytes,
@@ -470,6 +480,9 @@ impl ViewerState {
     }
 
     pub fn image_content_size(area_width: u16, area_height: u16) -> (u16, u16) {
-        (area_width, area_height.saturating_sub(3))
+        // Reserve 3 rows for title/status chrome, but never return height 0 —
+        // downstream aspect-ratio math divides by this and a 0 collapses the
+        // preview to nothing in a very short pane.
+        (area_width, area_height.saturating_sub(3).max(1))
     }
 }
