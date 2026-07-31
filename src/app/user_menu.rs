@@ -87,12 +87,14 @@ fn shell_quote_prefixed(prefix: &str, s: &str) -> Result<String, String> {
 /// on Windows): wrap in double quotes so `& | < > ^ ( )` are treated as
 /// literals. `%` (environment-variable expansion) and `"` cannot be reliably
 /// escaped for `cmd /C`, so a name containing either — or a newline — is
-/// rejected rather than folded into an injectable command line.
+/// rejected rather than folded into an injectable command line. `!` is also
+/// rejected: under `EnableDelayedExpansion` a `"…!var!…"` string is expanded
+/// rather than treated literally.
 #[cfg(windows)]
 fn shell_quote_prefixed(prefix: &str, s: &str) -> Result<String, String> {
     if let Some(bad) = s
         .chars()
-        .find(|&c| c == '%' || c == '"' || c == '\n' || c == '\r')
+        .find(|&c| c == '%' || c == '"' || c == '!' || c == '\n' || c == '\r')
     {
         return Err(format!(
             "name contains a character that cannot be safely quoted for cmd.exe: {bad:?}"
@@ -162,12 +164,12 @@ pub fn apply_substitutions(cmd: &str, ctx: &SubstContext<'_>) -> Result<String, 
                 out.push_str(&safe_file_arg(file_name_str(ctx.current_file)?)?);
             }
             Some('d') => {
-                out.push_str(&shell_quote(
+                out.push_str(&safe_file_arg(
                     ctx.active_dir.to_str().ok_or_else(non_utf8_err)?,
                 )?);
             }
             Some('D') => {
-                out.push_str(&shell_quote(
+                out.push_str(&safe_file_arg(
                     ctx.other_dir.to_str().ok_or_else(non_utf8_err)?,
                 )?);
             }

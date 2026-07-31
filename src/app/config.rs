@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -367,11 +367,30 @@ fn read_config_raw_with_env(
     let Some(path) = paths::config_file_path_with_env(env) else {
         return Ok(None);
     };
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
+    // Bounded read instead of stat-then-read: `symlink_metadata` reports the
+    // symlink's own size, so a symlink to a huge file would bypass a size cap
+    // checked on the link. Reading through `take(MAX+1)` bounds memory for
+    // symlinks, special files, and size-reporting edge cases alike.
+    const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+    let file = match File::open(&path) {
+        Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("Failed to read config {}: {e}", path.display())),
+        Err(e) => {
+            return Err(format!("Failed to open config {}: {e}", path.display()));
+        }
     };
+    let mut buf = Vec::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read config {}: {e}", path.display()))?;
+    if buf.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(format!(
+            "config file exceeds 1 MiB limit: {}",
+            path.display()
+        ));
+    }
+    let content = String::from_utf8(buf)
+        .map_err(|e| format!("config {} is not valid UTF-8: {e}", path.display()))?;
     let value: toml::Value = toml::from_str(&content)
         .map_err(|e| format!("Failed to parse config {}: {e}", path.display()))?;
     Ok(Some(value))

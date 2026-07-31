@@ -782,3 +782,29 @@ fn batch_copy_error_has_expected_kind() {
         report.errors[0]
     );
 }
+
+// PR #103 regression: archive cancel emits `io::Error::Other` (terminal), not
+// `Interrupted`, because `copy_with_progress` retries on `Interrupted`. The
+// batch layer must classify via the cancel flag, not the io kind — otherwise a
+// canceled extract/create is reported as "failed" instead of "canceled".
+#[test]
+fn batch_create_archive_cancel_reports_canceled() {
+    let src_dir = tempfile::tempdir().unwrap();
+    let dest_dir = tempfile::tempdir().unwrap();
+    let f1 = make_file(src_dir.path(), "a.txt", b"alpha");
+    let cancel = Arc::new(AtomicBool::new(true));
+    let archive_path = dest_dir.path().join("canceled.zip");
+
+    let action = PendingAction::CreateArchive {
+        sources: vec![f1],
+        dest: archive_path,
+        format: archive::ArchiveFormat::Zip,
+        overwrite: false,
+    };
+
+    let report = execute_batch_with_byte_progress(action, |_| {}, &Some(cancel), "Create Archive");
+
+    assert!(report.canceled, "archive cancel must set report.canceled");
+    assert_eq!(report.success_count, 0);
+    assert!(!dest_dir.path().join("canceled.zip").exists());
+}

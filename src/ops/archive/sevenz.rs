@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 
 use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, cleanup_extracted,
-    copy_with_progress,
+    copy_with_progress, count_extract_entry,
 };
 
 pub fn list_7z(path: &Path) -> Result<Vec<ArchiveEntry>, ArchiveError> {
@@ -60,6 +60,7 @@ struct SevenzEntryExtractor<'a> {
     error_slot: &'a Cell<Option<SevenzExtractError>>,
     total_size: super::TotalSizeGuard,
     extracted_paths: &'a mut Vec<PathBuf>,
+    entry_count: usize,
 }
 
 impl<'a> SevenzEntryExtractor<'a> {
@@ -95,6 +96,11 @@ impl<'a> SevenzEntryExtractor<'a> {
             self.error_slot.set(Some(SevenzExtractError::Canceled));
             return Err(sevenz_rust::Error::Other("Operation canceled".into()));
         }
+        count_extract_entry(&mut self.entry_count).map_err(|e| {
+            self.error_slot
+                .set(Some(SevenzExtractError::InvalidArchive(e.to_string())));
+            sevenz_rust::Error::Other("too many entries".into())
+        })?;
 
         let outpath = match super::sanitize_entry_path(self.canonical_dest, Path::new(entry.name()))
         {
@@ -122,8 +128,13 @@ impl<'a> SevenzEntryExtractor<'a> {
         if entry.is_directory() {
             // Only track directories THIS operation actually creates, so a
             // rollback never `remove_dir_all`s a pre-existing user directory that
-            // `create_dir_all` merely succeeded on idempotently.
-            let newly_created = fs::symlink_metadata(&outpath).is_err();
+            // `create_dir_all` merely succeeded on idempotently. A bare `is_err()`
+            // treats a permission-denied metadata error as "does not exist",
+            // marking a pre-existing dir for rollback delete.
+            let newly_created = matches!(
+                fs::symlink_metadata(&outpath),
+                Err(ref e) if e.kind() == io::ErrorKind::NotFound
+            );
             if let Err(e) = fs::create_dir_all(&outpath) {
                 self.error_slot.set(Some(SevenzExtractError::Io(e)));
                 return Err(sevenz_rust::Error::Other("create_dir_all failed".into()));
@@ -159,8 +170,9 @@ impl<'a> SevenzEntryExtractor<'a> {
                     })?;
                 }
                 Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted && self.cancel.load(Ordering::Relaxed)
-                    {
+                    // `copy_with_progress` emits `Other` on cancel (terminal),
+                    // not `Interrupted`, so classify via the cancel flag.
+                    if self.cancel.load(Ordering::Relaxed) {
                         self.error_slot.set(Some(SevenzExtractError::Canceled));
                     } else {
                         self.error_slot.set(Some(SevenzExtractError::Io(e)));
@@ -186,16 +198,12 @@ fn translate_extract_error(
         }
         Some(SevenzExtractError::InvalidArchive(msg)) => ArchiveError::InvalidArchive(msg),
         Some(SevenzExtractError::Io(e)) => ArchiveError::Io(e),
-        Some(SevenzExtractError::Canceled) => ArchiveError::Io(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Operation canceled",
-        )),
+        Some(SevenzExtractError::Canceled) => {
+            ArchiveError::Io(io::Error::other("Operation canceled"))
+        }
         None => {
             if cancel.load(Ordering::Relaxed) {
-                ArchiveError::Io(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operation canceled",
-                ))
+                ArchiveError::Io(io::Error::other("Operation canceled"))
             } else {
                 ArchiveError::InvalidArchive(err.to_string())
             }
@@ -227,6 +235,7 @@ pub fn extract_7z(
             error_slot: &error_slot,
             total_size: super::TotalSizeGuard::default(),
             extracted_paths: &mut extracted_paths,
+            entry_count: 0,
         };
 
         reader
@@ -310,6 +319,7 @@ mod tests {
             error_slot: slot,
             total_size: super::super::TotalSizeGuard::default(),
             extracted_paths: extracted,
+            entry_count: 0,
         };
         extractor.process_entry(entry, reader)
     }

@@ -79,6 +79,10 @@ const CRITICAL_DIR_PREFIXES: &[&str] = &[
 ];
 
 pub fn delete_file(path: &Path) -> io::Result<()> {
+    // Root-cause guard: validate here so every caller (batch, single-file, any
+    // future one) gets the critical-directory protection uniformly, instead of
+    // each caller having to remember to wrap the call.
+    ensure_entry_not_critical(path)?;
     fs::remove_file(path)
 }
 

@@ -9,7 +9,7 @@ use zip::write::SimpleFileOptions;
 
 use super::{
     ArchiveEntry, ArchiveError, MAX_FILE_SIZE, MAX_LIST_ENTRIES, check_cancel, cleanup_extracted,
-    copy_with_progress,
+    copy_with_progress, count_extract_entry,
 };
 use crate::ops::helpers::{MAX_RECURSION_DEPTH, cleanup_file as cleanup_temp_file};
 
@@ -93,13 +93,16 @@ fn extract_zip_entries(
     fs::create_dir_all(dest)?;
     let canonical_dest = dest.canonicalize().map_err(ArchiveError::Io)?;
     let mut total_size = super::TotalSizeGuard::default();
+    let mut entry_counter: usize = 0;
     for i in 0..entry_count {
         check_cancel(cancel)?;
+        count_extract_entry(&mut entry_counter)?;
 
         let mut entry = archive.by_index(i).map_err(map_zip_err)?;
 
         if entry.is_symlink() {
-            let _ = progress.send(entry.size());
+            // Skipped entries contribute no bytes to the progress total.
+            let _ = progress.send(0);
             continue;
         }
 
@@ -153,7 +156,10 @@ fn extract_zip_entries(
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Some(mode) = entry.unix_mode() {
-                    let safe_mode = mode & !0o7000;
+                    // Strip setuid/setgid/sticky (0o7000) AND group/other-write
+                    // (0o022): an archive entry with mode 0o777 must not be
+                    // extracted world-writable (privilege-escalation vector).
+                    let safe_mode = mode & !0o7022;
                     fs::set_permissions(&outpath, fs::Permissions::from_mode(safe_mode))?;
                 }
             }
@@ -375,7 +381,6 @@ fn zip_datetime_to_system_time(dt: zip::DateTime) -> SystemTime {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::io;
     // Used only by the unix-gated symlink tests below.
     #[cfg(unix)]
     use std::io::Write;
@@ -448,13 +453,24 @@ mod tests {
 
         let archive_path = work.path().join("canceled.zip");
         let (tx, _rx) = mpsc::channel();
-        // Cancel flag already set: creation must bail out with an Interrupted
-        // error and leave no archive (the temp file is cleaned up).
+        // Cancel flag already set: creation must bail out with a terminal
+        // cancellation error (`Other`, not retryable `Interrupted`) and leave
+        // no archive (the temp file is cleaned up).
         let cancel = AtomicBool::new(true);
         let result = create_zip(&[f1], &archive_path, &tx, &cancel);
-        assert!(
-            matches!(result, Err(ArchiveError::Io(ref e)) if e.kind() == io::ErrorKind::Interrupted),
-            "expected Interrupted error, got {result:?}"
+        let err = result.expect_err("expected cancellation error");
+        // Cancellation surfaces as a terminal `Other` io error, not
+        // `Interrupted` (which `copy_with_progress` would retry/spin on).
+        let io_err = match err {
+            ArchiveError::Io(e) => e,
+            ref other => {
+                unreachable!("expected ArchiveError::Io for cancel, got {other:?}")
+            }
+        };
+        assert_eq!(
+            io_err.kind(),
+            std::io::ErrorKind::Other,
+            "cancel must be terminal `Other`, got {io_err}"
         );
         assert!(!archive_path.exists());
     }
