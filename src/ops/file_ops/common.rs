@@ -73,13 +73,13 @@ pub(super) fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
 /// Checks if `child` is lexically contained within `parent` after canonicalization.
 ///
 /// Canonicalization failures (e.g. a broken symlink in an intermediate path
-/// component) are treated as "not contained" rather than propagated: a legal
-/// move should not be blocked just because a nearby path cannot be resolved.
-/// The OS will reject an actually-invalid move downstream.
+/// component) are treated as "not contained" (`Ok(false)`) rather than
+/// propagated: a legal move should not be blocked just because a nearby path
+/// cannot be resolved. The OS will reject an actually-invalid move downstream.
 ///
-/// Note: errors are wrapped via `format!` which drops the `Error::source()` chain.
-/// This is an accepted limitation of the `io::Result` error model used throughout
-/// the project; a custom error type would be needed to preserve the full chain.
+/// Because canonicalize failures map to `Ok(false)`, this function never returns
+/// `Err` in practice; the `io::Result` wrapper is retained for call-site
+/// uniformity with the other path helpers in this module.
 pub(super) fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
     let Some(canonical_parent) = canonicalize_existing_path(parent).ok() else {
         return Ok(false);

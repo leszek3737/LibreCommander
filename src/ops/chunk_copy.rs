@@ -330,7 +330,7 @@ fn preserve_permissions(_dest: &Path, _metadata: &fs::Metadata) -> io::Result<()
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -705,14 +705,17 @@ mod tests {
 
     // Regression: a FIFO as the copy source must be rejected, not opened.
     // `File::open` on a FIFO blocks indefinitely; the pre-open `symlink_metadata`
-    // guard rejects it before any open() can hang. We run under a timeout so a
-    // regression (open-then-check) fails the test instead of hanging CI.
+    // guard rejects it before any open() can hang. The copy runs on a worker
+    // thread and the result is read with a bounded `recv_timeout`: a regression
+    // (open-then-check) hits the timeout, cancels the worker, and fails the test
+    // deterministically instead of hanging the whole test binary.
     #[cfg(unix)]
     #[test]
     fn copy_rejects_fifo_source_without_hanging() {
         use std::os::unix::fs::FileTypeExt;
         use std::process::Command;
-        use std::time::{Duration, Instant};
+        use std::thread;
+        use std::time::Duration;
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let fifo = dir.path().join("pipe");
@@ -733,16 +736,30 @@ mod tests {
         );
 
         let dest = dir.path().join("dest");
-        let (tx, _) = mpsc::channel();
-        let cancel = AtomicBool::new(false);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let result = copy_with_progress(&fifo, &dest, &tx, &cancel, false);
-        assert!(
-            Instant::now() < deadline,
-            "copy did not hang on FIFO (regression)"
-        );
-        let err = result.expect_err("FIFO source must be rejected");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(!dest.exists(), "no partial dest written");
+        let (progress_tx, _) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let dest_c = dest.clone();
+        let cancel_c = cancel.clone();
+        thread::spawn(move || {
+            let r = copy_with_progress(&fifo, &dest_c, &progress_tx, &cancel_c, false);
+            let _ = result_tx.send(r);
+        });
+
+        match result_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Err(e)) => {
+                assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+                assert!(!dest.exists(), "no partial dest written");
+            }
+            Ok(Ok(n)) => panic!("FIFO source was copied ({n} bytes) instead of rejected"),
+            Err(_) => {
+                // ponytail: detach the worker on timeout — set cancel to release
+                // any future open() rather than join()ing a blocked thread (which
+                // would itself hang). The panic fails the test; the process exits.
+                cancel.store(true, Ordering::SeqCst);
+                panic!("copy hung on FIFO source (regression: pre-open guard missing)");
+            }
+        }
     }
 }
