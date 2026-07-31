@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use memchr::{memchr, memmem};
 
@@ -16,7 +16,6 @@ use crate::ops::search::{
     MAX_CONTENT_FILE_BYTES, MAX_CONTENT_LINE_BYTES, MAX_CONTENT_RESULTS, MAX_SEARCH_DEPTH,
     MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome, TruncationReason,
 };
-use std::sync::atomic::Ordering;
 
 /// A content-search hit: the file it was found in, the 1-based line number, and
 /// the matched line text. The path is an [`Arc`] so a file with many matches

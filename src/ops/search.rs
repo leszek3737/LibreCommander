@@ -2,15 +2,10 @@
 //!
 //! Full file search by name pattern or content.
 
-#[path = "search/content.rs"]
 mod content;
-#[path = "search/model.rs"]
 mod model;
-#[path = "search/name.rs"]
 mod name;
-#[path = "search/pattern.rs"]
 mod pattern;
-#[path = "search/walk.rs"]
 mod walk;
 
 pub use content::search_content;

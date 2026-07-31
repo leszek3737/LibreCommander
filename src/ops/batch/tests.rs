@@ -738,7 +738,6 @@ fn batch_move_cancel_reports_canceled() {
         cancel.store(true, Ordering::Relaxed);
     };
     let sources = vec![src_dir.path().join("a.txt")];
-    let _sizes = helpers::path_sizes(&sources, None);
     let action_label = "Move";
 
     let report = execute_batch_generic(

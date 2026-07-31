@@ -14,6 +14,10 @@ use super::{
 use crate::debug_log;
 use crate::ops::helpers::cleanup_file as cleanup_temp_file;
 
+/// Upper bound on entries written into a created archive. Intentionally equal
+/// to `super::MAX_LIST_ENTRIES` (100_000): the create and list caps are kept in
+/// lockstep so a user-created archive always fits a listing. Mirrored in
+/// `zip::MAX_CREATE_ENTRIES`; both must track the list cap.
 const MAX_CREATE_ENTRIES: usize = 100_000;
 
 /// Write adapter that aborts once cumulative output exceeds

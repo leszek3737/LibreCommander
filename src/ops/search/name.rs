@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs::Metadata;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::app::types::FileEntry;
 use crate::fs::reader::{file_info_from_metadata, get_file_info};
@@ -13,7 +13,6 @@ use crate::ops::search::walk::{
 use crate::ops::search::{
     MAX_SEARCH_DEPTH, MAX_SEARCH_ITEMS, SearchError, SearchErrorKind, SearchOutcome,
 };
-use std::sync::atomic::Ordering;
 
 /// Initial capacity for the visited inode set. Most directories contain well under
 /// 256 entries; this avoids reallocations for typical workloads while staying small.
@@ -112,7 +111,10 @@ fn search_files_recursive(
         // For a plain directory `entry.metadata()` (lstat) is enough and is
         // reused for FileEntry + cycle detection. For a symlink we follow
         // once via `fs::metadata` and only recurse when the target is a dir.
-        let plain_dir = recursive && file_type.is_dir() && !file_type.is_symlink();
+        // `FileType::is_dir()` returns false for symlinks on std::fs, so the
+        // bare `is_dir()` check already excludes symlinked dirs — the redundant
+        // `!is_symlink()` that guarded it has been removed.
+        let plain_dir = recursive && file_type.is_dir();
         let dir_meta: Option<io::Result<Metadata>> = plain_dir.then(|| entry.metadata());
 
         // Whether this entry needs its path allocated (for a match result or

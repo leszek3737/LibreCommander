@@ -116,6 +116,11 @@ impl MoveKind {
 ///   change atomically.
 /// - On case-sensitive filesystems, `dest` metadata lookup fails (target does
 ///   not exist), so the function proceeds as a normal move.
+///
+/// Test-only convenience wrapper around `move_entry_impl` that synthesizes a
+/// dummy progress channel and an always-clear cancel token. Gated `#[cfg(test)]`
+/// so the only public entry point for callers is `move_entry_with_progress`;
+/// `pub` visibility is required for the integration tests that link against it.
 #[cfg(test)]
 pub fn move_entry(src: &Path, dest: &Path, overwrite: bool) -> io::Result<()> {
     let cancel = AtomicBool::new(false);

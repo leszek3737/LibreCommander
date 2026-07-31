@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::fs::{self};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
