@@ -8,10 +8,15 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     permissions:
       contents: read
     strategy:
@@ -46,6 +51,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$TARGET"
+        shell: bash
 
       - name: Package
         env:
@@ -72,6 +78,7 @@ jobs:
     name: GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

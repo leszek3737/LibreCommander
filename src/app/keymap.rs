@@ -660,6 +660,28 @@ mod tests {
         }
     }
 
+    /// `build_help_message` emits a section header only on mode change, so it
+    /// silently assumes KEYBINDINGS is pre-grouped by mode. This test fails if
+    /// a binding is added out of order, preventing duplicated/interspersed
+    /// mode headers in the help output.
+    #[test]
+    fn keybindings_are_grouped_by_mode() {
+        let mut seen_modes: Vec<&'static str> = Vec::new();
+        for b in KEYBINDINGS {
+            if !seen_modes.contains(&b.mode) {
+                seen_modes.push(b.mode);
+            } else {
+                assert!(
+                    seen_modes.last() == Some(&b.mode),
+                    "Binding for mode {:?} ({}) appears after a different mode — \
+                     KEYBINDINGS must be grouped by mode",
+                    b.mode,
+                    b.key
+                );
+            }
+        }
+    }
+
     #[test]
     fn all_app_modes_have_keymap_or_documented_fallback() {
         let msg = build_help_message();

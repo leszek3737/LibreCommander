@@ -15,8 +15,7 @@ mod tests;
 
 // --- Re-exports -----------------------------------------------------------
 // Grouped by shape: data types (structs/enums) first, then free utility
-// functions. WS-E debt: this is a flat ~30-symbol facade; a later pass could
-// split it into per-concern submodule facades if the surface keeps growing.
+// functions.
 
 // State containers & aggregates (AppState plus its extracted sub-states).
 pub use app_state::{AppState, InputState, InteractionState, TreeState, UiState};
@@ -51,6 +50,7 @@ pub use text_input::TextInput;
 // callers use `FileEntry::display_permissions_raw` directly.
 pub use file_entry::{compute_category, format_size, format_time};
 
-// `sanitize_for_display` is only needed by test helpers.
+// `sanitize_for_display` is used by test helpers and the production display
+// path (e.g. non-UTF-8 filename rendering).
 #[cfg(test)]
 pub(crate) use file_entry::sanitize_for_display;

@@ -133,8 +133,9 @@ mod tests {
     // Guards the hand-maintained `CompareMode::ALL` against drift. The inner
     // `match` is exhaustive, so adding a new `CompareMode` variant breaks
     // compilation here until the author updates both the match and `ALL`; the
-    // length assertion then catches a variant that was added to the enum but
-    // forgotten in the array (or vice versa).
+    // length assertion catches a variant added to the enum but forgotten in
+    // the array (or vice versa). (`std::mem::variant_count` would be ideal but
+    // is still unstable as of Rust 1.95.)
     #[test]
     fn compare_mode_all_is_exhaustive_and_in_order() {
         for (i, variant) in CompareMode::ALL.iter().enumerate() {

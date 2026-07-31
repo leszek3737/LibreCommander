@@ -28,9 +28,7 @@ pub struct InputState {
 /// Transient presentation state: status line, menus, pickers, the directory
 /// hotlist, user-menu data, the deferred action awaiting confirmation, and the
 /// viewer spinner animation.
-///
-/// `Default` is implemented by hand because [`MenuSource`] has no `Default`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct UiState {
     pub status_message: Option<String>,
     pub menu_selected: usize,
@@ -63,31 +61,6 @@ pub struct UiState {
     pub pending_action: Option<PendingAction>,
     pub viewer_spinner_frame: u64,
     pub viewer_spinner_last_tick: Option<Instant>,
-}
-
-impl Default for UiState {
-    fn default() -> Self {
-        Self {
-            status_message: None,
-            menu_selected: 0,
-            menu_item_selected: 0,
-            picker_selected: 0,
-            user_menu_entries: Vec::new(),
-            user_menu_source: MenuSource::Global,
-            cached_hotlist_strings: Vec::new(),
-            cached_user_menu_strings: Vec::new(),
-            cached_history_strings: Vec::new(),
-            pending_menu_command: None,
-            pending_hotlist_delete: None,
-            pending_archive_list: None,
-            pending_tree_build: None,
-            menu_restore_panel: None,
-            directory_hotlist: Vec::new(),
-            pending_action: None,
-            viewer_spinner_frame: 0,
-            viewer_spinner_last_tick: None,
-        }
-    }
 }
 
 /// Directory-tree browser view state (the `DirectoryTree` mode).
