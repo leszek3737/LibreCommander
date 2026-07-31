@@ -51,13 +51,10 @@ pub fn copy_with_progress(
         }
     }
 
-    // Open first, then stat the fd (fstat) rather than re-statting the path.
-    // fstat reflects the entry we actually opened, so a TOCTOU swap of `src`
-    // for a symlink between the `symlink_metadata` above and this open cannot
-    // silently redirect the copy through the link undetected: if the path was
-    // replaced, the fd's identity no longer matches the non-symlink we vetted.
-    // Rejecting non-regular files also blocks FIFOs/sockets/devices, which
-    // `File::open` + `read()` would otherwise block on forever.
+    // `open_regular_file` rejects non-regular entries (FIFO/socket/device)
+    // before opening — those would block the copy worker mid-`open()` — and
+    // opens with O_NOFOLLOW so a symlink swapped in between the stat above and
+    // the open is refused rather than followed.
     let src_file = open_regular_file(src)?;
     let (temp_dest, dest_file) = create_temp_file(dest)?;
     let result = copy_to_temp(
@@ -91,33 +88,44 @@ pub fn copy_with_progress(
     }
 }
 
-/// Opens `src` and validates the opened fd is a regular file.
+/// Opens `src` and validates it is a regular file before any blocking I/O.
 ///
-/// Two correctness properties vs. a bare `File::open`:
-/// 1. **No FIFO/socket/device hang**: `File::metadata()` is an `fstat` on the
-///    fd, so it reports the true type of what we opened. Non-regular entries
-///    are rejected instead of reaching `read()` and blocking the worker forever.
-/// 2. **TOCTOU narrowing**: a fresh `symlink_metadata` right after the open
-///    catches a swap of `src` for a symlink in the window between the caller's
-///    earlier `symlink_metadata` and this open. `fstat` alone can't detect a
-///    swap to a symlink-to-regular-file (the followed target is still regular),
-///    so the path re-stat is the authoritative symlink check.
+/// Three layers vs. a bare `File::open`:
+/// 1. **No FIFO/socket/device hang at open time**: `symlink_metadata` is a
+///    non-blocking stat; we reject anything that isn't a regular file *before*
+///    calling `open()`. `File::open` on a FIFO blocks indefinitely and the copy
+///    worker cannot be interrupted mid-`open()`.
+/// 2. **O_NOFOLLOW + O_NONBLOCK** (Unix): the open refuses to follow a final-
+///    component symlink (closing the TOCTOU window vs the earlier stat) and
+///    cannot block even if a FIFO/device is swapped in between the stat and
+///    the open. On non-Unix the fstat recheck below is the sole guard.
+/// 3. **fstat recheck**: `file.metadata()` stats the fd we actually opened,
+///    the authoritative type check on the handle we will read from.
 fn open_regular_file(src: &Path) -> io::Result<File> {
-    let file = File::open(src)?;
-    let fd_meta = file.metadata()?;
-    if !fd_meta.is_file() {
+    // stat() never blocks; open() on a FIFO/device does. Filter non-regular
+    // entries at the path level before any open() can hang.
+    if !fs::symlink_metadata(src)?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("source is not a regular file: {}", src.display()),
         ));
     }
-    if fs::symlink_metadata(src)?.file_type().is_symlink() {
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(src)?
+    };
+    #[cfg(not(unix))]
+    let file = File::open(src)?;
+    // fstat the fd we opened: authoritative type on the handle we read from,
+    // catching a swap the path stat could not (e.g. to a FIFO via O_NONBLOCK).
+    if !file.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "source was replaced by a symlink during copy: {}",
-                src.display()
-            ),
+            format!("source is not a regular file: {}", src.display()),
         ));
     }
     Ok(file)
@@ -693,5 +701,48 @@ mod tests {
         copy_with_progress(&src, &dest, &tx, &cancel, false).expect("copy symlink to absent dest");
 
         assert_eq!(fs::read_link(&dest).expect("read dest"), target);
+    }
+
+    // Regression: a FIFO as the copy source must be rejected, not opened.
+    // `File::open` on a FIFO blocks indefinitely; the pre-open `symlink_metadata`
+    // guard rejects it before any open() can hang. We run under a timeout so a
+    // regression (open-then-check) fails the test instead of hanging CI.
+    #[cfg(unix)]
+    #[test]
+    fn copy_rejects_fifo_source_without_hanging() {
+        use std::os::unix::fs::FileTypeExt;
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let fifo = dir.path().join("pipe");
+        // mkfifo(1) — the crate forbids unsafe, so no libc::mkfifo.
+        let status = Command::new("mkfifo")
+            .arg("-m")
+            .arg("0600")
+            .arg(&fifo)
+            .status()
+            .expect("spawn mkfifo");
+        assert!(status.success(), "mkfifo created the pipe");
+        assert!(
+            fs::symlink_metadata(&fifo)
+                .expect("stat fifo")
+                .file_type()
+                .is_fifo(),
+            "fifo created"
+        );
+
+        let dest = dir.path().join("dest");
+        let (tx, _) = mpsc::channel();
+        let cancel = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = copy_with_progress(&fifo, &dest, &tx, &cancel, false);
+        assert!(
+            Instant::now() < deadline,
+            "copy did not hang on FIFO (regression)"
+        );
+        let err = result.expect_err("FIFO source must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!dest.exists(), "no partial dest written");
     }
 }

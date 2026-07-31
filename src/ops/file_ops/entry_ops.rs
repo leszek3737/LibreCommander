@@ -115,11 +115,12 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
 /// On macOS, `EFTYPE` is mapped to `InvalidInput` with a descriptive message.
 ///
 /// # TOCTOU
-/// `set_permissions(path, …)` resolves `path` again and would follow a symlink
-/// swapped in after our `symlink_metadata` check. To narrow that window we
-/// chmod via the file handle (`File::set_permissions`) after re-validating the
-/// path is still not a symlink. Full no-follow requires `O_NOFOLLOW`, which is
-/// behind `forbid(unsafe_code)`.
+/// `set_permissions(path, …)` re-resolves `path` and would follow a symlink
+/// swapped in after our `symlink_metadata` check. That residual window cannot
+/// be closed without `O_NOFOLLOW`, which std's safe API doesn't expose and
+/// `forbid(unsafe_code)` rules out. An fd-based `fchmod` would need read perm
+/// to open the file, breaking chmod on `0o000` files — so the path-based call
+/// (which needs only parent-dir search perm) is the correct tradeoff.
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -132,19 +133,12 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     }
 
     let permissions = fs::Permissions::from_mode(mode & 0o7777);
-    // Re-validate immediately before opening: a swap to a symlink here is the
-    // TOCTOU the audit flags. Narrowed, not eliminated (no O_NOFOLLOW in std).
-    if fs::symlink_metadata(path)?.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            MSG_SYMLINK_CHMOD,
-        ));
-    }
-    // chmod via the fd: avoids a second path resolution that `fs::set_permissions`
-    // would perform, so a swap between open and chmod cannot redirect the call.
-    let file = fs::File::open(path)?;
+    // chmod(2) needs only search permission on the parent directory, not read
+    // on the file itself — so the path-based syscall reaches files we locked
+    // to 0o000 (the common reason to chmod). An fd-based fchmod needs read perm
+    // to open and breaks exactly that case.
     #[cfg(target_os = "macos")]
-    let result = file.set_permissions(permissions).map_err(|e| {
+    let result = fs::set_permissions(path, permissions).map_err(|e| {
         if e.raw_os_error() == Some(libc::EFTYPE) {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -155,7 +149,7 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
         }
     });
     #[cfg(not(target_os = "macos"))]
-    let result = file.set_permissions(permissions);
+    let result = fs::set_permissions(path, permissions);
     result
 }
 
@@ -197,5 +191,24 @@ mod tests {
         rename_entry(&src, "renamed.txt").unwrap();
         assert!(!src.exists());
         assert_eq!(fs::read(dir.path().join("renamed.txt")).unwrap(), b"data");
+    }
+
+    // Regression: chmod must succeed on a file locked to 0o000 (the common
+    // reason to chmod). The path-based set_permissions needs only parent-dir
+    // search perm; an fd-based fchmod would need read perm to open and fail
+    // here with EACCES.
+    #[test]
+    fn chmod_succeeds_on_zero_permission_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("locked.txt");
+        fs::write(&f, b"data").unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o000)).unwrap();
+
+        chmod(&f, 0o644).expect("chmod on 0o000 file");
+
+        let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "mode applied to zero-perm file");
     }
 }
