@@ -138,20 +138,11 @@ fn search_files_recursive(
         } else if recursive && file_type.is_symlink() {
             // Follow the symlink once; recurse only when the target is a dir
             // and its inode is new.
-            match std::fs::metadata(&entry_path) {
-                Ok(meta) if meta.is_dir() => {
-                    if should_recurse(Ok(meta), ctx.visited) {
-                        search_files_recursive(
-                            &entry_path,
-                            pattern,
-                            recursive,
-                            depth + 1,
-                            ctx,
-                            scratch,
-                        );
-                    }
-                }
-                _ => {}
+            if let Ok(meta) = std::fs::metadata(&entry_path)
+                && meta.is_dir()
+                && should_recurse(Ok(meta), ctx.visited)
+            {
+                search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
             }
         }
     }

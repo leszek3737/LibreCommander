@@ -40,7 +40,12 @@ pub fn search_content(
         return outcome;
     }
     // Single-file path: search it directly instead of silently returning.
-    if path.is_file() {
+    // Only a real (non-symlink) file — search_in_file uses O_NOFOLLOW.
+    if path.is_file()
+        && !path
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+    {
         let pattern_bytes: Vec<u8> = if !case_sensitive {
             pattern.to_lowercase().into_bytes()
         } else {
