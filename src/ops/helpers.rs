@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -23,10 +24,10 @@ pub(crate) fn action_label(action: &PendingAction) -> &'static str {
 
 /// Returns `true` if `child` is a proper descendant of `parent`.
 ///
-/// Note: an empty `parent` matches any non-equal child because
-/// every path starts with the empty component sequence.
+/// An empty `parent` matches every path via `starts_with`, which is never a
+/// meaningful descendant check — return `false` to avoid false positives.
 pub(crate) fn lexical_path_starts_with(parent: &Path, child: &Path) -> bool {
-    child != parent && child.starts_with(parent)
+    !parent.as_os_str().is_empty() && child != parent && child.starts_with(parent)
 }
 
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
@@ -39,9 +40,11 @@ pub(crate) fn get_inode_key(metadata: &std::fs::Metadata) -> Option<(u64, u64)> 
 }
 
 #[cfg(not(unix))]
-/// Platforms without STABLE inode-like identifiers (Windows'
-/// file_index()/volume_serial_number() need the unstable `windows_by_handle`
-/// feature, rust-lang/rust#63010): cycle detection is skipped.
+/// Platforms without stable inode-like identifiers (Windows'
+/// `file_index()`/`volume_serial_number()` need the unstable `windows_by_handle`
+/// feature, rust-lang/rust#63010): cycle detection is skipped entirely.
+/// [`MAX_RECURSION_DEPTH`] is the sole backstop against runaway recursion via
+/// junction points or deep symlink chains on these platforms.
 #[inline]
 pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
     None
@@ -84,10 +87,16 @@ pub(crate) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
     }
 }
 
-fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) -> io::Result<u64> {
+fn dir_size_rec(
+    path: &Path,
+    depth: usize,
+    visited: &mut HashSet<(u64, u64)>,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<u64> {
     if depth >= MAX_RECURSION_DEPTH {
         debug_log!(
-            "dir_size: depth limit ({MAX_RECURSION_DEPTH}) reached at {}",
+            "dir_size: depth limit ({MAX_RECURSION_DEPTH}) reached at {} — \
+             size is incomplete for this subtree",
             path.display()
         );
         return Ok(0);
@@ -101,6 +110,12 @@ fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) ->
         }
     };
     for entry in entries {
+        // Check cancellation before each entry — the scan may traverse huge
+        // trees and MUST be abortable (AGENTS.md: ops must be cancellable).
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            debug_log!("dir_size: cancelled at {}", path.display());
+            return Ok(total);
+        }
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
@@ -135,7 +150,7 @@ fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) ->
                 );
                 continue;
             }
-            let child = dir_size_rec(&entry_path, depth + 1, visited).unwrap_or_else(|e| {
+            let child = dir_size_rec(&entry_path, depth + 1, visited, cancel).unwrap_or_else(|e| {
                 debug_log!("dir_size: subdir failed {}: {e}", entry_path.display());
                 0
             });
@@ -153,21 +168,26 @@ fn dir_size_rec(path: &Path, depth: usize, visited: &mut HashSet<(u64, u64)>) ->
 /// logged and treated as size 0 so that a single unreadable child does not
 /// abort the entire scan.
 ///
-/// Symlinks are intentionally skipped to avoid cycles.
-pub(crate) fn dir_size(path: &Path) -> io::Result<u64> {
+/// Symlinks are intentionally skipped to avoid cycles. The scan checks the
+/// `cancel` flag between entries and returns the partial total accumulated so
+/// far when cancelled.
+///
+/// **Blocking:** walks the directory tree synchronously on the caller's thread.
+/// Must be invoked from `job_runner`, not the event loop.
+pub(crate) fn dir_size(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<u64> {
     let mut visited = HashSet::new();
     seed_visited_dir(path, &mut visited);
-    dir_size_rec(path, 0, &mut visited)
+    dir_size_rec(path, 0, &mut visited, cancel)
 }
 
 /// Compute the size of a single path (file or directory).
 ///
 /// Symlinks and empty files both report size 0 and are indistinguishable
 /// from the return value alone.
-pub(crate) fn path_size(path: &Path) -> io::Result<u64> {
+pub(crate) fn path_size(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<u64> {
     match path.symlink_metadata() {
         Ok(meta) if meta.file_type().is_symlink() => Ok(0),
-        Ok(meta) if meta.is_dir() => dir_size(path),
+        Ok(meta) if meta.is_dir() => dir_size(path, cancel),
         Ok(meta) => Ok(meta.len()),
         Err(e) => {
             debug_log!("path_size: metadata failed for {}: {e}", path.display());
@@ -179,8 +199,8 @@ pub(crate) fn path_size(path: &Path) -> io::Result<u64> {
 /// Size of a single path, logging and returning 0 on failure so a batch can
 /// keep making progress past one unreadable entry.
 #[inline]
-fn path_size_or_zero(path: &Path) -> u64 {
-    path_size(path).unwrap_or_else(|e| {
+fn path_size_or_zero(path: &Path, cancel: Option<&AtomicBool>) -> u64 {
+    path_size(path, cancel).unwrap_or_else(|e| {
         debug_log!("path_sizes: using 0 for {}: {e}", path.display());
         0
     })
@@ -194,9 +214,10 @@ fn path_size_or_zero(path: &Path) -> u64 {
 /// **Blocking pre-scan:** walks every path's subtree synchronously on the
 /// caller's thread before returning. Used up-front by batch operations to
 /// size the total byte budget for progress reporting; large trees stall the
-/// caller until the walk completes.
-pub(crate) fn path_sizes(paths: &[PathBuf]) -> Vec<u64> {
-    paths.iter().map(|p| path_size_or_zero(p)).collect()
+/// caller until the walk completes. The `cancel` flag is checked between
+/// entries in each subtree so the pre-scan can be aborted mid-walk.
+pub(crate) fn path_sizes(paths: &[PathBuf], cancel: Option<&AtomicBool>) -> Vec<u64> {
+    paths.iter().map(|p| path_size_or_zero(p, cancel)).collect()
 }
 
 pub(crate) fn cleanup_file(path: &Path) {
@@ -234,7 +255,7 @@ mod tests {
         fs::create_dir(dir.join("sub")).unwrap();
         fs::write(dir.join("sub").join("nested.txt"), b"12345").unwrap();
 
-        let size = dir_size(&dir).unwrap();
+        let size = dir_size(&dir, None).unwrap();
         assert_eq!(size, 18);
     }
 
@@ -252,7 +273,7 @@ mod tests {
         fs::write(linked.join("outside.txt"), b"outside").unwrap();
         symlink(&linked, dir.join("symlink_dir")).unwrap();
 
-        let size = dir_size(&dir).unwrap();
+        let size = dir_size(&dir, None).unwrap();
         assert_eq!(size, 3);
     }
 
@@ -273,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_dir_size_nonexistent() {
-        let result = dir_size(Path::new("/tmp/lc_nonexistent_dir_xyz_12345"));
+        let result = dir_size(Path::new("/tmp/lc_nonexistent_dir_xyz_12345"), None);
         assert!(result.is_err());
     }
 
@@ -283,7 +304,25 @@ mod tests {
         let child = Path::new("/foo/bar/baz");
         assert!(lexical_path_starts_with(parent, child));
         assert!(!lexical_path_starts_with(parent, parent));
-        assert!(lexical_path_starts_with(Path::new(""), child));
+        assert!(!lexical_path_starts_with(Path::new(""), child));
+    }
+
+    #[test]
+    fn test_dir_size_cancellable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("cancel_dir");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("a.txt"), b"aaa").unwrap();
+        fs::write(dir.join("b.txt"), b"bbb").unwrap();
+
+        let cancel = AtomicBool::new(true);
+        let size = dir_size(&dir, Some(&cancel)).unwrap();
+        // Pre-set cancel flag → returns 0 immediately after first check.
+        assert_eq!(size, 0);
+
+        let cancel = AtomicBool::new(false);
+        let size = dir_size(&dir, Some(&cancel)).unwrap();
+        assert_eq!(size, 6);
     }
 
     #[test]
@@ -327,7 +366,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("data.txt");
         fs::write(&file, b"hello").unwrap();
-        assert_eq!(path_size(&file).unwrap(), 5);
+        assert_eq!(path_size(&file, None).unwrap(), 5);
     }
 
     #[test]
@@ -336,6 +375,6 @@ mod tests {
         let dir = tmp.path().join("sizedir");
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("f.txt"), b"xyz").unwrap();
-        assert_eq!(path_size(&dir).unwrap(), 3);
+        assert_eq!(path_size(&dir, None).unwrap(), 3);
     }
 }

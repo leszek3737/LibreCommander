@@ -1,5 +1,3 @@
-#![allow(clippy::expect_used)]
-
 use super::*;
 use std::time::SystemTime;
 
@@ -61,7 +59,10 @@ fn assert_sort_order(
         },
     );
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names, expected);
+    assert_eq!(
+        names, expected,
+        "sort order mismatch for {mode:?} (dir_first={dir_first}, sensitive={sensitive})"
+    );
 }
 
 /// Assert `..` sorts first under `mode` regardless of direction or field.
@@ -670,8 +671,11 @@ fn test_ellipsis_first_all_modes() {
         sort_mode!(NaturalName, Desc),
         sort_mode!(Size, Asc),
         sort_mode!(Size, Desc),
+        sort_mode!(ModTime, Asc),
         sort_mode!(ModTime, Desc),
+        sort_mode!(Btime, Asc),
         sort_mode!(Btime, Desc),
+        sort_mode!(Extension, Asc),
         sort_mode!(Extension, Desc),
     ] {
         assert_ellipsis_first(mode);
@@ -922,4 +926,23 @@ fn test_sort_mtime_none_after_known() {
     );
     assert_eq!(entries[0].name, "known.txt");
     assert_eq!(entries[1].name, "unknown.txt");
+}
+
+#[test]
+fn test_sort_natural_name_non_ascii() {
+    // Non-ASCII leading chars must sort by byte value and still split on
+    // digits — ü (0xC3 0xBC) sorts after ASCII letters. Numerics within
+    // non-ASCII names compare by value, not bytewise.
+    assert_sort_order(
+        vec![
+            create_test_entry("apple.txt", false, 100, 1000),
+            create_test_entry("über1.txt", false, 100, 1000),
+            create_test_entry("über2.txt", false, 100, 1000),
+            create_test_entry("über10.txt", false, 100, 1000),
+        ],
+        sort_mode!(NaturalName, Asc),
+        false,
+        false,
+        &["apple.txt", "über1.txt", "über2.txt", "über10.txt"],
+    );
 }

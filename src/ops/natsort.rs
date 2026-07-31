@@ -1,8 +1,14 @@
 // A natural sort implementation in Rust.
 // Copyright (c) 2023, sxyazi.
 //
-// This is a port of the C version of Martin Pool's `strnatcmp.c`:
+// Inspired by Martin Pool's `strnatcmp.c`:
 // http://sourcefrog.net/projects/natsort/
+//
+// This is NOT a literal port of strnatcmp.c. Key deviation: when a text
+// segment is compared against a number segment (cross-variant), Text always
+// sorts before Num, so letter-leading names come first. strnatcmp.c compares
+// raw byte values left-to-right, which places digit-leading names (lower ASCII)
+// first. This deviation is intentional for this project's UX.
 //
 // Safe Rust adaptation for LibreCommander.
 
@@ -39,6 +45,11 @@ pub enum NatKeySegment {
     Num(SegData),
 }
 
+/// Strip leading ASCII `'0'` bytes, returning the significant digits.
+///
+/// An all-zero input (`"000"`) yields an empty slice, so two all-zero runs
+/// (`"0"` vs `"000"`) compare as numerically equal (both represent 0). The
+/// original digit bytes serve as a tiebreaker in [`NatKeySegment::cmp`].
 fn strip_leading_zeros(digits: &[u8]) -> &[u8] {
     let start = digits
         .iter()
@@ -54,15 +65,19 @@ impl Ord for NatKeySegment {
             (NatKeySegment::Num(a), NatKeySegment::Num(b)) => {
                 let as_ = a.as_slice();
                 let bs = b.as_slice();
-                // Leading-zero runs compare bytewise (stable total order).
-                let has_leading_zero = as_.first() == Some(&b'0') || bs.first() == Some(&b'0');
-                if has_leading_zero {
-                    as_.cmp(bs)
-                } else {
-                    let sa = strip_leading_zeros(as_);
-                    let sb = strip_leading_zeros(bs);
-                    sa.len().cmp(&sb.len()).then(sa.cmp(sb))
-                }
+                let sa = strip_leading_zeros(as_);
+                let sb = strip_leading_zeros(bs);
+                // Compare numeric value first: longer significant digit run
+                // wins, ties broken by the significant digits themselves.
+                // This correctly orders zero-padded vs non-padded numbers
+                // (e.g. "090" vs "50" → 90 > 50) regardless of padding.
+                sa.len()
+                    .cmp(&sb.len())
+                    .then(sa.cmp(sb))
+                    // Same numeric value (e.g. "7" vs "007"): use the original
+                    // digit string as a deterministic tiebreaker so that
+                    // shorter/zero-padded variants get a stable total order.
+                    .then(as_.cmp(bs))
             }
             (NatKeySegment::Text(_), NatKeySegment::Num(_)) => Ordering::Less,
             (NatKeySegment::Num(_), NatKeySegment::Text(_)) => Ordering::Greater,
@@ -131,21 +146,23 @@ mod tests {
         ];
         // Key-based order: text segments include spaces, so "pic" < "pic " and
         // zero-padded "picNN" runs sort before "pic N" spaced forms.
+        // Numeric value dominates, so pic2 < pic3 < pic4 < pic05 < pic100 <
+        // pic02000 (the old bytewise-leading-zero order was a bug).
         let words = [
             "fred",
             "jane",
             "pic01",
             "pic02",
             "pic02a",
-            "pic02000",
-            "pic05",
             "pic2",
             "pic3",
             "pic4",
+            "pic05",
             "pic100",
             "pic100a",
             "pic120",
             "pic121",
+            "pic02000",
             "pic 4 else",
             "pic 5",
             "pic 5 ",
@@ -154,8 +171,8 @@ mod tests {
             "pic   7",
             "tom",
             "x2-g8",
-            "x2-y08",
             "x2-y7",
+            "x2-y08",
             "x8-y8",
             "1-02",
             "1-2",
@@ -178,9 +195,12 @@ mod tests {
         let key_short = natsort_key(b"pic2", true);
         let key_long = natsort_key(b"pic02", true);
         let key_longer = natsort_key(b"pic02000", true);
+        // Same numeric value (2): original digit string breaks the tie.
+        // "02" < "2" bytewise (leading zero sorts first).
         assert_eq!(key_short.cmp(&key_long), Ordering::Greater);
         assert_eq!(key_long.cmp(&key_short), Ordering::Less);
-        assert!(key_short > key_longer);
+        // Different numeric values: 2 < 2000, regardless of zero padding.
+        assert!(key_short < key_longer);
         assert!(key_long < key_longer);
     }
 
@@ -340,5 +360,37 @@ mod tests {
         sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
         assert_eq!(sorted[0], "a📝");
         assert_eq!(sorted[1], "plain");
+    }
+
+    #[test]
+    fn test_mixed_zero_padded_and_unpadded() {
+        // The bug: leading-zero path used pure bytewise cmp so "090" < "50".
+        // After fix: numeric value compared first → 50 < 90.
+        let names = ["file090.txt", "file50.txt", "file9.txt"];
+        let mut sorted = names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(
+            sorted,
+            ["file9.txt", "file50.txt", "file090.txt"],
+            "numeric value must dominate, not bytewise leading-zero order"
+        );
+    }
+
+    #[test]
+    fn test_leading_digits_natural() {
+        // Names starting with digits (no text prefix).
+        let names = ["10abc", "2abc", "1abc"];
+        let mut sorted = names.to_vec();
+        sorted.sort_by_cached_key(|s| natsort_key(s.as_bytes(), true));
+        assert_eq!(sorted, ["1abc", "2abc", "10abc"]);
+    }
+
+    #[test]
+    fn test_leading_zero_tiebreak() {
+        // Same numeric value: original digit string is the tiebreaker.
+        // "7" > "007" because "7" > "0" bytewise (shorter/unpadded sorts last).
+        assert_eq!(cmp(b"file7", b"file007", true), Ordering::Greater);
+        assert_eq!(cmp(b"file007", b"file7", true), Ordering::Less);
+        assert_eq!(cmp(b"file007", b"file07", true), Ordering::Less);
     }
 }

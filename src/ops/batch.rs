@@ -450,7 +450,7 @@ where
     F: FnMut(&Path, &Path, &mut dyn FnMut(u64)) -> io::Result<()>,
 {
     let total = sources.len();
-    let sizes = helpers::path_sizes(sources);
+    let sizes = helpers::path_sizes(sources, cancel.as_deref());
     let mut state = BatchState {
         used_dests: HashSet::new(),
         bytes_done: 0,
@@ -666,7 +666,7 @@ fn batch_delete(
     let filtered = dedup_paths(paths);
 
     let total = filtered.len();
-    let sizes = helpers::path_sizes(&filtered);
+    let sizes = helpers::path_sizes(&filtered, cancel.as_deref());
     let bytes_total = sizes.iter().copied().fold(0, u64::saturating_add);
     let mut bytes_done = 0_u64;
 
@@ -763,7 +763,7 @@ fn batch_extract_archive(
     action_label: &'static str,
 ) -> BatchReport {
     let start_time = Instant::now();
-    let source_size = helpers::path_size(source).unwrap_or(0);
+    let source_size = helpers::path_size(source, cancel.as_deref()).unwrap_or(0);
     let cancel_token = effective_cancel(cancel);
 
     report_progress(
@@ -853,7 +853,7 @@ fn batch_create_archive(
     action_label: &'static str,
 ) -> BatchReport {
     let start_time = Instant::now();
-    let sizes = helpers::path_sizes(sources);
+    let sizes = helpers::path_sizes(sources, cancel.as_deref());
     let total_size = sizes.iter().copied().fold(0, u64::saturating_add);
     let cancel_token = effective_cancel(cancel);
 

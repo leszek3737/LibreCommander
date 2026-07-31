@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::app::types::{CompareMode, FileEntry, PanelState};
 
@@ -9,16 +9,19 @@ use crate::app::types::{CompareMode, FileEntry, PanelState};
 /// opposite directions the recorded values can differ by *just over* 2s for what
 /// is really the same modification, so an exact 2s bound would report a spurious
 /// difference. The extra 500ms absorbs that boundary rounding.
+// ponytail: FAT32-coupled constant is fine — the 2.5s ceiling covers all
+// common filesystem precisions without per-FS tuning.
 const MTIME_TOLERANCE: Duration = Duration::from_millis(2500);
 
-/// The PARENT_DIR (parent directory) pseudo-entry — ignored during comparison.
+/// Pseudo-entries — ignored during comparison.
 const PARENT_DIR: &str = "..";
+const CURRENT_DIR: &str = ".";
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 struct EntryMeta {
     is_dir: bool,
     size: u64,
-    mtime: Option<std::time::SystemTime>,
+    mtime: Option<SystemTime>,
 }
 
 fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
@@ -43,14 +46,17 @@ fn meta_matches(left: EntryMeta, right: EntryMeta, mode: CompareMode) -> bool {
 }
 
 fn entry_to_meta(entry: &FileEntry) -> EntryMeta {
+    // Symlinks are data (AGENTS.md): a symlink pointing at a directory must
+    // not be treated as one — its size/mtime should be compared like a file.
+    let is_dir = !entry.is_symlink() && entry.is_dir();
     EntryMeta {
-        is_dir: entry.is_dir(),
+        is_dir,
         size: entry.size(),
         mtime: entry.cha.mtime,
     }
 }
 
-fn mtime_matches(left: std::time::SystemTime, right: std::time::SystemTime) -> bool {
+fn mtime_matches(left: SystemTime, right: SystemTime) -> bool {
     // `duration_since` fails when the argument is in the future relative
     // to `self`.  The `left > right` / `right > left` guards above make
     // this logically impossible, but clock adjustments or filesystem
@@ -79,18 +85,29 @@ pub struct CompareReport {
 
 /// Compare two directory listings by file name and report the differences.
 ///
-/// Entries are matched by name (the `..` pseudo-entry is ignored). For names
-/// present on both sides, [`meta_matches`] decides whether they differ under the
-/// given [`CompareMode`]. The returned [`CompareReport`] carries the names to
-/// mark on each side plus the unique/differing counts.
+/// Entries are matched by name (the `.` and `..` pseudo-entries are ignored).
+/// For names present on both sides, [`meta_matches`] decides whether they
+/// differ under the given [`CompareMode`]. The returned [`CompareReport`] carries
+/// the names to mark on each side plus the unique/differing counts.
+///
+/// If duplicate names appear on either side (which should not happen in a real
+/// directory listing), the first occurrence on each side wins — consistent with
+/// the left-to-right iteration — so counts stay stable and predictable.
 pub fn compare_entries(
     left: &[FileEntry],
     right: &[FileEntry],
     mode: CompareMode,
 ) -> CompareReport {
+    // First-wins: `or_insert` keeps the first entry seen for a duplicate name,
+    // mirroring the left side's left-to-right iteration order.
     let mut right_meta: HashMap<&str, EntryMeta> = HashMap::with_capacity(right.len());
-    for entry in right.iter().filter(|e| e.name != PARENT_DIR) {
-        right_meta.insert(entry.name.as_str(), entry_to_meta(entry));
+    for entry in right
+        .iter()
+        .filter(|e| e.name != PARENT_DIR && e.name != CURRENT_DIR)
+    {
+        right_meta
+            .entry(entry.name.as_str())
+            .or_insert(entry_to_meta(entry));
     }
 
     let mut unique_left: usize = 0;
@@ -100,7 +117,10 @@ pub fn compare_entries(
     let mut right_to_mark: HashSet<String> = HashSet::with_capacity(right.len());
     let mut seen_right: HashSet<&str> = HashSet::with_capacity(right_meta.len());
 
-    for entry in left.iter().filter(|e| e.name != PARENT_DIR) {
+    for entry in left
+        .iter()
+        .filter(|e| e.name != PARENT_DIR && e.name != CURRENT_DIR)
+    {
         let name = entry.name.as_str();
         match right_meta.get(name) {
             None => {
@@ -151,6 +171,12 @@ pub fn apply_compare_to_panels(
     right_panel.recalculate_selection_stats();
 }
 
+/// Set the selection on every entry to match `marks`.
+///
+/// This performs a **full selection reset**: every entry's `selected` flag is
+/// unconditionally overwritten — entries not in `marks` are deselected,
+/// including any prior manual selection or marks from a previous compare with
+/// a different scope. Compare results fully replace the current selection.
 fn apply_marks(panel: &mut PanelState, marks: &HashSet<String>) {
     for entry in panel.listing.unfiltered_mut() {
         entry.selected = entry.name != PARENT_DIR && marks.contains(&entry.name);
@@ -242,6 +268,22 @@ mod tests {
         let left = vec![
             TestEntry::new(PARENT_DIR)
                 .path("/tmp/..")
+                .permissions(0o755)
+                .build(),
+        ];
+        let right = vec![];
+
+        let report = compare_entries(&left, &right, CompareMode::Quick);
+
+        assert_eq!(report.unique_left, 0);
+        assert!(report.left_marks.is_empty());
+    }
+
+    #[test]
+    fn dot_entries_are_ignored() {
+        let left = vec![
+            TestEntry::new(CURRENT_DIR)
+                .path("/tmp/.")
                 .permissions(0o755)
                 .build(),
         ];
@@ -475,6 +517,21 @@ mod tests {
         assert_eq!(report.differing, 0);
         assert_eq!(report.unique_left, 0);
         assert_eq!(report.unique_right, 0);
+        assert!(report.left_marks.is_empty());
+        assert!(report.right_marks.is_empty());
+    }
+
+    #[test]
+    fn duplicate_names_use_first_wins() {
+        // Duplicate names on the right: first occurrence wins (size 100, not 200).
+        let left = vec![entry("dup.txt", 100)];
+        let right = vec![entry("dup.txt", 100), entry("dup.txt", 200)];
+
+        let report = compare_entries(&left, &right, CompareMode::Size);
+
+        assert_eq!(report.unique_left, 0);
+        assert_eq!(report.unique_right, 0);
+        assert_eq!(report.differing, 0);
         assert!(report.left_marks.is_empty());
         assert!(report.right_marks.is_empty());
     }

@@ -217,7 +217,10 @@ fn sort_by_mod_time(entries: &mut [FileEntry], dir_first: bool, sensitive: bool,
     sort_with_direction(entries, asc, |e, asc| {
         (
             entry_group(e, dir_first),
-            directional(e.mtime(), asc),
+            // Present mtimes first, missing ones last — in both directions.
+            // `Reverse(is_some())` makes `Some` (true) rank ahead of `None`.
+            Reverse(e.cha.mtime.is_some()),
+            directional(e.cha.mtime, asc),
             NameSortKey::new(&e.name, sensitive),
         )
     });
