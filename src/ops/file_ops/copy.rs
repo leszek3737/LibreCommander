@@ -108,6 +108,19 @@ pub fn copy_dir_recursive_with_progress(
     overwrite: bool,
 ) -> io::Result<u64> {
     check_canceled(cancel)?;
+    // "Symlinks are data": if `src` is itself a symlink, refuse here so a
+    // direct caller cannot accidentally dereference it (fs::metadata /
+    // canonicalize below would otherwise follow the link and copy the target's
+    // contents instead of recreating the symlink). The batch layer classifies
+    // entries first and routes symlinks to copy_symlink, so this is
+    // defense-in-depth for direct callers.
+    let src_lstat = fs::symlink_metadata(src)?;
+    if src_lstat.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to recursively copy a symlink — copy the symlink itself instead",
+        ));
+    }
     validate_copy_targets(src, dest, overwrite)?;
     let ctx = CopyContext {
         progress_tx,

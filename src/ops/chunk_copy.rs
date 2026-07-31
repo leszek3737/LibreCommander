@@ -1,4 +1,5 @@
 use super::helpers::cleanup_file;
+use crate::debug_log;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -50,7 +51,11 @@ pub fn copy_with_progress(
         }
     }
 
-    let src_file = File::open(src)?;
+    // `open_regular_file` rejects non-regular entries (FIFO/socket/device)
+    // before opening — those would block the copy worker mid-`open()` — and
+    // opens with O_NOFOLLOW so a symlink swapped in between the stat above and
+    // the open is refused rather than followed.
+    let src_file = open_regular_file(src)?;
     let (temp_dest, dest_file) = create_temp_file(dest)?;
     let result = copy_to_temp(
         src_file,
@@ -67,10 +72,8 @@ pub fn copy_with_progress(
                 cleanup_file(&temp_dest);
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
-            // Timestamps are set on the temp file inside `copy_to_temp`, before
-            // this publish, so a metadata failure aborts before `dest` exists —
-            // never after a fully completed copy (which would report a spurious
-            // error and leave the batch to retry into an `AlreadyExists`).
+            // Metadata (perms/timestamps) is preserved best-effort inside
+            // `copy_to_temp` and never aborts a completed copy.
             if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
                 cleanup_file(&temp_dest);
                 return Err(err);
@@ -83,6 +86,49 @@ pub fn copy_with_progress(
             Err(err)
         }
     }
+}
+
+/// Opens `src` and validates it is a regular file before any blocking I/O.
+///
+/// Three layers vs. a bare `File::open`:
+/// 1. **No FIFO/socket/device hang at open time**: `symlink_metadata` is a
+///    non-blocking stat; we reject anything that isn't a regular file *before*
+///    calling `open()`. `File::open` on a FIFO blocks indefinitely and the copy
+///    worker cannot be interrupted mid-`open()`.
+/// 2. **O_NOFOLLOW + O_NONBLOCK** (Unix): the open refuses to follow a final-
+///    component symlink (closing the TOCTOU window vs the earlier stat) and
+///    cannot block even if a FIFO/device is swapped in between the stat and
+///    the open. On non-Unix the fstat recheck below is the sole guard.
+/// 3. **fstat recheck**: `file.metadata()` stats the fd we actually opened,
+///    the authoritative type check on the handle we will read from.
+fn open_regular_file(src: &Path) -> io::Result<File> {
+    // stat() never blocks; open() on a FIFO/device does. Filter non-regular
+    // entries at the path level before any open() can hang.
+    if !fs::symlink_metadata(src)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source is not a regular file: {}", src.display()),
+        ));
+    }
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(src)?
+    };
+    #[cfg(not(unix))]
+    let file = File::open(src)?;
+    // fstat the fd we opened: authoritative type on the handle we read from,
+    // catching a swap the path stat could not (e.g. to a FIFO via O_NONBLOCK).
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source is not a regular file: {}", src.display()),
+        ));
+    }
+    Ok(file)
 }
 
 /// Creates the temp destination file, regenerating its unique name on collision.
@@ -171,11 +217,25 @@ fn copy_to_temp(
     writer.flush()?;
     writer.sync_all()?;
 
-    preserve_permissions(temp_dest, metadata)?;
-    // Set timestamps on the temp file, before it is published, so a metadata
-    // failure surfaces while the copy is still uncommitted rather than after
-    // `dest` already holds the finished data.
-    super::file_ops::preserve_timestamps(temp_dest, metadata)?;
+    // Metadata preservation is best-effort once the data is fully written and
+    // synced. chmod/timestamp failures (FAT32/exFAT ENOTSUP, read-only FS,
+    // clock-range limits) must NOT discard a complete, durable copy — that
+    // trades real data for cosmetic attributes. A failed preserve surfaces as
+    // a spurious error AND deletes the finished temp, forcing a full retry.
+    // Logging keeps the signal without losing the copy. See audit findings
+    // chunk_copy #6 (set_modified) and #7 (set_permissions).
+    if let Err(e) = preserve_permissions(temp_dest, metadata) {
+        debug_log!(
+            "warning: failed to preserve permissions for {}: {e}",
+            temp_dest.display()
+        );
+    }
+    if let Err(e) = super::file_ops::preserve_timestamps(temp_dest, metadata) {
+        debug_log!(
+            "warning: failed to preserve timestamps for {}: {e}",
+            temp_dest.display()
+        );
+    }
 
     Ok(total_written)
 }
@@ -270,7 +330,7 @@ fn preserve_permissions(_dest: &Path, _metadata: &fs::Metadata) -> io::Result<()
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -641,5 +701,65 @@ mod tests {
         copy_with_progress(&src, &dest, &tx, &cancel, false).expect("copy symlink to absent dest");
 
         assert_eq!(fs::read_link(&dest).expect("read dest"), target);
+    }
+
+    // Regression: a FIFO as the copy source must be rejected, not opened.
+    // `File::open` on a FIFO blocks indefinitely; the pre-open `symlink_metadata`
+    // guard rejects it before any open() can hang. The copy runs on a worker
+    // thread and the result is read with a bounded `recv_timeout`: a regression
+    // (open-then-check) hits the timeout, cancels the worker, and fails the test
+    // deterministically instead of hanging the whole test binary.
+    #[cfg(unix)]
+    #[test]
+    fn copy_rejects_fifo_source_without_hanging() {
+        use std::os::unix::fs::FileTypeExt;
+        use std::process::Command;
+        use std::thread;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let fifo = dir.path().join("pipe");
+        // mkfifo(1) — the crate forbids unsafe, so no libc::mkfifo.
+        let status = Command::new("mkfifo")
+            .arg("-m")
+            .arg("0600")
+            .arg(&fifo)
+            .status()
+            .expect("spawn mkfifo");
+        assert!(status.success(), "mkfifo created the pipe");
+        assert!(
+            fs::symlink_metadata(&fifo)
+                .expect("stat fifo")
+                .file_type()
+                .is_fifo(),
+            "fifo created"
+        );
+
+        let dest = dir.path().join("dest");
+        let (progress_tx, _) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let dest_c = dest.clone();
+        let cancel_c = cancel.clone();
+        thread::spawn(move || {
+            let r = copy_with_progress(&fifo, &dest_c, &progress_tx, &cancel_c, false);
+            let _ = result_tx.send(r);
+        });
+
+        match result_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(Err(e)) => {
+                assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+                assert!(!dest.exists(), "no partial dest written");
+            }
+            Ok(Ok(n)) => panic!("FIFO source was copied ({n} bytes) instead of rejected"),
+            Err(_) => {
+                // ponytail: detach the worker on timeout — set cancel to release
+                // any future open() rather than join()ing a blocked thread (which
+                // would itself hang). The panic fails the test; the process exits.
+                cancel.store(true, Ordering::SeqCst);
+                panic!("copy hung on FIFO source (regression: pre-open guard missing)");
+            }
+        }
     }
 }

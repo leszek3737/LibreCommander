@@ -218,17 +218,67 @@ fn delete_dir_contents_impl(
         let entry_path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_symlink() {
-            remove_symlink(&entry_path)?;
+            // Idempotent: tolerate a benign race where the entry vanished
+            // between read_dir and the unlink (audit delete #2).
+            remove_symlink_idempotent(&entry_path)?;
         } else if file_type.is_dir() {
             delete_dir_contents_impl(&entry_path, cancel, depth + 1)?;
             check_optional_canceled(cancel)?;
-            fs::remove_dir(&entry_path)?;
+            // A new entry can appear between read_dir above and this remove_dir,
+            // surfacing as DirectoryNotEmpty. Retry by re-clearing and removing
+            // a bounded number of times before surfacing the error (audit delete #4).
+            remove_dir_retrying(&entry_path, cancel, depth)?;
         } else {
-            // unlink(2) handles all non-directory entries: regular files, sockets, FIFOs, block/char devices
-            fs::remove_file(&entry_path)?;
+            // unlink(2) handles all non-directory entries: regular files, sockets, FIFOs, block/char devices.
+            // Idempotent against a vanish race (audit delete #2).
+            remove_file_idempotent(&entry_path)?;
         }
     }
     Ok(())
+}
+
+/// Removes a file, treating `NotFound` as success (the entry already vanished).
+fn remove_file_idempotent(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Removes a symlink, treating `NotFound` as success.
+fn remove_symlink_idempotent(path: &Path) -> io::Result<()> {
+    match remove_symlink(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+const REMOVE_DIR_RETRIES: u32 = 3;
+
+/// `remove_dir` after a recursive clear can fail with DirectoryNotEmpty if a
+/// new entry is created between `read_dir` and `remove_dir`. Re-clear and retry
+/// a bounded number of times before surfacing the error.
+fn remove_dir_retrying(path: &Path, cancel: Option<&AtomicBool>, depth: usize) -> io::Result<()> {
+    let mut last_err = None;
+    for _ in 0..REMOVE_DIR_RETRIES {
+        match fs::remove_dir(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                // Re-clear anything that appeared, then loop to retry remove_dir.
+                delete_dir_contents_impl(path, cancel, depth + 1)?;
+                check_optional_canceled(cancel)?;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::other(format!(
+            "remove_dir_retrying exhausted {REMOVE_DIR_RETRIES} retries"
+        ))
+    }))
 }
 
 #[cfg(test)]

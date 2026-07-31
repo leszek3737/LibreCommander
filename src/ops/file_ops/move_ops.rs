@@ -10,6 +10,21 @@ use super::common::{
 use super::copy::{copy_dir_recursive_with_progress, copy_file_with_progress, copy_symlink};
 use super::delete::{delete_dir_recursive_cancelable, ensure_entry_not_critical};
 
+/// Detects a cross-device rename failure.
+///
+/// `ErrorKind::CrossesDevices` is the canonical signal, but some FUSE/NFS
+/// implementations surface EXDEV as `ErrorKind::Other`. Checking the raw OS
+/// error code for EXDEV (errno 18 on Linux/macOS) catches those cases without
+/// treating unrelated `Other` errors as cross-device (audit move_ops #7).
+fn is_cross_device_error(e: &io::Error) -> bool {
+    if e.kind() == io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    // ponytail: raw errno check; Linux/macOS EXDEV == 18. Windows has no EXDEV
+    // (cross-volume rename fails with a different code handled by callers).
+    e.raw_os_error() == Some(18)
+}
+
 #[derive(Clone, Copy)]
 enum MoveKind {
     Symlink,
@@ -67,6 +82,14 @@ impl MoveKind {
             // match the protection `delete_dir_recursive_cancelable` already gives
             // directories; otherwise a cross-device move fallback could unlink a
             // file/symlink in `/usr/bin`, `/etc`, … without any check.
+            //
+            // No `check_canceled` here for File/Symlink: a cross-device *overwrite*
+            // move reaches this point only after the copy replaced the original
+            // dest (point of no return). Aborting the source removal mid-move would
+            // leave two copies and a misleading "canceled" status. The directory
+            // branch recurses through delete_dir_recursive_cancelable which checks
+            // cancel at each level (audit move_ops #5 vs the overwrite contract in
+            // #2 — #2's data-safety semantics win).
             MoveKind::Symlink => {
                 ensure_entry_not_critical(src)?;
                 remove_any(src)
@@ -154,7 +177,7 @@ fn move_entry_impl(
 
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+        Err(e) if is_cross_device_error(&e) => {
             check_canceled(cancel)?;
             let kind = MoveKind::from_file_type(&src_meta.file_type());
             copy_then_remove_src(

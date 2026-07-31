@@ -511,7 +511,7 @@ fn format_summary_all_errors() {
         canceled: false,
         action_label: "Delete",
     };
-    assert_eq!(report.format_summary(), "Deleted failed: 2 error(s)");
+    assert_eq!(report.format_summary(), "Delete failed: 2 error(s)");
 }
 
 #[test]
@@ -522,10 +522,7 @@ fn format_summary_single_error() {
         canceled: false,
         action_label: "Copy",
     };
-    assert_eq!(
-        report.format_summary(),
-        "Copied failed: file.txt: not found"
-    );
+    assert_eq!(report.format_summary(), "Copy failed: file.txt: not found");
 }
 
 #[test]
