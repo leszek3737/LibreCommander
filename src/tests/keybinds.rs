@@ -240,6 +240,32 @@ fn alt_backspace_empty_history_does_nothing() {
 }
 
 #[test]
+fn alt_backspace_failure_preserves_history() {
+    // When the history target no longer exists, the history entry must be
+    // preserved (not consumed) so the user can recover.
+    let mut state = AppState::default();
+    let ghost = PathBuf::from("/this/does/not/exist/at/all");
+    state.left_panel.push_history(ghost.clone());
+    let orig_len = state.left_panel.history().len();
+    state.active_panel = ActivePanel::Left;
+
+    handle_alt_keys(&mut state, KeyCode::Backspace, VISIBLE_HEIGHT);
+
+    // History entry preserved — failure did not consume it.
+    assert_eq!(state.left_panel.history().len(), orig_len);
+    assert_eq!(state.left_panel.history().back(), Some(&ghost));
+    // A failure status was reported.
+    assert!(
+        state
+            .ui
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Failed to read")
+    );
+}
+
+#[test]
 fn alt_c_opens_quick_cd() {
     let mut state = AppState {
         active_panel: ActivePanel::Left,

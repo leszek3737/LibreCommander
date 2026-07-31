@@ -559,20 +559,24 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
         }
         KeyCode::Backspace => {
             let prev_dir_name = file_name_str(state.active_panel().path());
+            let prev_path = match state.active_panel_mut().history().back().cloned() {
+                Some(p) => p,
+                None => return,
+            };
+            // Set the path and let `refresh_panel` report the failure if the
+            // directory is gone. Consume the history entry only on success so
+            // a failed navigation doesn't destroy the history stack.
             let panel = state.active_panel_mut();
-            if let Some(prev_path) = panel.pop_history() {
-                // Skip the blocking `prev_path.is_dir()` stat: on network mounts
-                // it freezes the event thread, and it is also a TOCTOU. Instead
-                // set the path unconditionally and let `refresh_active` report
-                // the failure ("Failed to read ...") if the directory is gone.
-                panel.set_path(prev_path.clone());
-                panel.cursor = 0;
-                panel.scroll_offset = 0;
-                panel_ops::refresh_active(state);
-                if state.ui.status_message.is_none() {
-                    reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
-                    state.ui.status_message = Some(format!("cd to {}", prev_path.display()));
-                }
+            panel.set_path(prev_path.clone());
+            panel.cursor = 0;
+            panel.scroll_offset = 0;
+            let result = panel_ops::refresh_panel(state.active_panel_mut(), visible);
+            if result.is_none() {
+                state.active_panel_mut().pop_history();
+                reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
+                state.ui.status_message = Some(format!("cd to {}", prev_path.display()));
+            } else if let Some(msg) = result {
+                state.set_status(msg);
             }
         }
         KeyCode::Char(c) if ('1'..='9').contains(&c) => {
