@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use chrono::{DateTime, Local};
+use chrono::{Local, TimeZone};
 use unicode_width::UnicodeWidthStr;
 
 use crate::fs::cha::Cha;
@@ -109,12 +109,28 @@ pub fn format_size(size: u64) -> String {
 }
 
 pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
-    // `DateTime::from(SystemTime)` handles both pre- and post-epoch values
-    // (std's `duration_since(UNIX_EPOCH)` returns Err for pre-1970 mtimes,
-    // silently dropping them). Returns None if the value is outside chrono's
-    // representable range.
-    let dt: DateTime<Local> = modified.into();
-    Some(dt.format("%d-%m-%y %H:%M").to_string())
+    // Decompose to signed seconds so both pre- and post-epoch values convert
+    // without `DateTime::from(SystemTime)` (which `.expect()`s on out-of-range
+    // timestamps). `timestamp_opt` returns None outside chrono's range. The
+    // format is minute-precision, so sub-second nanos are irrelevant.
+    let secs = signed_epoch_secs(modified)?;
+    Local
+        .timestamp_opt(secs, 0)
+        .single()
+        .map(|dt| dt.format("%d-%m-%y %H:%M").to_string())
+}
+
+/// Signed seconds from the Unix epoch, handling both pre- and post-1970 and
+/// clamping out-of-i64 magnitudes to `i64::MAX` (which `timestamp_opt` then
+/// rejects, yielding the None fallback).
+fn signed_epoch_secs(t: SystemTime) -> Option<i64> {
+    match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_secs()).ok(),
+        Err(e) => {
+            let deficit = i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX);
+            Some(deficit.checked_neg()?)
+        }
+    }
 }
 
 pub fn format_time(modified: SystemTime) -> String {

@@ -209,18 +209,24 @@ fn tagged_name(path: &Path, active_dir: &Path) -> Result<String, String> {
     // tagged file from a different directory must NOT silently fall back to its
     // bare file_name(): a same-named file inside active_dir would cause the
     // command to operate on the wrong file.
-    path.strip_prefix(active_dir)
-        .ok()
-        .and_then(|p| p.to_str())
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            format!(
+    //
+    // The two failure causes need distinct messages: a non-UTF-8 path is a
+    // shell-quoting problem, while a prefix mismatch is a wrong-directory
+    // problem — conflating them hides the real cause from the user.
+    let relative = match path.strip_prefix(active_dir) {
+        Ok(p) if !p.as_os_str().is_empty() => p,
+        _ => {
+            return Err(format!(
                 "tagged path `{}` is not under the active directory `{}`",
                 path.display(),
                 active_dir.display()
-            )
-        })
+            ));
+        }
+    };
+    match relative.to_str() {
+        Some(s) => Ok(s.to_owned()),
+        None => Err(non_utf8_err()),
+    }
 }
 
 /// Parse the menu file content and return all entries.
@@ -651,11 +657,44 @@ mod tests {
             result.is_err(),
             "expected error for out-of-active-dir tagged path"
         );
+        let err = result.unwrap_err();
         assert!(
-            result
-                .unwrap_err()
-                .contains("not under the active directory"),
-            "error should explain the mismatch"
+            err.contains("not under the active directory"),
+            "error should explain the mismatch, got: {err}"
+        );
+        // A prefix mismatch must NOT be mislabeled as a UTF-8 problem.
+        assert!(
+            !err.contains("non-UTF-8"),
+            "prefix mismatch should not be reported as non-UTF-8, got: {err}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_subst_percent_t_distinguishes_non_utf8_from_prefix_mismatch() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        // A tagged path that IS under active_dir but whose relative name is not
+        // valid UTF-8 must report the UTF-8 cause, not the wrong-directory cause
+        // (the old code conflated the two under "not under the active directory").
+        let active = PathBuf::from("/src");
+        let other = PathBuf::from("/dst");
+        // 0xFF is invalid UTF-8; the relative name after strip_prefix keeps it.
+        let non_utf8 = PathBuf::from("/src").join(OsString::from_vec(vec![
+            b'b', b'a', b'd', 0xFF, b'.', b't', b'x', b't',
+        ]));
+        let tagged = [non_utf8];
+        let c = ctx("bad.txt", &active, &other, &tagged);
+        let result = apply_substitutions("cat %t", &c);
+        assert!(result.is_err(), "expected error for non-UTF-8 tagged path");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("non-UTF-8"),
+            "non-UTF-8 path should report UTF-8 cause, got: {err}"
+        );
+        assert!(
+            !err.contains("not under the active directory"),
+            "non-UTF-8 path should not be mislabeled as wrong directory, got: {err}"
         );
     }
 

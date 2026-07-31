@@ -95,6 +95,10 @@ impl PanelListing {
     /// Selection is intentionally NOT copied from `ordered` (which may be a stale
     /// clone): it lives solely in `unfiltered_entries`, so the filtered view can
     /// never carry a divergent selection.
+    ///
+    /// The view is now consistent with the store, so a pending `NeedsRebuild`
+    /// (from `set_unfiltered` or `mark_dirty`) is cleared to `Clean` — otherwise
+    /// the next frame rebuilds again redundantly.
     pub fn set_filtered(&mut self, ordered: &[FileEntry]) {
         self.ensure_index();
         self.entries.clear();
@@ -103,6 +107,9 @@ impl PanelListing {
             if let Some(&idx) = self.path_index.get(&e.path) {
                 self.entries.push(idx);
             }
+        }
+        if self.state == ListingState::NeedsRebuild {
+            self.state = ListingState::Clean;
         }
     }
 

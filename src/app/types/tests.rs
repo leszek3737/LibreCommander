@@ -866,14 +866,28 @@ fn format_size_eb_overflow_clamped() {
 #[test]
 fn format_time_pre_epoch_formats_absolute() {
     // Pre-1970 mtimes must not be silently dropped to the placeholder; they
-    // should render an absolute date.
+    // should render an absolute date. We avoid asserting a specific year
+    // substring ("69") because `%y` and local-TZ offsets make it brittle; the
+    // load-bearing claim is "not the ?? placeholder".
     let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(31_536_000); // ~1969
     let result = format_time(pre_epoch);
     assert_ne!(
         result, "??-??-?? ??:??",
         "pre-epoch should format, got {result}"
     );
-    assert!(result.contains("69"), "expected year '69' in {result}");
+    assert!(
+        result.contains('-'),
+        "expected a date with separators, got {result}"
+    );
+}
+
+#[test]
+fn format_time_far_future_falls_back_to_placeholder() {
+    // Out-of-range post-epoch timestamps must not panic (the old
+    // `DateTime::from(SystemTime)` `.expect()`ed); they yield the placeholder.
+    let far_future = std::time::UNIX_EPOCH + std::time::Duration::from_secs(i64::MAX as u64);
+    let result = format_time(far_future);
+    assert_eq!(result, "??-??-?? ??:??");
 }
 
 #[test]
@@ -904,4 +918,21 @@ fn set_filtered_all_clears_needs_rebuild() {
     assert_eq!(listing.state(), ListingState::NeedsRebuild);
     listing.set_filtered_all();
     assert_eq!(listing.state(), ListingState::Clean);
+}
+
+#[test]
+fn set_filtered_clears_needs_rebuild() {
+    // `set_filtered` rebuilds the filtered view from an ordered slice; like
+    // `set_filtered_all` it must clear a pending `NeedsRebuild`, otherwise the
+    // next frame rebuilds redundantly.
+    let entries = vec![entry("x.txt").file(1).permissions(0o644).build()];
+    let mut listing = PanelListing::new();
+    listing.set_unfiltered(entries.clone());
+    assert_eq!(listing.state(), ListingState::NeedsRebuild);
+    listing.set_filtered(&entries);
+    assert_eq!(
+        listing.state(),
+        ListingState::Clean,
+        "set_filtered must clear NeedsRebuild after a successful rebuild"
+    );
 }
