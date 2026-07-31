@@ -61,8 +61,10 @@ fn decode_lossy_with_map(slice: &[u8]) -> (Cow<'_, str>, Option<Vec<usize>>) {
     match std::str::from_utf8(slice) {
         Ok(s) => (Cow::Borrowed(s), None),
         Err(_) => {
-            let mut decoded = String::with_capacity(slice.len());
-            let mut map = Vec::with_capacity(slice.len() + 1);
+            // U+FFFD is 3 bytes in UTF-8; a pure-binary slice expands to
+            // ceil(len/?) * 3, so reserve 3× to avoid reallocations.
+            let mut decoded = String::with_capacity(slice.len() * 3);
+            let mut map = Vec::with_capacity(slice.len() * 3 + 1);
             let mut raw = 0usize;
             for chunk in slice.utf8_chunks() {
                 let valid = chunk.valid();

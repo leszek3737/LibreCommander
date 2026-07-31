@@ -25,11 +25,12 @@ pub fn render_list_picker_with_colors<T: AsRef<str>>(
     let area = f.area();
     let picker_area = centered_rect(60, 70, area);
 
+    let dialog_style = Theme::dialog_with_colors(colors);
     f.render_widget(Clear, picker_area);
-    let bg_block = ratatui::widgets::Block::default().style(Theme::dialog_with_colors(colors));
+    let bg_block = ratatui::widgets::Block::default().style(dialog_style);
     f.render_widget(bg_block, picker_area);
 
-    let block = dialog_block(title, Theme::dialog_with_colors(colors));
+    let block = dialog_block(title, dialog_style);
     let inner = block.inner(picker_area);
     f.render_widget(block, picker_area);
 

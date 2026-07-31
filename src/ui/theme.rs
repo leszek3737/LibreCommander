@@ -19,14 +19,20 @@ impl IconTheme {
             crate::debug_log!("config: non-string value for icon_theme, using emoji");
             return Self::Emoji;
         };
-        match s.trim().to_ascii_lowercase().as_str() {
-            "emoji" => Self::Emoji,
-            "ascii" => Self::Ascii,
-            "nerdfont" | "nerd_font" | "nerd-font" => Self::NerdFont,
-            _ => {
-                crate::debug_log!("config: invalid value for icon_theme, using emoji");
-                Self::Emoji
-            }
+        // Match case-insensitively without allocating a lowercased String.
+        let trimmed = s.trim();
+        if trimmed.eq_ignore_ascii_case("emoji") {
+            Self::Emoji
+        } else if trimmed.eq_ignore_ascii_case("ascii") {
+            Self::Ascii
+        } else if trimmed.eq_ignore_ascii_case("nerdfont")
+            || trimmed.eq_ignore_ascii_case("nerd_font")
+            || trimmed.eq_ignore_ascii_case("nerd-font")
+        {
+            Self::NerdFont
+        } else {
+            crate::debug_log!("config: invalid value for icon_theme, using emoji");
+            Self::Emoji
         }
     }
 }

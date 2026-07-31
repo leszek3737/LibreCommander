@@ -20,9 +20,18 @@ const HEX_COLS_PER_BYTE: usize = 3;
 const PRINTABLE_ASCII: std::ops::RangeInclusive<u8> = 0x20..=0x7e;
 
 fn push_byte_hex(buf: &mut String, b: u8) {
-    buf.push(HEX_CHARS[(b >> NIBBLE_BITS) as usize] as char);
-    buf.push(HEX_CHARS[(b & LOW_NIBBLE_MASK) as usize] as char);
-    buf.push(' ');
+    // Build into a 3-byte stack array, then push in one shot — avoids three
+    // separate push calls (amortized check + len update) per byte.
+    let trio = [
+        HEX_CHARS[(b >> NIBBLE_BITS) as usize],
+        HEX_CHARS[(b & LOW_NIBBLE_MASK) as usize],
+        b' ',
+    ];
+    // `trio` is built solely from `HEX_CHARS` (ASCII) and a space, so it is
+    // always valid UTF-8. `from_utf8` never fails here.
+    if let Ok(s) = std::str::from_utf8(&trio) {
+        buf.push_str(s);
+    }
 }
 
 fn format_offset_hex(offset: usize, buf: &mut String) {

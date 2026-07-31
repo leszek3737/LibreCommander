@@ -90,12 +90,11 @@ pub fn execute_menu_action(state: &mut AppState) -> Option<(KeyCode, KeyModifier
         }
         MenuAction::SaveCurrentPathToHotlist => {
             with_menu_panel(state, |state| {
-                if !state
-                    .hotlist()
-                    .iter()
-                    .any(|p| p == state.active_panel().path())
-                {
-                    state.hotlist_push(state.active_panel().path().to_path_buf());
+                // Bind the path once before the scan to avoid re-querying
+                // active_panel().path() on every .any() iteration.
+                let path = state.active_panel().path().to_path_buf();
+                if !state.hotlist().iter().any(|p| p == &path) {
+                    state.hotlist_push(path);
                 }
                 state.ui.status_message =
                     Some("Path added to hotlist (run Save Setup to persist)".to_string());

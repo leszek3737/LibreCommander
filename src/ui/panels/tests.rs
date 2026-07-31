@@ -1,8 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::app::types::format_time;
-use crate::app::types::sanitize_for_display;
+use crate::app::types::{format_size, format_time, sanitize_for_display};
 use crate::ui::theme::{DEFAULT_COLORS, IconTheme};
 use ratatui::style::Color;
 use std::path::PathBuf;
@@ -54,6 +53,7 @@ fn entry_line(entry: &FileEntry, width: usize, show_permissions: bool) -> String
         &mut suffix,
         &mut out,
     );
+    let _ = &suffix; // scratch buffer required by format_entry_line, not asserted
     out
 }
 
