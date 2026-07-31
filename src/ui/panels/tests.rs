@@ -817,6 +817,30 @@ fn test_render_status_bar_no_panic() {
     assert!(content.contains("file.txt"));
 }
 
+/// Regression: the status bar must show the *unpadded* file size. The cached
+/// `size_str` is column-padded (`{:>10}` → "    1.0 KB"); the status bar must
+/// not leak that padding into the metadata segment.
+#[test]
+fn test_render_status_bar_size_is_unpadded() {
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    // size 1024 → format_size = "1.0 KB", padded cache = "    1.0 KB"
+    panel.set_entries(vec![create_test_entry("file.txt", false, false, false)]);
+    let content = render_to_string(80, 2, |f| {
+        render_status_bar_with_colors(f, f.area(), &panel, &DEFAULT_COLORS);
+    });
+    // Unpadded form must be present...
+    assert!(
+        content.contains("1.0 KB"),
+        "status bar missing unpadded size, got: {content:?}"
+    );
+    // ...and the column-padded form must not leak through (no run of spaces
+    // before the size — the metadata is "1.0 KB | <owner> | <group>").
+    assert!(
+        !content.contains("    1.0 KB"),
+        "status bar leaked column-padded size, got: {content:?}"
+    );
+}
+
 #[test]
 fn test_render_function_bar_no_panic() {
     let content = render_to_string(80, 1, |f| {

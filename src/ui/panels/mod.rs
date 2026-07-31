@@ -578,9 +578,11 @@ pub fn render_status_bar_with_colors(
     // empty listing simply skips the left side rather than panicking.
     if let Some(entry) = panel.listing.filtered_get(panel.cursor) {
         let display_name = entry.display_name();
-        // Reuse the cached formatted size instead of recomputing format_size
-        // (which allocates) every frame — the entry already carries it.
-        let size_str = &entry.size_str;
+        // `entry.size_str` is the column-padded cached size (`{:>10}` for files,
+        // "     <DIR>" for dirs) reused to avoid a per-frame `format_size` alloc.
+        // The status bar wants the *unpadded* form the old code produced, so strip
+        // the leading spaces — format_size output never carries leading whitespace.
+        let size_str = entry.size_str.trim_start();
 
         let mut meta = String::with_capacity(48);
         write_status_metadata(&mut meta, size_str, entry, panel.show_permissions());
