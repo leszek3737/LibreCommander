@@ -841,6 +841,31 @@ fn test_render_status_bar_size_is_unpadded() {
     );
 }
 
+/// Regression: a directory must show its real byte size in the status bar, not
+/// the column-cache placeholder "<DIR>". The pre-perf code used
+/// `format_size(entry.size())`; the column cache `size_str` is "     <DIR>"
+/// for directories, which is not a size.
+#[test]
+fn test_render_status_bar_directory_shows_size_not_dir_label() {
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    // Directory with a size (e.g. directory entry block size); column cache =
+    // "     <DIR>", but size() = 1024 → "1.0 KB".
+    panel.set_entries(vec![entry_with("docs", true, false, false, 1024)]);
+    let content = render_to_string(80, 2, |f| {
+        render_status_bar_with_colors(f, f.area(), &panel, &DEFAULT_COLORS);
+    });
+    // Must not show the column-cache placeholder...
+    assert!(
+        !content.contains("<DIR>"),
+        "status bar showed <DIR> for a directory, got: {content:?}"
+    );
+    // ...and must show a real size (contains a unit suffix, e.g. "B"/"KB").
+    assert!(
+        content.contains(" KB") || content.contains(" MB") || content.contains(" B"),
+        "status bar missing directory size for dir, got: {content:?}"
+    );
+}
+
 #[test]
 fn test_render_function_bar_no_panic() {
     let content = render_to_string(80, 1, |f| {

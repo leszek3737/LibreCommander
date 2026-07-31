@@ -578,14 +578,16 @@ pub fn render_status_bar_with_colors(
     // empty listing simply skips the left side rather than panicking.
     if let Some(entry) = panel.listing.filtered_get(panel.cursor) {
         let display_name = entry.display_name();
-        // `entry.size_str` is the column-padded cached size (`{:>10}` for files,
-        // "     <DIR>" for dirs) reused to avoid a per-frame `format_size` alloc.
-        // The status bar wants the *unpadded* form the old code produced, so strip
-        // the leading spaces — format_size output never carries leading whitespace.
-        let size_str = entry.size_str.trim_start();
+        // `entry.size_str` is the column-padded cache — for directories it is
+        // "     <DIR>", not a size. The status bar wants the real byte size for
+        // every entry (as the pre-perf code did via `format_size`), so format the
+        // entry's size directly into `size_buf` with the zero-alloc helper rather
+        // than reusing the column cache.
+        let mut size_buf = String::with_capacity(8);
+        write_size(&mut size_buf, entry.size());
 
         let mut meta = String::with_capacity(48);
-        write_status_metadata(&mut meta, size_str, entry, panel.show_permissions());
+        write_status_metadata(&mut meta, &size_buf, entry, panel.show_permissions());
         let meta_width = UnicodeWidthStr::width(meta.as_str());
 
         let full_width = UnicodeWidthStr::width(display_name) + 3 + meta_width;
@@ -606,7 +608,7 @@ pub fn render_status_bar_with_colors(
             } else {
                 meta.clear();
                 write!(meta, "{display_name} | ").ok();
-                write_status_metadata(&mut meta, size_str, entry, panel.show_permissions());
+                write_status_metadata(&mut meta, &size_buf, entry, panel.show_permissions());
                 let truncated = truncate_to_width(&meta, remaining);
                 out.push_str(&truncated);
             }
