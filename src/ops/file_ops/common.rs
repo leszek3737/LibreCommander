@@ -72,29 +72,28 @@ pub(super) fn ensure_destination_absent(dest: &Path) -> io::Result<()> {
 
 /// Checks if `child` is lexically contained within `parent` after canonicalization.
 ///
+/// Canonicalization failures (e.g. a broken symlink in an intermediate path
+/// component) are treated as "not contained" rather than propagated: a legal
+/// move should not be blocked just because a nearby path cannot be resolved.
+/// The OS will reject an actually-invalid move downstream.
+///
 /// Note: errors are wrapped via `format!` which drops the `Error::source()` chain.
 /// This is an accepted limitation of the `io::Result` error model used throughout
 /// the project; a custom error type would be needed to preserve the full chain.
 pub(super) fn path_contains(parent: &Path, child: &Path) -> io::Result<bool> {
-    let canonical_parent = canonicalize_existing_path(parent).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("failed to canonicalize parent '{}': {e}", parent.display()),
-        )
-    })?;
-    let canonical_child = canonicalize_with_nearest_existing_parent(child).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("failed to canonicalize child '{}': {e}", child.display()),
-        )
-    })?;
+    let Some(canonical_parent) = canonicalize_existing_path(parent).ok() else {
+        return Ok(false);
+    };
+    let Some(canonical_child) = canonicalize_with_nearest_existing_parent(child).ok() else {
+        return Ok(false);
+    };
     Ok(lexical_path_starts_with(
         &canonical_parent,
         &canonical_child,
     ))
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     let src_meta = fs::symlink_metadata(src)?;
     let dest_meta = match fs::symlink_metadata(dest) {
@@ -111,7 +110,12 @@ pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(any(unix, windows)))]
+/// Non-Unix `reject_same_file`: inode identity is unavailable without the
+/// unstable `windows_by_handle` feature (rust-lang/rust#63010), so fall back to
+/// a path-equality comparison. This catches the data-loss cases the audit flags
+/// (src==dest on Windows, case-only rename on case-insensitive FS) without
+/// needing handle-based metadata.
+#[cfg(not(unix))]
 pub(super) fn reject_same_file(src: &Path, dest: &Path) -> io::Result<()> {
     fs::symlink_metadata(src)?;
     match fs::symlink_metadata(dest) {
@@ -181,7 +185,21 @@ pub(super) fn canonicalize_with_nearest_existing_parent(path: &Path) -> io::Resu
 
         match ancestor.parent() {
             Some(parent) if parent != ancestor => ancestor = parent,
-            _ => return normalize_suffix(std::env::current_dir()?, path),
+            // No ancestor exists at all (e.g. a path whose root component is
+            // absent, or a relative path in a since-removed cwd). Anchoring on
+            // `current_dir()` makes the result depend on the process cwd, which
+            // can silently mis-resolve containment checks. Surface the
+            // resolution failure explicitly instead of returning a cwd-relative
+            // path that may not represent the intended location.
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!(
+                        "no existing ancestor found to canonicalize path: {}",
+                        path.display()
+                    ),
+                ));
+            }
         }
     }
 }
@@ -227,6 +245,10 @@ pub const MSG_SYMLINK_CHMOD: &str = "cannot chmod a symlink, refuse to follow sy
 /// a file that replaced a directory). Full TOCTOU hardening would require
 /// platform-specific `openat`+`unlinkat` patterns which are gated behind
 /// `forbid(unsafe_code)`.
+///
+/// A vanished entry is tolerated: if the path disappears between the stat
+/// and the remove call (a benign race), the resulting `NotFound` is mapped
+/// to `Ok` so deletion is idempotent.
 pub(super) fn remove_any(path: &Path) -> io::Result<()> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -234,14 +256,30 @@ pub(super) fn remove_any(path: &Path) -> io::Result<()> {
         Err(e) => return Err(e),
     };
     if meta.is_dir() {
-        return fs::remove_dir_all(path);
+        return remove_dir_all_idempotent(path);
     }
     // Windows-only: directory symlinks/junctions have is_symlink() + is_dir_meta().
     // On Unix this branch is unreachable — symlink_metadata symlinks are !is_dir().
     if meta.is_symlink() && is_dir_meta(&meta) {
-        return fs::remove_dir(path);
+        return match fs::remove_dir(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        };
     }
-    fs::remove_file(path)
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn remove_dir_all_idempotent(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

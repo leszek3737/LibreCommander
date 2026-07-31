@@ -25,7 +25,12 @@ pub struct BatchReport {
 impl BatchReport {
     #[inline]
     pub fn format_summary(&self) -> String {
-        let verb = match self.action_label {
+        // Action label is the verb infinitive ("Copy", "Move", "Delete", …).
+        // For the success row we use its past participle; for the failure row
+        // we keep the infinitive ("Delete failed", not "Deleted failed") —
+        // "Deleted failed" is ungrammatical and was a copy/paste of the past
+        // participle into the wrong branch.
+        let verb_past = match self.action_label {
             "Copy" => "Copied",
             "Move" => "Moved",
             "Delete" => "Deleted",
@@ -37,25 +42,25 @@ impl BatchReport {
 
         if self.canceled {
             if self.success_count == 0 {
-                format!("{verb} canceled")
+                format!("{verb_past} canceled")
             } else {
-                format!("{verb} canceled after {} file(s)", self.success_count)
+                format!("{verb_past} canceled after {} file(s)", self.success_count)
             }
         } else if error_count == 0 {
             if self.success_count == 1 {
-                format!("{verb} 1 file")
+                format!("{verb_past} 1 file")
             } else {
-                format!("{verb} {} files", self.success_count)
+                format!("{verb_past} {} files", self.success_count)
             }
         } else if self.success_count == 0 {
             if error_count == 1 {
-                format!("{verb} failed: {}", self.errors[0])
+                format!("{} failed: {}", self.action_label, self.errors[0])
             } else {
-                format!("{verb} failed: {error_count} error(s)")
+                format!("{} failed: {error_count} error(s)", self.action_label)
             }
         } else {
             format!(
-                "{verb} {} file(s), {error_count} error(s)",
+                "{verb_past} {} file(s), {error_count} error(s)",
                 self.success_count
             )
         }
@@ -601,6 +606,13 @@ fn process_batch_entry<F>(
             state.canceled = true;
         }
         state.errors.push(format!("{}: {}", src.display(), e));
+        // Mirror the early-return and success paths: charge the full file size
+        // so the final transition reaches 100% once every item is visited,
+        // even if some files failed partway. Without this, byte_percent()
+        // reports < 100% after a complete-but-failed batch.
+        let remainder = current_total.saturating_sub(bp.file_bytes_so_far);
+        state.bytes_done = state.bytes_done.saturating_add(remainder);
+        state.bytes_total = state.bytes_total.max(state.bytes_done);
     } else {
         state.success_count += 1;
         let remainder = current_total.saturating_sub(bp.file_bytes_so_far);

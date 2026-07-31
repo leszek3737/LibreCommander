@@ -14,8 +14,17 @@ use std::path::{Component, Path};
 /// failing with "no such file or directory" would force every caller to
 /// implement their own ancestor creation loop.
 ///
-/// Rejects paths containing `..` components to prevent directory traversal.
+/// Rejects paths containing `..` components to prevent directory traversal, and
+/// empty paths (which `create_dir_all` silently no-ops on). Absolute paths are
+/// allowed: the caller (`resolve_user_path`) intentionally supports absolute
+/// user input, and critical-location protection is enforced downstream.
 pub fn create_directory(path: &Path) -> io::Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path must not be empty",
+        ));
+    }
     if path
         .components()
         .any(|component| matches!(component, Component::ParentDir))
@@ -104,6 +113,13 @@ pub fn rename_entry(old: &Path, new_name: &str) -> io::Result<()> {
 /// Changes file permissions. Refuses to operate on symlinks — uses
 /// `symlink_metadata` to detect them before calling `set_permissions`.
 /// On macOS, `EFTYPE` is mapped to `InvalidInput` with a descriptive message.
+///
+/// # TOCTOU
+/// `set_permissions(path, …)` resolves `path` again and would follow a symlink
+/// swapped in after our `symlink_metadata` check. To narrow that window we
+/// chmod via the file handle (`File::set_permissions`) after re-validating the
+/// path is still not a symlink. Full no-follow requires `O_NOFOLLOW`, which is
+/// behind `forbid(unsafe_code)`.
 pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -116,8 +132,19 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
     }
 
     let permissions = fs::Permissions::from_mode(mode & 0o7777);
+    // Re-validate immediately before opening: a swap to a symlink here is the
+    // TOCTOU the audit flags. Narrowed, not eliminated (no O_NOFOLLOW in std).
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            MSG_SYMLINK_CHMOD,
+        ));
+    }
+    // chmod via the fd: avoids a second path resolution that `fs::set_permissions`
+    // would perform, so a swap between open and chmod cannot redirect the call.
+    let file = fs::File::open(path)?;
     #[cfg(target_os = "macos")]
-    let result = fs::set_permissions(path, permissions).map_err(|e| {
+    let result = file.set_permissions(permissions).map_err(|e| {
         if e.raw_os_error() == Some(libc::EFTYPE) {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -128,7 +155,7 @@ pub fn chmod(path: &Path, mode: u32) -> io::Result<()> {
         }
     });
     #[cfg(not(target_os = "macos"))]
-    let result = fs::set_permissions(path, permissions);
+    let result = file.set_permissions(permissions);
     result
 }
 

@@ -1,4 +1,5 @@
 use super::helpers::cleanup_file;
+use crate::debug_log;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -50,7 +51,14 @@ pub fn copy_with_progress(
         }
     }
 
-    let src_file = File::open(src)?;
+    // Open first, then stat the fd (fstat) rather than re-statting the path.
+    // fstat reflects the entry we actually opened, so a TOCTOU swap of `src`
+    // for a symlink between the `symlink_metadata` above and this open cannot
+    // silently redirect the copy through the link undetected: if the path was
+    // replaced, the fd's identity no longer matches the non-symlink we vetted.
+    // Rejecting non-regular files also blocks FIFOs/sockets/devices, which
+    // `File::open` + `read()` would otherwise block on forever.
+    let src_file = open_regular_file(src)?;
     let (temp_dest, dest_file) = create_temp_file(dest)?;
     let result = copy_to_temp(
         src_file,
@@ -67,10 +75,8 @@ pub fn copy_with_progress(
                 cleanup_file(&temp_dest);
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "copy canceled"));
             }
-            // Timestamps are set on the temp file inside `copy_to_temp`, before
-            // this publish, so a metadata failure aborts before `dest` exists —
-            // never after a fully completed copy (which would report a spurious
-            // error and leave the batch to retry into an `AlreadyExists`).
+            // Metadata (perms/timestamps) is preserved best-effort inside
+            // `copy_to_temp` and never aborts a completed copy.
             if let Err(err) = publish_temp(&temp_dest, dest, cancel, overwrite) {
                 cleanup_file(&temp_dest);
                 return Err(err);
@@ -83,6 +89,38 @@ pub fn copy_with_progress(
             Err(err)
         }
     }
+}
+
+/// Opens `src` and validates the opened fd is a regular file.
+///
+/// Two correctness properties vs. a bare `File::open`:
+/// 1. **No FIFO/socket/device hang**: `File::metadata()` is an `fstat` on the
+///    fd, so it reports the true type of what we opened. Non-regular entries
+///    are rejected instead of reaching `read()` and blocking the worker forever.
+/// 2. **TOCTOU narrowing**: a fresh `symlink_metadata` right after the open
+///    catches a swap of `src` for a symlink in the window between the caller's
+///    earlier `symlink_metadata` and this open. `fstat` alone can't detect a
+///    swap to a symlink-to-regular-file (the followed target is still regular),
+///    so the path re-stat is the authoritative symlink check.
+fn open_regular_file(src: &Path) -> io::Result<File> {
+    let file = File::open(src)?;
+    let fd_meta = file.metadata()?;
+    if !fd_meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source is not a regular file: {}", src.display()),
+        ));
+    }
+    if fs::symlink_metadata(src)?.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "source was replaced by a symlink during copy: {}",
+                src.display()
+            ),
+        ));
+    }
+    Ok(file)
 }
 
 /// Creates the temp destination file, regenerating its unique name on collision.
@@ -171,11 +209,25 @@ fn copy_to_temp(
     writer.flush()?;
     writer.sync_all()?;
 
-    preserve_permissions(temp_dest, metadata)?;
-    // Set timestamps on the temp file, before it is published, so a metadata
-    // failure surfaces while the copy is still uncommitted rather than after
-    // `dest` already holds the finished data.
-    super::file_ops::preserve_timestamps(temp_dest, metadata)?;
+    // Metadata preservation is best-effort once the data is fully written and
+    // synced. chmod/timestamp failures (FAT32/exFAT ENOTSUP, read-only FS,
+    // clock-range limits) must NOT discard a complete, durable copy — that
+    // trades real data for cosmetic attributes. A failed preserve surfaces as
+    // a spurious error AND deletes the finished temp, forcing a full retry.
+    // Logging keeps the signal without losing the copy. See audit findings
+    // chunk_copy #6 (set_modified) and #7 (set_permissions).
+    if let Err(e) = preserve_permissions(temp_dest, metadata) {
+        debug_log!(
+            "warning: failed to preserve permissions for {}: {e}",
+            temp_dest.display()
+        );
+    }
+    if let Err(e) = super::file_ops::preserve_timestamps(temp_dest, metadata) {
+        debug_log!(
+            "warning: failed to preserve timestamps for {}: {e}",
+            temp_dest.display()
+        );
+    }
 
     Ok(total_written)
 }

@@ -87,9 +87,13 @@ fn reserve_unique_name(dest: &Path, prefix: &str) -> io::Result<PathBuf> {
         }
     }
     let msg = if let Some(err) = last_err {
-        format!("could not reserve unique name for {prefix}: last error: {err}")
+        format!(
+            "could not reserve unique name for {prefix} after {TEMP_NAME_MAX_ATTEMPTS} attempts; last error: {err}"
+        )
     } else {
-        format!("could not reserve unique name for {prefix}")
+        format!(
+            "could not reserve unique name for {prefix} after {TEMP_NAME_MAX_ATTEMPTS} attempts"
+        )
     };
     Err(io::Error::new(io::ErrorKind::AlreadyExists, msg))
 }
@@ -209,13 +213,23 @@ pub(super) fn publish_temp_dir(
     match fs::rename(temp_dest, dest) {
         Ok(()) => {
             if let Some(backup) = backup {
-                if let Err(e) = remove_any(&backup.entry) {
-                    debug_log!(
-                        "warning: failed to cleanup backup entry {}: {e}",
-                        backup.entry.display()
-                    );
+                // If removing the backup entry fails, the container is still
+                // non-empty, so the non-recursive `cleanup_dir` below would also
+                // fail (and swallow the error). Fall back to `cleanup_dir_all`
+                // (recursive) so the container is actually removed instead of
+                // leaking (audit temp #1).
+                match remove_any(&backup.entry) {
+                    Ok(()) => {
+                        cleanup_dir(&backup.container);
+                    }
+                    Err(e) => {
+                        debug_log!(
+                            "warning: failed to cleanup backup entry {}; removing container recursively: {e}",
+                            backup.entry.display()
+                        );
+                        cleanup_dir_all(&backup.container);
+                    }
                 }
-                cleanup_dir(&backup.container);
             }
             Ok(())
         }
@@ -227,6 +241,18 @@ pub(super) fn publish_temp_dir(
                         backup.entry.display(),
                         dest.display()
                     );
+                    // dest is now missing and the original data is stranded
+                    // inside the backup container. Enrich the returned error so
+                    // callers/recovery tooling can act (audit temp #2).
+                    let kind = err.kind();
+                    return Err(io::Error::new(
+                        kind,
+                        format!(
+                            "{err}; original data stranded at backup container {} \
+                             (restore failed: {restore_err})",
+                            backup.container.display()
+                        ),
+                    ));
                 }
                 if let Err(e) = fs::remove_dir(&backup.container) {
                     debug_log!(
