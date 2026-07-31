@@ -780,11 +780,13 @@ fn cookie_mismatch_to_emits_created_and_leaves_orphaned_from() {
 }
 
 /// `#4` debounce boundary: an entry whose `last_seen` is exactly
-/// `DEBOUNCE_DURATION` ago is treated as expired (the cutoff is inclusive
-/// `>=`). Without this boundary test an off-by-one making it strictly `>`
-/// would pass silently.
+/// `DEBOUNCE_DURATION` ago is treated as expired and flushed, NOT suppressed.
+/// The suppression cutoff is strict `<` (`now.duration_since(last_seen) <
+/// DEBOUNCE_DURATION`), so at exactly the boundary the event emits and the
+/// stale coalesced entry flushes. Without this boundary test an off-by-one
+/// making the cutoff `<=` would pass silently.
 #[test]
-fn process_debounce_boundary_at_exact_duration_is_suppressed() {
+fn process_debounce_boundary_at_exact_duration_emits_event() {
     let mut debounce: HashMap<PathBuf, PendingEntry> = HashMap::new();
     let path = PathBuf::from("/tmp/boundary.txt");
 

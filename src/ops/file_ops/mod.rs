@@ -45,7 +45,16 @@ mod tests {
                     tmp_dir.display()
                 )
             });
-            for entry in entries.flatten() {
+            // Surface per-entry errors too: `flatten()` would silently drop an
+            // Err on an individual DirEntry (e.g. permission error on one file),
+            // again leaving `found` empty and passing vacuously.
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| {
+                    panic!(
+                        "error reading DirEntry in {}: {e}; cannot verify temp cleanup",
+                        tmp_dir.display()
+                    )
+                });
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
                 if name_str.contains(&pattern) {
@@ -857,17 +866,26 @@ mod tests {
         // Replaces the former `_via_thread` test, which joined the cancel
         // thread before the copy started — making it identical to the
         // cancel-before-start test and adding no concurrency coverage. This
-        // version flips cancel AFTER the copy has copied at least one file
-        // (signalled by a progress byte on the channel), exercising the
-        // cooperative cancel check inside the copy loop.
+        // version flips cancel AFTER the copy has started copying, exercising
+        // the cooperative cancel check inside the copy loop.
+        //
+        // The src dir holds ONE large file rather than many tiny ones: with
+        // 200 tiny files the worker could finish them all in the window
+        // between the first progress byte arriving and cancel being set (a
+        // race that made the test flaky — the copy would succeed and dest
+        // would exist, contradicting the assertion). A single multi-MB file
+        // keeps the worker inside chunk_copy's per-chunk cancel checkpoint
+        // for long enough that cancel is observed deterministically.
         let tmp = unique_temp_dir();
         let src = tmp.join("src_dir");
         std::fs::create_dir(&src).unwrap();
-        // Many files so the loop runs long enough to observe a progress byte
-        // and then hit the cancel checkpoint on a later iteration.
-        for i in 0..200 {
-            std::fs::write(src.join(format!("file_{}.txt", i)), b"some content").unwrap();
-        }
+        std::fs::write(
+            src.join("big.bin"),
+            (0..40_000_000u64)
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
 
         let dest = tmp.join("dest_dir");
         let (progress_tx, progress_rx) = mpsc::channel();
@@ -880,7 +898,7 @@ mod tests {
         });
 
         // Wait until the copy has actually started (first progress byte),
-        // then flip the cancel flag so a subsequent loop checkpoint aborts.
+        // then flip the cancel flag so a subsequent per-chunk checkpoint aborts.
         let _ = progress_rx
             .recv()
             .expect("copy must emit at least one progress byte");
