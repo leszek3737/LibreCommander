@@ -16,6 +16,8 @@ jobs:
       contents: read
       pull-requests: write
       issues: read
+      # Required: opencode github action exchanges OIDC for provider auth.
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
