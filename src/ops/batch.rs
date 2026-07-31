@@ -800,11 +800,14 @@ fn batch_extract_archive(
                         Ok(()) => Vec::new(),
                         Err(ref e) => vec![format!("{}: {e}", source.display())],
                     };
-                    let is_interrupt = matches!(&result, Err(archive::ArchiveError::Io(e)) if e.kind() == io::ErrorKind::Interrupted);
+                    // Archive cancel surfaces as `Other` (not `Interrupted`) in
+                    // `check_cancel`/`copy_with_progress`, so the flag is the
+                    // authoritative classifier here — matching on the io kind
+                    // would misclassify a cancel as a hard failure.
                     return BatchReport {
                         errors,
                         success_count: if result.is_ok() { 1 } else { 0 },
-                        canceled: is_interrupt && is_canceled(cancel),
+                        canceled: result.is_err() && is_canceled(cancel),
                         action_label,
                     };
                 }
@@ -896,11 +899,12 @@ fn batch_create_archive(
                         Ok(()) => Vec::new(),
                         Err(ref e) => vec![format!("{}: {e}", dest.display())],
                     };
-                    let is_interrupt = matches!(&result, Err(archive::ArchiveError::Io(e)) if e.kind() == io::ErrorKind::Interrupted);
+                    // See `batch_extract_archive`: the cancel flag is the
+                    // authoritative classifier (archive cancel emits `Other`).
                     return BatchReport {
                         errors,
                         success_count: if result.is_ok() { 1 } else { 0 },
-                        canceled: is_interrupt && is_canceled(cancel),
+                        canceled: result.is_err() && is_canceled(cancel),
                         action_label,
                     };
                 }

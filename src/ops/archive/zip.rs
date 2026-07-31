@@ -458,9 +458,19 @@ mod tests {
         // no archive (the temp file is cleaned up).
         let cancel = AtomicBool::new(true);
         let result = create_zip(&[f1], &archive_path, &tx, &cancel);
-        assert!(
-            result.is_err(),
-            "expected cancellation error, got {result:?}"
+        let err = result.expect_err("expected cancellation error");
+        // Cancellation surfaces as a terminal `Other` io error, not
+        // `Interrupted` (which `copy_with_progress` would retry/spin on).
+        let io_err = match err {
+            ArchiveError::Io(e) => e,
+            ref other => {
+                unreachable!("expected ArchiveError::Io for cancel, got {other:?}")
+            }
+        };
+        assert_eq!(
+            io_err.kind(),
+            std::io::ErrorKind::Other,
+            "cancel must be terminal `Other`, got {io_err}"
         );
         assert!(!archive_path.exists());
     }

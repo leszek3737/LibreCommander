@@ -170,8 +170,9 @@ impl<'a> SevenzEntryExtractor<'a> {
                     })?;
                 }
                 Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted && self.cancel.load(Ordering::Relaxed)
-                    {
+                    // `copy_with_progress` emits `Other` on cancel (terminal),
+                    // not `Interrupted`, so classify via the cancel flag.
+                    if self.cancel.load(Ordering::Relaxed) {
                         self.error_slot.set(Some(SevenzExtractError::Canceled));
                     } else {
                         self.error_slot.set(Some(SevenzExtractError::Io(e)));
@@ -197,16 +198,12 @@ fn translate_extract_error(
         }
         Some(SevenzExtractError::InvalidArchive(msg)) => ArchiveError::InvalidArchive(msg),
         Some(SevenzExtractError::Io(e)) => ArchiveError::Io(e),
-        Some(SevenzExtractError::Canceled) => ArchiveError::Io(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "Operation canceled",
-        )),
+        Some(SevenzExtractError::Canceled) => {
+            ArchiveError::Io(io::Error::other("Operation canceled"))
+        }
         None => {
             if cancel.load(Ordering::Relaxed) {
-                ArchiveError::Io(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Operation canceled",
-                ))
+                ArchiveError::Io(io::Error::other("Operation canceled"))
             } else {
                 ArchiveError::InvalidArchive(err.to_string())
             }
