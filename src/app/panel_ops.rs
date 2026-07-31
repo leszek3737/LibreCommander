@@ -36,27 +36,22 @@ pub fn refresh_panel(panel: &mut PanelState, visible_height: usize) -> Option<St
             update_panel_read_errors(panel, &errors);
             let current_path = current_panel_entry_path(panel);
             let saved = selected_panel_paths(panel);
-            let new_unfiltered = entries;
-            let compiled = panel.compiled_filter_cached();
-            let new_filtered = filter_and_sort(
-                &new_unfiltered,
-                compiled.as_ref(),
-                panel.sort_mode(),
-                *panel.sort_options(),
-                panel.show_hidden(),
-            );
-            let mut sorted_unfiltered = new_unfiltered;
+            let mut sorted_unfiltered = entries;
+            // Single sort of the backing store. The filtered view is derived as
+            // indices into this already-sorted store, so the previous double-sort
+            // (once on a cloned filtered Vec, once on the unfiltered store) and
+            // the per-entry clone of every visible FileEntry are both eliminated.
             ops::sort_entries(
                 &mut sorted_unfiltered,
                 panel.sort_mode(),
                 *panel.sort_options(),
             );
-            // Both listing stores receive pre-sorted data: `set_unfiltered` takes
-            // the sorted backing store, and `set_filtered` takes the sorted
-            // filtered slice and maps each entry back to its backing slot by path.
-            // Ordering is the caller's responsibility; the listing never reorders.
+            let compiled = panel.compiled_filter_cached();
+            let show_hidden = panel.show_hidden();
             panel.listing.set_unfiltered(sorted_unfiltered);
-            panel.listing.set_filtered(&new_filtered);
+            panel
+                .listing
+                .set_filtered_indices(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden));
             restore_panel_selection(panel, &saved);
             finalize_view(panel, current_path.as_deref(), visible_height);
             None
@@ -150,14 +145,19 @@ fn filter_and_sort(
 pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
     let current_path = current_panel_entry_path(panel);
     let compiled = panel.compiled_filter_cached();
-    let filtered = filter_and_sort(
-        panel.listing.unfiltered(),
-        compiled.as_ref(),
-        panel.sort_mode(),
-        *panel.sort_options(),
-        panel.show_hidden(),
-    );
-    panel.listing.set_filtered(&filtered);
+    let show_hidden = panel.show_hidden();
+    // Hoof sort params out before the mutable borrow of the listing.
+    let sort_mode = panel.sort_mode();
+    let sort_options = *panel.sort_options();
+    // Re-sort the backing store in place, then rebuild the filtered view as
+    // indices into the now-sorted store. Avoids cloning every FileEntry.
+    ops::sort_entries(panel.listing.unfiltered_mut(), sort_mode, sort_options);
+    // The in-place sort moved entries, so path_index (PathBuf→old index) is
+    // stale. Rebuild it or the next watcher upsert/remove hits the wrong slot.
+    panel.listing.rebuild_index();
+    panel
+        .listing
+        .set_filtered_indices(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden));
     finalize_view(panel, current_path.as_deref(), visible_height);
 }
 

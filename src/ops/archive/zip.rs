@@ -318,7 +318,14 @@ fn add_dir_to_zip(
                 ))
             })?
             .to_string_lossy()
-            .replace('\\', "/");
+            .into_owned();
+        // Single allocation: only replace backslashes if any are present,
+        // otherwise reuse the lossy string directly.
+        let name = if name.contains('\\') {
+            name.replace('\\', "/")
+        } else {
+            name
+        };
 
         // Single symlink_metadata read: skip symlinks (create-side filter) and
         // reuse the same metadata to distinguish dir vs file, avoiding a second

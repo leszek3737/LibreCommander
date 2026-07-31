@@ -89,12 +89,11 @@ fn search_files_recursive(
                 continue;
             }
         };
-        let entry_path = entry.path();
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(err) => {
                 ctx.outcome.errors.push(SearchError {
-                    path: Some(entry_path.clone()),
+                    path: Some(entry.path()),
                     kind: SearchErrorKind::FileType,
                     message: err.to_string(),
                 });
@@ -116,10 +115,21 @@ fn search_files_recursive(
         let plain_dir = recursive && file_type.is_dir() && !file_type.is_symlink();
         let dir_meta: Option<io::Result<Metadata>> = plain_dir.then(|| entry.metadata());
 
-        if matched {
+        // Whether this entry needs its path allocated (for a match result or
+        // for recursion). Non-matching, non-recursive entries skip the PathBuf.
+        let needs_path = matched || dir_meta.is_some() || (recursive && file_type.is_symlink());
+
+        let entry_path = needs_path.then(|| entry.path());
+
+        if let Some(entry_path) = &entry_path
+            && matched
+        {
             let built = match &dir_meta {
                 Some(Ok(meta)) => Ok(file_info_from_metadata(entry_path.clone(), meta)),
-                _ => get_file_info(&entry_path),
+                // dir_meta Some(Err): the stat already failed; don't retry via
+                // get_file_info (which would repeat the failed lstat).
+                Some(Err(e)) => Err(std::io::Error::new(e.kind(), e.to_string())),
+                None => get_file_info(entry_path),
             };
             match built {
                 Ok(file_entry) => ctx.outcome.matches.push(file_entry),
@@ -132,17 +142,20 @@ fn search_files_recursive(
         }
 
         if let Some(meta) = dir_meta {
-            if should_recurse(meta, ctx.visited) {
-                search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
+            if should_recurse(meta, ctx.visited)
+                && let Some(ref entry_path) = entry_path
+            {
+                search_files_recursive(entry_path, pattern, recursive, depth + 1, ctx, scratch);
             }
         } else if recursive && file_type.is_symlink() {
             // Follow the symlink once; recurse only when the target is a dir
             // and its inode is new.
-            if let Ok(meta) = std::fs::metadata(&entry_path)
+            if let Some(ref entry_path) = entry_path
+                && let Ok(meta) = std::fs::metadata(entry_path)
                 && meta.is_dir()
                 && should_recurse(Ok(meta), ctx.visited)
             {
-                search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
+                search_files_recursive(entry_path, pattern, recursive, depth + 1, ctx, scratch);
             }
         }
     }

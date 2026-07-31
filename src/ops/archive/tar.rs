@@ -188,6 +188,8 @@ pub fn list_tar(file: File, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, 
 
     let mut entries = Vec::new();
     let mut truncated = false;
+    // Hoist the format string out of the loop — it's constant per archive.
+    let method = format!("{format:?}").into_boxed_str();
     for entry in archive.entries()? {
         if entries.len() >= MAX_LIST_ENTRIES {
             truncated = true;
@@ -215,7 +217,7 @@ pub fn list_tar(file: File, format: ArchiveFormat) -> Result<Vec<ArchiveEntry>, 
                 .ok()
                 .map(|t| std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)),
             is_dir: header.entry_type().is_dir(),
-            method: format!("{format:?}").into_boxed_str(),
+            method: method.clone(),
         });
     }
     if truncated {

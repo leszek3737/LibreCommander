@@ -23,7 +23,9 @@ pub struct SegData(Box<[u8]>);
 
 impl SegData {
     fn from_slice(s: &[u8]) -> Self {
-        Self(s.to_vec().into_boxed_slice())
+        // Box::from(&[u8]) is a single allocation; the previous
+        // to_vec().into_boxed_slice() was two (Vec grow + Box).
+        Self(Box::from(s))
     }
 
     fn build(s: &[u8], fold_ascii: bool) -> Self {

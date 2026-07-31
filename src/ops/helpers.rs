@@ -182,7 +182,7 @@ fn dir_size_rec(
 /// **Blocking:** walks the directory tree synchronously on the caller's thread.
 /// Must be invoked from `job_runner`, not the event loop.
 pub(crate) fn dir_size(path: &Path, cancel: Option<&AtomicBool>) -> io::Result<u64> {
-    let mut visited = HashSet::new();
+    let mut visited = HashSet::with_capacity(256);
     seed_visited_dir(path, &mut visited);
     dir_size_rec(path, 0, &mut visited, cancel)
 }

@@ -19,6 +19,16 @@ pub(super) fn contains_case_insensitive(
     if finder.needle().is_empty() {
         return true;
     }
+    // ASCII fast path: if both haystack and needle are pure ASCII, fold the
+    // haystack byte-wise — no char iterator, no to_lowercase Unicode expansion.
+    // This is the common case for source code and log files.
+    if haystack.is_ascii() && finder.needle().is_ascii() {
+        buf.clear();
+        buf.push_str(haystack);
+        // ASCII lowercase is a simple byte-wise bit op on the String's buffer.
+        buf.make_ascii_lowercase();
+        return finder.find(buf.as_bytes()).is_some();
+    }
     buf.clear();
     buf.extend(haystack.chars().flat_map(char::to_lowercase));
     finder.find(buf.as_bytes()).is_some()
@@ -288,37 +298,43 @@ impl CompiledPattern {
         if pattern.contains('?') {
             return None;
         }
-        let star_count = pattern.chars().filter(|&c| c == '*').count();
-        if star_count == 1 {
-            let pos = pattern.find('*')?;
-            return Some(Self {
-                kind: PatternKind::WildcardAffix(WildcardAffix::new(
-                    &pattern[..pos],
-                    &pattern[pos + 1..],
+        // Single pass to find all '*' positions, avoiding the prior count +
+        // find + rfind triple iteration.
+        let star_positions: Vec<usize> = pattern
+            .char_indices()
+            .filter(|&(_, c)| c == '*')
+            .map(|(i, _)| i)
+            .collect();
+        match star_positions.len() {
+            1 => {
+                let pos = star_positions[0];
+                Some(Self {
+                    kind: PatternKind::WildcardAffix(WildcardAffix::new(
+                        &pattern[..pos],
+                        &pattern[pos + 1..],
+                        insensitive,
+                    )),
                     insensitive,
-                )),
-                insensitive,
-            });
+                })
+            }
+            2 if star_positions[1] > star_positions[0] => {
+                let f = star_positions[0];
+                let l = star_positions[1];
+                let inner = &pattern[f + 1..l];
+                if inner.is_empty() {
+                    return None;
+                }
+                // `*inner*` is a pure substring test — represent it as Plain.
+                if pattern[..f].is_empty() && pattern[l + 1..].is_empty() {
+                    return Some(Self {
+                        kind: PatternKind::Plain(Box::new(Plain::new(inner, insensitive))),
+                        insensitive,
+                    });
+                }
+                None
+            }
+            _ => None,
         }
-        if star_count == 2 {
-            let f = pattern.find('*')?;
-            let l = pattern.rfind('*')?;
-            if l <= f {
-                return None;
-            }
-            let inner = &pattern[f + 1..l];
-            if inner.is_empty() {
-                return None;
-            }
-            // `*inner*` is a pure substring test — represent it as Plain.
-            if pattern[..f].is_empty() && pattern[l + 1..].is_empty() {
-                return Some(Self {
-                    kind: PatternKind::Plain(Box::new(Plain::new(inner, insensitive))),
-                    insensitive,
-                });
-            }
-        }
-        None
     }
 
     pub fn matches(&self, name: &str) -> bool {

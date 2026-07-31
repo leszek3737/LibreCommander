@@ -147,6 +147,7 @@ impl ChaMode {
     }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) fn is_dir(&self) -> bool {
         self.typ() == ChaType::Dir
     }
@@ -171,7 +172,9 @@ impl ChaMode {
 // Recognizable sentinel so dummy dirs sort to the epoch and callers can detect them.
 const DIR_SENTINEL_MTIME: SystemTime = UNIX_EPOCH;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// All fields are Copy (ChaKind, ChaMode, u64, Option<SystemTime>, u32), so Cha
+// is Copy — avoids a Clone per use in hot paths (sorting, filtering, rendering).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cha {
     pub kind: ChaKind,
     pub mode: ChaMode,
@@ -272,7 +275,9 @@ impl Cha {
     /// from mode bits alone — so this is intentionally *not* a bare passthrough.
     #[inline]
     pub fn is_dir(&self) -> bool {
-        self.mode.is_dir() || (self.mode.is_link() && self.kind.dir_target)
+        // Compute typ() once — previously is_dir() + is_link() each called typ().
+        let typ = self.mode.typ();
+        typ == ChaType::Dir || (typ == ChaType::Link && self.kind.dir_target)
     }
 
     /// Delegates to [`ChaMode::is_file`] (the canonical type predicate).
@@ -451,14 +456,14 @@ mod tests {
     #[test]
     fn cha_hits_identity() {
         let a = Cha::dummy_dir();
-        let b = a.clone();
+        let b = a; // Copy — Cha is now Copy
         assert!(a.hits(&b));
     }
 
     #[test]
     fn cha_hits_different_mtime() {
         let a = Cha::dummy_dir();
-        let mut b = a.clone();
+        let mut b = a; // Copy
         b.mtime = Some(SystemTime::now());
         assert!(!a.hits(&b));
     }
