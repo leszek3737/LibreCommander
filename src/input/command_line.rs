@@ -96,7 +96,6 @@ pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
         KeyCode::Up if !state.input.command_history.is_empty() => {
             if state.input.history_index.is_none() {
                 state.input.command_draft = state.input.command_line.text().to_owned();
-                state.input.command_line.set_text(String::new());
             }
             let idx = match state.input.history_index {
                 Some(i) if i > 0 => i - 1,

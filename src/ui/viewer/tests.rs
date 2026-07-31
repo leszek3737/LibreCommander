@@ -743,7 +743,7 @@ fn test_hex_mode_search() {
         "hex search for '01 02' should find matches in hex data section"
     );
     assert_eq!(state.current_match, Some(0));
-    assert!(state.search_matches[0].line == 0);
+    assert_eq!(state.search_matches[0].line, 0);
 }
 
 #[test]

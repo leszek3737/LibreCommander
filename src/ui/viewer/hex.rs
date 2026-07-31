@@ -90,7 +90,7 @@ pub(crate) fn format_hex_line_to_buffer(offset: usize, bytes: &[u8], buf: &mut S
 }
 
 pub(crate) fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
+    if needle.is_empty() {
         return None;
     }
     if needle.len() == 1 {
