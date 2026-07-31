@@ -49,20 +49,32 @@ pub(crate) fn get_inode_key(_metadata: &std::fs::Metadata) -> Option<(u64, u64)>
 
 /// Seed the cycle-detection set with the scan root's inode before recursing.
 ///
-/// `dir_size_rec` only records inodes of subdirectories it descends into, so a
-/// symlink inside the tree pointing back at the root would otherwise go
-/// undetected. Inserting the root key up front closes that one-level gap.
-/// `symlink_metadata` (not `metadata`) is used so the root itself is never
-/// followed through a symlink.
+/// `dir_size_rec` / search walkers only record inodes of subdirectories they
+/// descend into, so a symlink inside the tree pointing back at the root would
+/// otherwise go undetected. Inserting the root key up front closes that
+/// one-level gap.
+///
+/// When `path` itself is a symlink, we seed the *target*'s inode (via
+/// `metadata`, which follows the final component) so a later re-entry to the
+/// real directory is recognised as a cycle. Falls back to `symlink_metadata`
+/// if the target is unreachable (broken link).
 pub(crate) fn seed_visited_dir(path: &Path, visited: &mut HashSet<(u64, u64)>) {
-    let meta = match std::fs::symlink_metadata(path) {
+    // Prefer the resolved target so a root-symlink seeds the real directory.
+    let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => {
-            debug_log!(
-                "seed_visited_dir: symlink_metadata failed for {}: {e}",
-                path.display()
-            );
-            return;
+            // Broken symlink / unreadable target: fall back to the link itself
+            // so we still seed *something* and keep the rest of the walk going.
+            match std::fs::symlink_metadata(path) {
+                Ok(m) => m,
+                Err(e2) => {
+                    debug_log!(
+                        "seed_visited_dir: metadata failed for {} ({e}); symlink_metadata also failed: {e2}",
+                        path.display()
+                    );
+                    return;
+                }
+            }
         }
     };
     if meta.is_dir()

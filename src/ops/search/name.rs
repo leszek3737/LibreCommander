@@ -73,6 +73,11 @@ fn search_files_recursive(
             return;
         }
 
+        // Count every dirent toward the item cap, including entries whose
+        // file_type() later fails — otherwise MAX_SEARCH_ITEMS can be
+        // overshot by N unreadable entries.
+        ctx.outcome.items_scanned += 1;
+
         let entry = match entry {
             Ok(entry) => entry,
             Err(err) => {
@@ -97,17 +102,19 @@ fn search_files_recursive(
             }
         };
 
-        ctx.outcome.items_scanned += 1;
-
         let name = entry.file_name();
         let matched = pattern.matches_os(&name, scratch);
 
-        // `entry.metadata()` is an `lstat`. Fetch it once for a non-symlink
-        // directory we may recurse into and reuse it for both the matched
-        // FileEntry and cycle detection — a matched directory then stats once,
-        // not twice (build + inode).
-        let dir_meta: Option<io::Result<Metadata>> =
-            (recursive && file_type.is_dir() && !file_type.is_symlink()).then(|| entry.metadata());
+        // Symlinked files are included in results (pattern matched above).
+        // Symlinked directories ARE recursed into: inode-based cycle detection
+        // (`should_recurse` + `seed_visited_dir`) already protects against
+        // loops, so skipping them would silently drop whole subtrees.
+        //
+        // For a plain directory `entry.metadata()` (lstat) is enough and is
+        // reused for FileEntry + cycle detection. For a symlink we follow
+        // once via `fs::metadata` and only recurse when the target is a dir.
+        let plain_dir = recursive && file_type.is_dir() && !file_type.is_symlink();
+        let dir_meta: Option<io::Result<Metadata>> = plain_dir.then(|| entry.metadata());
 
         if matched {
             let built = match &dir_meta {
@@ -124,17 +131,19 @@ fn search_files_recursive(
             }
         }
 
-        // Symlinked files are included in results (pattern matched above).
-        // Symlinked directories are skipped for recursion to prevent
-        // infinite loops via cyclic symlinks.
-        if file_type.is_symlink() {
-            continue;
-        }
-
-        if let Some(meta) = dir_meta
-            && should_recurse(meta, ctx.visited)
-        {
-            search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
+        if let Some(meta) = dir_meta {
+            if should_recurse(meta, ctx.visited) {
+                search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
+            }
+        } else if recursive && file_type.is_symlink() {
+            // Follow the symlink once; recurse only when the target is a dir
+            // and its inode is new.
+            if let Ok(meta) = std::fs::metadata(&entry_path)
+                && meta.is_dir()
+                && should_recurse(Ok(meta), ctx.visited)
+            {
+                search_files_recursive(&entry_path, pattern, recursive, depth + 1, ctx, scratch);
+            }
         }
     }
 }
@@ -224,7 +233,7 @@ mod tests {
 
         assert!(outcome.matches.is_empty());
         assert!(!outcome.errors.is_empty());
-        assert_eq!(outcome.truncated, None);
+        assert!(outcome.truncated.is_empty());
     }
 
     #[test]
@@ -245,73 +254,99 @@ mod tests {
         let outcome = search_files(&dir, "*.txt", false, false, &AtomicBool::new(false));
 
         assert_eq!(outcome.matches.len(), MAX_SEARCH_ITEMS);
-        assert_eq!(outcome.truncated, Some(TruncationReason::ItemLimit));
+        assert!(outcome.truncated.contains(&TruncationReason::ItemLimit));
 
         let _ = fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]
     #[test]
-    fn test_search_files_does_not_follow_symlinked_directories() {
+    fn test_search_files_follows_symlinked_directories() {
+        // Symlink-to-dir is recursed into; inode cycle detection prevents loops.
         use std::os::unix::fs::symlink;
-        use std::sync::atomic::{AtomicU64, Ordering};
 
-        static CTR: AtomicU64 = AtomicU64::new(0);
-        let id = CTR.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "lc_search_symlink_files_{}_{}",
-            std::process::id(),
-            id
-        ));
-        let _ = fs::remove_dir_all(&dir);
-
-        fs::create_dir_all(dir.join("root")).unwrap();
-        fs::create_dir_all(dir.join("outside")).unwrap();
-        fs::write(dir.join("outside/target.txt"), "x").unwrap();
-        symlink(dir.join("outside"), dir.join("root/linkdir")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("root")).unwrap();
+        fs::create_dir_all(dir.path().join("outside")).unwrap();
+        fs::write(dir.path().join("outside/target.txt"), "x").unwrap();
+        symlink(dir.path().join("outside"), dir.path().join("root/linkdir")).unwrap();
 
         let results = search_files(
-            &dir.join("root"),
+            &dir.path().join("root"),
             "target.txt",
             true,
             false,
             &AtomicBool::new(false),
         )
         .matches;
-        assert!(results.is_empty());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "target.txt");
+    }
 
-        let _ = fs::remove_dir_all(dir);
+    #[cfg(unix)]
+    #[test]
+    fn test_search_files_symlink_cycle_does_not_loop() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("hit.txt"), "x").unwrap();
+        // a/link -> b, b/link -> a  (cycle)
+        symlink(&b, a.join("link")).unwrap();
+        symlink(&a, b.join("link")).unwrap();
+
+        let outcome = search_files(dir.path(), "hit.txt", true, false, &AtomicBool::new(false));
+        // Should find hit.txt exactly once and terminate (no hang / no blowup).
+        assert_eq!(outcome.matches.len(), 1);
+        assert!(outcome.items_scanned < 100);
     }
 
     #[cfg(unix)]
     #[test]
     fn search_files_includes_symlinked_file_in_results() {
-        // matches_pattern runs before the is_symlink check; symlink files
-        // appear in search results (only symlink directories are skipped
-        // for recursion).
+        // Symlink files appear in search results; symlink directories are
+        // also recursed into (with cycle detection).
         use std::os::unix::fs::symlink;
-        use std::sync::atomic::{AtomicU64, Ordering};
 
-        static CTR: AtomicU64 = AtomicU64::new(0);
-        let id = CTR.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "lc_search_symlink_file_{}_{}",
-            std::process::id(),
-            id
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("real.txt"), "x").unwrap();
+        symlink(dir.path().join("real.txt"), dir.path().join("link.txt")).unwrap();
 
-        fs::write(dir.join("real.txt"), "x").unwrap();
-        symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
-
-        let results = search_files(&dir, "*.txt", false, false, &AtomicBool::new(false)).matches;
+        let results =
+            search_files(dir.path(), "*.txt", false, false, &AtomicBool::new(false)).matches;
         assert_eq!(results.len(), 2);
         let names: Vec<&str> = results.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"real.txt"));
         assert!(names.contains(&"link.txt"));
+    }
 
-        let _ = fs::remove_dir_all(dir);
+    #[cfg(unix)]
+    #[test]
+    fn search_files_broken_symlink_does_not_abort() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("ok.txt"), "x").unwrap();
+        symlink(dir.path().join("missing"), dir.path().join("broken")).unwrap();
+
+        let outcome = search_files(dir.path(), "*.txt", true, false, &AtomicBool::new(false));
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].name, "ok.txt");
+    }
+
+    #[test]
+    fn search_files_unicode_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("żółć.txt"), "x").unwrap();
+        fs::write(dir.path().join("ascii.txt"), "x").unwrap();
+
+        let results =
+            search_files(dir.path(), "żółć*", true, false, &AtomicBool::new(false)).matches;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "żółć.txt");
     }
 
     #[test]
@@ -328,7 +363,7 @@ mod tests {
         let outcome = search_files(&dir, "*.txt", true, false, &AtomicBool::new(false));
         assert!(outcome.matches.is_empty());
         assert!(outcome.errors.is_empty());
-        assert_eq!(outcome.truncated, None);
+        assert!(outcome.truncated.is_empty());
 
         let _ = fs::remove_dir_all(dir);
     }
