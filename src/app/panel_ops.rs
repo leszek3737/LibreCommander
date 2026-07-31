@@ -152,6 +152,9 @@ pub fn rebuild_visible_entries(panel: &mut PanelState, visible_height: usize) {
     // Re-sort the backing store in place, then rebuild the filtered view as
     // indices into the now-sorted store. Avoids cloning every FileEntry.
     ops::sort_entries(panel.listing.unfiltered_mut(), sort_mode, sort_options);
+    // The in-place sort moved entries, so path_index (PathBuf→old index) is
+    // stale. Rebuild it or the next watcher upsert/remove hits the wrong slot.
+    panel.listing.rebuild_index();
     panel
         .listing
         .set_filtered_indices(|e| entry_matches_panel(e, compiled.as_ref(), show_hidden));

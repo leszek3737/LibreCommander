@@ -318,6 +318,48 @@ fn watcher_skips_update_when_metadata_unchanged() {
     assert_entry_counts(&panel, 2, 2);
 }
 
+/// Regression: `rebuild_visible_entries` sorts the backing store in place, so
+/// `path_index` must be rebuilt or watcher upsert/remove mutate the wrong slot.
+/// Without the rebuild, an upsert targeting `alpha` (relocated by the sort)
+/// lands on whichever entry used to occupy that slot pre-sort.
+#[test]
+fn rebuild_visible_entries_keeps_path_index_consistent_for_watcher_upsert() {
+    let dir = tempfile::tempdir().unwrap();
+    let alpha = dir.path().join("alpha.txt");
+    let beta = dir.path().join("beta.txt");
+    fs::write(&alpha, b"a").unwrap();
+    fs::write(&beta, b"b").unwrap();
+
+    let mut panel = test_panel(dir.path());
+    // Insert in reverse name order so the name sort actually reorders.
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &beta));
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &alpha));
+    rebuild(&mut panel);
+    assert_entry_names_eq(&panel, &["..", "alpha.txt", "beta.txt"]);
+
+    // Update alpha's content and size; upsert must land on alpha, not beta.
+    fs::write(&alpha, b"alpha-grow").unwrap();
+    assert!(apply_watcher_upsert_if_matches(&mut panel, &alpha));
+    rebuild(&mut panel);
+
+    let alpha_entry = panel
+        .listing
+        .unfiltered()
+        .iter()
+        .find(|e| e.name == "alpha.txt")
+        .unwrap();
+    assert_eq!(alpha_entry.size(), b"alpha-grow".len() as u64);
+
+    // Sanity: beta untouched by the alpha upsert (the stale-index symptom).
+    let beta_entry = panel
+        .listing
+        .unfiltered()
+        .iter()
+        .find(|e| e.name == "beta.txt")
+        .unwrap();
+    assert_eq!(beta_entry.size(), b"b".len() as u64);
+}
+
 #[test]
 fn watcher_updates_when_metadata_changes() {
     let dir = tempfile::tempdir().unwrap();
