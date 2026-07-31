@@ -451,10 +451,11 @@ fn render_viewer_status(
     let status_text = format!(
         " {mode_label}  {mime_label}  {size_label}  {position_text}{utf8_warning}{binary_warning}{truncated_warning}",
     );
+    let status_style = Theme::status_bar_with_colors(colors);
     let status_style = if has_warning {
-        Theme::status_bar_with_colors(colors).fg(colors.warning)
+        status_style.fg(colors.warning)
     } else {
-        Theme::status_bar_with_colors(colors)
+        status_style
     };
     let status_paragraph = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_paragraph, status_area);

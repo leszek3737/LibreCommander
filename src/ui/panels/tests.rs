@@ -1,5 +1,3 @@
-#![allow(clippy::expect_used)]
-
 use super::*;
 use crate::app::types::{format_size, format_time, sanitize_for_display};
 use crate::ui::theme::{DEFAULT_COLORS, IconTheme};

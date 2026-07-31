@@ -1,8 +1,14 @@
 use crate::render_dialog_map;
+use lc::{app, ui};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     prelude::*,
 };
+
+use app::types::{ActivePanel, AppMode, AppState, PickerKind, ViewMode};
+use std::borrow::Cow;
+use ui::theme::{ColorPalette, Theme};
+use ui::{dialogs, panels, viewer};
 
 fn safe_split_at(s: &str, mut byte_idx: usize) -> (&str, &str) {
     byte_idx = byte_idx.min(s.len());
@@ -18,13 +24,6 @@ fn cursor_line(prefix: &str, text: &str, byte_pos: usize) -> String {
     let (before, after) = safe_split_at(text, byte_pos);
     format!("{prefix}{before}_{after}")
 }
-
-use lc::{app, ui};
-
-use app::types::{ActivePanel, AppMode, AppState, PickerKind, ViewMode};
-use std::borrow::Cow;
-use ui::theme::{ColorPalette, Theme};
-use ui::{dialogs, panels, viewer};
 
 pub(crate) fn render_ui(
     f: &mut Frame,

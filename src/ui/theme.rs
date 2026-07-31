@@ -1,5 +1,4 @@
-use ratatui::style::Modifier;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
 use crate::app::types::FileCategory;
@@ -53,11 +52,10 @@ macro_rules! define_theme_colors {
         pub struct ThemeConfig {
             $(pub $field: Option<String>,)*
             pub preset: Option<String>,
-            #[serde(default)]
             pub icon_theme: IconTheme,
         }
 
-        #[derive(Copy, Clone, Debug, PartialEq)]
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         pub struct ColorPalette {
             $(pub $field: Color,)*
             icon_theme: IconTheme,
@@ -220,16 +218,21 @@ fn parse_color(s: &str) -> Option<Color> {
 }
 
 fn parse_hex_color(hex: &str) -> Option<Color> {
-    if hex.len() == 6 {
-        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    // Operate on bytes and require a pure-ASCII digit string. Slicing `&hex[n..m]`
+    // on a multi-byte UTF-8 config value can split a codepoint and panic at
+    // runtime ("byte index is not a char boundary"). `is_ascii()` rejects any
+    // such input before we index; `as_bytes()` is safe once that holds.
+    let bytes = hex.as_bytes();
+    if bytes.len() == 6 && hex.is_ascii() {
+        let r = u8::from_str_radix(std::str::from_utf8(&bytes[0..2]).ok()?, 16).ok()?;
+        let g = u8::from_str_radix(std::str::from_utf8(&bytes[2..4]).ok()?, 16).ok()?;
+        let b = u8::from_str_radix(std::str::from_utf8(&bytes[4..6]).ok()?, 16).ok()?;
         return Some(Color::Rgb(r, g, b));
     }
-    if hex.len() == 3 {
-        let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
-        let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
-        let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+    if bytes.len() == 3 && hex.is_ascii() {
+        let r = u8::from_str_radix(std::str::from_utf8(&bytes[0..1]).ok()?, 16).ok()? * 17;
+        let g = u8::from_str_radix(std::str::from_utf8(&bytes[1..2]).ok()?, 16).ok()? * 17;
+        let b = u8::from_str_radix(std::str::from_utf8(&bytes[2..3]).ok()?, 16).ok()? * 17;
         return Some(Color::Rgb(r, g, b));
     }
     None
@@ -468,6 +471,17 @@ mod tests {
         assert_eq!(parse_color("notacolor"), None);
         assert_eq!(parse_color("#GG0000"), None);
         assert_eq!(parse_color("#12345"), None);
+    }
+
+    #[test]
+    fn parse_hex_color_non_ascii_does_not_panic() {
+        // Regression: a 6-byte slice that is not char-boundary aligned (e.g. a
+        // multi-byte UTF-8 codepoint sitting where a hex digit is expected)
+        // must return None, not panic on `&hex[n..m]`. Reachable from user
+        // config via parse_color -> parse_hex_color.
+        assert_eq!(parse_hex_color("a\u{4e2d}cd"), None);
+        assert_eq!(parse_hex_color("\u{4e2d}ab"), None);
+        assert_eq!(parse_hex_color("\u{4e2d}"), None);
     }
 
     #[test]

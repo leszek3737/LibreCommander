@@ -42,8 +42,7 @@ impl ViewerState {
         // Reset horizontal scroll on every toggle, both directions. Wrap-mode
         // rendering ignores `horizontal_offset`, but `scroll_right` keeps
         // growing it while wrapped; without this reset the view would jump by
-        // that stale offset the moment wrap is turned back off. (Pairs with the
-        // `mode_dispatch` `scroll_right` wrap-guard tracked in PR8.)
+        // that stale offset the moment wrap is turned back off.
         self.horizontal_offset = 0;
         self.invalidate_visual_cache();
     }
