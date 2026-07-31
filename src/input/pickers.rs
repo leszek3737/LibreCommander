@@ -106,8 +106,11 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
             }
         }
         KeyCode::Char('d') if state.ui.picker_selected < state.hotlist().len() => {
-            // Confirm before removing: the deletion has no undo.
-            state.ui.pending_hotlist_delete = Some(state.ui.picker_selected);
+            // Store the path (not the index) so the delete is robust against
+            // index drift between this prompt and the confirm: the entry is
+            // re-resolved by path at delete time.
+            let path = state.hotlist()[state.ui.picker_selected].clone();
+            state.ui.pending_hotlist_delete = Some(path);
             state.input.dialog_selection = 1; // default to "No"
             state.mode = AppMode::Dialog(DialogKind::Confirm(ConfirmDetails::simple(
                 "Remove from hotlist?",
@@ -121,14 +124,19 @@ fn handle_hotlist_picker(state: &mut AppState, key: KeyCode, len: usize) {
 /// Resolve a pending hotlist deletion after the confirm dialog: remove the
 /// entry when `confirmed`, then return to the hotlist picker regardless.
 pub(crate) fn resolve_hotlist_delete(state: &mut AppState, confirmed: bool) {
-    if let Some(idx) = state.ui.pending_hotlist_delete.take()
+    if let Some(path) = state.ui.pending_hotlist_delete.take()
         && confirmed
-        && idx < state.hotlist().len()
     {
-        state.hotlist_remove(idx);
-        let hotlist_len = state.hotlist().len();
-        if state.ui.picker_selected > 0 && state.ui.picker_selected >= hotlist_len {
-            state.ui.picker_selected -= 1;
+        // Re-resolve the index by path at delete time. This is robust against
+        // index drift: even if the hotlist was mutated between the 'd' prompt
+        // and this confirm, the correct entry (by identity) is removed — or none
+        // if it was already gone.
+        if let Some(idx) = state.hotlist().iter().position(|p| p == &path) {
+            state.hotlist_remove(idx);
+            let hotlist_len = state.hotlist().len();
+            if state.ui.picker_selected > 0 && state.ui.picker_selected >= hotlist_len {
+                state.ui.picker_selected -= 1;
+            }
         }
     }
     state.input.dialog_selection = 0;
@@ -443,7 +451,10 @@ mod tests {
         };
         // 'd' asks for confirmation (default "No") rather than deleting outright.
         handle_list_picker(&mut state, KeyCode::Char('d'));
-        assert_eq!(state.ui.pending_hotlist_delete, Some(0));
+        assert_eq!(
+            state.ui.pending_hotlist_delete,
+            Some(PathBuf::from("/only"))
+        );
         assert_eq!(state.input.dialog_selection, 1);
         assert_eq!(state.ui.directory_hotlist.len(), 1);
         // Confirming removes it and returns to the hotlist picker.

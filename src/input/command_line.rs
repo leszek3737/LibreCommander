@@ -36,28 +36,33 @@ fn command_execute(state: &mut AppState) {
 
 pub(crate) fn handle_command_line(state: &mut AppState, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Crossterm may deliver Ctrl+Shift+letter as an uppercase `Char`
+        // (e.g. Ctrl+Shift+A as 'A'); normalize so both behave identically.
         match key.code {
-            KeyCode::Char('a') => {
-                state.input.command_line.cursor_start();
-                return;
-            }
-            KeyCode::Char('e') => {
-                state.input.command_line.cursor_end();
-                return;
-            }
-            KeyCode::Char('u') => {
-                state.input.command_line.drain_to_start();
-                return;
-            }
-            KeyCode::Char('w') => {
-                let edited = state.input.command_line.delete_word_backward();
-                reset_history_if(state, edited);
-                return;
-            }
-            KeyCode::Char('c') => {
-                cancel_command_input(state);
-                return;
-            }
+            KeyCode::Char(c) if c.is_ascii_alphabetic() => match c.to_ascii_lowercase() {
+                'a' => {
+                    state.input.command_line.cursor_start();
+                    return;
+                }
+                'e' => {
+                    state.input.command_line.cursor_end();
+                    return;
+                }
+                'u' => {
+                    state.input.command_line.drain_to_start();
+                    return;
+                }
+                'w' => {
+                    let edited = state.input.command_line.delete_word_backward();
+                    reset_history_if(state, edited);
+                    return;
+                }
+                'c' => {
+                    cancel_command_input(state);
+                    return;
+                }
+                _ => {}
+            },
             _ => {}
         }
         return;

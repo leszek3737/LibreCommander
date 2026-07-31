@@ -193,7 +193,11 @@ fn compute_window_from_segments(
         // `start_cum <= cursor_display`: `start_idx` is the first grapheme whose
         // start column reaches `scroll_display <= cursor_display`, so it never
         // sits past the cursor — the subtraction cannot underflow.
-        cursor_col: cursor_display - start_cum,
+        // Clamp to `width` so the producer honours its own contract
+        // (`cursor_col <= width`): when a wide grapheme at the viewport edge
+        // makes the built window narrower than the cursor's display column,
+        // consumers no longer need a defensive clamp.
+        cursor_col: (cursor_display - start_cum).min(width),
         width,
     }
 }
