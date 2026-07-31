@@ -835,6 +835,16 @@ fn test_scroll_offset_beyond_entries_len_clamped_by_ensure_visible() {
 // --- Audit PR-11: app state invariants -------------------------------------
 
 #[test]
+fn format_mtime_pre_epoch_formats_absolute() {
+    // Pre-1970 mtimes must render an absolute date (aligned with the listing's
+    // format_time), not the "Unknown" placeholder. ~1969.
+    let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(31_536_000);
+    let result = format_mtime(pre_epoch);
+    assert_ne!(result, "Unknown", "pre-epoch should format, got {result}");
+    assert!(result.contains('-'), "expected a date, got {result}");
+}
+
+#[test]
 fn format_mtime_far_future_returns_unknown() {
     // A timestamp whose seconds fit i64 but exceed chrono's representable
     // range must render "Unknown", not a misleading 1970 epoch date.
@@ -852,14 +862,15 @@ fn format_mtime_normal_value_formats() {
 }
 
 #[test]
-fn format_size_eb_overflow_clamped() {
-    // Rounding at the largest unit (EB) can yield 1024.0 EB; the clamp must
-    // prevent the visually-wrong wraparound. ~1.18e19 bytes → ~10239 EB.
-    let near_eb_max = 11_805_916_207_174_113_024u64;
-    let result = format_size(near_eb_max);
+fn format_size_u64_max_formats_honest_eb() {
+    // u64::MAX tops out at ~16 EB; rounding at the EB unit can never reach
+    // 1024.0 EB, so no clamp is needed. The output must be a normal EB value,
+    // not a wraparound artifact.
+    let result = format_size(u64::MAX);
+    assert!(result.ends_with(" EB"), "expected EB unit, got {result}");
     assert!(
-        !result.starts_with("1024.0 EB"),
-        "expected clamp, got {result}"
+        !result.starts_with("1024"),
+        "unexpected wraparound: {result}"
     );
 }
 

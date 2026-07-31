@@ -95,11 +95,8 @@ pub fn format_size(size: u64) -> String {
             size_f /= BYTES_PER_UNIT;
             unit_idx += 1;
         }
-        // At the largest unit (EB) rounding overflow cannot carry up — clamp
-        // to avoid rendering "1024.0 EB", which looks like a wraparound.
-        if size_f >= BYTES_PER_UNIT {
-            size_f = BYTES_PER_UNIT - 0.1;
-        }
+        // ponytail: at the largest unit (EB) rounding overflow cannot carry
+        // up, and u64::MAX tops out at ~16 EB, so no clamp is needed here.
     }
     if unit_idx == 0 {
         format!("{} {}", size, units[unit_idx])
@@ -123,7 +120,7 @@ pub(crate) fn format_system_time(modified: SystemTime) -> Option<String> {
 /// Signed seconds from the Unix epoch, handling both pre- and post-1970 and
 /// clamping out-of-i64 magnitudes to `i64::MAX` (which `timestamp_opt` then
 /// rejects, yielding the None fallback).
-fn signed_epoch_secs(t: SystemTime) -> Option<i64> {
+pub(crate) fn signed_epoch_secs(t: SystemTime) -> Option<i64> {
     match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_secs()).ok(),
         Err(e) => {

@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use chrono::TimeZone;
 
+use super::file_entry::signed_epoch_secs;
 use super::text_input::TextInput;
 use crate::ops::archive::ArchiveEntry;
 
@@ -99,15 +100,15 @@ pub struct PropertiesDetails {
 }
 
 /// Format `mtime` as a local-time string matching the properties dialog.
-/// Falls back to `"Unknown"` for any value chrono cannot represent — both
-/// pre-epoch mtimes (via `duration_since` failure) and far-future timestamps
-/// that exceed chrono's representable range (via `timestamp_opt` returning
-/// `None`).
+/// Pre-epoch mtimes render an absolute date (aligned with the listing's
+/// `format_time`); only timestamps outside chrono's representable range
+/// (`timestamp_opt` returns `None`, e.g. i64::MAX seconds) fall back to
+/// `"Unknown"`.
 pub fn format_mtime(mtime: SystemTime) -> String {
-    let Ok(duration) = mtime.duration_since(std::time::UNIX_EPOCH) else {
-        return "Unknown".to_string();
+    let secs = match signed_epoch_secs(mtime) {
+        Some(s) => s,
+        None => return "Unknown".to_string(),
     };
-    let secs = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
     match chrono::Local.timestamp_opt(secs, 0).single() {
         Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
         None => "Unknown".to_string(),
