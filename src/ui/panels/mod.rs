@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme::{ColorPalette, DEFAULT_COLORS, IconTheme, Theme};
 
-use crate::app::types::{FileCategory, FileEntry, ListingMode, PanelState, format_size};
+use crate::app::types::{FileCategory, FileEntry, ListingMode, PanelState};
 
 const FN_KEY_TEXTS: [&str; 10] = [
     " F1 ", " F2 ", " F3 ", " F4 ", " F5 ", " F6 ", " F7 ", " F8 ", " F9 ", " F10 ",
@@ -140,13 +140,22 @@ fn shorten_home_with<'a>(path: &'a str, home: &str) -> Cow<'a, str> {
     Cow::Borrowed(path)
 }
 
+/// Resolve `$HOME` once and cache it thread-locally. `dirs::home_dir()` does
+/// an env/syscall lookup (with a passwd fallback) on every call; the home
+/// directory does not change during a session, so caching avoids a per-frame
+/// query from the hot panel-render path.
 fn shorten_home(path: &str) -> Cow<'_, str> {
-    // dirs::home_dir (not std::env) to stay consistent with tilde expansion
-    // in fs::path, which also falls back to passwd when $HOME is unset.
-    match dirs::home_dir() {
-        Some(home) => shorten_home_with(path, &home.to_string_lossy()),
-        None => Cow::Borrowed(path),
+    thread_local! {
+        static HOME: std::cell::OnceCell<Option<std::path::PathBuf>> =
+            const { std::cell::OnceCell::new() };
     }
+    HOME.with(|cell| {
+        let home = cell.get_or_init(dirs::home_dir);
+        match home {
+            Some(h) => shorten_home_with(path, &h.to_string_lossy()),
+            None => Cow::Borrowed(path),
+        }
+    })
 }
 
 pub fn render_panel_with_colors(
@@ -199,16 +208,14 @@ pub fn render_panel_with_colors(
     // simultaneously, but the per-line buffer is pre-sized to avoid reallocs.
     let mut suffix_buf = String::with_capacity(64);
 
-    for entry in panel
-        .listing
-        .filtered()
-        .skip(start_idx)
-        .take(end_idx.saturating_sub(start_idx))
-    {
+    for i in start_idx..end_idx {
+        let Some(entry) = panel.listing.filtered_get(i) else {
+            continue;
+        };
         let cat = entry.category();
         let bold = entry.is_dir() || entry.is_executable();
 
-        let mut line = String::with_capacity(content_width + 8);
+        let mut line = String::with_capacity(content_width.saturating_mul(4) + 8);
         match mode {
             ListingMode::Long => format_entry_line(
                 entry,
@@ -292,11 +299,14 @@ fn build_suffix_into(
     let size_date_width = size_width + date_width + 2;
 
     if show_permissions {
-        let perms_str = FileEntry::display_permissions_raw(entry.mode_bits());
-        let perms_width = UnicodeWidthStr::width(perms_str.as_str());
-        let full_width = size_date_width + perms_width + 1;
+        // Permissions are always 9 display columns (rwxrwxrwx with special
+        // bits). Write ChaMode straight into `buf` instead of allocating a
+        // String via `display_permissions_raw` for every visible row.
+        const PERMS_WIDTH: usize = 9;
+        let full_width = size_date_width + PERMS_WIDTH + 1;
         if 2 + full_width <= width {
-            write!(buf, " {size_str} {date_str} {perms_str}").ok();
+            let perms = crate::fs::cha::ChaMode::new(entry.mode_bits());
+            write!(buf, " {size_str} {date_str} {perms}").ok();
             return full_width;
         }
     }
@@ -402,7 +412,9 @@ fn format_entry_line(
 
 fn write_status_metadata(buf: &mut String, size: &str, entry: &FileEntry, show_permissions: bool) {
     if show_permissions {
-        let perms = FileEntry::display_permissions_raw(entry.mode_bits());
+        // Write ChaMode straight into buf — avoids the String alloc that
+        // `display_permissions_raw` does on every status-bar render.
+        let perms = crate::fs::cha::ChaMode::new(entry.mode_bits());
         write!(buf, "{size} | {perms} | {} | {}", entry.owner, entry.group).ok();
     } else {
         write!(buf, "{size} | {} | {}", entry.owner, entry.group).ok();
@@ -500,6 +512,30 @@ pub fn render_scrollbar_with_colors(
     f.render_widget(paragraph, area);
 }
 
+/// Format `size` into `buf` without allocating, mirroring [`format_size`].
+/// Used by the per-frame status-bar summary where the previous code allocated
+/// a `String` via `format_size` on every render.
+fn write_size(buf: &mut String, size: u64) {
+    const UNITS: [&str; 7] = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+    const BYTES_PER_UNIT: f64 = 1024.0;
+    let mut size_f = size as f64;
+    let mut unit_idx = 0;
+    while size_f >= BYTES_PER_UNIT && unit_idx < UNITS.len() - 1 {
+        size_f /= BYTES_PER_UNIT;
+        unit_idx += 1;
+    }
+    if unit_idx > 0 {
+        size_f = (size_f * 10.0).round() / 10.0;
+        if size_f >= BYTES_PER_UNIT && unit_idx < UNITS.len() - 1 {
+            size_f /= BYTES_PER_UNIT;
+            unit_idx += 1;
+        }
+        write!(buf, "{size_f:.1} {}", UNITS[unit_idx]).ok();
+    } else {
+        write!(buf, "{size} {}", UNITS[unit_idx]).ok();
+    }
+}
+
 pub fn panel_status_summary(panel: &PanelState, buf: &mut String) -> usize {
     buf.clear();
     let total = panel.listing.filtered_len();
@@ -513,13 +549,11 @@ pub fn panel_status_summary(panel: &PanelState, buf: &mut String) -> usize {
     write!(buf, " {}/{} {}%", pos, total, pct).ok();
 
     if panel.selected_count() > 0 {
-        write!(
-            buf,
-            " ({} {})",
-            panel.selected_count(),
-            format_size(panel.selected_size())
-        )
-        .ok();
+        // Format the size straight into `buf` — format_size() returns an owned
+        // String (one alloc per frame), but we only need it as Display text here.
+        write!(buf, " ({} ", panel.selected_count()).ok();
+        write_size(buf, panel.selected_size());
+        buf.push(')');
     }
 
     buf.push(' ');
@@ -534,29 +568,34 @@ pub fn render_status_bar_with_colors(
 ) {
     let available = area.width as usize;
 
-    let mut scratch = String::with_capacity(128);
-    let right_width = panel_status_summary(panel, &mut scratch);
-    let right_summary = scratch.clone();
+    let mut summary = String::with_capacity(48);
+    let right_width = panel_status_summary(panel, &mut summary);
     let remaining = available.saturating_sub(right_width);
 
-    let mut out = String::with_capacity(remaining + right_summary.len() + 8);
+    let mut out = String::with_capacity(remaining.max(available) + 8);
 
     // Render the cursor entry's info only when it exists; an out-of-range or
     // empty listing simply skips the left side rather than panicking.
     if let Some(entry) = panel.listing.filtered_get(panel.cursor) {
         let display_name = entry.display_name();
-        let size_str = format_size(entry.size());
+        // `entry.size_str` is the column-padded cache — for directories it is
+        // "     <DIR>", not a size. The status bar wants the real byte size for
+        // every entry (as the pre-perf code did via `format_size`), so format the
+        // entry's size directly into `size_buf` with the zero-alloc helper rather
+        // than reusing the column cache.
+        let mut size_buf = String::with_capacity(8);
+        write_size(&mut size_buf, entry.size());
 
-        scratch.clear();
-        write_status_metadata(&mut scratch, &size_str, entry, panel.show_permissions());
-        let meta_width = UnicodeWidthStr::width(scratch.as_str());
+        let mut meta = String::with_capacity(48);
+        write_status_metadata(&mut meta, &size_buf, entry, panel.show_permissions());
+        let meta_width = UnicodeWidthStr::width(meta.as_str());
 
         let full_width = UnicodeWidthStr::width(display_name) + 3 + meta_width;
 
         if full_width <= remaining {
             out.push_str(display_name);
             out.push_str(" | ");
-            out.push_str(&scratch);
+            out.push_str(&meta);
         } else {
             let meta_with_sep_width = meta_width + 3;
             let name_budget = remaining.saturating_sub(meta_with_sep_width);
@@ -565,12 +604,12 @@ pub fn render_status_bar_with_colors(
                 let truncated = truncate_to_width(display_name, name_budget);
                 out.push_str(&truncated);
                 out.push_str(" | ");
-                out.push_str(&scratch);
+                out.push_str(&meta);
             } else {
-                scratch.clear();
-                write!(scratch, "{display_name} | ").ok();
-                write_status_metadata(&mut scratch, &size_str, entry, panel.show_permissions());
-                let truncated = truncate_to_width(&scratch, remaining);
+                meta.clear();
+                write!(meta, "{display_name} | ").ok();
+                write_status_metadata(&mut meta, &size_buf, entry, panel.show_permissions());
+                let truncated = truncate_to_width(&meta, remaining);
                 out.push_str(&truncated);
             }
         }
@@ -579,7 +618,7 @@ pub fn render_status_bar_with_colors(
     let info_line_width = UnicodeWidthStr::width(out.as_str());
     let padding = remaining.saturating_sub(info_line_width);
     out.extend(std::iter::repeat_n(' ', padding));
-    out.push_str(&right_summary);
+    out.push_str(&summary);
 
     let paragraph = Paragraph::new(out)
         .style(Theme::status_bar_with_colors(colors))

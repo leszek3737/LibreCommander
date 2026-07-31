@@ -12,10 +12,6 @@ use crate::ui::theme::{ColorPalette, Theme};
 use super::layout::dialog_block;
 
 thread_local! {
-    /// Reusable scratch buffer for the input field's visible window,
-    /// avoiding a per-frame allocation. Safe because rendering is
-    /// single-threaded and the buffer is cleared at the start of each use.
-    static INPUT_BUF: RefCell<String> = const { RefCell::new(String::new()) };
     /// Reusable scratch buffer for the "N files selected" sources line.
     static SOURCES_BUF: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -153,21 +149,18 @@ fn render_input_field(
     // otherwise land it on the border (`visible_width >= 1` here).
     let cursor_col = window.cursor_col.min(visible_width.saturating_sub(1));
 
-    INPUT_BUF.with_borrow_mut(|buf| {
-        buf.clear();
-        buf.push_str(&window.text);
-        let input_paragraph = Paragraph::new(buf.as_str()).block(input_block);
-        // `render_widget` consumes `input_paragraph`, dropping the shared borrow of `buf`
-        // synchronously here — before `set_cursor_position` below touches the closure scope.
-        f.render_widget(input_paragraph, area);
+    // `window.text` is already an owned String from compute_visible_window;
+    // render it directly instead of copying into a thread-local scratch buffer.
+    let input_paragraph = Paragraph::new(window.text).block(input_block);
+    f.render_widget(input_paragraph, area);
 
-        let cursor_x = input_inner.x + cursor_col as u16;
-        f.set_cursor_position((cursor_x, input_inner.y));
-    });
+    let cursor_x = input_inner.x + cursor_col as u16;
+    f.set_cursor_position((cursor_x, input_inner.y));
 }
 
 fn render_button_row(f: &mut Frame, area: Rect, buttons: &[(ratatui::style::Style, &str)]) {
-    let mut spans: Vec<Span> = Vec::with_capacity(buttons.len());
+    // n buttons produce 2n-1 spans (each button + n-1 separators).
+    let mut spans: Vec<Span> = Vec::with_capacity(buttons.len() * 2);
     for (i, (style, label)) in buttons.iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));

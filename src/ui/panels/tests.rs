@@ -1,8 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::app::types::format_time;
-use crate::app::types::sanitize_for_display;
+use crate::app::types::{format_size, format_time, sanitize_for_display};
 use crate::ui::theme::{DEFAULT_COLORS, IconTheme};
 use ratatui::style::Color;
 use std::path::PathBuf;
@@ -54,6 +53,7 @@ fn entry_line(entry: &FileEntry, width: usize, show_permissions: bool) -> String
         &mut suffix,
         &mut out,
     );
+    let _ = &suffix; // scratch buffer required by format_entry_line, not asserted
     out
 }
 
@@ -815,6 +815,55 @@ fn test_render_status_bar_no_panic() {
         render_status_bar_with_colors(f, f.area(), &panel, &DEFAULT_COLORS);
     });
     assert!(content.contains("file.txt"));
+}
+
+/// Regression: the status bar must show the *unpadded* file size. The cached
+/// `size_str` is column-padded (`{:>10}` → "    1.0 KB"); the status bar must
+/// not leak that padding into the metadata segment.
+#[test]
+fn test_render_status_bar_size_is_unpadded() {
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    // size 1024 → format_size = "1.0 KB", padded cache = "    1.0 KB"
+    panel.set_entries(vec![create_test_entry("file.txt", false, false, false)]);
+    let content = render_to_string(80, 2, |f| {
+        render_status_bar_with_colors(f, f.area(), &panel, &DEFAULT_COLORS);
+    });
+    // Unpadded form must be present...
+    assert!(
+        content.contains("1.0 KB"),
+        "status bar missing unpadded size, got: {content:?}"
+    );
+    // ...and the column-padded form must not leak through (no run of spaces
+    // before the size — the metadata is "1.0 KB | <owner> | <group>").
+    assert!(
+        !content.contains("    1.0 KB"),
+        "status bar leaked column-padded size, got: {content:?}"
+    );
+}
+
+/// Regression: a directory must show its real byte size in the status bar, not
+/// the column-cache placeholder "<DIR>". The pre-perf code used
+/// `format_size(entry.size())`; the column cache `size_str` is "     <DIR>"
+/// for directories, which is not a size.
+#[test]
+fn test_render_status_bar_directory_shows_size_not_dir_label() {
+    let mut panel = PanelState::new(PathBuf::from("/test"));
+    // Directory with a size (e.g. directory entry block size); column cache =
+    // "     <DIR>", but size() = 1024 → "1.0 KB".
+    panel.set_entries(vec![entry_with("docs", true, false, false, 1024)]);
+    let content = render_to_string(80, 2, |f| {
+        render_status_bar_with_colors(f, f.area(), &panel, &DEFAULT_COLORS);
+    });
+    // Must not show the column-cache placeholder...
+    assert!(
+        !content.contains("<DIR>"),
+        "status bar showed <DIR> for a directory, got: {content:?}"
+    );
+    // ...and must show a real size (contains a unit suffix, e.g. "B"/"KB").
+    assert!(
+        content.contains(" KB") || content.contains(" MB") || content.contains(" B"),
+        "status bar missing directory size for dir, got: {content:?}"
+    );
 }
 
 #[test]

@@ -354,7 +354,10 @@ impl ViewerState {
         }
 
         let file = fs::File::open(path)?;
-        let mut raw_bytes = Vec::with_capacity(file_size.min(MAX_VIEW_SIZE + 1));
+        // Don't pre-reserve up to MAX_VIEW_SIZE (~100MB): a cancelled or early-
+        // ending read would waste that allocation. Start at a reasonable chunk
+        // size and let `extend_from_slice` grow naturally.
+        let mut raw_bytes = Vec::with_capacity(READ_CHUNK.min(file_size));
         let mut reader = file.take((MAX_VIEW_SIZE + 1) as u64);
         let mut buf = [0u8; READ_CHUNK];
         loop {
@@ -437,10 +440,11 @@ impl ViewerState {
                     truncated = true;
                     break;
                 }
-                let size = if entry.is_dir {
-                    "<DIR>".to_string()
+                // Borrow the size label instead of allocating a String per dir.
+                let size: std::borrow::Cow<'_, str> = if entry.is_dir {
+                    std::borrow::Cow::Borrowed("<DIR>")
                 } else {
-                    crate::app::types::format_size(entry.size)
+                    std::borrow::Cow::Owned(crate::app::types::format_size(entry.size))
                 };
                 let mtime = entry
                     .modified

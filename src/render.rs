@@ -33,7 +33,6 @@ pub(crate) fn render_ui(
     viewer_loader: Option<&viewer::ViewerLoader>,
 ) {
     let colors = &state.theme_colors;
-    let icon_theme = colors.icon_theme();
 
     match &state.mode {
         AppMode::Viewing => {
@@ -77,6 +76,10 @@ pub(crate) fn render_ui(
         render_overlays(f, state, f.area(), colors);
         return;
     }
+
+    // icon_theme is only needed for the panel layout below, not for the viewer
+    // or directory-tree paths that return early above.
+    let icon_theme = colors.icon_theme();
 
     let size = f.area();
 

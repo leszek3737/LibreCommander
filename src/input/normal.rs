@@ -567,14 +567,18 @@ pub(crate) fn handle_alt_keys(state: &mut AppState, key: KeyCode, visible: usize
             // directory is gone. Consume the history entry only on success so
             // a failed navigation doesn't destroy the history stack.
             let panel = state.active_panel_mut();
-            panel.set_path(prev_path.clone());
+            panel.set_path(prev_path);
             panel.cursor = 0;
             panel.scroll_offset = 0;
             let result = panel_ops::refresh_panel(state.active_panel_mut(), visible);
             if result.is_none() {
                 state.active_panel_mut().pop_history();
                 reposition_cursor_to_entry(state, prev_dir_name.as_deref(), visible);
-                state.ui.status_message = Some(format!("cd to {}", prev_path.display()));
+                // After set_path, the panel path IS the previous path, so we
+                // can read it back for the status message instead of cloning
+                // prev_path before the move.
+                state.ui.status_message =
+                    Some(format!("cd to {}", state.active_panel().path().display()));
             } else if let Some(msg) = result {
                 state.set_status(msg);
             }

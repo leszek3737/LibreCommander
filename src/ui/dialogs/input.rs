@@ -98,6 +98,13 @@ struct GraphemeSegment {
 /// Per-thread memoization of the grapheme segmentation of the last rendered
 /// input value.
 ///
+/// **Assumption:** at most one input field is rendered per frame. The cache
+/// key is the value string, so interleaving multiple distinct input values
+/// (e.g. an archive-extract dialog + a search bar) thrashes it. This is safe
+/// — correctness is unaffected — but the memoization only helps when the same
+/// value is rendered consecutively. Only one dialog is ever focused at a time
+/// in this TUI, so the single-active-field assumption holds in practice.
+///
 /// Rendering stays a pure function of its arguments: this cache only avoids
 /// re-segmenting an unchanged value across consecutive frames/keystrokes. It is
 /// NOT application state and never changes the output for a given `value`.

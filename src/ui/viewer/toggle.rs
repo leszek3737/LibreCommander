@@ -6,9 +6,12 @@ use super::scroll::line_number_column_width;
 
 impl ViewerState {
     fn invalidate_visual_cache(&self) {
-        self.render_cache.visual_heights.borrow_mut().clear();
-        self.render_cache.visual_offsets.borrow_mut().clear();
-        *self.render_cache.cached_content_width.borrow_mut() = 0;
+        let mut heights = self.render_cache.visual_heights.borrow_mut();
+        let mut offsets = self.render_cache.visual_offsets.borrow_mut();
+        let mut width = self.render_cache.cached_content_width.borrow_mut();
+        heights.clear();
+        offsets.clear();
+        *width = 0;
     }
 
     fn next_view_mode(&self) -> ViewMode {
@@ -61,14 +64,19 @@ impl ViewerState {
         self.invalidate_visual_cache();
 
         if self.view_mode == ViewMode::Text && self.originally_binary {
-            let (line_offsets, line_count, max_line_width) =
-                Self::compute_text_metrics(&self.raw_bytes);
-            self.line_offsets = line_offsets;
-            self.line_count = line_count;
-            self.max_line_width = max_line_width;
-            self.render_cache
-                .cached_line_num_col_width
-                .set(line_number_column_width(self.line_count));
+            // raw_bytes never changes after construction, so text-mode metrics
+            // are identical on every toggle. After the first Hex→Text switch
+            // they live in self.line_offsets and need no recomputation.
+            if self.line_offsets.is_empty() {
+                let (line_offsets, line_count, max_line_width) =
+                    Self::compute_text_metrics(&self.raw_bytes);
+                self.line_offsets = line_offsets;
+                self.line_count = line_count;
+                self.max_line_width = max_line_width;
+                self.render_cache
+                    .cached_line_num_col_width
+                    .set(line_number_column_width(self.line_count));
+            }
         }
     }
 
